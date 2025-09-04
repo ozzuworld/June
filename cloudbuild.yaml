@@ -1,0 +1,88 @@
+substitutions:
+  _REGION: us-central1
+  _REPO: june
+  _TF_DIR: infra
+  _FIREBASE_PROJECT_ID: $PROJECT_ID
+  _TFSTATE_BUCKET: ${PROJECT_ID}-tfstate
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: ensure-repo
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud artifacts repositories describe ${_REPO} --location=${_REGION} \
+        || gcloud artifacts repositories create ${_REPO} --location=${_REGION} --repository-format=DOCKER
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: ensure-tfstate-bucket
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gsutil ls -b gs://${_TFSTATE_BUCKET} >/dev/null 2>&1 \
+        || gsutil mb -l ${_REGION} gs://${_TFSTATE_BUCKET}
+
+  # ---- Build & push: orchestrator ----
+  - name: gcr.io/cloud-builders/docker
+    id: build-orchestrator
+    dir: services/june-orchestrator
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA", "."]
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-orchestrator
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA"]
+
+  # ---- Build & push: stt ----
+  - name: gcr.io/cloud-builders/docker
+    id: build-stt
+    dir: services/june-stt
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA", "."]
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-stt
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA"]
+
+  # ---- Build & push: tts ----
+  - name: gcr.io/cloud-builders/docker
+    id: build-tts
+    dir: services/june-tts
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA", "."]
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-tts
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA"]
+
+  # ---- Terraform ----
+  - name: hashicorp/terraform:1.8
+    id: terraform-init
+    entrypoint: sh
+    dir: ${_TF_DIR}
+    args:
+      - -c
+      - |
+        terraform init \
+          -backend-config="bucket=${_TFSTATE_BUCKET}" \
+          -backend-config="prefix=iac"
+
+  - name: hashicorp/terraform:1.8
+    id: terraform-apply
+    entrypoint: sh
+    dir: ${_TF_DIR}
+    args:
+      - -c
+      - |
+        export TF_IN_AUTOMATION=1
+        terraform apply -auto-approve \
+          -var="project_id=$PROJECT_ID" \
+          -var="region=${_REGION}" \
+          -var="repo_name=${_REPO}" \
+          -var="firebase_project_id=${_FIREBASE_PROJECT_ID}" \
+          -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA" \
+          -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA" \
+          -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA" \
+          -var="orch_stream_tts=false"
