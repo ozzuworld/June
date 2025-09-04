@@ -1,4 +1,4 @@
-﻿resource "google_service_account" "sa" {
+resource "google_service_account" "sa" {
   project      = var.project_id
   account_id   = "${var.service_name}-sa"
   display_name = "${var.service_name} runner"

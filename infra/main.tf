@@ -1,4 +1,4 @@
-﻿############################################
+############################################
 # Project services (APIs)
 ############################################
 resource "google_project_service" "apis" {
@@ -80,13 +80,13 @@ module "orchestrator" {
   allow_unauthenticated = true
 
   env = {
-    FIREBASE_PROJECT_ID   = var.firebase_project_id
-    STT_WS_URL            = local.stt_ws_url
-    TTS_URL               = local.tts_url
-    DEFAULT_LOCALE        = "en-US"
-    DEFAULT_STT_RATE      = "16000"
-    DEFAULT_STT_ENCODING  = "pcm16"
-    DEFAULT_TTS_ENCODING  = "MP3"
-    ORCH_STREAM_TTS       = tostring(var.orch_stream_tts)
+    FIREBASE_PROJECT_ID  = var.firebase_project_id
+    STT_WS_URL           = local.stt_ws_url
+    TTS_URL              = local.tts_url
+    DEFAULT_LOCALE       = "en-US"
+    DEFAULT_STT_RATE     = "16000"
+    DEFAULT_STT_ENCODING = "pcm16"
+    DEFAULT_TTS_ENCODING = "MP3"
+    ORCH_STREAM_TTS      = tostring(var.orch_stream_tts)
   }
 }
