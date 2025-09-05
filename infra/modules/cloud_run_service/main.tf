@@ -1,3 +1,8 @@
+#############################################
+# Module: cloud_run_service
+# File:   June/infra/modules/cloud_run_service/main.tf
+#############################################
+
 resource "google_service_account" "sa" {
   project      = var.project_id
   account_id   = "${var.service_name}-sa"
@@ -11,6 +16,10 @@ resource "google_cloud_run_v2_service" "svc" {
 
   template {
     service_account = google_service_account.sa.email
+
+    # OPTIONAL: let callers pass Cloud Run annotations (e.g., Cloud SQL connector)
+    # Only works if you also add `variable "annotations"` in variables.tf (see section 2).
+    annotations = var.annotations
 
     scaling {
       min_instance_count = var.min_instances
@@ -53,7 +62,8 @@ resource "google_cloud_run_v2_service" "svc" {
     }
   }
 
-  ingress = "INGRESS_TRAFFIC_ALL"
+  # Ingress policy (public/private)
+  ingress = var.ingress
 }
 
 # Public access (if desired)
@@ -72,4 +82,12 @@ resource "google_project_iam_member" "secret_access" {
   project = var.project_id
   role    = "roles/secretmanager.secretAccessor"
   member  = "serviceAccount:${google_service_account.sa.email}"
+}
+
+output "service_name" {
+  value = google_cloud_run_v2_service.svc.name
+}
+
+output "service_uri" {
+  value = google_cloud_run_v2_service.svc.uri
 }

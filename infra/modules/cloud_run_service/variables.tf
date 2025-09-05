@@ -33,11 +33,17 @@ variable "env" {
   default = {}
 }
 
-# secrets: map of { NAME = { secret = "id", version = "latest" } }
+# Secret env: { NAME = { secret = <sm_secret_id>, version = <sm_version> }, ... }
 variable "secret_env" {
   type = map(object({
     secret  = string
     version = string
   }))
+  default = {}
+}
+
+# Optional annotations (e.g., Cloud SQL connector)
+variable "annotations" {
+  type    = map(string)
   default = {}
 }
