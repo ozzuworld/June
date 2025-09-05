@@ -77,6 +77,17 @@ steps:
       - -c
       - |
         export TF_IN_AUTOMATION=1
+        
+# ---- Build & push: june-auth ----
+- name: gcr.io/cloud-builders/docker
+  id: build-june-auth
+  dir: services/june-auth
+  args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA", "."]
+
+- name: gcr.io/cloud-builders/docker
+  id: push-june-auth
+  args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA"]
+
         terraform apply -auto-approve \
           -var="project_id=$PROJECT_ID" \
           -var="region=${_REGION}" \
@@ -85,4 +96,5 @@ steps:
           -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA" \
           -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA" \
           -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA" \
+          -var="june_auth_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA" \
           -var="orch_stream_tts=false"
