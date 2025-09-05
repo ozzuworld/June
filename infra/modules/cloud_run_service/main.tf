@@ -11,24 +11,31 @@ resource "google_cloud_run_v2_service" "svc" {
 
   template {
     service_account = google_service_account.sa.email
+    # Request timeout for each request
+    timeout = "300s"
 
     scaling {
       min_instance_count = var.min_instances
       max_instance_count = var.max_instances
     }
 
+    labels = {
+      "managed-by" = "terraform"
+    }
+
+    annotations = {
+      "run.googleapis.com/ingress" = "all"
+    }
+
     containers {
       image = var.image
 
-      resources {
-        cpu_idle = true
-        limits = {
-          cpu    = var.cpu
-          memory = var.memory
-        }
+      # Explicit container port (Cloud Run still injects $PORT)
+      ports {
+        container_port = 8080
       }
 
-      # Plain env vars
+      # Environment variables (plain)
       dynamic "env" {
         for_each = var.env
         content {
@@ -37,7 +44,7 @@ resource "google_cloud_run_v2_service" "svc" {
         }
       }
 
-      # Secret-sourced env vars
+      # Environment variables from Secret Manager
       dynamic "env" {
         for_each = var.secret_env
         content {
@@ -52,17 +59,10 @@ resource "google_cloud_run_v2_service" "svc" {
       }
     }
   }
-
-  ingress = "INGRESS_TRAFFIC_ALL"
-
-  # Ensure secret IAM (if any) is applied before creating the service
-  depends_on = [
-    google_secret_manager_secret_iam_member.secret_access
-  ]
 }
 
-# Public access (if desired)
-resource "google_cloud_run_service_iam_member" "public" {
+# Allow unauthenticated if requested
+resource "google_cloud_run_v2_service_iam_member" "invoker" {
   count    = var.allow_unauthenticated ? 1 : 0
   project  = var.project_id
   location = var.region
@@ -71,7 +71,7 @@ resource "google_cloud_run_service_iam_member" "public" {
   member   = "allUsers"
 }
 
-# Allow reading specific secrets only when used (least privilege)
+# Allow the service to access only the specified secrets
 resource "google_secret_manager_secret_iam_member" "secret_access" {
   for_each = var.secret_env
   secret_id = each.value.secret
