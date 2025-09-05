@@ -54,6 +54,11 @@ resource "google_cloud_run_v2_service" "svc" {
   }
 
   ingress = "INGRESS_TRAFFIC_ALL"
+
+  # Ensure secret IAM (if any) is applied before creating the service
+  depends_on = [
+    google_secret_manager_secret_iam_member.secret_access
+  ]
 }
 
 # Public access (if desired)
@@ -66,10 +71,10 @@ resource "google_cloud_run_service_iam_member" "public" {
   member   = "allUsers"
 }
 
-# Allow reading secrets only when used
-resource "google_project_iam_member" "secret_access" {
-  count   = length(var.secret_env) > 0 ? 1 : 0
-  project = var.project_id
-  role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.sa.email}"
+# Allow reading specific secrets only when used (least privilege)
+resource "google_secret_manager_secret_iam_member" "secret_access" {
+  for_each = var.secret_env
+  secret_id = each.value.secret
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.sa.email}"
 }
