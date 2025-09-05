@@ -8,7 +8,10 @@ resource "google_project_service" "apis" {
     "secretmanager.googleapis.com",
     "cloudbuild.googleapis.com",
     "iam.googleapis.com",
-    "serviceusage.googleapis.com"
+    "serviceusage.googleapis.com",
+    # Service APIs used by app code
+    "speech.googleapis.com",
+    "texttospeech.googleapis.com"
   ])
   project = var.project_id
   service = each.key
