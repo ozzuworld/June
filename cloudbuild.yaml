@@ -90,6 +90,10 @@ steps:
         set -e
         export TF_IN_AUTOMATION=1
         terraform apply -auto-approve \
+          -var="project_id=$PROJECT_ID" \
+          -var="region=${_REGION}" \
+          -var="repo_name=${_REPO}" \
+          -var="firebase_project_id=${_FIREBASE_PROJECT_ID}" \
           -target=google_secret_manager_secret.june_auth_fernet_key \
           -target=google_secret_manager_secret.june_auth_mfa_jwt_secret
 
