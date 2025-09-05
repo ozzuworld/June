@@ -120,7 +120,7 @@ steps:
           else
             FERNET_KEY=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n=')
           fi
-          printf '%s' "$FERNET_KEY" | gcloud secrets versions add "$fernet_secret" --data-file=-
+          printf '%s' "$$FERNET_KEY" | gcloud secrets versions add "$fernet_secret" --data-file=-
         else
           echo "$fernet_secret already has a version; skipping"
         fi
@@ -132,7 +132,7 @@ steps:
           else
             MFA_JWT_SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
           fi
-          printf '%s' "$MFA_JWT_SECRET" | gcloud secrets versions add "$mfa_secret" --data-file=-
+          printf '%s' "$$MFA_JWT_SECRET" | gcloud secrets versions add "$mfa_secret" --data-file=-
         else
           echo "$mfa_secret already has a version; skipping"
         fi
