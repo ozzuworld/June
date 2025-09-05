@@ -79,8 +79,62 @@ steps:
           -backend-config="bucket=${_TFSTATE_BUCKET}" \
           -backend-config="prefix=iac"
 
+  # Apply only the secrets first (no versions yet)
   - name: hashicorp/terraform:1.8
-    id: terraform-apply
+    id: terraform-apply-secrets
+    entrypoint: sh
+    dir: ${_TF_DIR}
+    args:
+      - -c
+      - |
+        set -e
+        export TF_IN_AUTOMATION=1
+        terraform apply -auto-approve \
+          -target=google_secret_manager_secret.june_auth_fernet_key \
+          -target=google_secret_manager_secret.june_auth_mfa_jwt_secret
+
+  # Seed "latest" versions if missing (idempotent)
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: seed-june-auth-secrets
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        fernet_secret="june-auth-fernet-key"
+        mfa_secret="june-auth-mfa-jwt-secret"
+
+        has_ver() {
+          gcloud secrets versions list "$1" \
+            --format="value(state)" --filter="state=enabled" --limit=1 | grep -q .
+        }
+
+        if ! has_ver "$fernet_secret"; then
+          echo "Seeding $fernet_secret"
+          if command -v openssl >/dev/null 2>&1; then
+            FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')
+          else
+            FERNET_KEY=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n=')
+          fi
+          printf '%s' "$FERNET_KEY" | gcloud secrets versions add "$fernet_secret" --data-file=-
+        else
+          echo "$fernet_secret already has a version; skipping"
+        fi
+
+        if ! has_ver "$mfa_secret"; then
+          echo "Seeding $mfa_secret"
+          if command -v openssl >/dev/null 2>&1; then
+            MFA_JWT_SECRET=$(openssl rand -hex 32)
+          else
+            MFA_JWT_SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          fi
+          printf '%s' "$MFA_JWT_SECRET" | gcloud secrets versions add "$mfa_secret" --data-file=-
+        else
+          echo "$mfa_secret already has a version; skipping"
+        fi
+
+  - name: hashicorp/terraform:1.8
+    id: terraform-apply-full
     entrypoint: sh
     dir: ${_TF_DIR}
     args:
