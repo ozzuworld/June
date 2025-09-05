@@ -2,11 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Add code and (in deploy) mount your service account JSON to /app/service-account.json
+# Add code (env comes from Cloud Run/Secret Manager, not local files)
 COPY app ./app
-COPY .env.example ./.env.example
 
 ENV PYTHONUNBUFFERED=1
 
