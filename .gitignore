@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+.env
+services/**/.env
+
+# node
+node_modules/
+npm-debug.log*
+
+# terraform (we use remote state but ignore local artifacts)
+.terraform/
+*.tfstate*
+crash.log
+
+# misc
+.DS_Store
