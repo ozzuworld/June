@@ -89,11 +89,15 @@ steps:
       - |
         set -e
         export TF_IN_AUTOMATION=1
-        terraform apply -auto-approve \
+        terraform apply -auto-approve -input=false \
           -var="project_id=$PROJECT_ID" \
           -var="region=${_REGION}" \
           -var="repo_name=${_REPO}" \
           -var="firebase_project_id=${_FIREBASE_PROJECT_ID}" \
+          -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA" \
+          -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA" \
+          -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA" \
+          -var="june_auth_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA" \
           -target=google_secret_manager_secret.june_auth_fernet_key \
           -target=google_secret_manager_secret.june_auth_mfa_jwt_secret
 
@@ -145,7 +149,7 @@ steps:
       - -c
       - |
         export TF_IN_AUTOMATION=1
-        terraform apply -auto-approve \
+        terraform apply -auto-approve -input=false \
           -var="project_id=$PROJECT_ID" \
           -var="region=${_REGION}" \
           -var="repo_name=${_REPO}" \
