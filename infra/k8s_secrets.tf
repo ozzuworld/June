@@ -32,17 +32,15 @@ resource "kubernetes_secret" "keycloak_db" {
   type = "Opaque"
   data = {
     username = var.kc_db_user
-    password = var.kc_db_password != "" ? var.kc_db_password : random_password_kc_db.result
+    password = local.kc_db_password_effective  # <- use the local (auto-gen if blank)
   }
 }
 
-# Separate random for DB if password not given
 resource "random_password" "kc_db" {
   length  = 24
   special = false
 }
 
-# Expose value through a local for reuse
 locals {
   kc_db_password_effective = var.kc_db_password != "" ? var.kc_db_password : random_password.kc_db.result
 }
