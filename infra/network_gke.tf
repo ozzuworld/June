@@ -28,10 +28,3 @@ resource "google_compute_subnetwork" "subnet" {
     ip_cidr_range = "10.21.0.0/16"
   }
 }
-
-resource "google_vpc_access_connector" "serverless" {
-  name    = "svpc-${var.region}"
-  region  = var.region
-  network = google_compute_network.vpc.name
-  subnet { name = google_compute_subnetwork.subnet.name }
-}

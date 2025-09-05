@@ -1,9 +1,10 @@
 variable "project_id" { type = string }
-variable "region" { type = string }
-variable "zone" { type = string }
-variable "name" { type = string }       # e.g., "pg-keycloak"
-variable "network" { type = string }    # self_link or name
-variable "subnetwork" { type = string } # self_link or name
+variable "region"     { type = string }
+variable "zone"       { type = string }
+
+variable "name"       { type = string }
+variable "network"    { type = string }
+variable "subnetwork" { type = string }
 
 variable "db_name" {
   type    = string
