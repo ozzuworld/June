@@ -18,14 +18,14 @@ resource "google_project_service" "apis_june_auth" {
 resource "google_secret_manager_secret" "june_auth_fernet_key" {
   secret_id = "${var.june_auth_service_name}-fernet-key"
   replication {
-    automatic = true
+    auto {}
   }
 }
 
 resource "google_secret_manager_secret" "june_auth_mfa_jwt_secret" {
   secret_id = "${var.june_auth_service_name}-mfa-jwt-secret"
   replication {
-    automatic = true
+    auto {}
   }
 }
 
