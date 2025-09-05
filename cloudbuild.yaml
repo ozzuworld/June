@@ -119,10 +119,17 @@ steps:
 
         if ! has_ver "$fernet_secret"; then
           echo "Seeding $fernet_secret"
-          if command -v openssl >/dev/null 2>&1; then
+          # Generate a valid Fernet key (44-char urlsafe base64 of 32 random bytes)
+          if command -v python3 >/dev/null 2>&1; then
+            FERNET_KEY=$(python3 - <<'PY'
+import os, base64
+print(base64.urlsafe_b64encode(os.urandom(32)).decode())
+PY
+)
+          elif command -v openssl >/dev/null 2>&1; then
             FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')
           else
-            FERNET_KEY=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n=')
+            FERNET_KEY=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n')
           fi
           printf '%s' "$$FERNET_KEY" | gcloud secrets versions add "$fernet_secret" --data-file=-
         else
