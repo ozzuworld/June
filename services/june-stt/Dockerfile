@@ -2,7 +2,9 @@ FROM python:3.11-slim
 
 # Install ffmpeg for on-the-fly audio conversion
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system app \
+    && adduser --system --ingroup app app
 
 WORKDIR /app
 
@@ -12,6 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app code
 COPY . .
+
+RUN chown -R app:app /app
+USER app
 
 # Cloud Run listens on $PORT (default 8080). We can hardcode 8080 safely.
 EXPOSE 8080

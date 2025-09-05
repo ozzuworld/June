@@ -7,7 +7,9 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, Depends
+from authz import get_current_user
+from firebase_admin import auth as fb_auth
 
 # -----------------------------------------------------------------------------
 # FastAPI app
@@ -47,20 +49,18 @@ STT_REQUIRE_CLOUDRUN_AUTH  = os.getenv("STT_REQUIRE_CLOUDRUN_AUTH", "false").low
 async def healthz():
     return {"ok": True}
 
-# (Optional) simple config dump (protect behind Authorization if you want)
+# Minimal config info (requires auth). Avoid leaking detailed config.
 @app.get("/configz")
-async def configz():
+async def configz(user=Depends(get_current_user)):
     return {
-        "FIREBASE_PROJECT_ID": FIREBASE_PROJECT_ID,
-        "STT_WS_URL": STT_WS_URL,
-        "STT_HTTP_URL": STT_HTTP_URL,
-        "TTS_URL": TTS_URL,
-        "DEFAULT_LOCALE": DEFAULT_LOCALE,
-        "DEFAULT_STT_RATE": DEFAULT_STT_RATE,
-        "DEFAULT_STT_ENCODING": DEFAULT_STT_ENCODING,
-        "DEFAULT_TTS_ENCODING": DEFAULT_TTS_ENCODING,
-        "STT_HANDSHAKE": STT_HANDSHAKE,
-        "STT_REQUIRE_CLOUDRUN_AUTH": STT_REQUIRE_CLOUDRUN_AUTH,
+        "ok": True,
+        "project": FIREBASE_PROJECT_ID,
+        "voice": {
+            "locale": DEFAULT_LOCALE,
+            "stt_rate": DEFAULT_STT_RATE,
+            "stt_enc": DEFAULT_STT_ENCODING,
+            "tts_enc": DEFAULT_TTS_ENCODING,
+        },
     }
 
 # -----------------------------------------------------------------------------
@@ -68,7 +68,7 @@ async def configz():
 # Replace with your real chain/agent later.
 # -----------------------------------------------------------------------------
 @app.post("/v1/chat")
-async def chat(payload: dict):
+async def chat(payload: dict, user=Depends(get_current_user)):
     user_text = (payload or {}).get("user_input", "")
     # TODO: plug your LLM/agent here; for now, simple echo-style reply
     reply = f"You said: {user_text}".strip()
@@ -144,11 +144,18 @@ async def voice_ws(ws: WebSocket):
     token: Optional[str] = ws.query_params.get("token")
     locale: str = ws.query_params.get("locale") or DEFAULT_LOCALE
 
-    await ws.accept()
+    # Verify token BEFORE accepting the WebSocket
     if not token:
-        await ws.send_text(json.dumps({"type":"error","code":"AUTH","message":"Missing ?token"}))
         await ws.close(code=4401)
         return
+    try:
+        # Validate Firebase ID token
+        await asyncio.get_event_loop().run_in_executor(None, lambda: fb_auth.verify_id_token(token))
+    except Exception:
+        await ws.close(code=4401)
+        return
+
+    await ws.accept()
 
     try:
         await _stt_bridge(ws, token, locale, DEFAULT_STT_ENCODING)

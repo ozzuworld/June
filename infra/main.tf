@@ -35,11 +35,21 @@ module "stt" {
   service_name = "june-stt"
   image        = var.stt_image
 
-  allow_unauthenticated = true
+  allow_unauthenticated = false
 
   env = {
     FIREBASE_PROJECT_ID = var.firebase_project_id
   }
+}
+
+# Allow orchestrator to invoke private STT via Cloud Run IAM
+resource "google_cloud_run_service_iam_member" "stt_invoker_from_orchestrator" {
+  project  = var.project_id
+  location = var.region
+  service  = "june-stt"
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.orchestrator.service_account_email}"
+  depends_on = [module.stt, module.orchestrator]
 }
 
 ############################################
@@ -88,5 +98,6 @@ module "orchestrator" {
     DEFAULT_STT_ENCODING = "pcm16"
     DEFAULT_TTS_ENCODING = "MP3"
     ORCH_STREAM_TTS      = tostring(var.orch_stream_tts)
+    STT_REQUIRE_CLOUDRUN_AUTH = "true"
   }
 }
