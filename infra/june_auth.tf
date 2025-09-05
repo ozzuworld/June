@@ -16,13 +16,17 @@ resource "google_project_service" "apis_june_auth" {
 
 # Secrets for june-auth
 resource "google_secret_manager_secret" "june_auth_fernet_key" {
-  secret_id  = "${var.june_auth_service_name}-fernet-key"
-  replication { auto {} }
+  secret_id = "${var.june_auth_service_name}-fernet-key"
+  replication {
+    auto {}
+  }
 }
 
 resource "google_secret_manager_secret" "june_auth_mfa_jwt_secret" {
-  secret_id  = "${var.june_auth_service_name}-mfa-jwt-secret"
-  replication { auto {} }
+  secret_id = "${var.june_auth_service_name}-mfa-jwt-secret"
+  replication {
+    auto {}
+  }
 }
 
 # (Optional) Add secret versions from variables (⚠️ writes secret material into TF state)
