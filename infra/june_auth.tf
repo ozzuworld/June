@@ -2,7 +2,7 @@
 # june-auth: Secrets, APIs, Cloud Run
 ############################################
 
-# Make sure required APIs exist (idempotent)
+# Ensure commonly-used APIs are enabled
 resource "google_project_service" "apis_june_auth" {
   for_each = toset([
     "firestore.googleapis.com",
@@ -14,51 +14,58 @@ resource "google_project_service" "apis_june_auth" {
   service = each.key
 }
 
-# Secrets for june-auth
+# Secrets for FERNET_KEY and MFA_JWT_SECRET
 resource "google_secret_manager_secret" "june_auth_fernet_key" {
-  secret_id = "${var.june_auth_service_name}-fernet-key"
+  project   = var.project_id
+  secret_id = "${var.june_auth_service_name}-fernet"
   replication {
     auto {}
   }
+}
+
+resource "google_secret_manager_secret_version" "june_auth_fernet_key_v" {
+  secret      = google_secret_manager_secret.june_auth_fernet_key.id
+  secret_data = coalesce(var.june_auth_fernet_key, random_id.june_auth_fernet_key_hex.b64_url)
 }
 
 resource "google_secret_manager_secret" "june_auth_mfa_jwt_secret" {
-  secret_id = "${var.june_auth_service_name}-mfa-jwt-secret"
+  project   = var.project_id
+  secret_id = "${var.june_auth_service_name}-mfa-jwt"
   replication {
     auto {}
   }
 }
 
-# (Optional) Add secret versions from variables (⚠️ writes secret material into TF state)
-resource "google_secret_manager_secret_version" "june_auth_fernet_key" {
-  count       = var.june_auth_create_secret_versions && var.june_auth_fernet_key != null ? 1 : 0
-  secret      = google_secret_manager_secret.june_auth_fernet_key.id
-  secret_data = var.june_auth_fernet_key
-}
-
-resource "google_secret_manager_secret_version" "june_auth_mfa_jwt_secret" {
-  count       = var.june_auth_create_secret_versions && var.june_auth_mfa_jwt_secret != null ? 1 : 0
+resource "google_secret_manager_secret_version" "june_auth_mfa_jwt_secret_v" {
   secret      = google_secret_manager_secret.june_auth_mfa_jwt_secret.id
-  secret_data = var.june_auth_mfa_jwt_secret
+  secret_data = coalesce(var.june_auth_mfa_jwt_secret, random_id.june_auth_mfa_jwt_key_hex.hex)
 }
 
-# Cloud Run service via shared module
-module "june_auth" {
-  source      = "./modules/cloud_run_service"
-  project_id  = var.project_id
-  region      = var.region
-  service_name = var.june_auth_service_name
-  image       = var.june_auth_image
+# Randoms if the user doesn't provide values (safe defaults)
+resource "random_id" "june_auth_fernet_key_hex" {
+  byte_length = 32
+}
 
+resource "random_id" "june_auth_mfa_jwt_key_hex" {
+  byte_length = 32
+}
+
+# Deploy the service
+module "june_auth" {
+  source  = "./modules/cloud_run_service"
+  project_id = var.project_id
+  region     = var.region
+
+  service_name         = var.june_auth_service_name
+  image                = var.june_auth_image
   allow_unauthenticated = var.june_auth_allow_unauthenticated
 
+  min_instances = var.june_auth_min_instances
+  max_instances = var.june_auth_max_instances
+
   env = {
-    GOOGLE_CLOUD_PROJECT   = var.project_id
-    TOTP_ISSUER            = var.june_auth_totp_issuer
-    TOTP_ALG               = var.june_auth_totp_alg
-    TOTP_DIGITS            = tostring(var.june_auth_totp_digits)
-    TOTP_PERIOD            = tostring(var.june_auth_totp_period)
-    MFA_JWT_TTL_SECONDS    = tostring(var.june_auth_mfa_jwt_ttl_seconds)
+    # App-specific clear env (Firebase project ID used by the code)
+    FIREBASE_PROJECT_ID = var.firebase_project_id
   }
 
   secret_env = {
@@ -71,4 +78,12 @@ module "june_auth" {
       version = "latest"
     }
   }
+}
+
+
+# Allow the service account to access Firestore (Native)
+resource "google_project_iam_member" "june_auth_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${module.june_auth.service_account_email}"
 }

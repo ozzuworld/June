@@ -6,7 +6,7 @@ from passlib.hash import bcrypt
 from google.cloud import firestore
 
 FERNET = Fernet(os.environ["FERNET_KEY"].encode())
-DB = firestore.Client(project=os.environ["GOOGLE_CLOUD_PROJECT"])
+DB = firestore.Client()  # Use default project from metadata; no hard env dependency
 
 ISSUER = os.getenv("TOTP_ISSUER", "June Voice")
 ALG = os.getenv("TOTP_ALG", "SHA1")
