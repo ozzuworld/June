@@ -17,6 +17,21 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
+# --- Ensure Artifact Registry repo exists & Docker is configured ---
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  id: ensure-ar-repo
+  entrypoint: bash
+  args:
+    - -lc
+    - |
+      set -eux
+      gcloud artifacts repositories describe "${_REPO}" --location="${_REGION}" \
+      || gcloud artifacts repositories create "${_REPO}" \
+           --location="${_REGION}" \
+           --repository-format=docker \
+           --description="App images"
+      gcloud auth configure-docker "${_REGION}-docker.pkg.dev" -q
+
 # -------- STT --------
 - name: gcr.io/cloud-builders/docker
   dir: ${_STT_DIR}
