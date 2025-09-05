@@ -1,168 +1,100 @@
 substitutions:
   _REGION: us-central1
   _REPO: june
-  _TF_DIR: infra
-  _FIREBASE_PROJECT_ID: $PROJECT_ID
-  _TFSTATE_BUCKET: ${PROJECT_ID}-tfstate
+  _TF_DIR: June/infra
+  _FIREBASE_PROJECT_ID: ${PROJECT_ID}
 
 options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
+  # Ensure Artifact Registry repo exists (idempotent)
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    id: ensure-repo
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        gcloud artifacts repositories describe ${_REPO} --location=${_REGION} \
-        || gcloud artifacts repositories create ${_REPO} --location=${_REGION} --repository-format=DOCKER
-
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    id: ensure-tfstate-bucket
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        gsutil ls -b gs://${_TFSTATE_BUCKET} >/dev/null 2>&1 \
-        || gsutil mb -l ${_REGION} gs://${_TFSTATE_BUCKET}
-
-  # ---- Build & push: orchestrator ----
-  - name: gcr.io/cloud-builders/docker
-    id: build-orchestrator
-    dir: services/june-orchestrator
-    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA", "."]
-
-  - name: gcr.io/cloud-builders/docker
-    id: push-orchestrator
-    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA"]
-
-  # ---- Build & push: stt ----
-  - name: gcr.io/cloud-builders/docker
-    id: build-stt
-    dir: services/june-stt
-    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA", "."]
-
-  - name: gcr.io/cloud-builders/docker
-    id: push-stt
-    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA"]
-
-  # ---- Build & push: tts ----
-  - name: gcr.io/cloud-builders/docker
-    id: build-tts
-    dir: services/june-tts
-    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA", "."]
-
-  - name: gcr.io/cloud-builders/docker
-    id: push-tts
-    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA"]
-
-  # ---- Build & push: june-auth ----
-  - name: gcr.io/cloud-builders/docker
-    id: build-june-auth
-    dir: services/june-auth
-    args: ["build", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA", "."]
-
-  - name: gcr.io/cloud-builders/docker
-    id: push-june-auth
-    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA"]
-
-  # ---- Terraform ----
-  - name: hashicorp/terraform:1.8
-    id: terraform-init
-    entrypoint: sh
-    dir: ${_TF_DIR}
-    args:
-      - -c
-      - |
-        terraform init \
-          -backend-config="bucket=${_TFSTATE_BUCKET}" \
-          -backend-config="prefix=iac"
-
-  # Apply only the secrets first (no versions yet)
-  - name: hashicorp/terraform:1.8
-    id: terraform-apply-secrets
-    entrypoint: sh
-    dir: ${_TF_DIR}
-    args:
-      - -c
-      - |
-        set -e
-        export TF_IN_AUTOMATION=1
-        terraform apply -auto-approve -input=false \
-          -var="project_id=$PROJECT_ID" \
-          -var="region=${_REGION}" \
-          -var="repo_name=${_REPO}" \
-          -var="firebase_project_id=${_FIREBASE_PROJECT_ID}" \
-          -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA" \
-          -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA" \
-          -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA" \
-          -var="june_auth_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA" \
-          -target=google_secret_manager_secret.june_auth_fernet_key \
-          -target=google_secret_manager_secret.june_auth_mfa_jwt_secret
-
-  # Seed "latest" versions if missing (idempotent)
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    id: seed-june-auth-secrets
+    id: ensure-artifact-registry
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
-        fernet_secret="june-auth-fernet-key"
-        mfa_secret="june-auth-mfa-jwt-secret"
-
-        has_ver() {
-          gcloud secrets versions list "$1" \
-            --format="value(state)" --filter="state=enabled" --limit=1 | grep -q .
-        }
-
-        if ! has_ver "$fernet_secret"; then
-          echo "Seeding $fernet_secret"
-          # Generate a valid Fernet key (44-char urlsafe base64 of 32 random bytes)
-          if command -v python3 >/dev/null 2>&1; then
-            FERNET_KEY=$(python3 - <<'PY'
-import os, base64
-print(base64.urlsafe_b64encode(os.urandom(32)).decode())
-PY
-)
-          elif command -v openssl >/dev/null 2>&1; then
-            FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')
-          else
-            FERNET_KEY=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '\n')
-          fi
-          printf '%s' "$$FERNET_KEY" | gcloud secrets versions add "$fernet_secret" --data-file=-
+        if ! gcloud artifacts repositories describe "${_REPO}" --location="${_REGION}" >/dev/null 2>&1; then
+          gcloud artifacts repositories create "${_REPO}"             --repository-format=docker             --location="${_REGION}"             --description="Docker repo for June microservices"
         else
-          echo "$fernet_secret already has a version; skipping"
+          echo "Artifact Registry ${_REPO} exists"
         fi
 
-        if ! has_ver "$mfa_secret"; then
-          echo "Seeding $mfa_secret"
-          if command -v openssl >/dev/null 2>&1; then
-            MFA_JWT_SECRET=$(openssl rand -hex 32)
-          else
-            MFA_JWT_SECRET=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
-          fi
-          printf '%s' "$$MFA_JWT_SECRET" | gcloud secrets versions add "$mfa_secret" --data-file=-
-        else
-          echo "$mfa_secret already has a version; skipping"
-        fi
+  # Build & push images
+  - name: gcr.io/cloud-builders/docker
+    id: build-orchestrator
+    dir: June/services/june-orchestrator
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA
+      - .
 
+  - name: gcr.io/cloud-builders/docker
+    id: push-orchestrator
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA"]
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-stt
+    dir: June/services/june-stt
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-stt
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA"]
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-tts
+    dir: June/services/june-tts
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-tts
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA"]
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-june-auth
+    dir: June/services/june-auth
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-june-auth
+    args: ["push", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA"]
+
+  # Terraform init/plan/apply
   - name: hashicorp/terraform:1.8
-    id: terraform-apply-full
-    entrypoint: sh
+    id: terraform-init
     dir: ${_TF_DIR}
+    entrypoint: sh
     args:
       - -c
       - |
+        set -euo pipefail
+        terraform --version
+        terraform init -input=false           -backend-config="bucket=${PROJECT_ID}-tfstate"           -backend-config="prefix=state"
+
+  - name: hashicorp/terraform:1.8
+    id: terraform-apply
+    dir: ${_TF_DIR}
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -euo pipefail
         export TF_IN_AUTOMATION=1
-        terraform apply -auto-approve -input=false \
-          -var="project_id=$PROJECT_ID" \
-          -var="region=${_REGION}" \
-          -var="repo_name=${_REPO}" \
-          -var="firebase_project_id=${_FIREBASE_PROJECT_ID}" \
-          -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA" \
-          -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA" \
-          -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA" \
-          -var="june_auth_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA" \
-          -var="orch_stream_tts=false"
+        terraform apply -auto-approve -input=false           -var="project_id=$PROJECT_ID"           -var="region=${_REGION}"           -var="repo_name=${_REPO}"           -var="firebase_project_id=${_FIREBASE_PROJECT_ID}"           -var="orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-orchestrator:$SHORT_SHA"           -var="stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-stt:$SHORT_SHA"           -var="tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-tts:$SHORT_SHA"           -var="june_auth_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/june-auth:$SHORT_SHA"
+
