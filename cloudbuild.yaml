@@ -17,19 +17,62 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-# --- Ensure Artifact Registry repo exists & Docker is configured ---
+# ---- Terraform FIRST (creates AR repo + all infra) ----
+- name: hashicorp/terraform:1.8
+  id: tf-init
+  dir: ${_TF_DIR}
+  entrypoint: sh
+  args:
+    - -c
+    - |
+      set -eux
+      printf 'bucket = "%s"\nprefix = "%s"\n' "${_TFSTATE_BUCKET}" "${_TFSTATE_PREFIX}" > backend.hcl
+      terraform init -reconfigure -backend-config=backend.hcl
+
+- name: hashicorp/terraform:1.8
+  id: tf-plan
+  dir: ${_TF_DIR}
+  env:
+    - TF_VAR_project_id=$PROJECT_ID
+    - TF_VAR_region=${_REGION}
+    - TF_VAR_zone=us-central1-a
+    - TF_VAR_repo_name=${_REPO}
+    - TF_VAR_firebase_project_id=$PROJECT_ID
+    - TF_VAR_domain=${_BASE_DOMAIN}
+    # Use the final image tags up-front; pods may show ImagePullBackOff
+    # briefly until the images are pushed by later steps.
+    - TF_VAR_orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orchestrator:${_IMAGE_TAG}
+    - TF_VAR_stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/stt:${_IMAGE_TAG}
+    - TF_VAR_tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/tts:${_IMAGE_TAG}
+  entrypoint: sh
+  args:
+    - -c
+    - |
+      set -eux
+      terraform plan -input=false -out tfplan
+
+- name: hashicorp/terraform:1.8
+  id: tf-apply
+  dir: ${_TF_DIR}
+  entrypoint: sh
+  args:
+    - -c
+    - |
+      set -eux
+      if [ "${_AUTO_APPLY}" = "true" ]; then
+        terraform apply -input=false -auto-approve tfplan
+      else
+        echo "Skipping apply"
+      fi
+
+# ---- Configure Docker for Artifact Registry (repo was created by Terraform) ----
 - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-  id: ensure-ar-repo
+  id: ar-login
   entrypoint: bash
   args:
     - -lc
     - |
       set -eux
-      gcloud artifacts repositories describe "${_REPO}" --location="${_REGION}" \
-      || gcloud artifacts repositories create "${_REPO}" \
-           --location="${_REGION}" \
-           --repository-format=docker \
-           --description="App images"
       gcloud auth configure-docker "${_REGION}-docker.pkg.dev" -q
 
 # -------- STT --------
@@ -76,52 +119,6 @@ steps:
   args: ["push","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orchestrator:${_IMAGE_TAG}"]
 - name: gcr.io/cloud-builders/docker
   args: ["push","${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orchestrator:latest"]
-
-# ---- Terraform init/plan/apply ----
-- name: hashicorp/terraform:1.8
-  id: tf-init
-  dir: ${_TF_DIR}
-  entrypoint: sh
-  args:
-    - -c
-    - |
-      set -eux
-      printf 'bucket = "%s"\nprefix = "%s"\n' "${_TFSTATE_BUCKET}" "${_TFSTATE_PREFIX}" > backend.hcl
-      terraform init -reconfigure -backend-config=backend.hcl
-
-- name: hashicorp/terraform:1.8
-  id: tf-plan
-  dir: ${_TF_DIR}
-  env:
-    - TF_VAR_project_id=$PROJECT_ID
-    - TF_VAR_region=${_REGION}
-    - TF_VAR_zone=us-central1-a
-    - TF_VAR_repo_name=${_REPO}
-    - TF_VAR_firebase_project_id=$PROJECT_ID
-    - TF_VAR_domain=${_BASE_DOMAIN}
-    - TF_VAR_orchestrator_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/orchestrator:${_IMAGE_TAG}
-    - TF_VAR_stt_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/stt:${_IMAGE_TAG}
-    - TF_VAR_tts_image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/tts:${_IMAGE_TAG}
-  entrypoint: sh
-  args:
-    - -c
-    - |
-      set -eux
-      terraform plan -input=false -out tfplan
-
-- name: hashicorp/terraform:1.8
-  id: tf-apply
-  dir: ${_TF_DIR}
-  entrypoint: sh
-  args:
-    - -c
-    - |
-      set -eux
-      if [ "${_AUTO_APPLY}" = "true" ]; then
-        terraform apply -input=false -auto-approve tfplan
-      else
-        echo "Skipping apply"
-      fi
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/stt:${_IMAGE_TAG}
