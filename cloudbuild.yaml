@@ -1,3 +1,4 @@
+# cloudbuild.yaml (repo root)
 substitutions:
   _REGION: "us-central1"
   _GKE_CLUSTER_NAME: "june"
@@ -7,6 +8,7 @@ substitutions:
 options:
   logging: CLOUD_LOGGING_ONLY
 
+# Make the secret available to steps, but do NOT expose it by default.
 availableSecrets:
   secretManager:
     - versionName: projects/$PROJECT_NUMBER/secrets/firebase-web-api-key/versions/latest
@@ -39,16 +41,17 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}']
 
-  # Helm deploy (pulls Firebase key from Secret Manager → creates/updates K8s Secret → upgrades chart)
+  # Helm deploy (injects the secret only into this step)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
     env:
       - 'CLOUDSDK_COMPUTE_ZONE=${_GKE_ZONE}'
+    secretEnv:
+      - FIREBASE_WEB_API_KEY
     args:
       - -ceu
       - |
         set -euo pipefail
-
         REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/june"
 
         echo ">> get GKE credentials"
