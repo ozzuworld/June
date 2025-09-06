@@ -5,6 +5,9 @@ substitutions:
   _GKE_ZONE: "us-central1-a"
   _FIREBASE_PROJECT_ID: "main-buffer-469817-v7"
 
+  _REPO: "us-central1-docker.pkg.dev/main-buffer-469817-v7/june"
+  _API_HOST: "api.allsafe.world"
+  _FIREBASE_WEB_API_KEY: ""
 options:
   logging: CLOUD_LOGGING_ONLY
 
@@ -44,6 +47,26 @@ steps:
   # Helm deploy (injects the secret only into this step)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        echo ">> ensure Secret Manager secret firebase-web-api-key exists"
+        if gcloud secrets describe firebase-web-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+          echo "Secret already exists."
+        else
+          if [[ -n "${_FIREBASE_WEB_API_KEY:-}" ]]; then
+            echo "Creating secret firebase-web-api-key from _FIREBASE_WEB_API_KEY"
+            gcloud secrets create firebase-web-api-key --replication-policy="automatic" --project="${PROJECT_ID}"
+            printf '%s' "${_FIREBASE_WEB_API_KEY}" | gcloud secrets versions add firebase-web-api-key --data-file=- --project="${PROJECT_ID}"
+          else
+            echo "ERROR: Secret firebase-web-api-key is missing and no bootstrap value provided."
+            echo "Set _FIREBASE_WEB_API_KEY in the trigger temporarily or create the secret manually in Secret Manager."
+            exit 1
+          fi
+        fi
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'bash'
     env:
       - 'CLOUDSDK_COMPUTE_ZONE=${_GKE_ZONE}'
     secretEnv:
@@ -68,14 +91,17 @@ steps:
         echo ">> sync orchestrator secret from Secret Manager"
         kubectl -n apps create secret generic june-orchestrator-secrets \
           --from-literal=FIREBASE_PROJECT_ID="${_FIREBASE_PROJECT_ID}" \
-          --from-literal=FIREBASE_WEB_API_KEY="$FIREBASE_WEB_API_KEY" \
+          --from-literal=FIREBASE_WEB_API_KEY="$$FIREBASE_WEB_API_KEY" \
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> helm upgrade"
         helm upgrade --install june app/helm/june-stack -n apps --create-namespace \
-          --set "june-orchestrator.image.repository=${REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
-          --set "june-stt.image.repository=${REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
-          --set "june-tts.image.repository=${REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}"
+          --set "june-orchestrator.image.repository=${_REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
+          --set "june-stt.image.repository=${_REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
+          --set "june-tts.image.repository=${_REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}" \
 
+          --set "june-orchestrator.ingress.enabled=true" \
+          --set "june-orchestrator.ingress.className=nginx" \
+          --set "june-orchestrator.ingress.host=${_API_HOST}" 
         echo ">> wait for rollout"
         kubectl -n apps rollout status deploy/june-june-orchestrator --timeout=5m
