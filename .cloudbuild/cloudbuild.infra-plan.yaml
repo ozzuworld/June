@@ -3,8 +3,6 @@ options:
   substitution_option: ALLOW_LOOSE
 substitutions:
   _TF_DIR: "infra"
-  _TF_BUCKET: "main-buffer-469817-tfstate"
-  _TF_PREFIX: "iac"
 
 steps:
   - name: gcr.io/cloud-builders/git
@@ -20,9 +18,7 @@ steps:
       - -lc
       - |
         terraform fmt -recursive
-        terraform init -reconfigure \
-          -backend-config="bucket=${_TF_BUCKET}" \
-          -backend-config="prefix=${_TF_PREFIX}"
+        terraform init -reconfigure -backend-config=backend.hcl
 
   - name: hashicorp/terraform:1.8
     id: Validate
@@ -32,9 +28,4 @@ steps:
   - name: hashicorp/terraform:1.8
     id: Plan
     dir: ${_TF_DIR}
-    args: ["plan","-lock-timeout=300s","-input=false","-out=tfplan"]
-
-artifacts:
-  objects:
-    location: gs://${_TF_BUCKET}/${_TF_PREFIX}/plans/$BUILD_ID
-    paths: ["${_TF_DIR}/tfplan"]
+    args: ["plan","-lock=false","-input=false","-out=tfplan"]

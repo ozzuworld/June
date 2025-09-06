@@ -3,14 +3,24 @@ options:
   substitution_option: ALLOW_LOOSE
 substitutions:
   _TF_DIR: "infra"
-  _TF_BUCKET: "main-buffer-469817-tfstate"
-  _TF_PREFIX: "iac"
 
 steps:
   - name: gcr.io/cloud-builders/git
     id: Checkout
     entrypoint: bash
     args: ["-lc", "git submodule update --init --recursive || true"]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: Clear stale lock (best-effort)
+    dir: ${_TF_DIR}
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        LOCK="gs://main-buffer-469817-tfstate/iac/default.tflock"
+        echo "Checking for $LOCK ..."
+        gsutil -q stat "$LOCK" && { echo "Deleting stale lock..."; gsutil rm -f "$LOCK" || true; } || echo "No lock present."
 
   - name: hashicorp/terraform:1.8
     id: Terraform Init
@@ -20,11 +30,9 @@ steps:
       - -lc
       - |
         terraform fmt -recursive
-        terraform init -reconfigure \
-          -backend-config="bucket=${_TF_BUCKET}" \
-          -backend-config="prefix=${_TF_PREFIX}"
+        terraform init -reconfigure -backend-config=backend.hcl
 
   - name: hashicorp/terraform:1.8
     id: Apply
     dir: ${_TF_DIR}
-    args: ["apply","-lock-timeout=300s","-input=false","-auto-approve"]
+    args: ["apply","-lock-timeout=600s","-input=false","-auto-approve"]
