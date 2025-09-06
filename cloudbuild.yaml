@@ -1,0 +1,78 @@
+substitutions:
+  _REGION: "us-central1"
+  _GKE_CLUSTER_NAME: "june"
+  _GKE_ZONE: "us-central1-a"
+  _FIREBASE_PROJECT_ID: "main-buffer-469817-v7"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_NUMBER/secrets/firebase-web-api-key/versions/latest
+      env: FIREBASE_WEB_API_KEY
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}'
+
+steps:
+  # Build & push orchestrator
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'services/june-orchestrator'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}']
+
+  # Build & push STT
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'services/june-stt'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}']
+
+  # Build & push TTS
+  - name: 'gcr.io/cloud-builders/docker'
+    dir: 'services/june-tts'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}']
+
+  # Helm deploy (pulls Firebase key from Secret Manager → creates/updates K8s Secret → upgrades chart)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    entrypoint: 'bash'
+    env:
+      - 'CLOUDSDK_COMPUTE_ZONE=${_GKE_ZONE}'
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+
+        REPO="${_REGION}-docker.pkg.dev/${PROJECT_ID}/june"
+
+        echo ">> get GKE credentials"
+        gcloud container clusters get-credentials "${_GKE_CLUSTER_NAME}" --zone "${_GKE_ZONE}" --project "${PROJECT_ID}"
+
+        echo ">> install helm"
+        if ! command -v helm >/dev/null 2>&1; then
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        fi
+
+        echo ">> ensure namespace"
+        kubectl get ns apps || kubectl create ns apps
+
+        echo ">> sync orchestrator secret from Secret Manager"
+        kubectl -n apps create secret generic june-orchestrator-secrets \
+          --from-literal=FIREBASE_PROJECT_ID="${_FIREBASE_PROJECT_ID}" \
+          --from-literal=FIREBASE_WEB_API_KEY="$FIREBASE_WEB_API_KEY" \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+        echo ">> helm upgrade"
+        helm upgrade --install june app/helm/june-stack -n apps --create-namespace \
+          --set "june-orchestrator.image.repository=${REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
+          --set "june-stt.image.repository=${REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
+          --set "june-tts.image.repository=${REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}"
+
+        echo ">> wait for rollout"
+        kubectl -n apps rollout status deploy/june-june-orchestrator --timeout=5m
