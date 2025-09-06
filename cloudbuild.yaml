@@ -8,9 +8,12 @@ substitutions:
   _REPO: "us-central1-docker.pkg.dev/main-buffer-469817-v7/june"
   _API_HOST: "api.allsafe.world"
   _FIREBASE_WEB_API_KEY: ""
+<<<<<<< HEAD
   _KEYCLOAK_HOST: "keycloak.allsafe.world"
   _KEYCLOAK_ADMIN: ""
   _KEYCLOAK_ADMIN_PASSWORD: ""
+=======
+>>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
 options:
   logging: CLOUD_LOGGING_ONLY
 
@@ -74,6 +77,7 @@ steps:
         fi
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
+<<<<<<< HEAD
     args:
       - -ceu
       - |
@@ -97,6 +101,8 @@ steps:
         fi
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
+=======
+>>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
     env:
       - 'CLOUDSDK_COMPUTE_ZONE=${_GKE_ZONE}'
     secretEnv:
@@ -124,12 +130,15 @@ steps:
         kubectl -n apps create secret generic june-orchestrator-secrets \
           --from-literal=FIREBASE_PROJECT_ID="${_FIREBASE_PROJECT_ID}" \
           --from-literal=FIREBASE_WEB_API_KEY="$$FIREBASE_WEB_API_KEY" \
+<<<<<<< HEAD
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> sync keycloak admin secret"
         kubectl -n apps create secret generic keycloak-admin \
           --from-literal=admin-username="$$KEYCLOAK_ADMIN_USERNAME" \
           --from-literal=admin-password="$$KEYCLOAK_ADMIN_PASSWORD" \
+=======
+>>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> helm upgrade"
@@ -140,11 +149,15 @@ steps:
 
           --set "june-orchestrator.ingress.enabled=true" \
           --set "june-orchestrator.ingress.className=nginx" \
+<<<<<<< HEAD
           --set "june-orchestrator.ingress.host=${_API_HOST}" \
           --set "keycloak.enabled=true" \
           --set "keycloak.ingress.enabled=true" \
           --set "keycloak.ingress.ingressClassName=nginx" \
           --set "keycloak.ingress.hostname=${_KEYCLOAK_HOST}" \
           --set "keycloak.auth.existingSecret=keycloak-admin" \
+=======
+          --set "june-orchestrator.ingress.host=${_API_HOST}" 
+>>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
         echo ">> wait for rollout"
         kubectl -n apps rollout status deploy/june-june-orchestrator --timeout=5m
