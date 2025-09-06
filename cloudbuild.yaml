@@ -8,18 +8,9 @@ substitutions:
   _REPO: "us-central1-docker.pkg.dev/main-buffer-469817-v7/june"
   _API_HOST: "api.allsafe.world"
   _FIREBASE_WEB_API_KEY: ""
-<<<<<<< HEAD
   _KEYCLOAK_HOST: "keycloak.allsafe.world"
   _KEYCLOAK_ADMIN: ""
   _KEYCLOAK_ADMIN_PASSWORD: ""
-=======
-<<<<<<< HEAD
-  _KEYCLOAK_HOST: "keycloak.allsafe.world"
-  _KEYCLOAK_ADMIN: ""
-  _KEYCLOAK_ADMIN_PASSWORD: ""
-=======
->>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
 options:
   logging: CLOUD_LOGGING_ONLY
 
@@ -71,7 +62,7 @@ steps:
         if gcloud secrets describe firebase-web-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
           echo "Secret already exists."
         else
-          if [[ -n "${_FIREBASE_WEB_API_KEY:-}" ]]; then
+          if [[ -n "${_FIREBASE_WEB_API_KEY}" ]]; then
             echo "Creating secret firebase-web-api-key from _FIREBASE_WEB_API_KEY"
             gcloud secrets create firebase-web-api-key --replication-policy="automatic" --project="${PROJECT_ID}"
             printf '%s' "${_FIREBASE_WEB_API_KEY}" | gcloud secrets versions add firebase-web-api-key --data-file=- --project="${PROJECT_ID}"
@@ -83,17 +74,13 @@ steps:
         fi
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
     args:
       - -ceu
       - |
         set -euo pipefail
         echo ">> ensure Secret Manager secrets for Keycloak admin exist"
         if ! gcloud secrets describe keycloak-admin-username --project="${PROJECT_ID}" >/dev/null 2>&1; then
-          if [[ -n "${_KEYCLOAK_ADMIN:-}" ]]; then
+          if [[ -n "${_KEYCLOAK_ADMIN}" ]]; then
             gcloud secrets create keycloak-admin-username --replication-policy="automatic" --project="${PROJECT_ID}"
             printf '%s' "${_KEYCLOAK_ADMIN}" | gcloud secrets versions add keycloak-admin-username --data-file=- --project="${PROJECT_ID}"
           else
@@ -101,7 +88,7 @@ steps:
           fi
         fi
         if ! gcloud secrets describe keycloak-admin-password --project="${PROJECT_ID}" >/dev/null 2>&1; then
-          if [[ -n "${_KEYCLOAK_ADMIN_PASSWORD:-}" ]]; then
+          if [[ -n "${_KEYCLOAK_ADMIN_PASSWORD}" ]]; then
             gcloud secrets create keycloak-admin-password --replication-policy="automatic" --project="${PROJECT_ID}"
             printf '%s' "${_KEYCLOAK_ADMIN_PASSWORD}" | gcloud secrets versions add keycloak-admin-password --data-file=- --project="${PROJECT_ID}"
           else
@@ -110,11 +97,6 @@ steps:
         fi
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'bash'
-<<<<<<< HEAD
-=======
-=======
->>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
     env:
       - 'CLOUDSDK_COMPUTE_ZONE=${_GKE_ZONE}'
     secretEnv:
@@ -142,21 +124,12 @@ steps:
         kubectl -n apps create secret generic june-orchestrator-secrets \
           --from-literal=FIREBASE_PROJECT_ID="${_FIREBASE_PROJECT_ID}" \
           --from-literal=FIREBASE_WEB_API_KEY="$$FIREBASE_WEB_API_KEY" \
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> sync keycloak admin secret"
         kubectl -n apps create secret generic keycloak-admin \
           --from-literal=admin-username="$$KEYCLOAK_ADMIN_USERNAME" \
           --from-literal=admin-password="$$KEYCLOAK_ADMIN_PASSWORD" \
-<<<<<<< HEAD
-=======
-=======
->>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> helm upgrade"
@@ -167,21 +140,11 @@ steps:
 
           --set "june-orchestrator.ingress.enabled=true" \
           --set "june-orchestrator.ingress.className=nginx" \
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
           --set "june-orchestrator.ingress.host=${_API_HOST}" \
           --set "keycloak.enabled=true" \
           --set "keycloak.ingress.enabled=true" \
           --set "keycloak.ingress.ingressClassName=nginx" \
           --set "keycloak.ingress.hostname=${_KEYCLOAK_HOST}" \
           --set "keycloak.auth.existingSecret=keycloak-admin" \
-<<<<<<< HEAD
-=======
-=======
-          --set "june-orchestrator.ingress.host=${_API_HOST}" 
->>>>>>> 32e347a7ab2331d2178f80faa0422dc2f442ae79
->>>>>>> c0a47760c97a931286016f41757f9214abdfd0a1
         echo ">> wait for rollout"
         kubectl -n apps rollout status deploy/june-june-orchestrator --timeout=5m
