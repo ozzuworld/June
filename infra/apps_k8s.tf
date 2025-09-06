@@ -67,34 +67,36 @@ resource "kubernetes_deployment" "orch" {
           }
 
           env {
-            name  = "PORT"
-            value = tostring(local.default_port)
+  name  = "PORT"
+  value = tostring(local.default_port)
+}
+
+          env {
+  name  = "STT_BASE_URL"
+  value = "http://${local.stt_svc_dns
+}:${local.default_port}"
           }
 
           env {
-            name  = "STT_BASE_URL"
-            value = "http://${local.stt_svc_dns}:${local.default_port}"
+  name  = "TTS_BASE_URL"
+  value = "http://${local.tts_svc_dns
+}:${local.default_port}"
           }
 
           env {
-            name  = "TTS_BASE_URL"
-            value = "http://${local.tts_svc_dns}:${local.default_port}"
-          }
+  name  = "ORCH_STREAM_TTS"
+  value = var.orch_stream_tts ? "true" : "false"
+}
 
           env {
-            name  = "ORCH_STREAM_TTS"
-            value = var.orch_stream_tts ? "true" : "false"
-          }
+  name  = "GCP_PROJECT"
+  value = var.project_id
+}
 
           env {
-            name  = "GCP_PROJECT"
-            value = var.project_id
-          }
-
-          env {
-            name  = "FIREBASE_PROJECT_ID"
-            value = var.firebase_project_id
-          }
+  name  = "FIREBASE_PROJECT_ID"
+  value = var.firebase_project_id
+}
         }
       }
     }
@@ -221,19 +223,19 @@ resource "kubernetes_deployment" "stt" {
           }
 
           env {
-            name  = "PORT"
-            value = tostring(local.default_port)
-          }
+  name  = "PORT"
+  value = tostring(local.default_port)
+}
 
           env {
-            name  = "GCP_PROJECT"
-            value = var.project_id
-          }
+  name  = "GCP_PROJECT"
+  value = var.project_id
+}
 
           env {
-            name  = "FIREBASE_PROJECT_ID"
-            value = var.firebase_project_id
-          }
+  name  = "FIREBASE_PROJECT_ID"
+  value = var.firebase_project_id
+}
         }
       }
     }
@@ -327,19 +329,19 @@ resource "kubernetes_deployment" "tts" {
           }
 
           env {
-            name  = "PORT"
-            value = tostring(local.default_port)
-          }
+  name  = "PORT"
+  value = tostring(local.default_port)
+}
 
           env {
-            name  = "GCP_PROJECT"
-            value = var.project_id
-          }
+  name  = "GCP_PROJECT"
+  value = var.project_id
+}
 
           env {
-            name  = "FIREBASE_PROJECT_ID"
-            value = var.firebase_project_id
-          }
+  name  = "FIREBASE_PROJECT_ID"
+  value = var.firebase_project_id
+}
         }
       }
     }
