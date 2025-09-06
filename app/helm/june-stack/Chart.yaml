@@ -3,14 +3,17 @@ name: june-stack
 description: Umbrella chart for June services
 type: application
 version: 0.1.0
-appVersion: "1.0.0"
+appVersion: 1.0.0
 dependencies:
-  - name: june-orchestrator
-    version: 0.1.0
-    repository: "file://../june-orchestrator"
-  - name: june-stt
-    version: 0.1.0
-    repository: "file://../june-stt"
-  - name: june-tts
-    version: 0.1.0
-    repository: "file://../june-tts"
+- name: june-orchestrator
+  version: 0.1.0
+  repository: file://../june-orchestrator
+- name: june-stt
+  version: 0.1.0
+  repository: file://../june-stt
+- name: june-tts
+  version: 0.1.0
+  repository: file://../june-tts
+- name: keycloak
+  version: 22.x.x
+  repository: oci://registry-1.docker.io/bitnamicharts

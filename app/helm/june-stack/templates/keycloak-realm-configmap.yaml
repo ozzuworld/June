@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/part-of: june-stack
+data:
+  june-realm.json: |
+    {
+      "realm": "june",
+      "enabled": true,
+      "registrationAllowed": false,
+      "rememberMe": true,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "accessTokenLifespan": 300,
+      "ssoSessionIdleTimeout": 604800,
+      "clients": [
+        {
+          "clientId": "rn-app",
+          "publicClient": true,
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": false,
+          "redirectUris": [
+            "myapp://oauth2redirect",
+            "exp://localhost/*",
+            "http://localhost/*"
+          ],
+          "webOrigins": [
+            "*"
+          ]
+        },
+        {
+          "clientId": "june-orchestrator",
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "redirectUris": [
+            "https://api.allsafe.world/*",
+            "http://localhost/*"
+          ],
+          "webOrigins": [
+            "*"
+          ]
+        }
+      ]
+    }
