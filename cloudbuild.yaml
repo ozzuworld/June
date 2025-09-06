@@ -68,7 +68,7 @@ steps:
         echo ">> sync orchestrator secret from Secret Manager"
         kubectl -n apps create secret generic june-orchestrator-secrets \
           --from-literal=FIREBASE_PROJECT_ID="${_FIREBASE_PROJECT_ID}" \
-          --from-literal=FIREBASE_WEB_API_KEY="$FIREBASE_WEB_API_KEY" \
+          --from-literal=FIREBASE_WEB_API_KEY="$$FIREBASE_WEB_API_KEY" \
           --dry-run=client -o yaml | kubectl apply -f -
 
         echo ">> helm upgrade"
