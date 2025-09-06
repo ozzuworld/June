@@ -1,4 +1,3 @@
-# network_serverless.tf
 # Serverless VPC Access connector only (reuses VPC/Subnet from network_gke.tf)
 
 resource "google_vpc_access_connector" "serverless" {

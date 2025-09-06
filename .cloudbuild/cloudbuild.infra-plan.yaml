@@ -1,0 +1,40 @@
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: ALLOW_LOOSE
+substitutions:
+  _TF_DIR: "infra"
+  _TF_BUCKET: "main-buffer-469817-tfstate"
+  _TF_PREFIX: "iac"
+
+steps:
+  - name: gcr.io/cloud-builders/git
+    id: Checkout
+    entrypoint: bash
+    args: ["-lc", "git submodule update --init --recursive || true"]
+
+  - name: hashicorp/terraform:1.8
+    id: Terraform Init
+    dir: ${_TF_DIR}
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        terraform fmt -recursive
+        terraform init -reconfigure \
+          -backend-config="bucket=${_TF_BUCKET}" \
+          -backend-config="prefix=${_TF_PREFIX}"
+
+  - name: hashicorp/terraform:1.8
+    id: Validate
+    dir: ${_TF_DIR}
+    args: ["validate"]
+
+  - name: hashicorp/terraform:1.8
+    id: Plan
+    dir: ${_TF_DIR}
+    args: ["plan","-lock-timeout=300s","-input=false","-out=tfplan"]
+
+artifacts:
+  objects:
+    location: gs://${_TF_BUCKET}/${_TF_PREFIX}/plans/$BUILD_ID
+    paths: ["${_TF_DIR}/tfplan"]
