@@ -29,6 +29,3 @@ ingress:
 # Environment variables (key: value). Override per env.
 env: {}
 
-# Default env
-env:
-{}
