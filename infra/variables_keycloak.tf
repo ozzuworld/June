@@ -1,9 +1,4 @@
-# ---- public DNS for Keycloak ----
-variable "domain" {
-  description = "Base domain (e.g., example.com)"
-  type        = string
-}
-
+# variables_keycloak.tf
 # ---- Keycloak container settings ----
 variable "kc_version" {
   description = "Keycloak image tag"
