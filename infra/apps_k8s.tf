@@ -56,16 +56,45 @@ resource "kubernetes_deployment" "orch" {
           }
 
           resources {
-            requests = { cpu = "250m", memory = "256Mi" }
-            limits   = { cpu = "1000m", memory = "1Gi" }
+            requests = {
+              cpu    = "250m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
           }
 
-          env { name = "PORT"             value = tostring(local.default_port) }
-          env { name = "STT_BASE_URL"     value = "http://${local.stt_svc_dns}:${local.default_port}" }
-          env { name = "TTS_BASE_URL"     value = "http://${local.tts_svc_dns}:${local.default_port}" }
-          env { name = "ORCH_STREAM_TTS"  value = var.orch_stream_tts ? "true" : "false" }
-          env { name = "GCP_PROJECT"      value = var.project_id }
-          env { name = "FIREBASE_PROJECT_ID" value = var.firebase_project_id }
+          env {
+            name  = "PORT"
+            value = tostring(local.default_port)
+          }
+
+          env {
+            name  = "STT_BASE_URL"
+            value = "http://${local.stt_svc_dns}:${local.default_port}"
+          }
+
+          env {
+            name  = "TTS_BASE_URL"
+            value = "http://${local.tts_svc_dns}:${local.default_port}"
+          }
+
+          env {
+            name  = "ORCH_STREAM_TTS"
+            value = var.orch_stream_tts ? "true" : "false"
+          }
+
+          env {
+            name  = "GCP_PROJECT"
+            value = var.project_id
+          }
+
+          env {
+            name  = "FIREBASE_PROJECT_ID"
+            value = var.firebase_project_id
+          }
         }
       }
     }
@@ -76,7 +105,7 @@ resource "kubernetes_service" "orch" {
   metadata {
     name      = "june-orchestrator"
     namespace = local.apps_ns
-    labels = { app = "june-orchestrator" }
+    labels    = { app = "june-orchestrator" }
   }
 
   spec {
@@ -137,7 +166,7 @@ resource "kubernetes_deployment" "stt" {
   metadata {
     name      = "june-stt"
     namespace = local.apps_ns
-    labels = { app = "june-stt" }
+    labels    = { app = "june-stt" }
   }
 
   spec {
@@ -160,28 +189,51 @@ resource "kubernetes_deployment" "stt" {
           image             = var.stt_image
           image_pull_policy = "IfNotPresent"
 
-          port { container_port = local.default_port }
+          port {
+            container_port = local.default_port
+          }
 
           liveness_probe {
-            tcp_socket { port = local.default_port }
+            tcp_socket {
+              port = local.default_port
+            }
             initial_delay_seconds = 20
             period_seconds        = 10
           }
 
           readiness_probe {
-            tcp_socket { port = local.default_port }
+            tcp_socket {
+              port = local.default_port
+            }
             initial_delay_seconds = 10
             period_seconds        = 5
           }
 
           resources {
-            requests = { cpu = "250m", memory = "256Mi" }
-            limits   = { cpu = "1000m", memory = "1Gi" }
+            requests = {
+              cpu    = "250m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
           }
 
-          env { name = "PORT" value = tostring(local.default_port) }
-          env { name = "GCP_PROJECT" value = var.project_id }
-          env { name = "FIREBASE_PROJECT_ID" value = var.firebase_project_id }
+          env {
+            name  = "PORT"
+            value = tostring(local.default_port)
+          }
+
+          env {
+            name  = "GCP_PROJECT"
+            value = var.project_id
+          }
+
+          env {
+            name  = "FIREBASE_PROJECT_ID"
+            value = var.firebase_project_id
+          }
         }
       }
     }
@@ -220,7 +272,7 @@ resource "kubernetes_deployment" "tts" {
   metadata {
     name      = "june-tts"
     namespace = local.apps_ns
-    labels = { app = "june-tts" }
+    labels    = { app = "june-tts" }
   }
 
   spec {
@@ -243,28 +295,51 @@ resource "kubernetes_deployment" "tts" {
           image             = var.tts_image
           image_pull_policy = "IfNotPresent"
 
-          port { container_port = local.default_port }
+          port {
+            container_port = local.default_port
+          }
 
           liveness_probe {
-            tcp_socket { port = local.default_port }
+            tcp_socket {
+              port = local.default_port
+            }
             initial_delay_seconds = 20
             period_seconds        = 10
           }
 
           readiness_probe {
-            tcp_socket { port = local.default_port }
+            tcp_socket {
+              port = local.default_port
+            }
             initial_delay_seconds = 10
             period_seconds        = 5
           }
 
           resources {
-            requests = { cpu = "250m", memory = "256Mi" }
-            limits   = { cpu = "1000m", memory = "1Gi" }
+            requests = {
+              cpu    = "250m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "1000m"
+              memory = "1Gi"
+            }
           }
 
-          env { name = "PORT" value = tostring(local.default_port) }
-          env { name = "GCP_PROJECT" value = var.project_id }
-          env { name = "FIREBASE_PROJECT_ID" value = var.firebase_project_id }
+          env {
+            name  = "PORT"
+            value = tostring(local.default_port)
+          }
+
+          env {
+            name  = "GCP_PROJECT"
+            value = var.project_id
+          }
+
+          env {
+            name  = "FIREBASE_PROJECT_ID"
+            value = var.firebase_project_id
+          }
         }
       }
     }
