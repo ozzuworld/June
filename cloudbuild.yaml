@@ -18,31 +18,31 @@ availableSecrets:
       env: FIREBASE_WEB_API_KEY
 
 images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}'
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}'
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${BUILD_ID}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${BUILD_ID}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${BUILD_ID}'
 
 steps:
   # Build & push orchestrator
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'services/june-orchestrator'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${BUILD_ID}', '.']
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${SHORT_SHA}']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/orchestrator:${BUILD_ID}']
 
   # Build & push STT
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'services/june-stt'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${BUILD_ID}', '.']
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${SHORT_SHA}']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/stt:${BUILD_ID}']
 
   # Build & push TTS
   - name: 'gcr.io/cloud-builders/docker'
     dir: 'services/june-tts'
-    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}', '.']
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${BUILD_ID}', '.']
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${SHORT_SHA}']
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/june/tts:${BUILD_ID}']
 
   # Helm deploy (injects the secret only into this step)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
@@ -96,9 +96,9 @@ steps:
 
         echo ">> helm upgrade"
         helm upgrade --install june app/helm/june-stack -n apps --create-namespace \
-          --set "june-orchestrator.image.repository=${_REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
-          --set "june-stt.image.repository=${_REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
-          --set "june-tts.image.repository=${_REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}" \
+          --set "june-orchestrator.image.repository=${_REPO}/orchestrator" --set "june-orchestrator.image.tag=${BUILD_ID}" \
+          --set "june-stt.image.repository=${_REPO}/stt"               --set "june-stt.image.tag=${BUILD_ID}" \
+          --set "june-tts.image.repository=${_REPO}/tts"               --set "june-tts.image.tag=${BUILD_ID}" \
 
           --set "june-orchestrator.ingress.enabled=true" \
           --set "june-orchestrator.ingress.className=nginx" \
