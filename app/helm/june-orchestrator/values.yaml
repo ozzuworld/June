@@ -1,0 +1,46 @@
+replicas: 2
+
+image:
+  repository: CHANGE_ME_REGISTRY/june/june-orchestrator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+resources:
+  requests: { cpu: "250m", memory: "256Mi" }
+  limits:   { cpu: "1000m", memory: "1Gi" }
+
+serviceAccount:
+  create: true
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+
+# Environment variables (key: value). Override per env.
+env: {}
+
+# Default env
+env:
+DEFAULT_LOCALE: en-US
+DEFAULT_STT_ENCODING: pcm16
+DEFAULT_STT_RATE: '16000'
+DEFAULT_TTS_ENCODING: MP3
+FIREBASE_PROJECT_ID: CHANGE_ME
+FIREBASE_WEB_API_KEY: CHANGE_ME
+ORCH_STREAM_TTS: 'false'
+PORT: '8080'
+STT_HANDSHAKE: /handshake
+STT_HTTP_URL: http://june-stt.apps.svc.cluster.local:8080
+STT_REQUIRE_CLOUDRUN_AUTH: 'false'
+STT_WS_URL: ws://june-stt.apps.svc.cluster.local:8080/ws
+TTS_URL: http://june-tts.apps.svc.cluster.local:8080

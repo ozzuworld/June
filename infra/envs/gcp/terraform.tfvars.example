@@ -1,0 +1,11 @@
+project_id    = "your-gcp-project-id"
+region        = "us-central1"
+name          = "june-platform"
+k8s_version   = "1.30"
+vpc_cidr      = "10.42.0.0/16"
+dns_zone_name = "home-example-com"
+domain        = "home.example.com"
+
+node_pools = [
+  { name="general", machine="e2-standard-4", min=1, max=2, disk_gb=100, spot=true }
+]

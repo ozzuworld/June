@@ -1,0 +1,10 @@
+region        = "us-east-1"
+name          = "june-platform"
+k8s_version   = "1.30"
+vpc_cidr      = "10.42.0.0/16"
+dns_zone_name = "home-example-com"
+domain        = "home.example.com"
+
+node_pools = [
+  { name="general", machine="t3.large", min=1, max=2, disk_gb=100, spot=true }
+]
