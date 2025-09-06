@@ -5,9 +5,6 @@ substitutions:
   _GKE_ZONE: "us-central1-a"
   _FIREBASE_PROJECT_ID: "main-buffer-469817-v7"
 
-  _REPO: "us-central1-docker.pkg.dev/main-buffer-469817-v7/june"
-  _API_HOST: "api.allsafe.world"
-  _FIREBASE_WEB_API_KEY: ""
 options:
   logging: CLOUD_LOGGING_ONLY
 
@@ -96,12 +93,9 @@ steps:
 
         echo ">> helm upgrade"
         helm upgrade --install june app/helm/june-stack -n apps --create-namespace \
-          --set "june-orchestrator.image.repository=${_REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
-          --set "june-stt.image.repository=${_REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
-          --set "june-tts.image.repository=${_REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}" \
+          --set "june-orchestrator.image.repository=${REPO}/orchestrator" --set "june-orchestrator.image.tag=${SHORT_SHA}" \
+          --set "june-stt.image.repository=${REPO}/stt"               --set "june-stt.image.tag=${SHORT_SHA}" \
+          --set "june-tts.image.repository=${REPO}/tts"               --set "june-tts.image.tag=${SHORT_SHA}"
 
-          --set "june-orchestrator.ingress.enabled=true" \
-          --set "june-orchestrator.ingress.className=nginx" \
-          --set "june-orchestrator.ingress.host=${_API_HOST}" 
         echo ">> wait for rollout"
         kubectl -n apps rollout status deploy/june-june-orchestrator --timeout=5m
