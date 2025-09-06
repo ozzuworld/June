@@ -74,3 +74,10 @@ variable "kc_admin_password" {
   default   = ""
   sensitive = true
 }
+
+# Tag used to build image URIs when modules expect a tag
+variable "image_tag" {
+  description = "Docker image tag to deploy (e.g., a commit SHA like abc123)."
+  type        = string
+  default     = "initial" # change in CLI or tfvars as needed
+}
