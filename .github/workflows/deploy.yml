@@ -17,6 +17,7 @@ on:
     branches: [ "main", "master" ]
     paths:
       - 'June/services/**'
+      - 'services/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch: {}
   schedule:
@@ -39,7 +40,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # IMPORTANT: these must match your folder names under June/services
         service: [ "june-orchestrator", "june-stt", "june-tts" ]
 
     steps:
@@ -59,8 +59,24 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      - name: Resolve service path (auto-detect root)
+        id: rpath
+        shell: bash
+        run: |
+          set -euo pipefail
+          roots=("${{ env.SERVICES_ROOT }}" "June/services" "services")
+          for r in "${roots[@]}"; do
+            if [ -f "$r/${{ matrix.service }}/Dockerfile" ]; then
+              echo "Using root: $r";
+              echo "workdir=$r/${{ matrix.service }}" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+          echo "Could not find Dockerfile for ${{ matrix.service }} under any of: ${roots[*]}" >&2
+          exit 1
+
       - name: Build & Push image
-        working-directory: ${{ env.SERVICES_ROOT }}/${{ matrix.service }}
+        working-directory: ${{ steps.rpath.outputs.workdir }}
         env:
           IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
         run: |
@@ -88,15 +104,6 @@ jobs:
               ;;
           esac
 
-      # Optional: run DB migrations for orchestrator (uncomment + adapt if needed)
-      # - name: DB migrate on Neon
-      #   if: matrix.service == 'june-orchestrator'
-      #   working-directory: ${{ env.SERVICES_ROOT }}/june-orchestrator
-      #   run: |
-      #     NEON_DB_URL="$(gcloud secrets versions access latest --secret=NEON_DB_URL)"
-      #     pip install -r requirements.txt
-      #     alembic upgrade head
-
       - name: Deploy to Cloud Run (with Secret Manager env)
         shell: bash
         run: |
@@ -118,7 +125,6 @@ jobs:
           )
           for s in "${SECRETS[@]}"; do FLAGS="$FLAGS --set-secrets $s"; done
 
-          # Use $IMAGE from $GITHUB_ENV (set in the build step)
           gcloud run deploy "${{ matrix.service }}" \
             --image="$IMAGE" \
             --region="${{ env.REGION }}" \
