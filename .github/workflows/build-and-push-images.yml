@@ -1,0 +1,51 @@
+name: build-and-push-images
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+    paths:
+      - 'June/services/june-orchestrator/**'
+      - 'June/services/june-stt/**'
+      - 'June/services/june-tts/**'
+      - '.github/workflows/build-and-push-images.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push orchestrator
+        id: orch
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-orchestrator
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/june-orchestrator:latest
+
+      - name: Build + push stt
+        id: stt
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-stt
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/june-stt:latest
+
+      - name: Build + push tts
+        id: tts
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-tts
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/june-tts:latest
