@@ -53,39 +53,36 @@ jobs:
         run: |
           gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
 
-      - name: Resolve service path (auto-detect root)
+            - name: Resolve service path (auto-detect root)
         id: rpath
         shell: bash
         run: |
           set -euo pipefail
-          CANDIDATES=(
-            "${{ env.SERVICES_ROOT }}/${{ matrix.service }}/Dockerfile"
-            "June/services/${{ matrix.service }}/Dockerfile"
-            "services/${{ matrix.service }}/Dockerfile"
-          )
-          FOUND=""
-          for f in "${CANDIDATES[@]}"; do
-            if [[ -f "$f" ]]; then
-              FOUND="$f"
-              break
-            fi
-          done
-          if [[ -z "$FOUND" ]]; then
-            FOUND=$(git ls-files | grep -E "(^|/)(June/)?services/${{ matrix.service }}/Dockerfile$" | head -n1 || true)
-          fi
+          echo "Searching for Dockerfile for: ${{ matrix.service }}"
+          FOUND="$(find . -type f -name Dockerfile | sed 's#^\./##' | grep -E "/${{ matrix.service }}/Dockerfile$" | head -n1 || true)"
           if [[ -z "$FOUND" ]]; then
             echo "Could not find Dockerfile for ${{ matrix.service }}" >&2
-            echo "Candidates checked:" >&2
-            for c in "${CANDIDATES[@]}"; do echo " - $c" >&2; done
-            echo "Git files under services/:" >&2
-            git ls-files | grep -E "(^|/)(June/)?services/" || true
+            echo "All Dockerfiles discovered:" >&2
+            find . -type f -name Dockerfile | sed 's#^\./##' | sort || true
+            echo "Repo root listing:" >&2
+            ls -la
             exit 1
           fi
-          DIR=$(dirname "$FOUND")
+          DIR="$(dirname "$FOUND")"
           echo "workdir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Found: $FOUND"
 
       - name: Build & Push image
+        working-directory: ${{ steps.rpath.outputs.workdir }}
+        env:
+          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
+        shell: bash
+        run: |
+          docker build --pull -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Compute per-service flags
         working-directory: ${{ steps.rpath.outputs.workdir }}
         env:
           IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
