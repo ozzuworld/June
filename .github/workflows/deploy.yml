@@ -55,6 +55,29 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Ensure PROJECT_ID (fallback from SA)
+        run: |
+          set -euo pipefail
+          # If PROJECT_ID is empty, derive it from the deployer SA or gcloud config
+          if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "(unset)" ]]; then
+            SA="${{ secrets.DEPLOYER_SA }}"
+            if [[ "$SA" =~ @(.+)\.iam\.gserviceaccount\.com$ ]]; then
+              PID="${BASH_REMATCH[1]}"
+              echo "PROJECT_ID=$PID" >> "$GITHUB_ENV"
+              gcloud config set project "$PID"
+            else
+              PID="$(gcloud config get-value project --quiet 2>/dev/null || true)"
+              if [[ -n "$PID" && "$PID" != "(unset)" ]]; then
+                echo "PROJECT_ID=$PID" >> "$GITHUB_ENV"
+              else
+                echo "❌ PROJECT_ID not set. Add repo variable GCP_PROJECT_ID or fix DEPLOYER_SA." >&2
+                exit 1
+              fi
+            fi
+          else
+            gcloud config set project "$PROJECT_ID"
+          fi
+
       - name: Configure Docker for Artifact Registry
         run: |
           gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
@@ -65,10 +88,10 @@ jobs:
           set -euo pipefail
           echo "Searching Dockerfile for: ${{ matrix.service }}"
           FOUND="$(git ls-files | grep -E '(^|/)(June/)?services/${{ matrix.service }}/Dockerfile$' | head -n1 || true)"
-          if [ -z "$FOUND" ]; then
+          if [[ -z "$FOUND" ]]; then
             FOUND="$(find . -type f -name Dockerfile -path "*/${{ matrix.service }}/Dockerfile" | head -n1 || true)"
           fi
-          if [ -z "$FOUND" ]; then
+          if [[ -z "$FOUND" ]]; then
             echo "Could not find Dockerfile for ${{ matrix.service }}" >&2
             echo "All Dockerfiles:" >&2
             find . -type f -name Dockerfile | sed 's#^\./##' | sort || true
@@ -80,25 +103,31 @@ jobs:
 
       - name: Build & Push image
         working-directory: ${{ steps.rpath.outputs.workdir }}
-        env:
-          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
         run: |
+          set -euo pipefail
+          REGION="${REGION:-us-central1}"
+          AR_REPO="${AR_REPO:-june}"
+          : "${PROJECT_ID:?PROJECT_ID is not set}"
+
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
           docker build --pull -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Compute per-service flags
         id: flags
         run: |
+          set -euo pipefail
           case "${{ matrix.service }}" in
             june-orchestrator)
-              echo "extra=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              echo "extra=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
             june-stt)
-              echo "extra=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              echo "extra=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
             june-tts)
-              echo "extra=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              echo "extra=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "extra=" >> "$GITHUB_OUTPUT"
@@ -107,8 +136,9 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
+          set -euo pipefail
           FLAGS="${{ steps.flags.outputs.extra }}"
-          if [[ "${{ env.ALLOW_PUBLIC }}" == "true" ]]; then
+          if [[ "${ALLOW_PUBLIC}" == "true" ]]; then
             AUTH_FLAG="--allow-unauthenticated"
           else
             AUTH_FLAG="--no-allow-unauthenticated"
@@ -128,8 +158,8 @@ jobs:
 
           gcloud run deploy "${{ matrix.service }}" \
             --image="$IMAGE" \
-            --region="${{ env.REGION }}" \
+            --region="${REGION}" \
             --platform=managed \
             --timeout=3600 \
             $AUTH_FLAG $FLAGS \
-            --labels="commit=${{ github.sha }},service=${{ matrix.service }}"
+            --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
