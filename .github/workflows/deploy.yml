@@ -2,7 +2,7 @@ name: Build & Deploy Cloud Run (June monorepo)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
     paths:
       - 'June/services/**'
       - '.github/workflows/deploy.yml'
