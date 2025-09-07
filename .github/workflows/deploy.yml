@@ -1,3 +1,5 @@
+# GitHub Actions: Build & Deploy Cloud Run (June monorepo)
+
 name: Build & Deploy Cloud Run (June monorepo)
 
 on:
@@ -11,7 +13,11 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch: {}
   schedule:
-    - cron: '0 5 1 */3 *'
+    - cron: '0 5 1 */3 *'  # every 3 months
+
+defaults:
+  run:
+    shell: bash
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -34,6 +40,7 @@ jobs:
           - june-orchestrator
           - june-stt
           - june-tts
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,23 +56,22 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for Artifact Registry
-        shell: bash
         run: |
           gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
 
-            - name: Resolve service path (auto-detect root)
+      - name: Resolve service path (auto-detect root)
         id: rpath
-        shell: bash
         run: |
           set -euo pipefail
-          echo "Searching for Dockerfile for: ${{ matrix.service }}"
-          FOUND="$(find . -type f -name Dockerfile | sed 's#^\./##' | grep -E "/${{ matrix.service }}/Dockerfile$" | head -n1 || true)"
-          if [[ -z "$FOUND" ]]; then
+          echo "Searching Dockerfile for: ${{ matrix.service }}"
+          FOUND="$(git ls-files | grep -E '(^|/)(June/)?services/${{ matrix.service }}/Dockerfile$' | head -n1 || true)"
+          if [ -z "$FOUND" ]; then
+            FOUND="$(find . -type f -name Dockerfile -path "*/${{ matrix.service }}/Dockerfile" | head -n1 || true)"
+          fi
+          if [ -z "$FOUND" ]; then
             echo "Could not find Dockerfile for ${{ matrix.service }}" >&2
-            echo "All Dockerfiles discovered:" >&2
+            echo "All Dockerfiles:" >&2
             find . -type f -name Dockerfile | sed 's#^\./##' | sort || true
-            echo "Repo root listing:" >&2
-            ls -la
             exit 1
           fi
           DIR="$(dirname "$FOUND")"
@@ -76,17 +82,6 @@ jobs:
         working-directory: ${{ steps.rpath.outputs.workdir }}
         env:
           IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
-        shell: bash
-        run: |
-          docker build --pull -t "$IMAGE" .
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-
-      - name: Compute per-service flags
-        working-directory: ${{ steps.rpath.outputs.workdir }}
-        env:
-          IMAGE: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/${{ matrix.service }}:${{ github.sha }}
-        shell: bash
         run: |
           docker build --pull -t "$IMAGE" .
           docker push "$IMAGE"
@@ -94,7 +89,6 @@ jobs:
 
       - name: Compute per-service flags
         id: flags
-        shell: bash
         run: |
           case "${{ matrix.service }}" in
             june-orchestrator)
@@ -112,7 +106,6 @@ jobs:
           esac
 
       - name: Deploy to Cloud Run
-        shell: bash
         run: |
           FLAGS="${{ steps.flags.outputs.extra }}"
           if [[ "${{ env.ALLOW_PUBLIC }}" == "true" ]]; then
