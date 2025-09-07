@@ -2,9 +2,9 @@ name: Build & Deploy Cloud Run (June monorepo)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
     paths:
-      - 'services/**'
+      - 'June/services/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch: {}
   schedule:
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [ "june-orchestrator", "june-stt", "june-tts" ]
+        service: [ "orchestrator", "stt", "tts" ]
 
     steps:
       - name: Checkout
@@ -60,19 +60,20 @@ jobs:
         run: |
           svc="${{ matrix.service }}"
           case "$svc" in
-            june-orchestrator)
+            orchestrator)
               echo 'extra=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@'${{ env.PROJECT_ID }}'.iam.gserviceaccount.com' >> $GITHUB_OUTPUT
               ;;
-            june-stt)
+            stt)
               echo 'extra=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@'${{ env.PROJECT_ID }}'.iam.gserviceaccount.com' >> $GITHUB_OUTPUT
               ;;
-            june-tts)
+            tts)
               echo 'extra=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@'${{ env.PROJECT_ID }}'.iam.gserviceaccount.com' >> $GITHUB_OUTPUT
               ;;
             *)
               echo 'extra=' >> $GITHUB_OUTPUT
               ;;
           esac
+
 
       # - name: (Optional) DB migrate on Neon
       #   working-directory: ${{ env.SERVICES_ROOT }}/june-orchestrator

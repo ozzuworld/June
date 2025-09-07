@@ -5,5 +5,4 @@
 crash.log
 *.tfvars
 !*.example.tfvars
-# Keep the provider lock file (commit this):
 !.terraform.lock.hcl
