@@ -1,85 +1,24 @@
-# June — Cloud-agnostic Terraform Skeleton
+# June Ephemeral Cloud Run Migration (Stateless on GCP, Persistence Off-GCP)
 
-This folder provides a provider-agnostic layout so you can switch between GCP/AWS (and later Azure)
-with minimal code changes. Your **app** should deploy via GitOps (Argo/Flux) or Helm, while Terraform
-handles platform primitives (network, cluster, registry, DNS, object storage, KMS/Secrets).
+This folder contains a minimal, version-pinned IaC + CI/CD scaffold to deploy the **June** services onto a **fresh GCP project** each cycle, while relying on **external persistent services** (Keycloak, Neon/Postgres, Cloudflare).
 
-## Structure
+## Components
+- Terraform **org** stack: creates a brand-new GCP project with required APIs.
+- Terraform **monthly** stack: deploys `june-orchestrator`, `june-stt`, `june-tts` as **Cloud Run** services.
+- GitHub Actions workflow **monthly-rollover**: project creation → deploy → (optional) old project deletion.
+- Keycloak provision script: creates/rotates client and prints secrets for injection into CI.
 
-```
-infra/
-  modules/                 # cloud-agnostic interfaces (variables/outputs only)
-  providers/
-    gcp/                   # concrete GCP implementations
-    aws/                   # concrete AWS implementations (partial example)
-  envs/
-    gcp/                   # backend + providers + wiring for GCP
-    aws/                   # backend + providers + wiring for AWS
-```
+## Inputs (CI Secrets / Vars)
+- GCP: `GCP_WIF_PROVIDER`, `ORG_PROJECT_FACTORY_SA`, `ORG_DEPLOYER_SA`, `ORG_DELETER_SA`, `GCP_ORG_ID`, `GCP_BILLING_ACCOUNT`, `GCP_SEED_PROJECT`, `TFC_ORG`, `GCP_REGION`
+- Images (digests): `ORCHESTRATOR_IMAGE_DIGEST`, `STT_IMAGE_DIGEST`, `TTS_IMAGE_DIGEST`
+- Keycloak: `KC_BASE_URL`, `KC_CLIENT_ID`, `KC_CLIENT_SECRET`, `KC_REALM`
+- Database: `NEON_DB_URL`
+- Gemini: `GEMINI_API_KEY`
 
-## Quick start (GCP)
+## How to use
+1. Configure **Terraform Cloud workspaces** (`june-org`, `june-monthly`) and set the backend blocks via `terraform init` in CI.
+2. Set GitHub secrets & variables listed above.
+3. Push this folder to your repo; enable the `monthly-rollover` workflow.
+4. Optionally wire Cloudflare DNS to the Cloud Run URLs printed by `terraform output` or terminate TLS at Cloudflare and proxy to Cloud Run.
 
-```bash
-cd infra/envs/gcp
-terraform init
-terraform apply -auto-approve
-$(terraform output -raw kube_client_cmd)  # get kubeconfig
-```
-
-## Quick start (AWS)
-
-```bash
-cd infra/envs/aws
-terraform init
-terraform apply -auto-approve
-$(terraform output -raw kube_client_cmd)  # get kubeconfig
-```
-
-> Fill in `terraform.tfvars` in each env with your project/account IDs, regions, and desired node pools.
-
----
-
-## Source archive preview (first ~40 files)
-
-```
-June/.gitignore
-June/cloudbuild.yaml
-June/.cloudbuild/cloudbuild.infra-apply.yaml
-June/.cloudbuild/cloudbuild.infra-plan.yaml
-June/.git/COMMIT_EDITMSG
-June/.git/config
-June/.git/description
-June/.git/FETCH_HEAD
-June/.git/HEAD
-June/.git/index
-June/.git/ORIG_HEAD
-June/.git/hooks/applypatch-msg.sample
-June/.git/hooks/commit-msg.sample
-June/.git/hooks/fsmonitor-watchman.sample
-June/.git/hooks/post-update.sample
-June/.git/hooks/pre-applypatch.sample
-June/.git/hooks/pre-commit.sample
-June/.git/hooks/pre-merge-commit.sample
-June/.git/hooks/pre-push.sample
-June/.git/hooks/pre-rebase.sample
-June/.git/hooks/pre-receive.sample
-June/.git/hooks/prepare-commit-msg.sample
-June/.git/hooks/push-to-checkout.sample
-June/.git/hooks/sendemail-validate.sample
-June/.git/hooks/update.sample
-June/.git/info/exclude
-June/.git/logs/HEAD
-June/.git/logs/refs/heads/master
-June/.git/logs/refs/heads/fix/june-build-startup
-June/.git/logs/refs/heads/recover/dd33870
-June/.git/logs/refs/remotes/origin/HEAD
-June/.git/logs/refs/remotes/origin/master
-June/.git/logs/refs/remotes/origin/recover/dd33870
-June/.git/objects/00/4b05bacc560691fcb4e29811094c51ec4c5f61
-June/.git/objects/00/a4a6ddf96d555de2c04859628321b37bd64fdb
-June/.git/objects/00/d4e8fe7676bdf1b957c3568dc61050c7279fbd
-June/.git/objects/02/0715189fc5ef6551a249471109236bb0252288
-June/.git/objects/02/2e1a5fd0a74b8d13b0dc9691689ed365117656
-June/.git/objects/03/376025fb5c3f0e6d079b989c982f8cc491a8af
-June/.git/objects/06/0546b67c2ffb048e391b95f1529b56807ff1c5
-```
+> NOTE: If you want GKE Autopilot instead of Cloud Run, swap the `cloud_run_service` module with a small GKE module and Helm charts. This scaffold focuses on Cloud Run to stay inside free tiers.

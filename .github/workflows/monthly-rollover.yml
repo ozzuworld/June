@@ -1,0 +1,83 @@
+name: monthly-rollover
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  create-project:
+    runs-on: ubuntu-latest
+    permissions: { id-token: write, contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.8.5 }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.ORG_PROJECT_FACTORY_SA }}
+      - name: Terraform Init (org)
+        working-directory: infra/org
+        run: terraform init -backend-config="hostname=app.terraform.io" -backend-config="organization=${{ secrets.TFC_ORG }}" -backend-config="workspaces=name:june-org"
+      - name: Terraform Apply (org)
+        working-directory: infra/org
+        env:
+          TF_VAR_org_id: ${{ secrets.GCP_ORG_ID }}
+          TF_VAR_billing_account: ${{ secrets.GCP_BILLING_ACCOUNT }}
+          TF_VAR_seed_project_id: ${{ secrets.GCP_SEED_PROJECT }}
+          TF_VAR_default_region: ${{ vars.GCP_REGION }}
+          TF_VAR_month_suffix: ${{ github.run_id }}
+        run: terraform apply -auto-approve
+      - name: Capture outputs
+        id: orgout
+        working-directory: infra/org
+        run: |
+          echo "project_id=$(terraform output -raw project_id)" >> $GITHUB_OUTPUT
+          echo "region=$(terraform output -raw region)" >> $GITHUB_OUTPUT
+
+  deploy-runtime:
+    needs: create-project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.8.5 }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.ORG_DEPLOYER_SA }}
+      - name: Terraform Init (monthly)
+        working-directory: infra/envs/monthly
+        run: terraform init -backend-config="hostname=app.terraform.io" -backend-config="organization=${{ secrets.TFC_ORG }}" -backend-config="workspaces=name:june-monthly"
+      - name: Terraform Apply (monthly)
+        working-directory: infra/envs/monthly
+        env:
+          TF_VAR_project_id: ${{ needs.create-project.outputs.project_id }}
+          TF_VAR_region:     ${{ needs.create-project.outputs.region }}
+          TF_VAR_orchestrator_image: ${{ vars.ORCHESTRATOR_IMAGE_DIGEST }}
+          TF_VAR_stt_image:          ${{ vars.STT_IMAGE_DIGEST }}
+          TF_VAR_tts_image:          ${{ vars.TTS_IMAGE_DIGEST }}
+          TF_VAR_kc_base_url:        ${{ secrets.KC_BASE_URL }}
+          TF_VAR_kc_realm:           ${{ vars.KC_REALM }}
+          TF_VAR_kc_client_id:       ${{ secrets.KC_CLIENT_ID }}
+          TF_VAR_kc_client_secret:   ${{ secrets.KC_CLIENT_SECRET }}
+          TF_VAR_neon_db_url:        ${{ secrets.NEON_DB_URL }}
+          TF_VAR_gemini_api_key:     ${{ secrets.GEMINI_API_KEY }}
+        run: terraform apply -auto-approve
+      - name: Smoke
+        run: |
+          echo "Orchestrator URL:"
+          terraform -chdir=infra/envs/monthly output orchestrator_url
+
+  decommission-old:
+    needs: deploy-runtime
+    runs-on: ubuntu-latest
+    if: ${{ inputs.skip_delete != 'true' }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.ORG_DELETER_SA }}
+      - name: Delete previous project (if any)
+        run: |
+          echo "Implement lookup for previous project id from last run artifacts and delete via gcloud projects delete"
