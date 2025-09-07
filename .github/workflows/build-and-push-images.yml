@@ -4,9 +4,9 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'June/june-orchestrator/**'
-      - 'June/june-stt/**'
-      - 'June/june-tts/**'
+      - 'June/services/june-orchestrator/**'
+      - 'June/services/june-stt/**'
+      - 'June/services/june-tts/**'
       - '.github/workflows/build-and-push-images.yml'
 
 jobs:
@@ -26,38 +26,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push orchestrator
+      - name: Build + push orchestrator
+        id: orch
         uses: docker/build-push-action@v5
         with:
-          context: ./June/june-orchestrator
+          context: ./June/services/june-orchestrator
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/june-orchestrator:latest
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/june-orchestrator,push-by-digest=true,name-canonical=true
 
-      - name: Build and push stt
+      - name: Build + push stt
+        id: stt
         uses: docker/build-push-action@v5
         with:
-          context: ./June/june-stt
+          context: ./June/services/june-stt
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/june-stt:latest
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/june-stt,push-by-digest=true,name-canonical=true
 
-      - name: Build and push tts
+      - name: Build + push tts
+        id: tts
         uses: docker/build-push-action@v5
         with:
-          context: ./June/june-tts
+          context: ./June/services/june-tts
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/june-tts:latest
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/june-tts,push-by-digest=true,name-canonical=true
-
-      - name: Capture digests
-        id: digests
-        run: |
-          echo "ORCH=$(jq -r '.[0].digest' < /home/runner/work/_temp/docker-build-push/**/june-orchestrator*.json)" >> $GITHUB_OUTPUT
-          echo "STT=$(jq -r '.[0].digest' < /home/runner/work/_temp/docker-build-push/**/june-stt*.json)" >> $GITHUB_OUTPUT
-          echo "TTS=$(jq -r '.[0].digest' < /home/runner/work/_temp/docker-build-push/**/june-tts*.json)" >> $GITHUB_OUTPUT
-      - name: Summary
-        run: |
-          echo "orchestrator: ghcr.io/${{ github.repository_owner }}/june-orchestrator@${{ steps.digests.outputs.ORCH }}"
-          echo "stt:          ghcr.io/${{ github.repository_owner }}/june-stt@${{ steps.digests.outputs.STT }}"
-          echo "tts:          ghcr.io/${{ github.repository_owner }}/june-tts@${{ steps.digests.outputs.TTS }}"

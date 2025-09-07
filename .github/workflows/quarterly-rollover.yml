@@ -1,7 +1,7 @@
 name: quarterly-rollover
 on:
   schedule:
-    - cron: "0 6 1 1,4,7,10 *"   # Jan 1, Apr 1, Jul 1, Oct 1 at 06:00 UTC
+    - cron: "0 6 1 1,4,7,10 *"
   workflow_dispatch:
     inputs:
       suffix:
@@ -81,21 +81,14 @@ jobs:
         working-directory: infra/envs/quarterly
         run: terraform init -backend-config="hostname=app.terraform.io" -backend-config="organization=${{ secrets.TFC_ORG }}" -backend-config="workspaces=name:june-quarterly"
 
-      - name: Set image digests from latest GHCR
-        id: img
-        run: |
-          echo "ORCH=ghcr.io/${{ github.repository_owner }}/june-orchestrator:latest" >> $GITHUB_OUTPUT
-          echo "STT=ghcr.io/${{ github.repository_owner }}/june-stt:latest" >> $GITHUB_OUTPUT
-          echo "TTS=ghcr.io/${{ github.repository_owner }}/june-tts:latest" >> $GITHUB_OUTPUT
-
       - name: Terraform Apply (quarterly)
         working-directory: infra/envs/quarterly
         env:
           TF_VAR_project_id:  ${{ needs.create-project.outputs.project_id }}
           TF_VAR_region:      ${{ vars.GCP_REGION }}
-          TF_VAR_image_orchestrator: ${{ steps.img.outputs.ORCH }}
-          TF_VAR_image_stt:          ${{ steps.img.outputs.STT }}
-          TF_VAR_image_tts:          ${{ steps.img.outputs.TTS }}
+          TF_VAR_image_orchestrator: ghcr.io/${{ github.repository_owner }}/june-orchestrator:latest
+          TF_VAR_image_stt:          ghcr.io/${{ github.repository_owner }}/june-stt:latest
+          TF_VAR_image_tts:          ghcr.io/${{ github.repository_owner }}/june-tts:latest
         run: |
           source ../..//../runtime.env
           terraform apply -auto-approve             -var="NEON_DB_URL=$NEON_DB_URL"             -var="UPSTASH_REDIS_REST_URL=$UPSTASH_REDIS_REST_URL"             -var="UPSTASH_REDIS_REST_TOKEN=$UPSTASH_REDIS_REST_TOKEN"             -var="QDRANT_URL=$QDRANT_URL"             -var="QDRANT_API_KEY=$QDRANT_API_KEY"             -var="GEMINI_API_KEY=$GEMINI_API_KEY"             -var="KC_BASE_URL=$KC_BASE_URL"             -var="KC_REALM=${KC_REALM:-june}"             -var="KC_CLIENT_ID=$KC_CLIENT_ID"             -var="KC_CLIENT_SECRET=$KC_CLIENT_SECRET"
@@ -109,13 +102,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Inject Doppler (Cloudflare)
         uses: dopplerhq/cli-action@v2
         with:
           doppler-token: ${{ secrets.DOPPLER_SERVICE_TOKEN }}
           project: june
           config: prd
-          command: bash -lc 'env | grep -E "CLOUDFLARE_|DOMAIN|R2_" > cf.env'
+          command: bash -lc 'env | grep -E "CLOUDFLARE_|DOMAIN" > cf.env'
 
       - name: Read service URLs
         working-directory: infra/envs/quarterly
@@ -124,24 +118,16 @@ jobs:
           echo "ORCH=$(terraform output -raw orchestrator_url)" >> $GITHUB_OUTPUT
 
       - name: Update Cloudflare DNS (api)
-        env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || '' }}
         run: |
+          set -e
           source cf.env
-          REC="api"
-          TARGET="${{ steps.urls.outputs.ORCH }}".replace("https://","")
-          echo "Pointing $REC.$DOMAIN -> $TARGET"
-          curl -s -X PATCH "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"             -H "Content-Type: application/json"             --data '{"type":"CNAME","name":"'"$REC.$DOMAIN"'","content":"'"$TARGET"'","proxied":true}' || true
-
-  delete_old:
-    if: ${{ github.event_name == 'schedule' }}
-    needs: cutover_dns
-    runs-on: ubuntu-latest
-    steps:
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.ORG_DELETER_SA }}
-      - name: Delete previous project (placeholder)
-        run: |
-          echo "Implement lookup + deletion logic here once you store previous project_id in an artifact or external store."
+          TARGET="${{ steps.urls.outputs.ORCH }}"
+          TARGET_HOST=${TARGET#https://}
+          echo "Pointing api.$DOMAIN -> $TARGET_HOST"
+          # Upsert record
+          rec_id=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json"             "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records?type=CNAME&name=api.$DOMAIN" | jq -r '.result[0].id')
+          if [ "$rec_id" != "null" ] && [ -n "$rec_id" ]; then
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records/$rec_id"               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json"               --data '{"type":"CNAME","name":"api.'"$DOMAIN"'","content":"'"$TARGET_HOST"'","proxied":true,"ttl":1}'
+          else
+            curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records"               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json"               --data '{"type":"CNAME","name":"api.'"$DOMAIN"'","content":"'"$TARGET_HOST"'","proxied":true,"ttl":1}'
+          fi
