@@ -115,7 +115,7 @@ jobs:
             "${{ steps.rpath.outputs.workdir }}"
           docker push "$IMAGE"
 
-      - name: Debug: whoami & project (list secrets)
+      - name: 'Debug: whoami & project (list secrets)'
         run: |
           echo "Account: $(gcloud config get-value account || true)"
           echo "Project: $(gcloud config get-value project || true)"
@@ -153,34 +153,41 @@ jobs:
               echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
             june-idp)
-              ENVVARS="KC_DB=postgres"
-              [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
-              [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
-              else
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
-              fi
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
-              else
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
-              fi
-              echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
+          ENVVARS="KC_DB=postgres"
+          [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
+          [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
 
-              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+          if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
+            ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
+          else
+            ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
+          fi
+          if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
+            ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
+          else
+            ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
+          fi
 
-              EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 \
-                     --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com \
-                     --set-env-vars ${ENVVARS}"
-              echo "EXTRA=$EXTRA" >> "$GITHUB_OUTPUT"
-              ;;
+          echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
+          echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+
+          EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1                  --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com                  --set-env-vars ${ENVVARS}"
+          echo "EXTRA=$EXTRA" >> "$GITHUB_OUTPUT"
+          ;;
             *)
               echo "EXTRA=" >> "$GITHUB_OUTPUT"
               ;;
           esac
 
-      - name: Deploy to Cloud Run (one or two-pass)
+            - name: Verify required GCP secrets (june-idp only)
+        if: matrix.service == 'june-idp'
+        run: |
+          set -euo pipefail
+          echo "Account: $(gcloud config get-value account || true)"
+          echo "Project: $(gcloud config get-value project || true)"
+          gcloud secrets describe KC_DB_PASSWORD --project "${PROJECT_ID}" >/dev/null
+          gcloud secrets versions list KC_DB_PASSWORD --project "${PROJECT_ID}" || true
+- name: Deploy to Cloud Run (one or two-pass)
         env:
           ENVVARS: ${{ steps.flags.outputs.ENVVARS }}
           ARGS_BASE: ${{ steps.flags.outputs.ARGS_BASE }}
@@ -191,7 +198,7 @@ jobs:
           if [[ "${ALLOW_PUBLIC}" == "true" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
           if [[ "${{ matrix.service }}" != "june-idp" ]]; then
-            gcloud run deploy "${{ matrix.service }}" \
+            gcloud run deploy "${{ matrix.service }}"  --project="${PROJECT_ID}" \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
               --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
@@ -200,24 +207,24 @@ jobs:
 
           # Keycloak (june-idp): two-pass when KC_BASE_URL is unknown
           if [[ -n "${KC_BASE_URL:-}" ]]; then
-            gcloud run deploy june-idp \
+            gcloud run deploy june-idp  --project="${PROJECT_ID}" \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
               --args="${ARGS_BASE},--hostname=${KC_BASE_URL}" \
               --labels="commit=${GITHUB_SHA},service=june-idp"
           else
-            gcloud run deploy june-idp \
+            gcloud run deploy june-idp  --project="${PROJECT_ID}" \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
               --args="${ARGS_BASE}" \
               --labels="commit=${GITHUB_SHA},service=june-idp"
 
-            URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')"
+            URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')" --project="${PROJECT_ID}"
             echo "Discovered Cloud Run URL: $URL"
 
-            gcloud run deploy june-idp \
+            gcloud run deploy june-idp  --project="${PROJECT_ID}" \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
@@ -230,10 +237,10 @@ jobs:
 
       - name: Enable session affinity (june-idp only)
         if: matrix.service == 'june-idp'
-        run: gcloud run services update june-idp --region "${REGION}" --session-affinity || true
+        run: gcloud run services update june-idp --region "${REGION}" --session-affinity || true --project="${PROJECT_ID}"
 
       - name: Output service URL (june-idp only)
         if: matrix.service == 'june-idp'
         run: |
-          URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')"
+          URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')" --project="${PROJECT_ID}"
           echo "::notice title=Keycloak URL::${URL}"
