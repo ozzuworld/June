@@ -1,0 +1,58 @@
+name: Deploy june-idp (Option B)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'services/june-idp/**'
+      - 'infra/**'
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      AR_REPO: ${{ secrets.GCP_AR_REPO }} # e.g., us-central1-docker.pkg.dev/PROJECT/REGISTRY
+      IMAGE_NAME: june-idp
+      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_IDP: ${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+      # Passed into TF
+      KC_DB_URL: ${{ secrets.KC_DB_URL }}
+      KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
+      KC_BASE_URL: ${{ secrets.KC_BASE_URL }} # set after first deploy
+
+      # Secret value only used to add a secret version
+      KC_DB_PASSWORD: ${{ secrets.KC_DB_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          export_default_credentials: true
+
+      - name: Configure Docker auth to Artifact Registry
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build & Push june-idp image
+        working-directory: services/june-idp
+        run: |
+          docker build -t "$IMAGE_IDP" .
+          docker push "$IMAGE_IDP"
+
+      - name: Ensure KC_DB_PASSWORD secret exists, then add/rotate version
+        run: |
+          gcloud secrets describe KC_DB_PASSWORD --format='value(name)' ||           gcloud secrets create KC_DB_PASSWORD --replication-policy=automatic
+          printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --data-file=-
+
+      - name: Terraform apply (quarterly env)
+        working-directory: infra/envs/quarterly
+        run: |
+          terraform init -upgrade
+          terraform apply -auto-approve             -var "image_idp=$IMAGE_IDP"             -var "KC_DB_URL=$KC_DB_URL"             -var "KC_DB_USERNAME=$KC_DB_USERNAME"             -var "KC_BASE_URL=$KC_BASE_URL"

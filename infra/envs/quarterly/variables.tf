@@ -16,3 +16,8 @@ variable "KC_BASE_URL"              { type = string }
 variable "KC_REALM"                 { type = string  default = "june" }
 variable "KC_CLIENT_ID"             { type = string  default = "" }
 variable "KC_CLIENT_SECRET"         { type = string  default = "" }
+variable "image_idp" { type = string }
+variable "KC_BASE_URL" { type = string } # Cloud Run URL or custom domain, e.g. https://june-idp-<hash>-uc.a.run.app
+variable "KC_DB_URL" { type = string } # jdbc:postgresql://HOST:5432/DB?sslmode=require
+variable "KC_DB_USERNAME" { type = string }
+variable "KC_DB_PASSWORD" { type = string, sensitive = true }
