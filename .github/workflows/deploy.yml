@@ -115,7 +115,7 @@ jobs:
             "${{ steps.rpath.outputs.workdir }}"
           docker push "$IMAGE"
 
-      - name: Debug: whoami & project (list secrets)
+      - name: 'Debug: whoami & project (list secrets)'
         run: |
           echo "Account: $(gcloud config get-value account || true)"
           echo "Project: $(gcloud config get-value project || true)"
