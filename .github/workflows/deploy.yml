@@ -122,7 +122,6 @@ jobs:
           echo "Project: $(gcloud config get-value project || true)"
           gcloud secrets list --format="value(name)" | sed 's/^/secret: /' || true
 
-      # Add/rotate KC_DB_PASSWORD version without creating the secret container
       - name: Add/rotate KC_DB_PASSWORD version (no-create)
         if: matrix.service == 'june-idp'
         env:
@@ -170,7 +169,6 @@ jobs:
               ;;
           esac
 
-      # TWO-PASS DEPLOY LOGIC FOR june-idp
       - name: Deploy to Cloud Run (one or two-pass)
         env:
           ENVVARS: ${{ steps.flags.outputs.ENVVARS }}
