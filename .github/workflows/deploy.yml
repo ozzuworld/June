@@ -1,5 +1,4 @@
 # GitHub Actions: Build & Deploy Cloud Run (June monorepo)
-
 name: Build & Deploy Cloud Run (June monorepo)
 
 on:
@@ -8,7 +7,7 @@ on:
     paths:
       - 'June/services/**'
       - 'services/**'
-      - 'June/June/services/**'   # nested layout support
+      - 'June/June/services/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch: {}
   schedule:
@@ -20,10 +19,10 @@ defaults:
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
-  AR_REPO: ${{ vars.ARTIFACT_REPO || 'june' }}
-  SERVICES_ROOT: ${{ vars.SERVICES_ROOT || 'services' }}
-  ALLOW_PUBLIC: ${{ vars.ALLOW_PUBLIC || 'true' }}
+  REGION: ${{ vars.GCP_REGION }}
+  AR_REPO: ${{ vars.ARTIFACT_REPO }}
+  SERVICES_ROOT: ${{ vars.SERVICES_ROOT }}
+  ALLOW_PUBLIC: ${{ vars.ALLOW_PUBLIC }}
 
 jobs:
   deploy:
@@ -55,6 +54,26 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Set sane defaults
+        run: |
+          set -euo pipefail
+          # REGION default
+          if [[ -z "${REGION:-}" || "${REGION}" == "(unset)" ]]; then
+            echo "REGION=us-central1" >> "$GITHUB_ENV"
+          fi
+          # Artifact Registry repo name default
+          if [[ -z "${AR_REPO:-}" || "${AR_REPO}" == "(unset)" ]]; then
+            echo "AR_REPO=june" >> "$GITHUB_ENV"
+          fi
+          # services root default
+          if [[ -z "${SERVICES_ROOT:-}" || "${SERVICES_ROOT}" == "(unset)" ]]; then
+            echo "SERVICES_ROOT=services" >> "$GITHUB_ENV"
+          fi
+          # public default
+          if [[ -z "${ALLOW_PUBLIC:-}" || "${ALLOW_PUBLIC}" == "(unset)" ]]; then
+            echo "ALLOW_PUBLIC=true" >> "$GITHUB_ENV"
+          fi
+
       - name: Ensure PROJECT_ID (fallback from SA)
         run: |
           set -euo pipefail
@@ -79,14 +98,13 @@ jobs:
 
       - name: Configure Docker for Artifact Registry
         run: |
-          gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Resolve service path (auto-detect root)
+      - name: Resolve service path (auto-detect Dockerfile)
         id: rpath
         run: |
           set -euo pipefail
           echo "Searching Dockerfile for: ${{ matrix.service }}"
-          # handle services/, June/services/, or June/June/services/
           FOUND="$(git ls-files | grep -E '(^|/)(June/)?(June/)?services/${{ matrix.service }}/Dockerfile$' | head -n1 || true)"
           if [[ -z "$FOUND" ]]; then
             FOUND="$(find . -type f -name Dockerfile -path "*/${{ matrix.service }}/Dockerfile" | head -n1 || true)"
@@ -99,20 +117,36 @@ jobs:
           fi
           DIR="$(dirname "$FOUND")"
           echo "workdir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=$FOUND" >> "$GITHUB_OUTPUT"
           echo "Found: $FOUND"
 
-      - name: Build & Push image
-        working-directory: ${{ steps.rpath.outputs.workdir }}
+      - name: "Debug: show Dockerfile used (and ensure multi-stage for june-idp)"
         run: |
           set -euo pipefail
-          REGION="${REGION:-us-central1}"
-          AR_REPO="${AR_REPO:-june}"
-          : "${PROJECT_ID:?PROJECT_ID is not set}"
+          echo "PWD: $(pwd)"
+          echo "Dockerfile: ${{ steps.rpath.outputs.dockerfile }}"
+          sed -n '1,160p' "${{ steps.rpath.outputs.dockerfile }}"
+          BYTES=$(wc -c < "${{ steps.rpath.outputs.dockerfile }}")
+          echo "Size(bytes): ${BYTES}"
+          if [[ "${{ matrix.service }}" == "june-idp" ]]; then
+            if ! grep -qE '^FROM .* AS builder' "${{ steps.rpath.outputs.dockerfile }}"; then
+              echo "::error ::The Dockerfile for june-idp must be multi-stage and start with 'FROM ... AS builder'."
+              echo "This prevents Docker from trying to pull a non-existent 'builder:latest' image."
+              exit 1
+            fi
+          fi
 
+      - name: Build & Push image (explicit file + context)
+        run: |
+          set -euo pipefail
+          : "${PROJECT_ID:?PROJECT_ID is not set}"
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-          docker build --pull -t "$IMAGE" .
+          docker build --pull \
+            -t "$IMAGE" \
+            -f "${{ steps.rpath.outputs.dockerfile }}" \
+            "${{ steps.rpath.outputs.workdir }}"
           docker push "$IMAGE"
 
       - name: Compute per-service flags
@@ -130,8 +164,24 @@ jobs:
               echo "extra=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
             june-idp)
-              # Keycloak (IdP): keep 1 warm instance; honor proxy headers (Cloud Run/Cloudflare)
-              echo "extra=--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars=KC_DB=postgres,KC_HTTP_ENABLED=true,KC_PROXY_HEADERS=xforwarded" >> "$GITHUB_OUTPUT"
+              # Keycloak (IdP) – use proper proxy/hostname flags. KC_DB_PASSWORD comes via Secret Manager.
+              ENVVARS="KC_DB=postgres"
+              [[ -n "${{ secrets.KC_DB_URL }}"      ]] && ENVVARS+=",KC_DB_URL=${{ secrets.KC_DB_URL }}"
+              [[ -n "${{ secrets.KC_DB_USERNAME }}" ]] && ENVVARS+=",KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }}"
+              [[ -n "${{ secrets.KC_BASE_URL }}"    ]] && ENVVARS+=",KC_BASE_URL=${{ secrets.KC_BASE_URL }}"
+              [[ -n "${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}" ]] && ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}" || ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
+              [[ -n "${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" ]] && ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" || ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
+
+              FLAGS="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 \
+                     --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com \
+                     --set-env-vars ${ENVVARS} \
+                     --args start --args --http-enabled=true --args --proxy-headers=xforwarded"
+
+              if [[ -n "${{ secrets.KC_BASE_URL }}" ]]; then
+                FLAGS+=" --args --hostname=${{ secrets.KC_BASE_URL }}"
+              fi
+
+              echo "extra=${FLAGS}" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "extra=" >> "$GITHUB_OUTPUT"
@@ -142,25 +192,21 @@ jobs:
         run: |
           set -euo pipefail
           FLAGS="${{ steps.flags.outputs.extra }}"
+
           if [[ "${ALLOW_PUBLIC}" == "true" ]]; then
             AUTH_FLAG="--allow-unauthenticated"
           else
             AUTH_FLAG="--no-allow-unauthenticated"
           fi
 
-          # Inject only secrets that exist and have an enabled version
-          REQUIRED=(
-            NEON_DB_URL NEON_API_KEY UPSTASH_REDIS_REST_URL UPSTASH_REDIS_REST_TOKEN UPSTASH_REDIS_URL
-            QDRANT_API_KEY QDRANT_URL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET
-            KC_DB_URL KC_DB_USERNAME KC_DB_PASSWORD KC_HOSTNAME KC_BOOTSTRAP_ADMIN_USERNAME KC_BOOTSTRAP_ADMIN_PASSWORD
-          )
-          for s in "${REQUIRED[@]}"; do
-            if gcloud secrets versions list "$s" --format='value(name)' --filter='state=enabled' --limit=1 >/dev/null 2>&1; then
-              FLAGS+=" --set-secrets ${s}=${s}:latest"
+          # Inject KC_DB_PASSWORD from Secret Manager if it exists (Option B)
+          if [[ "${{ matrix.service }}" == "june-idp" ]]; then
+            if gcloud secrets versions list KC_DB_PASSWORD --format='value(name)' --filter='state=enabled' --limit=1 >/dev/null 2>&1; then
+              FLAGS+=" --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest"
             else
-              echo "::warning:: Secret $s missing or has no enabled version; skipping injection"
+              echo "::warning:: Secret KC_DB_PASSWORD missing or has no enabled version; skipping injection"
             fi
-          done
+          fi
 
           gcloud run deploy "${{ matrix.service }}" \
             --image="$IMAGE" \
@@ -169,3 +215,16 @@ jobs:
             --timeout=3600 \
             $AUTH_FLAG $FLAGS \
             --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
+
+      - name: Enable session affinity (june-idp only)
+        if: matrix.service == 'june-idp'
+        run: |
+          set -euo pipefail
+          gcloud run services update june-idp --region "${REGION}" --session-affinity || true
+
+      - name: Output service URL (june-idp only)
+        if: matrix.service == 'june-idp'
+        run: |
+          URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')"
+          echo "june-idp URL: ${URL}"
+          echo "::notice title=Keycloak URL::${URL}"
