@@ -1,5 +1,5 @@
 variable "image_idp"      { type = string }
-variable "KC_BASE_URL"    { type = string } # https://june-idp-<hash>-<region>.a.run.app or custom domain
+variable "KC_BASE_URL"    { type = string } # https://june-idp-<hash>-us-central1.a.run.app or custom domain
 variable "KC_DB_URL"      { type = string } # jdbc:postgresql://HOST:5432/DB?sslmode=require
 variable "KC_DB_USERNAME" { type = string }
 
@@ -18,7 +18,6 @@ module "idp" {
   min_instances = 0
   max_instances = 3
 
-  # Keycloak behind Cloud Run proxy
   args = [
     "start",
     "--http-enabled=true",
@@ -31,7 +30,7 @@ module "idp" {
     KC_DB_URL                   = var.KC_DB_URL
     KC_DB_USERNAME              = var.KC_DB_USERNAME
     KC_BOOTSTRAP_ADMIN_USERNAME = "admin"
-    KC_BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-temp" # rotate after first login
+    KC_BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-temp"
   }
 
   env_secrets = {

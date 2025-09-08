@@ -1,4 +1,4 @@
-name: Deploy june-idp (Option B)
+name: Deploy june-idp (Option B, customized)
 
 on:
   workflow_dispatch:
@@ -12,16 +12,16 @@ jobs:
   build-deploy:
     runs-on: ubuntu-latest
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      REGION: ${{ secrets.GCP_REGION }}
-      AR_REPO: ${{ secrets.GCP_AR_REPO }} # e.g., us-central1-docker.pkg.dev/PROJECT/REGISTRY
+      PROJECT_ID: main-buffer-469817-v7
+      REGION: us-central1
+      AR_REPO: us-central1-docker.pkg.dev/main-buffer-469817-v7/june
       IMAGE_NAME: june-idp
       IMAGE_TAG: ${{ github.sha }}
       IMAGE_IDP: ${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
       # Passed into TF
-      KC_DB_URL: ${{ secrets.KC_DB_URL }}
-      KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
+      KC_DB_URL: "jdbc:postgresql://ep-dry-art-ad9moi68-pooler.c-2.us-east-1.aws.neon.tech:5432/neondb?sslmode=require"
+      KC_DB_USERNAME: "neondb_owner"
       KC_BASE_URL: ${{ secrets.KC_BASE_URL }} # set after first deploy
 
       # Secret value only used to add a secret version
@@ -48,7 +48,7 @@ jobs:
 
       - name: Ensure KC_DB_PASSWORD secret exists, then add/rotate version
         run: |
-          gcloud secrets describe KC_DB_PASSWORD --format='value(name)' ||           gcloud secrets create KC_DB_PASSWORD --replication-policy=automatic
+          gcloud secrets describe KC_DB_PASSWORD --format='get(name)' ||           gcloud secrets create KC_DB_PASSWORD --replication-policy=automatic
           printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --data-file=-
 
       - name: Terraform apply (quarterly env)
