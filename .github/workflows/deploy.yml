@@ -68,7 +68,7 @@ jobs:
               gcloud config set project "$PID"
             else
               PID="$(gcloud config get-value project --quiet 2>/dev/null || true)"
-              [[ -n "$PID" && "$PID" != "(unset)" ]] || { echo "❌ PROJECT_ID not set"; exit 1; }
+              [[ -n "$PID" && "$PID" != "(unset)" ]] || { echo "PROJECT_ID not set"; exit 1; }
               echo "PROJECT_ID=$PID" >> "$GITHUB_ENV"
             fi
           else
@@ -95,11 +95,10 @@ jobs:
           echo "workdir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           echo "Found: $FOUND"
 
-      - name: Debug: show Dockerfile used (and ensure multi-stage for june-idp)
+      - name: Print first 120 lines of Dockerfile
         run: |
           set -euo pipefail
-          echo "Dockerfile: ${{ steps.rpath.outputs.dockerfile }}"
-          sed -n '1,160p' "${{ steps.rpath.outputs.dockerfile }}"
+          sed -n '1,120p' "${{ steps.rpath.outputs.dockerfile }}"
           if [[ "${{ matrix.service }}" == "june-idp" ]]; then
             grep -qE '^FROM .* AS builder' "${{ steps.rpath.outputs.dockerfile }}" || {
               echo "::error ::june-idp Dockerfile must include 'FROM ... AS builder'"; exit 1; }
@@ -132,7 +131,7 @@ jobs:
           gcloud secrets describe KC_DB_PASSWORD --format='get(name)' >/dev/null 2>&1 || {
             echo "::error ::Secret KC_DB_PASSWORD not found in project $(gcloud config get-value project)."; exit 1; }
           printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --data-file=- >/dev/null
-          echo "✅ Added new KC_DB_PASSWORD secret version."
+          echo "Added new KC_DB_PASSWORD secret version."
 
       - name: Compute per-service flags
         id: flags
@@ -187,7 +186,7 @@ jobs:
             exit 0
           fi
 
-          # --- june-idp ---
+          # june-idp (Keycloak)
           if [[ -n "${KC_BASE_URL:-}" ]]; then
             gcloud run deploy june-idp \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
