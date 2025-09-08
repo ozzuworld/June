@@ -117,16 +117,19 @@ jobs:
           docker push "$IMAGE"
 
       # Ensure KC_DB_PASSWORD exists in Secret Manager and add a version (june-idp only)
-      - name: 'Ensure Secret(KC_DB_PASSWORD) + add version'
+      - name: 'Ensure KC_DB_PASSWORD exists, then add/rotate version'
         if: matrix.service == 'june-idp'
         env:
           KC_DB_PASSWORD: ${{ secrets.KC_DB_PASSWORD }}
         run: |
           set -euo pipefail
           [[ -n "${KC_DB_PASSWORD:-}" ]] || { echo "::error ::GitHub Secret KC_DB_PASSWORD is not set"; exit 1; }
-          gcloud secrets describe KC_DB_PASSWORD --format='get(name)' >/dev/null 2>&1 || \
-          gcloud secrets create KC_DB_PASSWORD --replication-policy=automatic
+          # Must already exist (created once by a human or via higher-priv CI)
+          gcloud secrets describe KC_DB_PASSWORD --format='get(name)' >/dev/null 2>&1 || {
+            echo "::error ::Secret KC_DB_PASSWORD does not exist. Create it once in the project, then re-run."; exit 1; }
+          # Add/rotate a version (requires roles/secretmanager.secretVersionAdder on this secret)
           printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --data-file=- >/dev/null
+
 
       - name: Compute per-service flags
         id: flags
