@@ -95,7 +95,7 @@ jobs:
           echo "workdir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
           echo "Found: $FOUND"
 
-      - name: 'Debug: show Dockerfile used (and ensure multi-stage for june-idp)'
+      - name: Debug: show Dockerfile used (and ensure multi-stage for june-idp)
         run: |
           set -euo pipefail
           echo "Dockerfile: ${{ steps.rpath.outputs.dockerfile }}"
@@ -116,20 +116,24 @@ jobs:
             "${{ steps.rpath.outputs.workdir }}"
           docker push "$IMAGE"
 
-      # Ensure KC_DB_PASSWORD exists in Secret Manager and add a version (june-idp only)
-      - name: 'Ensure KC_DB_PASSWORD exists, then add/rotate version'
+      - name: Debug: whoami & project (list secrets)
+        run: |
+          echo "Account: $(gcloud config get-value account || true)"
+          echo "Project: $(gcloud config get-value project || true)"
+          gcloud secrets list --format="value(name)" | sed 's/^/secret: /' || true
+
+      # Add/rotate KC_DB_PASSWORD version without creating the secret container
+      - name: Add/rotate KC_DB_PASSWORD version (no-create)
         if: matrix.service == 'june-idp'
         env:
           KC_DB_PASSWORD: ${{ secrets.KC_DB_PASSWORD }}
         run: |
           set -euo pipefail
           [[ -n "${KC_DB_PASSWORD:-}" ]] || { echo "::error ::GitHub Secret KC_DB_PASSWORD is not set"; exit 1; }
-          # Must already exist (created once by a human or via higher-priv CI)
           gcloud secrets describe KC_DB_PASSWORD --format='get(name)' >/dev/null 2>&1 || {
-            echo "::error ::Secret KC_DB_PASSWORD does not exist. Create it once in the project, then re-run."; exit 1; }
-          # Add/rotate a version (requires roles/secretmanager.secretVersionAdder on this secret)
+            echo "::error ::Secret KC_DB_PASSWORD not found in project $(gcloud config get-value project)."; exit 1; }
           printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --data-file=- >/dev/null
-
+          echo "✅ Added new KC_DB_PASSWORD secret version."
 
       - name: Compute per-service flags
         id: flags
@@ -153,7 +157,6 @@ jobs:
               [[ -n "${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" ]] && ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" || ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
               echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
 
-              # Base args; hostname will be added in second pass if KC_BASE_URL is empty
               ARGS_BASE="start,--http-enabled=true,--proxy-headers=xforwarded"
               echo "ARGS_BASE=$ARGS_BASE" >> "$GITHUB_OUTPUT"
 
@@ -188,7 +191,6 @@ jobs:
 
           # --- june-idp ---
           if [[ -n "${KC_BASE_URL:-}" ]]; then
-            # Single-pass (KC_BASE_URL provided)
             gcloud run deploy june-idp \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
@@ -196,7 +198,6 @@ jobs:
               --args="${ARGS_BASE},--hostname=${KC_BASE_URL}" \
               --labels="commit=${GITHUB_SHA},service=june-idp"
           else
-            # First pass: without hostname
             gcloud run deploy june-idp \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
@@ -204,9 +205,9 @@ jobs:
               --args="${ARGS_BASE}" \
               --labels="commit=${GITHUB_SHA},service=june-idp"
 
-            # Discover URL and re-deploy with hostname
             URL="$(gcloud run services describe june-idp --region "${REGION}" --format='value(status.uri)')"
             echo "Discovered Cloud Run URL: $URL"
+
             gcloud run deploy june-idp \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
