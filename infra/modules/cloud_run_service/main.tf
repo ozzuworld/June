@@ -3,7 +3,6 @@ resource "google_cloud_run_v2_service" "this" {
   location = var.region
 
   template {
-    # optional SA override
     service_account = var.service_account
 
     containers {
@@ -12,7 +11,6 @@ resource "google_cloud_run_v2_service" "this" {
 
       ports { container_port = var.port }
 
-      # plain env
       dynamic "env" {
         for_each = var.env
         content {
@@ -21,7 +19,6 @@ resource "google_cloud_run_v2_service" "this" {
         }
       }
 
-      # secret-backed env
       dynamic "env" {
         for_each = var.env_secrets
         content {
@@ -48,9 +45,6 @@ resource "google_cloud_run_v2_service" "this" {
       max_instance_count = var.max_instances
     }
 
-    # Sticky sessions helpful for Keycloak
     session_affinity = var.session_affinity
   }
-
-  # traffic/ingress/labels blocks here if you already have them
 }

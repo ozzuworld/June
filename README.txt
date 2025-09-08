@@ -1,21 +1,28 @@
-june-idp Option B Patch (Cloud Run + Secret Manager, no secrets in TF state)
+june-idp Option B Patch (CUSTOMIZED)
 
-Files in this zip:
+Project: main-buffer-469817-v7
+Region:  us-central1
+Assumed Artifact Registry repo: us-central1-docker.pkg.dev/main-buffer-469817-v7/june
+Neon JDBC URL: jdbc:postgresql://ep-dry-art-ad9moi68-pooler.c-2.us-east-1.aws.neon.tech:5432/neondb?sslmode=require
+Neon role: neondb_owner
+
+Files:
 - services/june-idp/Dockerfile
 - infra/modules/cloud_run_service/variables.tf
 - infra/modules/cloud_run_service/main.tf
 - infra/modules/cloud_run_service/outputs.tf
 - infra/envs/quarterly/secrets.tf
-- infra/envs/quarterly/june-idp.tf   (adds the module block + output without touching your existing main.tf)
-- .github/workflows/deploy-idp.yml   (optional CI; adapt or remove)
+- infra/envs/quarterly/june-idp.tf
+- .github/workflows/deploy-idp.yml
 
-Apply order:
-  1) Replace/add files in your repo using these paths.
-  2) terraform -chdir=infra/envs/quarterly init -upgrade
-  3) terraform -chdir=infra/envs/quarterly apply        -var "image_idp=us-<region>.pkg.dev/<project>/<registry>/june-idp:<tag>"        -var "KC_DB_URL=jdbc:postgresql://<host>:5432/<db>?sslmode=require"        -var "KC_DB_USERNAME=<role>"        -var "KC_BASE_URL=https://june-idp-<hash>-<region>.a.run.app"
-     (If you don't know KC_BASE_URL yet, deploy once with a placeholder, capture the output idp_url, set KC_BASE_URL to that value, then apply again.)
+CI Secrets to set (GitHub → Settings → Secrets and variables → Actions):
+- GCP_SA_KEY            (JSON for a deploy SA)
+- KC_DB_PASSWORD        (Neon role password)
+- KC_BASE_URL           (set AFTER first deploy to the Cloud Run URL or your custom domain)
 
-Notes:
-  - This is Option B: Secret Manager stores only secret *versions* (created by CI), not values in TF.
-  - Cloud Run pulls KC_DB_PASSWORD at runtime via env_secrets mapping.
-  - Keep your persistence in Neon/Upstash/R2/Qdrant; GCP is compute-only.
+Optional (override defaults if you prefer):
+- GCP_AR_REPO, GCP_PROJECT_ID, GCP_REGION
+
+Apply (manual TF):
+  terraform -chdir=infra/envs/quarterly init -upgrade
+  terraform -chdir=infra/envs/quarterly apply     -var "image_idp=us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-idp:<tag>"     -var "KC_DB_URL=jdbc:postgresql://ep-dry-art-ad9moi68-pooler.c-2.us-east-1.aws.neon.tech:5432/neondb?sslmode=require"     -var "KC_DB_USERNAME=neondb_owner"     -var "KC_BASE_URL=<cloud-run-url>"
