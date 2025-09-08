@@ -14,13 +14,13 @@ RUN keytool -genkeypair \
     -ext "SAN:c=DNS:localhost,IP:127.0.0.1" \
     -keystore conf/server.keystore
 
-# Build the optimized runtime
+# Build the optimized runtime (compiles providers, trims distro)
 RUN /opt/keycloak/bin/kc.sh build
 
 # ====== Final runtime stage ======
 FROM quay.io/keycloak/keycloak:latest
 
-# Copy from the named build stage (now it exists!)
+# Copy from the named build stage
 COPY --from=builder /opt/keycloak/ /opt/keycloak/
 
 ENV KC_HEALTH_ENABLED=true \
