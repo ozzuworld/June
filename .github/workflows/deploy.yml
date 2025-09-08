@@ -135,6 +135,11 @@ jobs:
 
       - name: Compute per-service flags
         id: flags
+        env:
+          S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
+          S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
+          S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
+          S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           case "${{ matrix.service }}" in
@@ -149,14 +154,21 @@ jobs:
               ;;
             june-idp)
               ENVVARS="KC_DB=postgres"
-              [[ -n "${{ secrets.KC_DB_URL }}"      ]] && ENVVARS+=",KC_DB_URL=${{ secrets.KC_DB_URL }}"
-              [[ -n "${{ secrets.KC_DB_USERNAME }}" ]] && ENVVARS+=",KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }}"
-              [[ -n "${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}" ]] && ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}" || ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
-              [[ -n "${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" ]] && ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}" || ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
+              [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
+              [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
+                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
+              else
+                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
+              fi
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
+                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
+              else
+                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
+              fi
               echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
 
-              ARGS_BASE="start,--http-enabled=true,--proxy-headers=xforwarded"
-              echo "ARGS_BASE=$ARGS_BASE" >> "$GITHUB_OUTPUT"
+              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
 
               EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 \
                      --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com \
@@ -186,7 +198,7 @@ jobs:
             exit 0
           fi
 
-          # june-idp (Keycloak)
+          # Keycloak (june-idp): two-pass when KC_BASE_URL is unknown
           if [[ -n "${KC_BASE_URL:-}" ]]; then
             gcloud run deploy june-idp \
               --image="$IMAGE" --region="${REGION}" --platform=managed \
