@@ -1,5 +1,7 @@
-# infra/envs/quarterly/variables.tf
-# REPLACE YOUR EXISTING FILE WITH THIS CLEAN VERSION
+variable "project_id" {
+  description = "GCP project ID"
+  type        = string
+}
 
 variable "region" {
   description = "GCP region"
@@ -7,7 +9,17 @@ variable "region" {
   default     = "us-central1"
 }
 
-# Container images - grouped for clarity
+variable "deployer_sa_email" {
+  description = "The service account email used in GitHub Actions with WIF"
+  type        = string
+  default     = ""
+}
+
+# Container images
+variable "image_idp" { 
+  type = string 
+}
+
 variable "image_orchestrator" {
   description = "Container image for orchestrator service"
   type        = string
@@ -21,6 +33,40 @@ variable "image_stt" {
 variable "image_tts" {
   description = "Container image for TTS service"
   type        = string
+}
+
+# Keycloak specific variables
+variable "KC_BASE_URL" { 
+  type = string 
+  description = "https://june-idp-<hash>-us-central1.a.run.app or custom domain"
+}
+
+variable "KC_DB_URL" { 
+  type = string 
+  description = "jdbc:postgresql://HOST:5432/DB?sslmode=require"
+}
+
+variable "KC_DB_USERNAME" { 
+  type = string 
+}
+
+variable "KC_REALM" {
+  description = "Keycloak realm name"
+  type        = string
+  default     = "june"
+}
+
+variable "KC_CLIENT_ID" {
+  description = "Keycloak client ID"
+  type        = string
+  default     = ""
+}
+
+variable "KC_CLIENT_SECRET" {
+  description = "Keycloak client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 # External service URLs and credentials
@@ -58,24 +104,5 @@ variable "QDRANT_API_KEY" {
 variable "GEMINI_API_KEY" {
   description = "Google Gemini API key"
   type        = string
-  sensitive   = true
-}
-
-variable "KC_REALM" {
-  description = "Keycloak realm name"
-  type        = string
-  default     = "june"
-}
-
-variable "KC_CLIENT_ID" {
-  description = "Keycloak client ID"
-  type        = string
-  default     = ""
-}
-
-variable "KC_CLIENT_SECRET" {
-  description = "Keycloak client secret"
-  type        = string
-  default     = ""
   sensitive   = true
 }
