@@ -1,20 +1,14 @@
+# June/services/nginx-edge/Dockerfile
 FROM nginx:1.27-alpine
 
-# runtime deps for envsubst + curl (for health)
-RUN apk add --no-cache bash curl gettext
+# We no longer need gettext/envsubst since the entrypoint builds nginx.conf directly
+RUN apk add --no-cache bash curl
 
-# template + entrypoint
-COPY nginx.conf.template /etc/nginx/templates/nginx.conf.template
+# Bring in the dynamic entrypoint
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-
-ENV NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx
-ENV NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates
-
-# Cloud Run provides PORT; we also require UPSTREAM_URL
-# Example: UPSTREAM_URL=https://<keycloak-cloud-run-hostname>
 ENV PORT=8080
-
 EXPOSE 8080
+
 ENTRYPOINT ["/entrypoint.sh"]
