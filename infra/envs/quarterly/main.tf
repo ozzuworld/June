@@ -1,6 +1,3 @@
-# infra/envs/quarterly/main.tf
-# REPLACE YOUR EXISTING main.tf WITH THIS VERSION
-
 terraform {
   required_providers {
     google = {
@@ -16,13 +13,12 @@ provider "google" {
   region  = var.region
 }
 
+# Use the service accounts module
 module "service_accounts" {
-  source = "../../modules/service_accounts"
-  # pass inputs as needed, e.g.:
-  # project_id       = var.project_id
-  # service_accounts = var.service_accounts
+  source            = "git::https://github.com/ozzuworld/June.git//infra/modules/service_accounts?ref=master"
+  project_id        = var.project_id
+  deployer_sa_email = var.deployer_sa_email
 }
-
 
 # Common environment variables
 locals {
@@ -42,47 +38,9 @@ locals {
   runtime_sas = module.service_accounts.runtime_service_accounts
 }
 
-# Keycloak IDP
-module "idp" {
-  source       = "../../modules/cloud_run_service"
-  service_name = "june-idp"
-  region       = var.region
-  image        = var.image_idp
-
-  service_account  = local.runtime_sas["june-idp"]
-  session_affinity = true
-
-  cpu           = "2"
-  memory        = "2Gi"
-  port          = 8080
-  min_instances = 1
-  max_instances = 3
-
-  args = [
-    "start",
-    "--http-enabled=true",
-    "--proxy-headers=xforwarded",
-    "--hostname=${var.KC_BASE_URL}"
-  ]
-
-  env = {
-    KC_DB                       = "postgres"
-    KC_DB_URL                   = var.KC_DB_URL
-    KC_DB_USERNAME              = var.KC_DB_USERNAME
-    KC_BOOTSTRAP_ADMIN_USERNAME = "admin"
-    KC_BOOTSTRAP_ADMIN_PASSWORD = "bootstrap-temp"
-    KC_HOSTNAME_STRICT          = "false"
-    KC_CACHE                    = "local"
-  }
-
-  env_secrets = {
-    KC_DB_PASSWORD = { secret = "KC_DB_PASSWORD", version = "latest" }
-  }
-}
-
 # Orchestrator
 module "orchestrator" {
-  source       = "../../modules/cloud_run_service"
+  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
   service_name = "june-orchestrator"
   region       = var.region
   image        = var.image_orchestrator
@@ -98,13 +56,12 @@ module "orchestrator" {
 
 # Speech-to-Text
 module "stt" {
-  source       = "../../modules/cloud_run_service"
+  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
   service_name = "june-stt"
   region       = var.region
   image        = var.image_stt
 
   service_account = local.runtime_sas["june-stt"]
-
   env = {
     GEMINI_API_KEY = var.GEMINI_API_KEY
   }
@@ -117,13 +74,12 @@ module "stt" {
 
 # Text-to-Speech
 module "tts" {
-  source       = "../../modules/cloud_run_service"
+  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
   service_name = "june-tts"
   region       = var.region
   image        = var.image_tts
 
   service_account = local.runtime_sas["june-tts"]
-
   env = {
     GEMINI_API_KEY = var.GEMINI_API_KEY
   }
@@ -134,11 +90,7 @@ module "tts" {
   max_instances = 10
 }
 
-# Outputs
-output "idp_url" {
-  value = module.idp.url
-}
-
+# Outputs (remove idp_url since it's in june-idp.tf)
 output "orchestrator_url" {
   value = module.orchestrator.url
 }
@@ -150,3 +102,4 @@ output "stt_url" {
 output "tts_url" {
   value = module.tts.url
 }
+
