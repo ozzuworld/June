@@ -127,40 +127,32 @@ jobs:
             echo "Skipping rotation (set vars.ROTATE_KC_DB_PASSWORD=true to rotate)."
           fi
 
-      - name: Compute per-service flags
-        id: flags
-        env:
-          S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
-          S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
-          S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
-          S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          case "${{ matrix.service }}" in
-            june-orchestrator)
-              echo "EXTRA=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
-              ;;
-            june-stt)
-              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
-              ;;
-            june-tts)
-              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
-              ;;
+            - name: Compute per-service flags
+            id: flags
+            env:
+                KC_BASE_URL: ${{ secrets.KC_BASE_URL }}          # <-- ADD THIS
+                S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
+                S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
+                S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
+                S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
+            run: |
+                set -euo pipefail
+                case "${{ matrix.service }}" in
                 nginx-edge)
-            # Discover Keycloak upstream URL (june-idp). If not found yet, fall back to KC_BASE_URL secret.
-            URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-            if [[ -z "$URL" && -n "${KC_BASE_URL:-}" ]]; then
-                URL="${KC_BASE_URL}"
-                echo "::notice title=nginx-edge::Using KC_BASE_URL fallback: ${URL}"
-            fi
-            if [[ -z "$URL" ]]; then
-                echo "::error title=nginx-edge::Could not discover june-idp URL and KC_BASE_URL is not set; deploy june-idp or set KC_BASE_URL secret"
-                exit 1
-            fi
-            echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
-            echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
-            echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
-            ;;
+                    # Discover june-idp URL; fall back to KC_BASE_URL
+                    URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
+                    if [[ -z "$URL" && -n "${KC_BASE_URL:-}" ]]; then
+                    URL="${KC_BASE_URL}"
+                    echo "::notice title=nginx-edge::Using KC_BASE_URL fallback: ${URL}"
+                    fi
+                    if [[ -z "$URL" ]]; then
+                    echo "::error title=nginx-edge::Could not discover june-idp URL and KC_BASE_URL is not set; deploy june-idp or set KC_BASE_URL secret"
+                    exit 1
+                    fi
+                    echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
+                    echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
+                    echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
+                    ;;
 
 
             june-idp)
