@@ -31,8 +31,9 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 1          # serialize to avoid race; june-idp first
       matrix:
-        service: [ june-orchestrator, june-stt, june-tts, june-idp, nginx-edge ]
+        service: [ june-idp, nginx-edge, june-orchestrator, june-stt, june-tts ]
 
     steps:
       - name: Checkout
@@ -127,74 +128,76 @@ jobs:
             echo "Skipping rotation (set vars.ROTATE_KC_DB_PASSWORD=true to rotate)."
           fi
 
-            - name: Compute per-service flags
-            id: flags
-            env:
-                KC_BASE_URL: ${{ secrets.KC_BASE_URL }}          # <-- ADD THIS
-                S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
-                S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
-                S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
-                S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
-            run: |
-                set -euo pipefail
-                case "${{ matrix.service }}" in
-                nginx-edge)
-                    # Discover june-idp URL; fall back to KC_BASE_URL
-                    URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-                    if [[ -z "$URL" && -n "${KC_BASE_URL:-}" ]]; then
-                    URL="${KC_BASE_URL}"
-                    echo "::notice title=nginx-edge::Using KC_BASE_URL fallback: ${URL}"
-                    fi
-                    if [[ -z "$URL" ]]; then
-                    echo "::error title=nginx-edge::Could not discover june-idp URL and KC_BASE_URL is not set; deploy june-idp or set KC_BASE_URL secret"
-                    exit 1
-                    fi
-                    echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
-                    echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
-                    echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
-                    ;;
+      - name: Compute per-service flags
+        id: flags
+        env:
+          KC_BASE_URL: ${{ secrets.KC_BASE_URL }}
+          S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
+          S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
+          S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
+          S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
 
+          case "${{ matrix.service }}" in
+            nginx-edge)
+              # Discover june-idp URL; fall back to KC_BASE_URL
+              URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
+              if [[ -z "$URL" && -n "${KC_BASE_URL:-}" ]]; then
+                URL="${KC_BASE_URL}"
+                echo "::notice title=nginx-edge::Using KC_BASE_URL fallback: ${URL}"
+              fi
+              if [[ -z "$URL" ]]; then
+                echo "::error title=nginx-edge::Could not discover june-idp URL and KC_BASE_URL is not set; deploy june-idp or set KC_BASE_URL secret"
+                exit 1
+              fi
+              echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
+              echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
+              # Require a runtime SA (create and grant iam.serviceAccountUser to your deployer SA)
+              echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100 --min-instances=0 --service-account=nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              ;;
 
             june-idp)
-            # Build ENVVARS for Keycloak (DB + admin + hostname)
-            ENVVARS="KC_DB=postgres"
+              ENVVARS="KC_DB=postgres"
+              [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
+              [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
 
-            [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
-            [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
-
-            if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
-            else
+              else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
-            fi
-            if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
+              fi
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
-            else
+              else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
-            fi
+              fi
 
-            # Derive KC_HOSTNAME from KC_BASE_URL secret (e.g., https://idp.allsafe.world or Cloud Run URL)
-            HOSTNAME=""
-            if [[ -n "${KC_BASE_URL:-}" ]]; then
+              HOSTNAME=""
+              if [[ -n "${KC_BASE_URL:-}" ]]; then
                 HOSTNAME="$(echo "${KC_BASE_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
-            fi
-            if [[ -n "${HOSTNAME}" ]]; then
+              fi
+              if [[ -n "${HOSTNAME}" ]]; then
                 ENVVARS+=",KC_HOSTNAME=${HOSTNAME}"
-            fi
+              fi
+              ENVVARS+=",KC_HOSTNAME_STRICT=false"
 
-            # While wiring things up, relax strictness to avoid startup failure if host mismatch occurs.
-            # (You can remove this once KC_HOSTNAME is stable.)
-            ENVVARS+=",KC_HOSTNAME_STRICT=false"
+              echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
+              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+              echo "EXTRA=--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}" >> "$GITHUB_OUTPUT"
+              ;;
 
-            echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
+            june-orchestrator)
+              echo "EXTRA=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              ;;
 
-            # Quarkus params: trust proxy headers and allow HTTP internally (we sit behind Cloudflare/NGINX)
-            echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+            june-stt)
+              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              ;;
 
-            # Instance sizing + env injection
-            EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}"
-            echo "EXTRA=$EXTRA" >> "$GITHUB_OUTPUT"
-            ;;
+            june-tts)
+              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              ;;
 
             *)
               echo "EXTRA=" >> "$GITHUB_OUTPUT"
@@ -212,20 +215,50 @@ jobs:
           if [[ "${ALLOW_PUBLIC}" == "true" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
           if [[ "${{ matrix.service }}" != "june-idp" ]]; then
-            gcloud run deploy "${{ matrix.service }}"               --project="${PROJECT_ID}"               --image="$IMAGE" --region="${REGION}" --platform=managed               --timeout=3600 $AUTH_FLAG $EXTRA               --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
+            gcloud run deploy "${{ matrix.service }}" \
+              --project="${PROJECT_ID}" \
+              --image="$IMAGE" \
+              --region="${REGION}" \
+              --platform=managed \
+              --timeout=3600 $AUTH_FLAG $EXTRA \
+              --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
             exit 0
           fi
 
           # Keycloak (june-idp): two-pass when KC_BASE_URL is unknown
           if [[ -n "${KC_BASE_URL:-}" ]]; then
-            gcloud run deploy june-idp               --project="${PROJECT_ID}"               --image="$IMAGE" --region="${REGION}" --platform=managed               --timeout=3600 $AUTH_FLAG $EXTRA               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest               --args="${ARGS_BASE},--hostname=${KC_BASE_URL}"               --labels="commit=${GITHUB_SHA},service=june-idp"
+            gcloud run deploy june-idp \
+              --project="${PROJECT_ID}" \
+              --image="$IMAGE" \
+              --region="${REGION}" \
+              --platform=managed \
+              --timeout=3600 $AUTH_FLAG $EXTRA \
+              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
+              --args="${ARGS_BASE},--hostname=${KC_BASE_URL}" \
+              --labels="commit=${GITHUB_SHA},service=june-idp"
           else
-            gcloud run deploy june-idp               --project="${PROJECT_ID}"               --image="$IMAGE" --region="${REGION}" --platform=managed               --timeout=3600 $AUTH_FLAG $EXTRA               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest               --args="${ARGS_BASE}"               --labels="commit=${GITHUB_SHA},service=june-idp"
+            gcloud run deploy june-idp \
+              --project="${PROJECT_ID}" \
+              --image="$IMAGE" \
+              --region="${REGION}" \
+              --platform=managed \
+              --timeout=3600 $AUTH_FLAG $EXTRA \
+              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
+              --args="${ARGS_BASE}" \
+              --labels="commit=${GITHUB_SHA},service=june-idp"
 
             URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)')"
             echo "Discovered Cloud Run URL: $URL"
 
-            gcloud run deploy june-idp               --project="${PROJECT_ID}"               --image="$IMAGE" --region="${REGION}" --platform=managed               --timeout=3600 $AUTH_FLAG $EXTRA               --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest               --args="${ARGS_BASE},--hostname=${URL}"               --labels="commit=${GITHUB_SHA},service=june-idp"
+            gcloud run deploy june-idp \
+              --project="${PROJECT_ID}" \
+              --image="$IMAGE" \
+              --region="${REGION}" \
+              --platform=managed \
+              --timeout=3600 $AUTH_FLAG $EXTRA \
+              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
+              --args="${ARGS_BASE},--hostname=${URL}" \
+              --labels="commit=${GITHUB_SHA},service=june-idp"
 
             echo "::notice title=KC_BASE_URL discovered::${URL}"
             echo "TIP: Add KC_BASE_URL='${URL}' as a GitHub Secret for future single-pass deploys."
