@@ -167,7 +167,7 @@ jobs:
               else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
               fi
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]] ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
               else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
@@ -180,10 +180,11 @@ jobs:
               if [[ -n "${HOSTNAME}" ]]; then
                 ENVVARS+=",KC_HOSTNAME=${HOSTNAME}"
               fi
-              ENVVARS+=",KC_HOSTNAME_STRICT=false,KC_CACHE=local" 
+              ENVVARS+=",KC_HOSTNAME_STRICT=false,KC_CACHE=local"
 
               echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
-              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+              # Ensure Cloud Run runs Keycloak with local cache (no clustering on Cloud Run)
+              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded,--cache=local" >> "$GITHUB_OUTPUT"
               echo "EXTRA=--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}" >> "$GITHUB_OUTPUT"
               ;;
 
@@ -215,12 +216,20 @@ jobs:
           if [[ "${ALLOW_PUBLIC}" == "true" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
           if [[ "${{ matrix.service }}" != "june-idp" ]]; then
+            # Forward ENVVARS (e.g., UPSTREAM_URL for nginx-edge) if present
+            if [[ -n "${ENVVARS:-}" ]]; then
+              ENV_FLAG=(--set-env-vars "${ENVVARS}")
+            else
+              ENV_FLAG=()
+            fi
+
             gcloud run deploy "${{ matrix.service }}" \
               --project="${PROJECT_ID}" \
               --image="$IMAGE" \
               --region="${REGION}" \
               --platform=managed \
               --timeout=3600 $AUTH_FLAG $EXTRA \
+              "${ENV_FLAG[@]}" \
               --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
             exit 0
           fi
