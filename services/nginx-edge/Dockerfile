@@ -8,8 +8,6 @@ COPY nginx.conf.template /etc/nginx/templates/nginx.conf.template
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# simple liveness check script (optional)
-COPY /dev/null /usr/share/nginx/html/healthz
 
 ENV NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx
 ENV NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates
