@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [ june-orchestrator, june-stt, june-tts, june-idp ]
+        service: [ june-orchestrator, june-stt, june-tts, june-idp, nginx-edge ]
 
     steps:
       - name: Checkout
@@ -146,6 +146,17 @@ jobs:
             june-tts)
               echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
+            nginx-edge)
+              # Discover Keycloak upstream URL (june-idp)
+              URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
+              if [[ -z "$URL" ]]; then
+                echo "::error title=nginx-edge::Could not discover june-idp URL; deploy june-idp first"; exit 1
+              fi
+              echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
+              echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
+              echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
+              ;;
+
             june-idp)
               ENVVARS="KC_DB=postgres"
               [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
