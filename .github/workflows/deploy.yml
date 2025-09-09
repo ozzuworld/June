@@ -167,11 +167,12 @@ jobs:
               else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
               fi
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]] ]]; then
+              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
               else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
               fi
+
 
               HOSTNAME=""
               if [[ -n "${KC_BASE_URL:-}" ]]; then
