@@ -146,16 +146,22 @@ jobs:
             june-tts)
               echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
-            nginx-edge)
-              # Discover Keycloak upstream URL (june-idp)
-              URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-              if [[ -z "$URL" ]]; then
-                echo "::error title=nginx-edge::Could not discover june-idp URL; deploy june-idp first"; exit 1
-              fi
-              echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
-              echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
-              echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
-              ;;
+                nginx-edge)
+            # Discover Keycloak upstream URL (june-idp). If not found yet, fall back to KC_BASE_URL secret.
+            URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
+            if [[ -z "$URL" && -n "${KC_BASE_URL:-}" ]]; then
+                URL="${KC_BASE_URL}"
+                echo "::notice title=nginx-edge::Using KC_BASE_URL fallback: ${URL}"
+            fi
+            if [[ -z "$URL" ]]; then
+                echo "::error title=nginx-edge::Could not discover june-idp URL and KC_BASE_URL is not set; deploy june-idp or set KC_BASE_URL secret"
+                exit 1
+            fi
+            echo "ENVVARS=UPSTREAM_URL=${URL}" >> "$GITHUB_OUTPUT"
+            echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
+            echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100" >> "$GITHUB_OUTPUT"
+            ;;
+
 
             june-idp)
               ENVVARS="KC_DB=postgres"
