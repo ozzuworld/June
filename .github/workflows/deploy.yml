@@ -1,4 +1,7 @@
-﻿name: Build & Deploy Cloud Run (June monorepo)
+﻿# .github/workflows/deploy.yml  
+# REPLACE YOUR EXISTING deploy.yml WITH THIS CLEANER VERSION
+
+name: Deploy Services to Cloud Run
 
 on:
   push:
@@ -17,14 +20,13 @@ defaults:
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  REGION: ${{ vars.GCP_REGION }}
-  AR_REPO: ${{ vars.ARTIFACT_REPO }}
-  SERVICES_ROOT: ${{ vars.SERVICES_ROOT }}
-  ALLOW_PUBLIC: ${{ vars.ALLOW_PUBLIC }}
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  AR_REPO: ${{ vars.ARTIFACT_REPO || 'june' }}
+  ALLOW_PUBLIC: ${{ vars.ALLOW_PUBLIC || 'true' }}
 
 jobs:
   deploy:
-    name: Build & deploy each service to Cloud Run
+    name: Deploy Services
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,13 +35,48 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        service: [ june-idp, nginx-edge, june-orchestrator, june-stt, june-tts ]
+        include:
+          - service: june-idp
+            path: services/june-idp
+            cpu: "2"
+            memory: "2Gi"
+            min_instances: 1
+            sa_suffix: svc
+            secrets: "KC_DB_PASSWORD"
+          - service: june-orchestrator  
+            path: June/services/june-orchestrator
+            cpu: "1"
+            memory: "512Mi"
+            min_instances: 0
+            sa_suffix: svc
+            secrets: ""
+          - service: june-stt
+            path: June/services/june-stt
+            cpu: "2"
+            memory: "1Gi"
+            min_instances: 1
+            sa_suffix: svc
+            secrets: ""
+          - service: june-tts
+            path: June/services/june-tts
+            cpu: "2"
+            memory: "1Gi"
+            min_instances: 0
+            sa_suffix: svc
+            secrets: ""
+          - service: nginx-edge
+            path: services/nginx-edge
+            cpu: "1"
+            memory: "256Mi"
+            min_instances: 0
+            sa_suffix: svc
+            secrets: ""
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Auth to Google Cloud (WIF)
+      - name: Auth to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
@@ -49,254 +86,160 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Set sane defaults
-        run: |
-          set -euo pipefail
-          [[ -n "${REGION:-}"        && "${REGION}"        != "(unset)" ]] || echo "REGION=us-central1" >> "$GITHUB_ENV"
-          [[ -n "${AR_REPO:-}"       && "${AR_REPO}"       != "(unset)" ]] || echo "AR_REPO=june" >> "$GITHUB_ENV"
-          [[ -n "${SERVICES_ROOT:-}" && "${SERVICES_ROOT}" != "(unset)" ]] || echo "SERVICES_ROOT=services" >> "$GITHUB_ENV"
-          [[ -n "${ALLOW_PUBLIC:-}"  && "${ALLOW_PUBLIC}"  != "(unset)" ]] || echo "ALLOW_PUBLIC=true" >> "$GITHUB_ENV"
-
-      - name: Ensure PROJECT_ID (fallback from SA)
-        run: |
-          set -euo pipefail
-          if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "(unset)" ]]; then
-            SA="${{ secrets.DEPLOYER_SA }}"
-            if [[ "$SA" =~ @(.+)\.iam\.gserviceaccount\.com$ ]]; then
-              PID="${BASH_REMATCH[1]}"
-              echo "PROJECT_ID=$PID" >> "$GITHUB_ENV"
-              gcloud config set project "$PID"
-            else
-              PID="$(gcloud config get-value project --quiet 2>/dev/null || true)"
-              [[ -n "$PID" && "$PID" != "(unset)" ]] || { echo "PROJECT_ID not set"; exit 1; }
-              echo "PROJECT_ID=$PID" >> "$GITHUB_ENV"
-            fi
-          else
-            gcloud config set project "$PROJECT_ID"
-          fi
-
-      - name: Configure Docker for Artifact Registry
+      - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Debug identity & secret IAM
+      - name: Check if service path exists
         run: |
-          set -euo pipefail
-          echo "Account: $(gcloud config get-value account || true)"
-          echo "Project: $(gcloud config get-value project || true)"
-          echo "KC_DB_PASSWORD IAM bindings:"
-          gcloud secrets get-iam-policy KC_DB_PASSWORD --project "${PROJECT_ID}" --format="table(bindings.role, bindings.members)" || true
-
-      - name: Resolve service path
-        id: rpath
-        run: |
-          set -euo pipefail
-          SVC="${{ matrix.service }}"
-          if [[ -f "services/${SVC}/Dockerfile" ]]; then
-            FOUND="services/${SVC}/Dockerfile"
-          elif [[ -f "June/services/${SVC}/Dockerfile" ]]; then
-            FOUND="June/services/${SVC}/Dockerfile"
-          else
-            FOUND="$(find . -type f -name Dockerfile -path "*/${SVC}/Dockerfile" | head -n1 || true)"
+          if [[ ! -d "${{ matrix.path }}" ]]; then
+            echo "::error::Path ${{ matrix.path }} does not exist for ${{ matrix.service }}"
+            exit 1
           fi
-          [[ -n "$FOUND" ]] || { echo "No Dockerfile for ${SVC}"; exit 1; }
-          echo "dockerfile=$FOUND" >> "$GITHUB_OUTPUT"
-          echo "workdir=$(dirname "$FOUND")" >> "$GITHUB_OUTPUT"
-          echo "Found: $FOUND"
+          echo "✅ Found service at ${{ matrix.path }}"
 
-      - name: Build & Push image
+      - name: Build and push image
         run: |
           set -euo pipefail
-          : "${PROJECT_ID:?PROJECT_ID is not set}"
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          docker build --pull -t "$IMAGE" -f "${{ steps.rpath.outputs.dockerfile }}" "${{ steps.rpath.outputs.workdir }}"
+          echo "Building: $IMAGE"
+          
+          docker build --pull -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
+          
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
-      - name: Ensure KC_DB_PASSWORD exists (june-idp only; no rotation by default)
-        if: matrix.service == 'june-idp'
-        env:
-          KC_DB_PASSWORD: ${{ secrets.KC_DB_PASSWORD }}
-          ROTATE_KC_DB_PASSWORD: ${{ vars.ROTATE_KC_DB_PASSWORD }}
+      - name: Wait for dependencies (nginx-edge only)
+        if: matrix.service == 'nginx-edge'
+        run: |
+          echo "Waiting for upstream services..."
+          
+          services=("june-idp" "june-orchestrator" "june-stt" "june-tts")
+          for service in "${services[@]}"; do
+            echo "Checking $service..."
+            max_attempts=20
+            attempt=0
+            
+            while [ $attempt -lt $max_attempts ]; do
+              if gcloud run services describe "$service" \
+                   --region="$REGION" \
+                   --format='value(status.uri)' >/dev/null 2>&1; then
+                echo "✅ $service is ready"
+                break
+              fi
+              echo "⏳ Waiting for $service... ($((attempt+1))/$max_attempts)"
+              sleep 15
+              attempt=$((attempt + 1))
+            done
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ Timeout waiting for $service"
+              exit 1
+            fi
+          done
+
+      - name: Get upstream URLs (nginx-edge only)
+        if: matrix.service == 'nginx-edge'
+        run: |
+          IDP_URL=$(gcloud run services describe june-idp --region="$REGION" --format='value(status.uri)')
+          ORCH_URL=$(gcloud run services describe june-orchestrator --region="$REGION" --format='value(status.uri)')
+          TTS_URL=$(gcloud run services describe june-tts --region="$REGION" --format='value(status.uri)')
+          STT_URL=$(gcloud run services describe june-stt --region="$REGION" --format='value(status.uri)')
+          
+          echo "UPSTREAM_IDP=$IDP_URL" >> $GITHUB_ENV
+          echo "UPSTREAM_ORCH=$ORCH_URL" >> $GITHUB_ENV
+          echo "UPSTREAM_TTS=$TTS_URL" >> $GITHUB_ENV
+          echo "UPSTREAM_STT=$STT_URL" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
         run: |
           set -euo pipefail
-          gcloud secrets describe KC_DB_PASSWORD --project "${PROJECT_ID}" --format='get(name)' >/dev/null
-          if [[ "${ROTATE_KC_DB_PASSWORD:-false}" == "true" ]]; then
-            [[ -n "${KC_DB_PASSWORD:-}" ]] || { echo "::error ::KC_DB_PASSWORD GitHub Secret not set for rotation"; exit 1; }
-            printf '%s' "$KC_DB_PASSWORD" | gcloud secrets versions add KC_DB_PASSWORD --project "${PROJECT_ID}" --data-file=- >/dev/null
-            echo "Rotated KC_DB_PASSWORD (added new version)."
+          
+          # Base command
+          CMD="gcloud run deploy ${{ matrix.service }}"
+          CMD+=" --project=$PROJECT_ID"
+          CMD+=" --image=$IMAGE"
+          CMD+=" --region=$REGION" 
+          CMD+=" --platform=managed"
+          CMD+=" --cpu=${{ matrix.cpu }}"
+          CMD+=" --memory=${{ matrix.memory }}"
+          CMD+=" --min-instances=${{ matrix.min_instances }}"
+          CMD+=" --timeout=3600"
+          
+          # Service account (matches naming from service_accounts.tf)
+          if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
+            SA_NAME="orchestrator-svc"
           else
-            echo "Skipping rotation (set vars.ROTATE_KC_DB_PASSWORD=true to rotate)."
+            SA_NAME="${{ matrix.service }}"
+            SA_NAME="${SA_NAME#june-}"  # Remove june- prefix
+            SA_NAME="${SA_NAME}-svc"    # Add -svc suffix
           fi
-
-      - name: Compute per-service flags
-        id: flags
-        env:
-          KC_BASE_URL: ${{ secrets.KC_BASE_URL }}
-          S_KC_DB_URL: ${{ secrets.KC_DB_URL }}
-          S_KC_DB_USERNAME: ${{ secrets.KC_DB_USERNAME }}
-          S_KC_BOOTSTRAP_ADMIN_USERNAME: ${{ secrets.KC_BOOTSTRAP_ADMIN_USERNAME }}
-          S_KC_BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.KC_BOOTSTRAP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-
+          CMD+=" --service-account=${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+          
+          # Authentication
+          if [ "$ALLOW_PUBLIC" = "true" ]; then
+            CMD+=" --allow-unauthenticated"
+          else
+            CMD+=" --no-allow-unauthenticated"
+          fi
+          
+          # Service-specific configuration
           case "${{ matrix.service }}" in
-            nginx-edge)
-              # Discover service URLs
-              IDP_URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-              ORCH_URL="$(gcloud run services describe june-orchestrator --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-              TTS_URL="$(gcloud run services describe june-tts --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-              STT_URL="$(gcloud run services describe june-stt --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
-
-              # IDP can fall back to KC_BASE_URL
-              if [[ -z "$IDP_URL" && -n "${KC_BASE_URL:-}" ]]; then
-                IDP_URL="${KC_BASE_URL}"
-                echo "::notice title=nginx-edge::Using KC_BASE_URL fallback for IDP: ${IDP_URL}"
-              fi
-
-              # Require at least IDP
-              if [[ -z "$IDP_URL" ]]; then
-                echo "::error title=nginx-edge::IDP upstream missing (june-idp not deployed and KC_BASE_URL not set)"
-                exit 1
-              fi
-
-              # Build ENVVARS with only the upstreams that exist
-              ENV_ARR=()
-              ENV_ARR+=("UPSTREAM_IDP=${IDP_URL}")
-              [[ -n "$ORCH_URL" ]] && ENV_ARR+=("UPSTREAM_ORCH=${ORCH_URL}")
-              [[ -n "$TTS_URL"  ]] && ENV_ARR+=("UPSTREAM_TTS=${TTS_URL}")
-              [[ -n "$STT_URL"  ]] && ENV_ARR+=("UPSTREAM_STT=${STT_URL}")
-
-              # Join with commas
-              ENV_JOIN="$(IFS=,; echo "${ENV_ARR[*]}")"
-
-              echo "ENVVARS=${ENV_JOIN}" >> "$GITHUB_OUTPUT"
-              echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
-              echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100 --min-instances=0 --service-account=nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
-              ;;
-
-
             june-idp)
-              ENVVARS="KC_DB=postgres"
-              [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
-              [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
-
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
-              else
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
+              CMD+=" --concurrency=20"
+              CMD+=" --set-env-vars=KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HOSTNAME_STRICT=false,KC_CACHE=local"
+              CMD+=" --set-secrets=KC_DB_PASSWORD=KC_DB_PASSWORD:latest"
+              CMD+=" --args=start,--http-enabled=true,--proxy-headers=xforwarded,--cache=local"
+              if [ -n "${{ secrets.KC_BASE_URL }}" ]; then
+                CMD+=" --update-env-vars KC_HOSTNAME=${{ secrets.KC_BASE_URL }}"
               fi
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
-              else
-                ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
-              fi
-
-              HOSTNAME=""
-              if [[ -n "${KC_BASE_URL:-}" ]]; then
-                HOSTNAME="$(echo "${KC_BASE_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
-              fi
-              if [[ -n "${HOSTNAME}" ]]; then
-                ENVVARS+=",KC_HOSTNAME=${HOSTNAME}"
-              fi
-              ENVVARS+=",KC_HOSTNAME_STRICT=false,KC_CACHE=local"
-
-              echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
-              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded,--cache=local" >> "$GITHUB_OUTPUT"
-              echo "EXTRA=--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}" >> "$GITHUB_OUTPUT"
               ;;
-
+            nginx-edge)
+              CMD+=" --concurrency=100"
+              CMD+=" --set-env-vars=UPSTREAM_IDP=${UPSTREAM_IDP},UPSTREAM_ORCH=${UPSTREAM_ORCH},UPSTREAM_TTS=${UPSTREAM_TTS},UPSTREAM_STT=${UPSTREAM_STT}"
+              ;;
             june-orchestrator)
-              echo "EXTRA=--cpu=1 --memory=512Mi --concurrency=10 --min-instances=0 --service-account=orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              CMD+=" --concurrency=10"
               ;;
-
             june-stt)
-              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=1 --min-instances=1 --service-account=stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
+              CMD+=" --concurrency=1"
               ;;
-
             june-tts)
-              echo "EXTRA=--cpu=2 --memory=1Gi --concurrency=4 --min-instances=0 --service-account=tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
-              ;;
-
-            *)
-              echo "EXTRA=" >> "$GITHUB_OUTPUT"
+              CMD+=" --concurrency=4"
               ;;
           esac
-
-      - name: Deploy to Cloud Run (one or two-pass)
-        env:
-          ENVVARS: ${{ steps.flags.outputs.ENVVARS }}
-          ARGS_BASE: ${{ steps.flags.outputs.ARGS_BASE }}
-          EXTRA: ${{ steps.flags.outputs.EXTRA }}
-          KC_BASE_URL: ${{ secrets.KC_BASE_URL }}
-        run: |
-          set -euo pipefail
-          if [[ "${ALLOW_PUBLIC}" == "true" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
-
-          if [[ "${{ matrix.service }}" != "june-idp" ]]; then
-            # Forward ENVVARS (UPSTREAM_* for nginx-edge) if present
-            if [[ -n "${ENVVARS:-}" ]]; then
-              ENV_FLAG=(--set-env-vars "${ENVVARS}")
-            else
-              ENV_FLAG=()
-            fi
-
-            gcloud run deploy "${{ matrix.service }}" \
-              --project="${PROJECT_ID}" \
-              --image="$IMAGE" \
-              --region="${REGION}" \
-              --platform=managed \
-              --timeout=3600 $AUTH_FLAG $EXTRA \
-              "${ENV_FLAG[@]}" \
-              --labels="commit=${GITHUB_SHA},service=${{ matrix.service }}"
-            exit 0
-          fi
-
-          # Keycloak (june-idp): two-pass when KC_BASE_URL is unknown
-          if [[ -n "${KC_BASE_URL:-}" ]]; then
-            gcloud run deploy june-idp \
-              --project="${PROJECT_ID}" \
-              --image="$IMAGE" \
-              --region="${REGION}" \
-              --platform=managed \
-              --timeout=3600 $AUTH_FLAG $EXTRA \
-              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
-              --args="${ARGS_BASE},--hostname=${KC_BASE_URL}" \
-              --labels="commit=${GITHUB_SHA},service=june-idp"
-          else
-            gcloud run deploy june-idp \
-              --project="${PROJECT_ID}" \
-              --image="$IMAGE" \
-              --region="${REGION}" \
-              --platform=managed \
-              --timeout=3600 $AUTH_FLAG $EXTRA \
-              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
-              --args="${ARGS_BASE}" \
-              --labels="commit=${GITHUB_SHA},service=june-idp"
-
-            URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)')"
-            echo "Discovered Cloud Run URL: $URL"
-
-            gcloud run deploy june-idp \
-              --project="${PROJECT_ID}" \
-              --image="$IMAGE" \
-              --region="${REGION}" \
-              --platform=managed \
-              --timeout=3600 $AUTH_FLAG $EXTRA \
-              --set-secrets KC_DB_PASSWORD=KC_DB_PASSWORD:latest \
-              --args="${ARGS_BASE},--hostname=${URL}" \
-              --labels="commit=${GITHUB_SHA},service=june-idp"
-
-            echo "::notice title=KC_BASE_URL discovered::${URL}"
-            echo "TIP: Add KC_BASE_URL='${URL}' as a GitHub Secret for future single-pass deploys."
-          fi
+          
+          # Add labels
+          CMD+=" --labels=commit=$GITHUB_SHA,service=${{ matrix.service }}"
+          
+          # Execute deployment
+          echo "Executing: $CMD"
+          eval $CMD
 
       - name: Enable session affinity (june-idp only)
         if: matrix.service == 'june-idp'
         run: |
-          gcloud run services update june-idp --project "${PROJECT_ID}" --region "${REGION}" --session-affinity || true
+          gcloud run services update june-idp \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --session-affinity || true
 
-      - name: Output service URL (june-idp only)
-        if: matrix.service == 'june-idp'
+      - name: Update Keycloak hostname (june-idp only)
+        if: matrix.service == 'june-idp' && !secrets.KC_BASE_URL
         run: |
-          URL="$(gcloud run services describe june-idp --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)')"
-          echo "::notice title=Keycloak URL::${URL}"
+          URL=$(gcloud run services describe june-idp --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
+          echo "Updating Keycloak with discovered URL: $URL"
+          
+          gcloud run deploy june-idp \
+            --project="$PROJECT_ID" \
+            --image="$IMAGE" \
+            --region="$REGION" \
+            --args="start,--http-enabled=true,--proxy-headers=xforwarded,--hostname=$URL" \
+            --labels="commit=$GITHUB_SHA,service=june-idp"
+          
+          echo "::notice title=Keycloak URL::$URL"
+          echo "💡 Add KC_BASE_URL='$URL' as a GitHub Secret for faster future deploys"
+
+      - name: Output service URL
+        run: |
+          URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
+          echo "::notice title=${{ matrix.service }} URL::$URL"

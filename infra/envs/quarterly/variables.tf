@@ -1,23 +1,110 @@
-variable "project_id" { type = string }
-variable "region"     { type = string  default = "us-central1" }
+# infra/envs/quarterly/variables.tf
+# REPLACE YOUR EXISTING FILE WITH THIS CLEAN VERSION
 
-variable "image_orchestrator" { type = string }
-variable "image_stt"          { type = string }
-variable "image_tts"          { type = string }
+# Core infrastructure
+variable "project_id" {
+  description = "GCP Project ID"
+  type        = string
+}
 
-# Shared envs from Doppler
-variable "NEON_DB_URL"              { type = string }
-variable "UPSTASH_REDIS_REST_URL"   { type = string }
-variable "UPSTASH_REDIS_REST_TOKEN" { type = string }
-variable "QDRANT_URL"               { type = string  default = "" }
-variable "QDRANT_API_KEY"           { type = string  default = "" }
-variable "GEMINI_API_KEY"           { type = string }
-variable "KC_BASE_URL"              { type = string }
-variable "KC_REALM"                 { type = string  default = "june" }
-variable "KC_CLIENT_ID"             { type = string  default = "" }
-variable "KC_CLIENT_SECRET"         { type = string  default = "" }
-variable "image_idp" { type = string }
-variable "KC_BASE_URL" { type = string } # Cloud Run URL or custom domain, e.g. https://june-idp-<hash>-uc.a.run.app
-variable "KC_DB_URL" { type = string } # jdbc:postgresql://HOST:5432/DB?sslmode=require
-variable "KC_DB_USERNAME" { type = string }
-variable "KC_DB_PASSWORD" { type = string, sensitive = true }
+variable "region" {
+  description = "GCP region"
+  type        = string
+  default     = "us-central1"
+}
+
+# Container images - grouped for clarity
+variable "image_orchestrator" {
+  description = "Container image for orchestrator service"
+  type        = string
+}
+
+variable "image_stt" {
+  description = "Container image for STT service"
+  type        = string
+}
+
+variable "image_tts" {
+  description = "Container image for TTS service"
+  type        = string
+}
+
+variable "image_idp" {
+  description = "Container image for Keycloak IDP"
+  type        = string
+}
+
+# External service URLs and credentials
+variable "NEON_DB_URL" {
+  description = "Neon PostgreSQL connection string"
+  type        = string
+  sensitive   = true
+}
+
+variable "UPSTASH_REDIS_REST_URL" {
+  description = "Upstash Redis REST endpoint"
+  type        = string
+  sensitive   = true
+}
+
+variable "UPSTASH_REDIS_REST_TOKEN" {
+  description = "Upstash Redis REST token"
+  type        = string
+  sensitive   = true
+}
+
+variable "QDRANT_URL" {
+  description = "Qdrant vector database URL"
+  type        = string
+  default     = ""
+}
+
+variable "QDRANT_API_KEY" {
+  description = "Qdrant API key"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "GEMINI_API_KEY" {
+  description = "Google Gemini API key"
+  type        = string
+  sensitive   = true
+}
+
+# Keycloak configuration - consolidated and clean
+variable "KC_BASE_URL" {
+  description = "Keycloak base URL (Cloud Run URL or custom domain)"
+  type        = string
+}
+
+variable "KC_DB_URL" {
+  description = "Keycloak database JDBC URL"
+  type        = string
+  sensitive   = true
+}
+
+variable "KC_DB_USERNAME" {
+  description = "Keycloak database username"
+  type        = string
+  sensitive   = true
+}
+
+variable "KC_REALM" {
+  description = "Keycloak realm name"
+  type        = string
+  default     = "june"
+}
+
+variable "KC_CLIENT_ID" {
+  description = "Keycloak client ID"
+  type        = string
+  default     = ""
+}
+
+variable "KC_CLIENT_SECRET" {
+  description = "Keycloak client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
