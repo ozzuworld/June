@@ -5,7 +5,13 @@ terraform {
       version = "~> 5.38"
     }
   }
-  backend "remote" {}
+  backend "remote" {
+    organization = "allsafe-world"
+    
+    workspaces {
+      name = "quarterly"
+    }
+  }
 }
 
 provider "google" {
