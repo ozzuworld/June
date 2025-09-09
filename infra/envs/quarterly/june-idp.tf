@@ -53,12 +53,12 @@ module "idp" {
   env_secret_vars = [
     {
       name = "KC_DB_PASSWORD"
-      value_source = {
+      value_from = [{
         secret_key_ref = {
           secret  = google_secret_manager_secret.kc_db_password.secret_id
           version = "latest"
         }
-      }
+      }]
     }
   ]
 
