@@ -147,21 +147,33 @@ jobs:
               TTS_URL="$(gcloud run services describe june-tts --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
               STT_URL="$(gcloud run services describe june-stt --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
 
-              # Allow IDP to fall back to KC_BASE_URL if needed
+              # IDP can fall back to KC_BASE_URL
               if [[ -z "$IDP_URL" && -n "${KC_BASE_URL:-}" ]]; then
                 IDP_URL="${KC_BASE_URL}"
                 echo "::notice title=nginx-edge::Using KC_BASE_URL fallback for IDP: ${IDP_URL}"
               fi
 
-              if [[ -z "$IDP_URL" || -z "$ORCH_URL" || -z "$TTS_URL" || -z "$STT_URL" ]]; then
-                echo "::error title=nginx-edge::One or more upstream service URLs missing; deploy all microservices first"
+              # Require at least IDP
+              if [[ -z "$IDP_URL" ]]; then
+                echo "::error title=nginx-edge::IDP upstream missing (june-idp not deployed and KC_BASE_URL not set)"
                 exit 1
               fi
 
-              echo "ENVVARS=UPSTREAM_IDP=${IDP_URL},UPSTREAM_ORCH=${ORCH_URL},UPSTREAM_TTS=${TTS_URL},UPSTREAM_STT=${STT_URL}" >> "$GITHUB_OUTPUT"
+              # Build ENVVARS with only the upstreams that exist
+              ENV_ARR=()
+              ENV_ARR+=("UPSTREAM_IDP=${IDP_URL}")
+              [[ -n "$ORCH_URL" ]] && ENV_ARR+=("UPSTREAM_ORCH=${ORCH_URL}")
+              [[ -n "$TTS_URL"  ]] && ENV_ARR+=("UPSTREAM_TTS=${TTS_URL}")
+              [[ -n "$STT_URL"  ]] && ENV_ARR+=("UPSTREAM_STT=${STT_URL}")
+
+              # Join with commas
+              ENV_JOIN="$(IFS=,; echo "${ENV_ARR[*]}")"
+
+              echo "ENVVARS=${ENV_JOIN}" >> "$GITHUB_OUTPUT"
               echo "ARGS_BASE=" >> "$GITHUB_OUTPUT"
               echo "EXTRA=--cpu=1 --memory=256Mi --concurrency=100 --min-instances=0 --service-account=nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" >> "$GITHUB_OUTPUT"
               ;;
+
 
             june-idp)
               ENVVARS="KC_DB=postgres"
