@@ -1,12 +1,6 @@
 # infra/envs/quarterly/variables.tf
 # REPLACE YOUR EXISTING FILE WITH THIS CLEAN VERSION
 
-# Core infrastructure
-variable "project_id" {
-  description = "GCP Project ID"
-  type        = string
-}
-
 variable "region" {
   description = "GCP region"
   type        = string
@@ -26,11 +20,6 @@ variable "image_stt" {
 
 variable "image_tts" {
   description = "Container image for TTS service"
-  type        = string
-}
-
-variable "image_idp" {
-  description = "Container image for Keycloak IDP"
   type        = string
 }
 
@@ -68,24 +57,6 @@ variable "QDRANT_API_KEY" {
 
 variable "GEMINI_API_KEY" {
   description = "Google Gemini API key"
-  type        = string
-  sensitive   = true
-}
-
-# Keycloak configuration - consolidated and clean
-variable "KC_BASE_URL" {
-  description = "Keycloak base URL (Cloud Run URL or custom domain)"
-  type        = string
-}
-
-variable "KC_DB_URL" {
-  description = "Keycloak database JDBC URL"
-  type        = string
-  sensitive   = true
-}
-
-variable "KC_DB_USERNAME" {
-  description = "Keycloak database username"
   type        = string
   sensitive   = true
 }

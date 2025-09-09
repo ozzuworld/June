@@ -1,10 +1,10 @@
-variable "image_idp"      { type = string }
-variable "KC_BASE_URL"    { type = string } # https://june-idp-<hash>-us-central1.a.run.app or custom domain
-variable "KC_DB_URL"      { type = string } # jdbc:postgresql://HOST:5432/DB?sslmode=require
+variable "image_idp" { type = string }
+variable "KC_BASE_URL" { type = string } # https://june-idp-<hash>-us-central1.a.run.app or custom domain
+variable "KC_DB_URL" { type = string }   # jdbc:postgresql://HOST:5432/DB?sslmode=require
 variable "KC_DB_USERNAME" { type = string }
 
 module "idp" {
-  source       = "../../modules/cloud_run_service"
+  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
   service_name = "june-idp"
   region       = var.region
   image        = var.image_idp
@@ -41,3 +41,5 @@ module "idp" {
 output "idp_url" {
   value = module.idp.url
 }
+
+
