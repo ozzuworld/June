@@ -15,7 +15,7 @@ provider "google" {
 
 # Use the service accounts module
 module "service_accounts" {
-  source            = "git::https://github.com/ozzuworld/June.git//infra/modules/service_accounts?ref=master"
+  source            = "github.com/ozzuworld/June//infra/modules/service_accounts?ref=master"
   project_id        = var.project_id
   deployer_sa_email = var.deployer_sa_email
 }
@@ -40,7 +40,7 @@ locals {
 
 # Orchestrator
 module "orchestrator" {
-  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
+  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
   service_name = "june-orchestrator"
   region       = var.region
   image        = var.image_orchestrator
@@ -56,7 +56,7 @@ module "orchestrator" {
 
 # Speech-to-Text
 module "stt" {
-  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
+  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
   service_name = "june-stt"
   region       = var.region
   image        = var.image_stt
@@ -74,7 +74,7 @@ module "stt" {
 
 # Text-to-Speech
 module "tts" {
-  source       = "git::https://github.com/ozzuworld/June.git//infra/modules/cloud_run_service?ref=master"
+  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
   service_name = "june-tts"
   region       = var.region
   image        = var.image_tts
@@ -90,7 +90,7 @@ module "tts" {
   max_instances = 10
 }
 
-# Outputs (remove idp_url since it's in june-idp.tf)
+# Outputs
 output "orchestrator_url" {
   value = module.orchestrator.url
 }
@@ -102,4 +102,3 @@ output "stt_url" {
 output "tts_url" {
   value = module.tts.url
 }
-
