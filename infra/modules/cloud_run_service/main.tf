@@ -1,50 +1,36 @@
-resource "google_cloud_run_v2_service" "this" {
-  name     = var.service_name
-  location = var.region
+# Replace in main.tf - use standard Google module instead
 
-  template {
-    service_account = var.service_account
+module "orchestrator" {
+  source  = "GoogleCloudPlatform/cloud-run/google"
+  version = "~> 0.20"
 
-    containers {
-      image = var.image
-      args  = var.args
+  service_name = "june-orchestrator"
+  project_id   = var.project_id
+  location     = var.region
+  image        = var.image_orchestrator
 
-      ports { container_port = var.port }
+  service_account_email = local.runtime_sas["june-orchestrator"]
+  
+  env_vars = [
+    { name = "NEON_DB_URL", value = var.NEON_DB_URL },
+    { name = "UPSTASH_REDIS_REST_URL", value = var.UPSTASH_REDIS_REST_URL },
+    { name = "UPSTASH_REDIS_REST_TOKEN", value = var.UPSTASH_REDIS_REST_TOKEN },
+    { name = "QDRANT_URL", value = var.QDRANT_URL },
+    { name = "QDRANT_API_KEY", value = var.QDRANT_API_KEY },
+    { name = "GEMINI_API_KEY", value = var.GEMINI_API_KEY },
+    { name = "KC_BASE_URL", value = var.KC_BASE_URL },
+    { name = "KC_REALM", value = var.KC_REALM },
+    { name = "KC_CLIENT_ID", value = var.KC_CLIENT_ID },
+    { name = "KC_CLIENT_SECRET", value = var.KC_CLIENT_SECRET }
+  ]
 
-      dynamic "env" {
-        for_each = var.env
-        content {
-          name  = env.key
-          value = env.value
-        }
-      }
+  limits = {
+    cpu    = "1000m"
+    memory = "512Mi"
+  }
 
-      dynamic "env" {
-        for_each = var.env_secrets
-        content {
-          name = env.key
-          value_source {
-            secret_key_ref {
-              secret  = env.value.secret
-              version = env.value.version
-            }
-          }
-        }
-      }
-
-      resources {
-        limits = {
-          cpu    = var.cpu
-          memory = var.memory
-        }
-      }
-    }
-
-    scaling {
-      min_instance_count = var.min_instances
-      max_instance_count = var.max_instances
-    }
-
-    session_affinity = var.session_affinity
+  template_annotations = {
+    "autoscaling.knative.dev/minScale" = "0"
+    "autoscaling.knative.dev/maxScale" = "20"
   }
 }

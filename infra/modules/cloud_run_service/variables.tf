@@ -1,3 +1,4 @@
+# MISSING VARIABLES - ADD THESE TO THE MODULE
 variable "service_name" {
   description = "Name of the Cloud Run service"
   type        = string
@@ -13,6 +14,7 @@ variable "image" {
   type        = string
 }
 
+# EXISTING VARIABLES (already in the module)
 variable "args" {
   type    = list(string)
   default = []
