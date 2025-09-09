@@ -1,8 +1,13 @@
+# infra/envs/quarterly/main.tf
 terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.38"
+      version = ">= 6.0.0, < 7.0.0"  # Updated for compatibility
+    }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = ">= 6.0.0, < 7.0.0"
     }
   }
   backend "remote" {
@@ -15,6 +20,11 @@ terraform {
 }
 
 provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
@@ -44,67 +54,122 @@ locals {
   runtime_sas = module.service_accounts.runtime_service_accounts
 }
 
-# Orchestrator
+# Orchestrator using the official module
 module "orchestrator" {
-  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
+  source  = "GoogleCloudPlatform/cloud-run/google"
+  version = "~> 0.21"
+
   service_name = "june-orchestrator"
-  region       = var.region
+  project_id   = var.project_id
+  location     = var.region
   image        = var.image_orchestrator
 
-  service_account = local.runtime_sas["june-orchestrator"]
-  env             = local.base_env
+  service_account_email = local.runtime_sas["june-orchestrator"]
+  
+  env_vars = [
+    for k, v in local.base_env : {
+      name  = k
+      value = v
+    }
+  ]
 
-  cpu           = "1"
-  memory        = "512Mi"
-  min_instances = 0
-  max_instances = 20
+  limits = {
+    cpu    = "1000m"
+    memory = "512Mi"
+  }
+
+  template_annotations = {
+    "autoscaling.knative.dev/minScale" = "0"
+    "autoscaling.knative.dev/maxScale" = "20"
+  }
 }
 
-# Speech-to-Text
+# Speech-to-Text using the official module
 module "stt" {
-  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
+  source  = "GoogleCloudPlatform/cloud-run/google"
+  version = "~> 0.21"
+
   service_name = "june-stt"
-  region       = var.region
+  project_id   = var.project_id
+  location     = var.region
   image        = var.image_stt
 
-  service_account = local.runtime_sas["june-stt"]
-  env = {
-    GEMINI_API_KEY = var.GEMINI_API_KEY
+  service_account_email = local.runtime_sas["june-stt"]
+  
+  env_vars = [
+    { name = "GEMINI_API_KEY", value = var.GEMINI_API_KEY }
+  ]
+
+  limits = {
+    cpu    = "2000m"
+    memory = "1Gi"
   }
 
-  cpu           = "2"
-  memory        = "1Gi"
-  min_instances = 1
-  max_instances = 10
+  template_annotations = {
+    "autoscaling.knative.dev/minScale" = "1"
+    "autoscaling.knative.dev/maxScale" = "10"
+  }
 }
 
-# Text-to-Speech
+# Text-to-Speech using the official module
 module "tts" {
-  source       = "github.com/ozzuworld/June//infra/modules/cloud_run_service?ref=master"
+  source  = "GoogleCloudPlatform/cloud-run/google"
+  version = "~> 0.21"
+
   service_name = "june-tts"
-  region       = var.region
+  project_id   = var.project_id
+  location     = var.region
   image        = var.image_tts
 
-  service_account = local.runtime_sas["june-tts"]
-  env = {
-    GEMINI_API_KEY = var.GEMINI_API_KEY
+  service_account_email = local.runtime_sas["june-tts"]
+  
+  env_vars = [
+    { name = "GEMINI_API_KEY", value = var.GEMINI_API_KEY }
+  ]
+
+  limits = {
+    cpu    = "2000m"
+    memory = "1Gi"
   }
 
-  cpu           = "2"
-  memory        = "1Gi"
-  min_instances = 0
-  max_instances = 10
+  template_annotations = {
+    "autoscaling.knative.dev/minScale" = "0"
+    "autoscaling.knative.dev/maxScale" = "10"
+  }
+}
+
+# Service Account for IDP (moved from secrets.tf)
+resource "google_service_account" "idp_sa" {
+  account_id   = "june-idp-sa"
+  display_name = "June IDP Cloud Run SA"
+}
+
+# Secret for IDP (moved from secrets.tf)
+resource "google_secret_manager_secret" "kc_db_password" {
+  secret_id = "KC_DB_PASSWORD"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "kc_db_pw_access" {
+  secret_id = google_secret_manager_secret.kc_db_password.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.idp_sa.email}"
 }
 
 # Outputs
 output "orchestrator_url" {
-  value = module.orchestrator.url
+  value = module.orchestrator.service_url
 }
 
 output "stt_url" {
-  value = module.stt.url
+  value = module.stt.service_url
 }
 
 output "tts_url" {
-  value = module.tts.url
+  value = module.tts.service_url
 }
+
+# Note: idp_url output is in june-idp.tf
