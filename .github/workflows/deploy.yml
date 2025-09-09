@@ -164,24 +164,46 @@ jobs:
 
 
             june-idp)
-              ENVVARS="KC_DB=postgres"
-              [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
-              [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
+            # Build ENVVARS for Keycloak (DB + admin + hostname)
+            ENVVARS="KC_DB=postgres"
+
+            [[ -n "${S_KC_DB_URL:-}" ]] && ENVVARS+=",KC_DB_URL=${S_KC_DB_URL}"
+            [[ -n "${S_KC_DB_USERNAME:-}" ]] && ENVVARS+=",KC_DB_USERNAME=${S_KC_DB_USERNAME}"
+
+            if [[ -n "${S_KC_BOOTSTRAP_ADMIN_USERNAME:-}" ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=${S_KC_BOOTSTRAP_ADMIN_USERNAME}"
-              else
+            else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_USERNAME=admin"
-              fi
-              if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
+            fi
+            if [[ -n "${S_KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=${S_KC_BOOTSTRAP_ADMIN_PASSWORD}"
-              else
+            else
                 ENVVARS+=",KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
-              fi
-              echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
-              echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
-              EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}"
-              echo "EXTRA=$EXTRA" >> "$GITHUB_OUTPUT"
-              ;;
+            fi
+
+            # Derive KC_HOSTNAME from KC_BASE_URL secret (e.g., https://idp.allsafe.world or Cloud Run URL)
+            HOSTNAME=""
+            if [[ -n "${KC_BASE_URL:-}" ]]; then
+                HOSTNAME="$(echo "${KC_BASE_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+            fi
+            if [[ -n "${HOSTNAME}" ]]; then
+                ENVVARS+=",KC_HOSTNAME=${HOSTNAME}"
+            fi
+
+            # While wiring things up, relax strictness to avoid startup failure if host mismatch occurs.
+            # (You can remove this once KC_HOSTNAME is stable.)
+            ENVVARS+=",KC_HOSTNAME_STRICT=false"
+
+            echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
+
+            # Quarkus params: trust proxy headers and allow HTTP internally (we sit behind Cloudflare/NGINX)
+            echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
+
+            # Instance sizing + env injection
+            EXTRA="--cpu=2 --memory=2Gi --concurrency=20 --min-instances=1 --service-account=june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com --set-env-vars ${ENVVARS}"
+            echo "EXTRA=$EXTRA" >> "$GITHUB_OUTPUT"
+            ;;
+
             *)
               echo "EXTRA=" >> "$GITHUB_OUTPUT"
               ;;
