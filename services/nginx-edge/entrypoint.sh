@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PORT:?PORT env var required}"
-: "${UPSTREAM_URL:?UPSTREAM_URL env var required (e.g., https://<keycloak>.run.app)}"
+# Fail early if no upstreams defined
+if ! env | grep -q '^UPSTREAM_'; then
+  echo "At least one UPSTREAM_* env var is required (e.g. UPSTREAM_IDP, UPSTREAM_ORCH)"
+  exit 1
+fi
 
-# Render nginx.conf from template using envsubst
-envsubst '${PORT} ${UPSTREAM_URL}' \
-  < /etc/nginx/templates/nginx.conf.template \
-  > /etc/nginx/nginx.conf
+# Expand template -> final config
+echo ">>> Rendering nginx.conf with envsubst..."
+# envsubst will substitute ${PORT}, ${UPSTREAM_IDP}, ${UPSTREAM_ORCH}, ${UPSTREAM_TTS}, ${UPSTREAM_STT}, etc.
+envsubst < /etc/nginx/templates/nginx.conf.template > /etc/nginx/nginx.conf
 
-# Show effective config for debugging
-echo "----- Rendered /etc/nginx/nginx.conf -----"
+echo ">>> NGINX configuration:"
 cat /etc/nginx/nginx.conf
 echo "------------------------------------------"
 
-# Smoke check
-nginx -t
-
-# Start nginx in the foreground
+# Start nginx in foreground
 exec nginx -g 'daemon off;'

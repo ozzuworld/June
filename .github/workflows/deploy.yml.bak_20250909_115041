@@ -1,4 +1,4 @@
-﻿name: Build & Deploy Cloud Run (June monorepo)
+name: Build & Deploy Cloud Run (June monorepo)
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 1          # serialize to avoid race; june-idp first
       matrix:
         service: [ june-idp, nginx-edge, june-orchestrator, june-stt, june-tts ]
 
@@ -147,7 +147,6 @@ jobs:
               TTS_URL="$(gcloud run services describe june-tts --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
               STT_URL="$(gcloud run services describe june-stt --project "${PROJECT_ID}" --region "${REGION}" --format='value(status.uri)' || true)"
 
-              # Allow IDP to fall back to KC_BASE_URL if needed
               if [[ -z "$IDP_URL" && -n "${KC_BASE_URL:-}" ]]; then
                 IDP_URL="${KC_BASE_URL}"
                 echo "::notice title=nginx-edge::Using KC_BASE_URL fallback for IDP: ${IDP_URL}"
@@ -221,7 +220,6 @@ jobs:
           if [[ "${ALLOW_PUBLIC}" == "true" ]]; then AUTH_FLAG="--allow-unauthenticated"; else AUTH_FLAG="--no-allow-unauthenticated"; fi
 
           if [[ "${{ matrix.service }}" != "june-idp" ]]; then
-            # Forward ENVVARS (UPSTREAM_* for nginx-edge) if present
             if [[ -n "${ENVVARS:-}" ]]; then
               ENV_FLAG=(--set-env-vars "${ENVVARS}")
             else
