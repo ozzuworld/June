@@ -180,7 +180,7 @@ jobs:
               if [[ -n "${HOSTNAME}" ]]; then
                 ENVVARS+=",KC_HOSTNAME=${HOSTNAME}"
               fi
-              ENVVARS+=",KC_HOSTNAME_STRICT=false"
+              ENVVARS+=",KC_HOSTNAME_STRICT=false,KC_CACHE=local" 
 
               echo "ENVVARS=$ENVVARS" >> "$GITHUB_OUTPUT"
               echo "ARGS_BASE=start,--http-enabled=true,--proxy-headers=xforwarded" >> "$GITHUB_OUTPUT"
