@@ -1,17 +1,17 @@
 
 resource "google_service_account" "orchestrator" {
-  project    = var.project_id
-  account_id = "orchestrator-svc"
+  project      = var.project_id
+  account_id   = "orchestrator-svc"
   display_name = "Orchestrator runtime"
 }
 resource "google_service_account" "stt" {
-  project    = var.project_id
-  account_id = "stt-svc"
+  project      = var.project_id
+  account_id   = "stt-svc"
   display_name = "STT runtime"
 }
 resource "google_service_account" "tts" {
-  project    = var.project_id
-  account_id = "tts-svc"
+  project      = var.project_id
+  account_id   = "tts-svc"
   display_name = "TTS runtime"
 }
 

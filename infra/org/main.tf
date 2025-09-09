@@ -32,8 +32,8 @@ resource "google_project_service" "apis" {
     "iam.googleapis.com",
     "compute.googleapis.com"
   ])
-  project = google_project.workload.project_id
-  service = each.key
+  project            = google_project.workload.project_id
+  service            = each.key
   disable_on_destroy = false
 }
 
