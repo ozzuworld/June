@@ -29,13 +29,7 @@ provider "google-beta" {
   region  = var.region
 }
 
-# Use the LOCAL service accounts module
-module "service_accounts" {
-  source = "../../modules/service_accounts"
-  
-  project_id        = var.project_id
-  deployer_sa_email = var.deployer_sa_email
-}
+# Service accounts are defined in service_accounts.tf
 
 # Common environment variables
 locals {
@@ -52,7 +46,8 @@ locals {
     KC_CLIENT_SECRET         = var.KC_CLIENT_SECRET
   }
 
-  runtime_sas = module.service_accounts.runtime_service_accounts
+  # Reference the local service accounts from service_accounts.tf
+  runtime_sas = local.runtime_service_accounts
 }
 
 # Orchestrator using the official module
