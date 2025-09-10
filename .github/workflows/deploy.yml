@@ -168,6 +168,8 @@ jobs:
           # Service account (matches naming from service_accounts.tf)
           if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
             SA_NAME="orchestrator-svc"
+          elif [ "${{ matrix.service }}" = "june-idp" ]; then
+            SA_NAME="june-idp-svc"
           else
             SA_NAME="${{ matrix.service }}"
             SA_NAME="${SA_NAME#june-}"  # Remove june- prefix
