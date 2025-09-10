@@ -1,5 +1,5 @@
 ﻿# .github/workflows/deploy.yml  
-# COMPLETE FIXED VERSION with database connection fix for Keycloak
+# COMPLETE FIXED VERSION - Direct gcloud commands, no string building
 
 name: Deploy Services to Cloud Run
 
@@ -290,18 +290,8 @@ jobs:
             echo "  👂 STT: ${UPSTREAM_STT:-'(not available)'}"
           fi
           
-          # Base command
-          CMD="gcloud run deploy ${{ matrix.service }}"
-          CMD+=" --project=$PROJECT_ID"
-          CMD+=" --image=$IMAGE"
-          CMD+=" --region=$REGION" 
-          CMD+=" --platform=managed"
-          CMD+=" --cpu=${{ matrix.cpu }}"
-          CMD+=" --memory=${{ matrix.memory }}"
-          CMD+=" --min-instances=${{ matrix.min_instances }}"
-          CMD+=" --timeout=3600"
-          
-          # Service account (matches naming from service_accounts.tf)
+          # Determine service account name
+          SA_NAME="${{ matrix.service }}"
           if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
             SA_NAME="orchestrator-svc"
           elif [ "${{ matrix.service }}" = "june-idp" ]; then
@@ -311,104 +301,108 @@ jobs:
             SA_NAME="${SA_NAME#june-}"  # Remove june- prefix
             SA_NAME="${SA_NAME}-svc"    # Add -svc suffix
           fi
-          CMD+=" --service-account=${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
           
-          # Authentication
-          if [ "$ALLOW_PUBLIC" = "true" ]; then
-            CMD+=" --allow-unauthenticated"
+          # Deploy each service with direct gcloud commands (no string building)
+          echo "🚀 Deploying ${{ matrix.service }}..."
+          
+          if [ "${{ matrix.service }}" = "june-idp" ]; then
+            # Keycloak deployment with database configuration
+            gcloud run deploy june-idp \
+              --project="$PROJECT_ID" \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --platform="managed" \
+              --cpu="2" \
+              --memory="2Gi" \
+              --min-instances="1" \
+              --timeout="900" \
+              --service-account="june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --concurrency="20" \
+              --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_PROXY_HEADERS=xforwarded,KC_LOG_LEVEL=INFO,KC_DB_POOL_INITIAL_SIZE=1,KC_DB_POOL_MIN_SIZE=1,KC_DB_POOL_MAX_SIZE=5,KC_TRANSACTION_XA_ENABLED=false,KC_HEALTH_ENABLED=true,KC_METRICS_ENABLED=true,KC_HOSTNAME=${{ secrets.KC_BASE_URL }}" \
+              --set-secrets="KC_DB_PASSWORD=KC_DB_PASSWORD:latest" \
+              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false" \
+              --labels="commit=$GITHUB_SHA,service=june-idp"
+          
+          elif [ "${{ matrix.service }}" = "nginx-edge" ]; then
+            # nginx-edge deployment with upstream URLs
+            ENV_VARS="UPSTREAM_IDP=${UPSTREAM_IDP}"
+            [ -n "${UPSTREAM_ORCH:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${UPSTREAM_ORCH}"
+            [ -n "${UPSTREAM_TTS:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${UPSTREAM_TTS}"
+            [ -n "${UPSTREAM_STT:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${UPSTREAM_STT}"
+            
+            echo "🔧 nginx-edge env vars: $ENV_VARS"
+            
+            gcloud run deploy nginx-edge \
+              --project="$PROJECT_ID" \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --platform="managed" \
+              --cpu="1" \
+              --memory="256Mi" \
+              --min-instances="0" \
+              --timeout="3600" \
+              --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --concurrency="100" \
+              --set-env-vars="$ENV_VARS" \
+              --labels="commit=$GITHUB_SHA,service=nginx-edge"
+          
+          elif [ "${{ matrix.service }}" = "june-orchestrator" ]; then
+            # Orchestrator deployment
+            gcloud run deploy june-orchestrator \
+              --project="$PROJECT_ID" \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --platform="managed" \
+              --cpu="1" \
+              --memory="512Mi" \
+              --min-instances="0" \
+              --timeout="3600" \
+              --service-account="orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --concurrency="10" \
+              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }},STT_SERVICE_URL=https://june-stt-wrqlxfokjq-uc.a.run.app,TTS_SERVICE_URL=https://june-tts-wrqlxfokjq-uc.a.run.app" \
+              --labels="commit=$GITHUB_SHA,service=june-orchestrator"
+          
+          elif [ "${{ matrix.service }}" = "june-stt" ]; then
+            # STT deployment
+            gcloud run deploy june-stt \
+              --project="$PROJECT_ID" \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --platform="managed" \
+              --cpu="2" \
+              --memory="1Gi" \
+              --min-instances="1" \
+              --timeout="3600" \
+              --service-account="stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --concurrency="1" \
+              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}" \
+              --labels="commit=$GITHUB_SHA,service=june-stt"
+          
+          elif [ "${{ matrix.service }}" = "june-tts" ]; then
+            # TTS deployment
+            gcloud run deploy june-tts \
+              --project="$PROJECT_ID" \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --platform="managed" \
+              --cpu="2" \
+              --memory="1Gi" \
+              --min-instances="0" \
+              --timeout="3600" \
+              --service-account="tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --concurrency="4" \
+              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}" \
+              --labels="commit=$GITHUB_SHA,service=june-tts"
+          
           else
-            CMD+=" --no-allow-unauthenticated"
+            echo "::error::Unknown service: ${{ matrix.service }}"
+            exit 1
           fi
-          
-          # Service-specific configuration
-          case "${{ matrix.service }}" in
-            june-idp)
-              CMD+=" --concurrency=20"
-              CMD+=" --timeout=900"  # Extended timeout for DB connection
-              
-              # Enhanced database configuration with connection pool settings
-              ENV_VARS="KC_DB=postgres"
-              ENV_VARS="${ENV_VARS},KC_DB_URL=${{ secrets.KC_DB_URL }}"
-              ENV_VARS="${ENV_VARS},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }}"
-              ENV_VARS="${ENV_VARS},KC_BOOTSTRAP_ADMIN_USERNAME=admin"
-              ENV_VARS="${ENV_VARS},KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
-              ENV_VARS="${ENV_VARS},KC_HTTP_ENABLED=true"
-              ENV_VARS="${ENV_VARS},KC_HOSTNAME_STRICT=false"
-              ENV_VARS="${ENV_VARS},KC_PROXY_HEADERS=xforwarded"
-              ENV_VARS="${ENV_VARS},KC_LOG_LEVEL=INFO"
-              
-              # Database connection pool settings to prevent timeouts
-              ENV_VARS="${ENV_VARS},KC_DB_POOL_INITIAL_SIZE=1"
-              ENV_VARS="${ENV_VARS},KC_DB_POOL_MIN_SIZE=1"
-              ENV_VARS="${ENV_VARS},KC_DB_POOL_MAX_SIZE=5"
-              ENV_VARS="${ENV_VARS},KC_TRANSACTION_XA_ENABLED=false"
-              
-              # Health check settings
-              ENV_VARS="${ENV_VARS},KC_HEALTH_ENABLED=true"
-              ENV_VARS="${ENV_VARS},KC_METRICS_ENABLED=true"
-              
-              if [ -n "${{ secrets.KC_BASE_URL }}" ]; then
-                ENV_VARS="${ENV_VARS},KC_HOSTNAME=${{ secrets.KC_BASE_URL }}"
-              fi
-              
-              CMD+=" --set-env-vars=${ENV_VARS}"
-              CMD+=" --set-secrets=KC_DB_PASSWORD=KC_DB_PASSWORD:latest"
-              
-              # Enhanced startup command with database-friendly settings
-              CMD+=" --args=start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false"
-              ;;
-            nginx-edge)
-              CMD+=" --concurrency=100"
-              # Build environment variables for nginx-edge
-              if [ -z "${UPSTREAM_IDP:-}" ]; then
-                echo "::error::UPSTREAM_IDP is required for nginx-edge but not set"
-                exit 1
-              fi
-              
-              ENV_VARS="UPSTREAM_IDP=${UPSTREAM_IDP}"
-              
-              # Add optional upstreams if they exist
-              [ -n "${UPSTREAM_ORCH:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${UPSTREAM_ORCH}"
-              [ -n "${UPSTREAM_TTS:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${UPSTREAM_TTS}"
-              [ -n "${UPSTREAM_STT:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${UPSTREAM_STT}"
-              
-              CMD+=" --set-env-vars=${ENV_VARS}"
-              echo "🔧 nginx-edge env vars: $ENV_VARS"
-              ;;
-            june-orchestrator)
-              CMD+=" --concurrency=10"
-              # Add service authentication and service URLs
-              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
-              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
-              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
-              ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-wrqlxfokjq-uc.a.run.app"
-              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-wrqlxfokjq-uc.a.run.app"
-              CMD+=" --set-env-vars=\"${ENV_VARS}\""
-              ;;
-            june-stt)
-              CMD+=" --concurrency=1"
-              # Add service authentication
-              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
-              ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
-              ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
-              CMD+=" --set-env-vars=\"${ENV_VARS}\""
-              ;;
-            june-tts)
-              CMD+=" --concurrency=4"
-              # Add service authentication
-              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
-              ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
-              ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
-              CMD+=" --set-env-vars=\"${ENV_VARS}\""
-              ;;
-          esac
-          
-          # Add labels
-          CMD+=" --labels=commit=$GITHUB_SHA,service=${{ matrix.service }}"
-          
-          # Execute deployment
-          echo "🚀 Executing: $CMD"
-          eval $CMD
 
       - name: Enable session affinity (june-idp only)
         if: matrix.service == 'june-idp'
