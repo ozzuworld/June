@@ -383,7 +383,7 @@ jobs:
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
               ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-wrqlxfokjq-uc.a.run.app"
               ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-wrqlxfokjq-uc.a.run.app"
-              CMD+=" --set-env-vars=${ENV_VARS}"
+              CMD+=" --set-env-vars=\"${ENV_VARS}\""
               ;;
             june-stt)
               CMD+=" --concurrency=1"
@@ -391,7 +391,7 @@ jobs:
               ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
               ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
-              CMD+=" --set-env-vars=${ENV_VARS}"
+              CMD+=" --set-env-vars=\"${ENV_VARS}\""
               ;;
             june-tts)
               CMD+=" --concurrency=4"
@@ -399,7 +399,7 @@ jobs:
               ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
               ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
-              CMD+=" --set-env-vars=${ENV_VARS}"
+              CMD+=" --set-env-vars=\"${ENV_VARS}\""
               ;;
           esac
           
