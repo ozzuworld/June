@@ -1,5 +1,6 @@
-﻿# Updated .github/workflows/deploy.yml
-# Fixes both Keycloak clustering and nginx-edge service discovery
+﻿# Streamlined .github/workflows/deploy.yml
+# Removes complexity while keeping scalability
+# Fixes: Service discovery, timing issues, Keycloak clustering
 
 name: Deploy Services to Cloud Run
 
@@ -60,26 +61,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOYER_SA }}
           project_id: ${{ env.PROJECT_ID }}
-
       - uses: google-github-actions/setup-gcloud@v2
-
       - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
       - name: Build and Deploy
         run: |
-          # Build image
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
           docker build -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
           
-          # Determine service account (match your existing SAs)
+          # Service account mapping
           case "${{ matrix.service }}" in
             june-orchestrator) SA="orchestrator-svc" ;;
             june-idp) SA="june-idp-svc" ;;
@@ -88,9 +85,9 @@ jobs:
             *) SA="${{ matrix.service }}-svc" ;;
           esac
           
-          # Deploy with service-specific config
+          # Service-specific deployment
           if [ "${{ matrix.service }}" = "june-idp" ]; then
-            # Keycloak with FIXED single-node configuration
+            # Keycloak with fixed clustering
             gcloud run deploy ${{ matrix.service }} \
               --image="$IMAGE" \
               --region="$REGION" \
@@ -101,29 +98,23 @@ jobs:
               --concurrency="${{ matrix.concurrency }}" \
               --service-account="${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
               --allow-unauthenticated \
-              --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_TRANSACTION_XA_ENABLED=false,KC_HOSTNAME=${{ secrets.KC_BASE_URL }},KC_CACHE=local,KC_CACHE_STACK=local" \
+              --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_TRANSACTION_XA_ENABLED=false,KC_HOSTNAME=${{ secrets.KC_BASE_URL }},KC_CACHE=local" \
               --set-secrets="KC_DB_PASSWORD=KC_DB_PASSWORD:latest" \
-              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false,--cache=local,--cache-stack=local"
-            
+              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false,--cache=local"
           else
-            # Other services with auth config + service URLs for orchestrator
+            # Other services
             ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
             
-            # Add service-to-service URLs for orchestrator
+            # Add service-specific credentials and URLs
             if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
               ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
-            fi
-            
-            # Add service-specific credentials
-            if [ "${{ matrix.service }}" = "june-stt" ]; then
+            elif [ "${{ matrix.service }}" = "june-stt" ]; then
               ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
-            fi
-            
-            if [ "${{ matrix.service }}" = "june-tts" ]; then
+            elif [ "${{ matrix.service }}" = "june-tts" ]; then
               ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
             fi
@@ -141,12 +132,7 @@ jobs:
               --set-env-vars="$ENV_VARS"
           fi
 
-      - name: Output URL
-        run: |
-          URL=$(gcloud run services describe ${{ matrix.service }} --region="$REGION" --format='value(status.uri)')
-          echo "🌐 ${{ matrix.service }}: $URL"
-
-  # Deploy nginx-edge after core services - FIXED VERSION
+  # Deploy nginx-edge after core services - STREAMLINED
   deploy-edge:
     name: Deploy Edge Proxy
     runs-on: ubuntu-latest
@@ -156,69 +142,62 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOYER_SA }}
           project_id: ${{ env.PROJECT_ID }}
-
       - uses: google-github-actions/setup-gcloud@v2
-
       - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
+      - name: Wait for services to be ready
+        run: |
+          echo "🕐 Waiting for core services to be ready..."
+          
+          # Known service URLs (predictable and stable)
+          SERVICES=(
+            "https://june-idp-359243954.us-central1.run.app/realms/june"
+            "https://june-orchestrator-359243954.us-central1.run.app/healthz"
+            "https://june-stt-359243954.us-central1.run.app/healthz"
+            "https://june-tts-359243954.us-central1.run.app/healthz"
+          )
+          
+          for url in "${SERVICES[@]}"; do
+            service_name=$(echo "$url" | cut -d'/' -f3 | cut -d'-' -f2)
+            echo "Checking $service_name..."
+            
+            # Simple readiness check with timeout
+            for i in {1..12}; do  # 12 attempts = 2 minutes max
+              if curl -f -s -m 10 "$url" >/dev/null 2>&1; then
+                echo "✅ $service_name ready"
+                break
+              fi
+              
+              if [ $i -eq 12 ]; then
+                echo "❌ $service_name not ready after 2 minutes"
+                exit 1
+              fi
+              
+              echo "⏳ $service_name not ready, waiting... ($i/12)"
+              sleep 10
+            done
+          done
+          
+          echo "🎉 All services ready!"
+
       - name: Deploy nginx-edge
         run: |
-          # Build image
+          # Build and push image
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/nginx-edge:${GITHUB_SHA}"
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          echo "🔍 Getting service URLs for nginx-edge..."
-          
-          # Wait for services to be fully ready
-          sleep 30
-          
-          # List services to see what's available
-          echo "Available services:"
-          gcloud run services list --region="$REGION" --project="$PROJECT_ID" --format="table(metadata.name,status.uri)"
-          
-          # FIXED: Use the exact service names and better extraction
-          echo "Getting service URLs..."
-          
-          # Method 1: Direct URL construction (most reliable for Cloud Run)
-          IDP_URL="https://june-idp-359243954.us-central1.run.app"
-          ORCH_URL="https://june-orchestrator-359243954.us-central1.run.app"
-          STT_URL="https://june-stt-359243954.us-central1.run.app"
-          TTS_URL="https://june-tts-359243954.us-central1.run.app"
-          
-          # Method 2: Verify services exist with gcloud (fallback verification)
-          echo "Verifying service URLs..."
-          
-          # Test if services respond
-          for service in june-idp june-orchestrator june-stt june-tts; do
-            if gcloud run services describe "$service" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
-              echo "✅ $service service exists"
-            else
-              echo "❌ $service service not found"
-            fi
-          done
-          
-          # Debug: Show what we found
-          echo "🔍 Service URLs to use:"
-          echo "  IDP: $IDP_URL"
-          echo "  ORCH: $ORCH_URL"
-          echo "  STT: $STT_URL"
-          echo "  TTS: $TTS_URL"
-          
-          # Build environment variables (all should be available)
-          ENV_VARS="UPSTREAM_IDP=${IDP_URL}"
-          ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${ORCH_URL}"
-          ENV_VARS="${ENV_VARS},UPSTREAM_STT=${STT_URL}"
-          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${TTS_URL}"
-          
-          echo "🚀 Final environment variables: $ENV_VARS"
+          # Use known, stable service URLs
+          ENV_VARS="UPSTREAM_IDP=https://june-idp-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=https://june-orchestrator-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_STT=https://june-stt-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-tts-359243954.us-central1.run.app"
           
           # Deploy nginx-edge
           gcloud run deploy nginx-edge \
@@ -233,61 +212,28 @@ jobs:
             --concurrency="100" \
             --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
-            --set-env-vars="$ENV_VARS" \
-            --port="8080"
+            --set-env-vars="$ENV_VARS"
 
-      - name: Test nginx-edge deployment
+      - name: Verify deployment
         run: |
-          # Get nginx-edge URL
-          EDGE_URL=$(gcloud run services describe nginx-edge \
-            --region="$REGION" \
-            --project="$PROJECT_ID" \
-            --format='value(status.uri)')
+          # Get nginx-edge URL and test key endpoints
+          EDGE_URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)')
           
-          echo "🧪 Testing nginx-edge deployment..."
-          echo "   URL: $EDGE_URL"
+          echo "🧪 Testing nginx-edge: $EDGE_URL"
           
-          # Wait a moment for deployment to be ready
-          sleep 10
-          
-          # Test basic connectivity
-          echo "Testing health endpoint..."
-          if curl -f -s -m 10 "${EDGE_URL}/healthz" > /dev/null 2>&1; then
-            echo "✅ nginx-edge health check passed"
-          else
-            echo "❌ nginx-edge health check failed"
-            curl -v "${EDGE_URL}/healthz" || true
-          fi
-          
-          # Test Keycloak routing
-          echo "Testing Keycloak routing..."
-          if curl -f -s -m 10 "${EDGE_URL}/auth/realms/june" > /dev/null 2>&1; then
-            echo "✅ Keycloak routing working"
-          else
-            echo "⚠️  Keycloak routing may have issues"
-            curl -v "${EDGE_URL}/auth/realms/june" || true
-          fi
-          
-          # Test service routing
-          echo "Testing service routing..."
-          for service in orchestrator stt tts; do
-            if curl -f -s -m 10 "${EDGE_URL}/${service}/healthz" > /dev/null 2>&1; then
-              echo "✅ ${service} routing working"
+          # Test endpoints with simple pass/fail
+          for endpoint in "/healthz" "/auth/realms/june" "/orchestrator/healthz"; do
+            if curl -f -s -m 15 "${EDGE_URL}${endpoint}" >/dev/null 2>&1; then
+              echo "✅ ${endpoint}"
             else
-              echo "⚠️  ${service} routing may have issues"
+              echo "❌ ${endpoint}"
             fi
           done
-
-      - name: Output Edge URL and next steps
-        run: |
-          URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)')
-          echo "🌐 nginx-edge: $URL"
+          
           echo ""
-          echo "🎯 Test your routing:"
-          echo "   Health: $URL/healthz"
-          echo "   Keycloak: $URL/auth/realms/june"
-          echo "   Orchestrator: $URL/orchestrator/healthz"
-          echo "   STT: $URL/stt/healthz"
-          echo "   TTS: $URL/tts/healthz"
-          echo ""
-          echo "::notice title=Edge Proxy URL::$URL"
+          echo "🌐 nginx-edge deployed: $EDGE_URL"
+          echo "🎯 Test URLs:"
+          echo "   $EDGE_URL/auth/realms/june"
+          echo "   $EDGE_URL/orchestrator/healthz"
+          echo "   $EDGE_URL/stt/healthz"
+          echo "   $EDGE_URL/tts/healthz"

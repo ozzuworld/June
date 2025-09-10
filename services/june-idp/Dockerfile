@@ -1,7 +1,6 @@
 # services/june-idp/Dockerfile
-# Fixed version that COMPLETELY disables clustering for Cloud Run
+# STREAMLINED - Completely disable clustering for Cloud Run
 
-# ====== Build stage ======
 FROM quay.io/keycloak/keycloak:latest AS builder
 
 ENV KC_HEALTH_ENABLED=true \
@@ -9,18 +8,13 @@ ENV KC_HEALTH_ENABLED=true \
     KC_DB=postgres
 
 WORKDIR /opt/keycloak
+RUN /opt/keycloak/bin/kc.sh build --cache=local
 
-# Build WITHOUT any cache (completely disable Infinispan)
-RUN /opt/keycloak/bin/kc.sh build \
-    --cache=local
-
-# ====== Final runtime stage ======
 FROM quay.io/keycloak/keycloak:latest
 
-# Copy from the named build stage
 COPY --from=builder /opt/keycloak/ /opt/keycloak/
 
-# Environment variables to disable clustering completely
+# Completely disable clustering at JVM level
 ENV KC_HEALTH_ENABLED=true \
     KC_METRICS_ENABLED=true \
     KC_DB=postgres \
@@ -28,9 +22,7 @@ ENV KC_HEALTH_ENABLED=true \
     KC_HOSTNAME_STRICT=false \
     KC_TRANSACTION_XA_ENABLED=false \
     KC_CACHE=local \
-    JAVA_OPTS_APPEND="-Djgroups.tcp.address=NON_LOOPBACK -Djava.net.preferIPv4Stack=true -Djgroups.bind_addr=127.0.0.1"
+    JAVA_OPTS_APPEND="-Djgroups.tcp.address=127.0.0.1 -Djava.net.preferIPv4Stack=true -Dkeycloak.connectionsInfinispan.default.clustered=false"
 
 ENTRYPOINT ["/opt/keycloak/bin/kc.sh"]
-
-# Critical: Start with single-node configuration and JGroups override
 CMD ["start", "--http-enabled=true", "--hostname-strict=false", "--proxy-headers=xforwarded", "--db=postgres", "--transaction-xa-enabled=false", "--cache=local"]
