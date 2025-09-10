@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from google.cloud import texttospeech
 from google.oauth2 import service_account
 import io, os, json
+import time
 
 from authz import get_current_user  # Firebase auth for client requests
 from shared.auth_service import require_service_auth  # Service-to-service auth
@@ -185,6 +186,19 @@ async def test_auth(service_auth_data: dict = Depends(require_service_auth)):
         "scopes": service_auth_data.get("scopes", []),
         "service": "june-tts"
     }
+
+
+# Add this route if it doesn't exist
+@app.get("/healthz") 
+async def healthz():
+    return {"ok": True, "service": "june-tts", "timestamp": time.time()}
+
+# Also add a root route
+@app.get("/")
+async def root():
+    return {"service": "june-tts", "status": "running"}
+
+
 
 if __name__ == "__main__":
     import uvicorn
