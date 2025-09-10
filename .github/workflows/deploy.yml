@@ -159,11 +159,25 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Get service URLs (simple approach)
-          IDP_URL=$(gcloud run services describe june-idp --region="$REGION" --format='value(status.uri)' || echo "")
-          ORCH_URL=$(gcloud run services describe june-orchestrator --region="$REGION" --format='value(status.uri)' || echo "")
-          STT_URL=$(gcloud run services describe june-stt --region="$REGION" --format='value(status.uri)' || echo "")
-          TTS_URL=$(gcloud run services describe june-tts --region="$REGION" --format='value(status.uri)' || echo "")
+          # Get service URLs with explicit project and region
+          echo "Getting service URLs..."
+          IDP_URL=$(gcloud run services describe june-idp --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
+          ORCH_URL=$(gcloud run services describe june-orchestrator --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
+          STT_URL=$(gcloud run services describe june-stt --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
+          TTS_URL=$(gcloud run services describe june-tts --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
+          
+          echo "Service URLs found:"
+          echo "  IDP: ${IDP_URL}"
+          echo "  ORCH: ${ORCH_URL}"
+          echo "  STT: ${STT_URL}"
+          echo "  TTS: ${TTS_URL}"
+          
+          # Verify IDP URL exists
+          if [ -z "$IDP_URL" ]; then
+            echo "ERROR: Could not get june-idp URL. Checking if service exists..."
+            gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name:june-idp"
+            exit 1
+          fi
           
           # Build env vars
           ENV_VARS="UPSTREAM_IDP=${IDP_URL}"
@@ -171,10 +185,11 @@ jobs:
           [ -n "$STT_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${STT_URL}"
           [ -n "$TTS_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${TTS_URL}"
           
-          echo "🔧 Upstream URLs: $ENV_VARS"
+          echo "Final env vars: $ENV_VARS"
           
           # Deploy nginx-edge
           gcloud run deploy nginx-edge \
+            --project="$PROJECT_ID" \
             --image="$IMAGE" \
             --region="$REGION" \
             --cpu="1" \
