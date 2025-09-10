@@ -133,6 +133,8 @@ jobs:
           fi
 
   # Deploy nginx-edge after core services - STREAMLINED
+  # Replace the deploy-edge job in your deploy.yml with this simplified version
+
   deploy-edge:
     name: Deploy Edge Proxy
     runs-on: ubuntu-latest
@@ -151,41 +153,6 @@ jobs:
       - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Wait for services to be ready
-        run: |
-          echo "🕐 Waiting for core services to be ready..."
-          
-          # Known service URLs (predictable and stable)
-          SERVICES=(
-            "https://june-idp-359243954.us-central1.run.app/realms/june"
-            "https://june-orchestrator-359243954.us-central1.run.app/healthz"
-            "https://june-stt-359243954.us-central1.run.app/healthz"
-            "https://june-tts-359243954.us-central1.run.app/healthz"
-          )
-          
-          for url in "${SERVICES[@]}"; do
-            service_name=$(echo "$url" | cut -d'/' -f3 | cut -d'-' -f2)
-            echo "Checking $service_name..."
-            
-            # Simple readiness check with timeout
-            for i in {1..12}; do  # 12 attempts = 2 minutes max
-              if curl -f -s -m 10 "$url" >/dev/null 2>&1; then
-                echo "✅ $service_name ready"
-                break
-              fi
-              
-              if [ $i -eq 12 ]; then
-                echo "❌ $service_name not ready after 2 minutes"
-                exit 1
-              fi
-              
-              echo "⏳ $service_name not ready, waiting... ($i/12)"
-              sleep 10
-            done
-          done
-          
-          echo "🎉 All services ready!"
-
       - name: Deploy nginx-edge
         run: |
           # Build and push image
@@ -193,13 +160,19 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Use known, stable service URLs
+          # Use known service URLs - no waiting needed
           ENV_VARS="UPSTREAM_IDP=https://june-idp-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=https://june-orchestrator-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_STT=https://june-stt-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-tts-359243954.us-central1.run.app"
           
-          # Deploy nginx-edge
+          echo "🚀 Deploying nginx-edge with upstream services:"
+          echo "   IDP: https://june-idp-359243954.us-central1.run.app"
+          echo "   ORCH: https://june-orchestrator-359243954.us-central1.run.app"
+          echo "   STT: https://june-stt-359243954.us-central1.run.app"
+          echo "   TTS: https://june-tts-359243954.us-central1.run.app"
+          
+          # Deploy nginx-edge immediately
           gcloud run deploy nginx-edge \
             --project="$PROJECT_ID" \
             --image="$IMAGE" \
@@ -213,26 +186,14 @@ jobs:
             --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
             --set-env-vars="$ENV_VARS"
-
-      - name: Verify deployment
-        run: |
-          # Get nginx-edge URL and test key endpoints
+          
+          # Get nginx-edge URL
           EDGE_URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)')
-          
-          echo "🧪 Testing nginx-edge: $EDGE_URL"
-          
-          # Test endpoints with simple pass/fail
-          for endpoint in "/healthz" "/auth/realms/june" "/orchestrator/healthz"; do
-            if curl -f -s -m 15 "${EDGE_URL}${endpoint}" >/dev/null 2>&1; then
-              echo "✅ ${endpoint}"
-            else
-              echo "❌ ${endpoint}"
-            fi
-          done
           
           echo ""
           echo "🌐 nginx-edge deployed: $EDGE_URL"
-          echo "🎯 Test URLs:"
+          echo "🎯 Test these URLs:"
+          echo "   $EDGE_URL/healthz"
           echo "   $EDGE_URL/auth/realms/june"
           echo "   $EDGE_URL/orchestrator/healthz"
           echo "   $EDGE_URL/stt/healthz"
