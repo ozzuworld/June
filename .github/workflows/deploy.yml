@@ -159,12 +159,20 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Get service URLs with explicit project and region
+          # Get service URLs using a more reliable method
           echo "Getting service URLs..."
-          IDP_URL=$(gcloud run services describe june-idp --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
-          ORCH_URL=$(gcloud run services describe june-orchestrator --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
-          STT_URL=$(gcloud run services describe june-stt --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
-          TTS_URL=$(gcloud run services describe june-tts --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
+          
+          # Use gcloud run services list which we know works
+          IDP_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-idp" --format="value(status.url)" 2>/dev/null || echo "")
+          ORCH_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-orchestrator" --format="value(status.url)" 2>/dev/null || echo "")
+          STT_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-stt" --format="value(status.url)" 2>/dev/null || echo "")
+          TTS_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-tts" --format="value(status.url)" 2>/dev/null || echo "")
+          
+          # If that doesn't work, try the URL from the list command we know works
+          if [ -z "$IDP_URL" ]; then
+            IDP_URL="https://june-idp-359243954.us-central1.run.app"
+            echo "Using hardcoded IDP URL as fallback"
+          fi
           
           echo "Service URLs found:"
           echo "  IDP: ${IDP_URL}"
