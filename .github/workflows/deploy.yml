@@ -1,5 +1,5 @@
-﻿# .github/workflows/deploy.yml
-# CLEAN & SIMPLE VERSION - Focus on what actually matters
+﻿# Updated .github/workflows/deploy.yml
+# Fix for nginx-edge deployment issues
 
 name: Deploy Services to Cloud Run
 
@@ -111,7 +111,28 @@ jobs:
               --session-affinity || true
               
           else
-            # Other services with auth config
+            # Other services with auth config + service URLs for orchestrator
+            ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+            
+            # Add service-to-service URLs for orchestrator
+            if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
+              ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-359243954.us-central1.run.app"
+              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
+              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
+            fi
+            
+            # Add service-specific credentials
+            if [ "${{ matrix.service }}" = "june-stt" ]; then
+              ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
+            fi
+            
+            if [ "${{ matrix.service }}" = "june-tts" ]; then
+              ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
+            fi
+            
             gcloud run deploy ${{ matrix.service }} \
               --image="$IMAGE" \
               --region="$REGION" \
@@ -122,7 +143,7 @@ jobs:
               --concurrency="${{ matrix.concurrency }}" \
               --service-account="${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
               --allow-unauthenticated \
-              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+              --set-env-vars="$ENV_VARS"
           fi
 
       - name: Output URL
@@ -130,7 +151,7 @@ jobs:
           URL=$(gcloud run services describe ${{ matrix.service }} --region="$REGION" --format='value(status.uri)')
           echo "🌐 ${{ matrix.service }}: $URL"
 
-  # Deploy nginx-edge after core services
+  # Deploy nginx-edge after core services - IMPROVED VERSION
   deploy-edge:
     name: Deploy Edge Proxy
     runs-on: ubuntu-latest
@@ -159,58 +180,157 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Get service URLs using a more reliable method
-          echo "Getting service URLs..."
+          echo "🔍 Getting service URLs for nginx-edge..."
           
-          # Use gcloud run services list which we know works
-          IDP_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-idp" --format="value(status.url)" 2>/dev/null || echo "")
-          ORCH_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-orchestrator" --format="value(status.url)" 2>/dev/null || echo "")
-          STT_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-stt" --format="value(status.url)" 2>/dev/null || echo "")
-          TTS_URL=$(gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name=june-tts" --format="value(status.url)" 2>/dev/null || echo "")
+          # Wait for services to be fully ready
+          sleep 15
           
-          # If that doesn't work, try the URL from the list command we know works
+          # Get service URLs using more reliable method
+          echo "Listing all services first:"
+          gcloud run services list --region="$REGION" --project="$PROJECT_ID" --filter="metadata.name:june"
+          
+          # Get URLs one by one with error handling
+          echo "Getting individual service URLs..."
+          
+          IDP_URL=""
+          ORCH_URL=""
+          STT_URL=""
+          TTS_URL=""
+          
+          # Try multiple methods to get URLs
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt to get service URLs..."
+            
+            # Method 1: describe service
+            if [ -z "$IDP_URL" ]; then
+              IDP_URL=$(gcloud run services describe june-idp \
+                --region="$REGION" \
+                --project="$PROJECT_ID" \
+                --format='value(status.uri)' 2>/dev/null || echo "")
+            fi
+            
+            if [ -z "$ORCH_URL" ]; then
+              ORCH_URL=$(gcloud run services describe june-orchestrator \
+                --region="$REGION" \
+                --project="$PROJECT_ID" \
+                --format='value(status.uri)' 2>/dev/null || echo "")
+            fi
+            
+            if [ -z "$STT_URL" ]; then
+              STT_URL=$(gcloud run services describe june-stt \
+                --region="$REGION" \
+                --project="$PROJECT_ID" \
+                --format='value(status.uri)' 2>/dev/null || echo "")
+            fi
+            
+            if [ -z "$TTS_URL" ]; then
+              TTS_URL=$(gcloud run services describe june-tts \
+                --region="$REGION" \
+                --project="$PROJECT_ID" \
+                --format='value(status.uri)' 2>/dev/null || echo "")
+            fi
+            
+            # If we got the critical ones, break
+            if [ -n "$IDP_URL" ] && [ -n "$ORCH_URL" ]; then
+              break
+            fi
+            
+            echo "Still missing some URLs, waiting 10s..."
+            sleep 10
+          done
+          
+          # Debug: Show what we found
+          echo "🔍 Service URLs found:"
+          echo "  IDP (required): ${IDP_URL:-NOT_FOUND}"
+          echo "  ORCH: ${ORCH_URL:-NOT_FOUND}"
+          echo "  STT: ${STT_URL:-NOT_FOUND}"
+          echo "  TTS: ${TTS_URL:-NOT_FOUND}"
+          
+          # Verify we have at least IDP (minimum required)
           if [ -z "$IDP_URL" ]; then
-            IDP_URL="https://june-idp-359243954.us-central1.run.app"
-            echo "Using hardcoded IDP URL as fallback"
-          fi
-          
-          echo "Service URLs found:"
-          echo "  IDP: ${IDP_URL}"
-          echo "  ORCH: ${ORCH_URL}"
-          echo "  STT: ${STT_URL}"
-          echo "  TTS: ${TTS_URL}"
-          
-          # Verify IDP URL exists
-          if [ -z "$IDP_URL" ]; then
-            echo "ERROR: Could not get june-idp URL. Checking if service exists..."
-            gcloud run services list --project="$PROJECT_ID" --region="$REGION" --filter="metadata.name:june-idp"
+            echo "❌ ERROR: Could not get june-idp URL. Cannot deploy nginx-edge."
+            echo "Available services:"
+            gcloud run services list --region="$REGION" --project="$PROJECT_ID"
             exit 1
           fi
           
-          # Build env vars
+          # Build environment variables (IDP required, others optional)
           ENV_VARS="UPSTREAM_IDP=${IDP_URL}"
-          [ -n "$ORCH_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${ORCH_URL}"
-          [ -n "$STT_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${STT_URL}"
-          [ -n "$TTS_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${TTS_URL}"
           
-          echo "Final env vars: $ENV_VARS"
+          if [ -n "$ORCH_URL" ]; then
+            ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${ORCH_URL}"
+            echo "✅ Added orchestrator upstream"
+          else
+            echo "⚠️  No orchestrator URL found - /orchestrator routes will not work"
+          fi
           
-          # Deploy nginx-edge
+          if [ -n "$STT_URL" ]; then
+            ENV_VARS="${ENV_VARS},UPSTREAM_STT=${STT_URL}"
+            echo "✅ Added STT upstream"
+          else
+            echo "⚠️  No STT URL found - /stt routes will not work"
+          fi
+          
+          if [ -n "$TTS_URL" ]; then
+            ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${TTS_URL}"
+            echo "✅ Added TTS upstream"
+          else
+            echo "⚠️  No TTS URL found - /tts routes will not work"
+          fi
+          
+          echo "🚀 Final environment variables: $ENV_VARS"
+          
+          # Deploy nginx-edge with improved configuration
           gcloud run deploy nginx-edge \
             --project="$PROJECT_ID" \
             --image="$IMAGE" \
             --region="$REGION" \
             --cpu="1" \
-            --memory="256Mi" \
+            --memory="512Mi" \
             --min-instances="0" \
-            --timeout="3600" \
+            --max-instances="10" \
+            --timeout="300" \
             --concurrency="100" \
             --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
             --allow-unauthenticated \
-            --set-env-vars="$ENV_VARS"
+            --set-env-vars="$ENV_VARS" \
+            --port="8080"
 
-      - name: Output Edge URL
+      - name: Test nginx-edge deployment
+        run: |
+          # Get nginx-edge URL
+          EDGE_URL=$(gcloud run services describe nginx-edge \
+            --region="$REGION" \
+            --project="$PROJECT_ID" \
+            --format='value(status.uri)')
+          
+          echo "🧪 Testing nginx-edge deployment..."
+          echo "   URL: $EDGE_URL"
+          
+          # Test basic connectivity
+          if curl -f -s "${EDGE_URL}/healthz" > /dev/null; then
+            echo "✅ nginx-edge health check passed"
+          else
+            echo "❌ nginx-edge health check failed"
+          fi
+          
+          # Test Keycloak routing
+          if curl -f -s "${EDGE_URL}/auth/realms/june" > /dev/null; then
+            echo "✅ Keycloak routing working"
+          else
+            echo "⚠️  Keycloak routing may have issues"
+          fi
+
+      - name: Output Edge URL and next steps
         run: |
           URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)')
           echo "🌐 nginx-edge: $URL"
+          echo ""
+          echo "🎯 Test your routing:"
+          echo "   Health: $URL/healthz"
+          echo "   Keycloak: $URL/auth/realms/june"
+          echo "   Orchestrator: $URL/orchestrator/healthz"
+          echo "   STT: $URL/stt/healthz"
+          echo "   TTS: $URL/tts/healthz"
+          echo ""
           echo "::notice title=Edge Proxy URL::$URL"

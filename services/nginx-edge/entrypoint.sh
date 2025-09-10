@@ -1,29 +1,55 @@
 #!/usr/bin/env bash
+# services/nginx-edge/entrypoint.sh
+# Improved version with better debugging and error handling
+
 set -euo pipefail
 
 : "${PORT:=8080}"
 
+echo "🚀 Nginx-edge starting..."
+echo "📋 Environment check:"
+echo "   PORT: $PORT"
+echo "   UPSTREAM_IDP: ${UPSTREAM_IDP:-❌ NOT_SET}"
+echo "   UPSTREAM_ORCH: ${UPSTREAM_ORCH:-⚠️  NOT_SET}"
+echo "   UPSTREAM_STT: ${UPSTREAM_STT:-⚠️  NOT_SET}"
+echo "   UPSTREAM_TTS: ${UPSTREAM_TTS:-⚠️  NOT_SET}"
+
 # Require IDP so /auth works
 if [[ -z "${UPSTREAM_IDP:-}" ]]; then
-  echo "UPSTREAM_IDP is required (Keycloak upstream)."
+  echo "❌ FATAL: UPSTREAM_IDP is required (Keycloak upstream)."
+  echo "   nginx-edge cannot function without Keycloak routing."
   exit 1
 fi
 
-# Normalize upstreams to ensure a single trailing slash in proxy_pass
+# Normalize upstreams to ensure consistent trailing slash behavior
 IDP_UPSTREAM="${UPSTREAM_IDP%/}"
 ORCH_UPSTREAM="${UPSTREAM_ORCH:-}"
 TTS_UPSTREAM="${UPSTREAM_TTS:-}"
 STT_UPSTREAM="${UPSTREAM_STT:-}"
+
+# Remove trailing slashes for consistency
 [[ -n "$ORCH_UPSTREAM" ]] && ORCH_UPSTREAM="${ORCH_UPSTREAM%/}"
 [[ -n "$TTS_UPSTREAM"  ]] && TTS_UPSTREAM="${TTS_UPSTREAM%/}"
 [[ -n "$STT_UPSTREAM"  ]] && STT_UPSTREAM="${STT_UPSTREAM%/}"
 
+echo "✅ Normalized upstreams:"
+echo "   IDP: $IDP_UPSTREAM"
+[[ -n "$ORCH_UPSTREAM" ]] && echo "   ORCH: $ORCH_UPSTREAM" || echo "   ORCH: ❌ DISABLED"
+[[ -n "$STT_UPSTREAM" ]] && echo "   STT: $STT_UPSTREAM" || echo "   STT: ❌ DISABLED"
+[[ -n "$TTS_UPSTREAM" ]] && echo "   TTS: $TTS_UPSTREAM" || echo "   TTS: ❌ DISABLED"
+
 CONF="/etc/nginx/nginx.conf"
+
+echo "🔧 Generating nginx configuration..."
 
 # Write full nginx.conf (events + http + server)
 # NOTE: We escape NGINX runtime variables like $host as \$host so Bash doesn't expand them.
 cat > "$CONF" <<EOF
+# Generated nginx configuration for nginx-edge
+# Generated at: $(date)
 worker_processes  auto;
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
 
 events {
   worker_connections  1024;
@@ -32,6 +58,13 @@ events {
 http {
   include       /etc/nginx/mime.types;
   default_type  application/octet-stream;
+  
+  # Logging
+  log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                  '\$status \$body_bytes_sent "\$http_referer" '
+                  '"\$http_user_agent" "\$http_x_forwarded_for"';
+  
+  access_log  /var/log/nginx/access.log  main;
 
   sendfile        on;
   tcp_nopush      on;
@@ -64,14 +97,24 @@ http {
 
   server {
     listen      ${PORT};
-    server_name allsafe.world;
+    server_name _;
 
-    # Health check
-    location = /healthz { return 200; }
+    # Health check endpoint
+    location = /healthz { 
+      access_log off;
+      return 200 'nginx-edge healthy\n';
+      add_header Content-Type text/plain;
+    }
+    
+    # Root endpoint - simple status
+    location = / {
+      return 200 'nginx-edge proxy\n';
+      add_header Content-Type text/plain;
+    }
 
-    # ---- Keycloak (IDP) ----
+    # ---- Keycloak (IDP) - ALWAYS ENABLED ----
     location /auth/ {
-      proxy_pass         ${IDP_UPSTREAM}/;  # ensure trailing slash behavior
+      proxy_pass         ${IDP_UPSTREAM}/;
       proxy_http_version 1.1;
 
       # Use upstream host for Cloud Run routing (fixes 502)
@@ -89,76 +132,5 @@ http {
 
       proxy_set_header   Connection "";
       proxy_read_timeout 120s;
-      client_max_body_size 20m;
-    }
-EOF
-
-# Conditionally add other services if env set (unquoted heredocs so env expands;
-# we escape NGINX vars with backslashes)
-if [[ -n "${ORCH_UPSTREAM}" ]]; then
-cat >> "$CONF" <<EOF
-    # ---- Orchestrator ----
-    location /orchestrator/ {
-      proxy_pass         ${ORCH_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /orchestrator;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-    }
-EOF
-fi
-
-if [[ -n "${TTS_UPSTREAM}" ]]; then
-cat >> "$CONF" <<EOF
-    # ---- Text-to-Speech ----
-    location /tts/ {
-      proxy_pass         ${TTS_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /tts;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-    }
-EOF
-fi
-
-if [[ -n "${STT_UPSTREAM}" ]]; then
-cat >> "$CONF" <<EOF
-    # ---- Speech-to-Text ----
-    location /stt/ {
-      proxy_pass         ${STT_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /stt;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-    }
-EOF
-fi
-
-# Close blocks
-cat >> "$CONF" <<'EOF'
-  } # server
-} # http
-EOF
-
-echo ">>> Final /etc/nginx/nginx.conf"
-cat "$CONF"
-echo "------------------------------------------"
-
-# Validate and start
-nginx -t
-exec nginx -g 'daemon off;'
+      proxy_connect_timeout 10s;
+      client_
