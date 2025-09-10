@@ -15,8 +15,20 @@ echo "   STT:  $UPSTREAM_STT"
 echo "   TTS:  $UPSTREAM_TTS"
 echo "   PORT: $PORT"
 
-# Generate nginx.conf directly (no template needed)
-cat > /etc/nginx/nginx.conf << 'EOF'
+# Extract hostnames from URLs (remove https:// and any trailing paths)
+IDP_HOST=$(echo "$UPSTREAM_IDP" | sed 's|https\?://||' | sed 's|/.*||')
+ORCH_HOST=$(echo "$UPSTREAM_ORCH" | sed 's|https\?://||' | sed 's|/.*||')
+STT_HOST=$(echo "$UPSTREAM_STT" | sed 's|https\?://||' | sed 's|/.*||')
+TTS_HOST=$(echo "$UPSTREAM_TTS" | sed 's|https\?://||' | sed 's|/.*||')
+
+echo "🔄 Extracted upstream hosts:"
+echo "   IDP:  $IDP_HOST"
+echo "   ORCH: $ORCH_HOST"
+echo "   STT:  $STT_HOST"
+echo "   TTS:  $TTS_HOST"
+
+# Generate nginx.conf directly
+cat > /etc/nginx/nginx.conf << EOF
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
@@ -29,10 +41,10 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
     
-    # Logging
-    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                    '$status $body_bytes_sent "$http_referer" '
-                    '"$http_user_agent" "$http_x_forwarded_for"';
+    # Logging format
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                    '\$status \$body_bytes_sent "\$http_referer" '
+                    '"\$http_user_agent" "\$http_x_forwarded_for"';
     access_log /var/log/nginx/access.log main;
     
     # Basic settings
@@ -47,57 +59,68 @@ http {
     gzip on;
     gzip_vary on;
     gzip_min_length 1024;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
 
-    # Upstream definitions
+    # Upstream definitions (HTTPS backends)
     upstream idp_backend {
-        server UPSTREAM_IDP_HOST;
+        server $IDP_HOST:443;
         keepalive 32;
     }
     
     upstream orchestrator_backend {
-        server UPSTREAM_ORCH_HOST;
+        server $ORCH_HOST:443;
         keepalive 32;
     }
     
     upstream stt_backend {
-        server UPSTREAM_STT_HOST;
+        server $STT_HOST:443;
         keepalive 32;
     }
     
     upstream tts_backend {
-        server UPSTREAM_TTS_HOST;
+        server $TTS_HOST:443;
         keepalive 32;
     }
 
+    # Map for WebSocket connection upgrade
+    map \$http_upgrade \$connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
     server {
-        listen PORT_PLACEHOLDER;
+        listen $PORT;
         server_name _;
         
-        # Health check
+        # Health check (works!)
         location = /healthz {
-            return 200 'OK\n';
+            return 200 'nginx-edge OK\n';
             add_header Content-Type text/plain;
         }
         
-        # Root redirect to Keycloak admin
+        # Root - redirect to Keycloak admin console
         location = / {
             return 302 /auth/admin/;
         }
         
-        # Keycloak (Identity Provider)
+        # Keycloak (Identity Provider) - strip /auth prefix
         location /auth/ {
-            proxy_pass https://idp_backend/;
+            # Remove /auth from the request path when proxying
+            rewrite ^/auth/(.*) /\$1 break;
+            
+            proxy_pass https://idp_backend;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header X-Forwarded-Host $host;
-            proxy_set_header X-Forwarded-Port $server_port;
+            
+            # Preserve original request info
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header X-Forwarded-Host \$host;
+            proxy_set_header X-Forwarded-Port \$server_port;
             
             # Timeout settings
             proxy_connect_timeout 5s;
@@ -105,94 +128,84 @@ http {
             proxy_read_timeout 60s;
         }
         
-        # Orchestrator service
+        # Orchestrator service - strip /orchestrator prefix
         location /orchestrator/ {
-            proxy_pass https://orchestrator_backend/;
+            # Remove /orchestrator from the request path when proxying
+            rewrite ^/orchestrator/(.*) /\$1 break;
+            
+            proxy_pass https://orchestrator_backend;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header X-Forwarded-Host $host;
-            proxy_set_header X-Forwarded-Port $server_port;
+            
+            # Preserve original request info
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header X-Forwarded-Host \$host;
+            proxy_set_header X-Forwarded-Port \$server_port;
             
             # WebSocket support
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
             
             proxy_connect_timeout 5s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
         }
         
-        # Speech-to-Text service
+        # Speech-to-Text service - strip /stt prefix
         location /stt/ {
-            proxy_pass https://stt_backend/;
+            # Remove /stt from the request path when proxying
+            rewrite ^/stt/(.*) /\$1 break;
+            
+            proxy_pass https://stt_backend;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Preserve original request info
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
             
             # WebSocket support for real-time STT
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
             
             proxy_connect_timeout 5s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
         }
         
-        # Text-to-Speech service
+        # Text-to-Speech service - strip /tts prefix
         location /tts/ {
-            proxy_pass https://tts_backend/;
+            # Remove /tts from the request path when proxying
+            rewrite ^/tts/(.*) /\$1 break;
+            
+            proxy_pass https://tts_backend;
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Preserve original request info
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
             
             proxy_connect_timeout 5s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
         }
-    }
-    
-    # WebSocket connection upgrade mapping
-    map $http_upgrade $connection_upgrade {
-        default upgrade;
-        '' close;
     }
 }
 EOF
-
-# Extract hostnames from URLs and substitute into nginx.conf
-IDP_HOST=$(echo "$UPSTREAM_IDP" | sed 's|https\?://||' | sed 's|/.*||')
-ORCH_HOST=$(echo "$UPSTREAM_ORCH" | sed 's|https\?://||' | sed 's|/.*||')
-STT_HOST=$(echo "$UPSTREAM_STT" | sed 's|https\?://||' | sed 's|/.*||')
-TTS_HOST=$(echo "$UPSTREAM_TTS" | sed 's|https\?://||' | sed 's|/.*||')
-
-echo "🔄 Extracted upstream hosts:"
-echo "   IDP:  $IDP_HOST"
-echo "   ORCH: $ORCH_HOST"
-echo "   STT:  $STT_HOST"
-echo "   TTS:  $TTS_HOST"
-
-# Replace placeholders in nginx.conf
-sed -i "s/UPSTREAM_IDP_HOST/$IDP_HOST/g" /etc/nginx/nginx.conf
-sed -i "s/UPSTREAM_ORCH_HOST/$ORCH_HOST/g" /etc/nginx/nginx.conf
-sed -i "s/UPSTREAM_STT_HOST/$STT_HOST/g" /etc/nginx/nginx.conf
-sed -i "s/UPSTREAM_TTS_HOST/$TTS_HOST/g" /etc/nginx/nginx.conf
-sed -i "s/PORT_PLACEHOLDER/$PORT/g" /etc/nginx/nginx.conf
 
 echo "✅ nginx.conf generated successfully"
 
