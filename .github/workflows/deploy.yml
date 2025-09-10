@@ -79,13 +79,14 @@ jobs:
           docker build -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
           
-          # Determine service account
+          # Determine service account (match your existing SAs)
           case "${{ matrix.service }}" in
             june-orchestrator) SA="orchestrator-svc" ;;
             june-idp) SA="june-idp-svc" ;;
+            june-stt) SA="stt-svc" ;;
+            june-tts) SA="tts-svc" ;;
             *) SA="${{ matrix.service }}-svc" ;;
           esac
-          SA="${SA#june-}"
           
           # Deploy with service-specific config
           if [ "${{ matrix.service }}" = "june-idp" ]; then
