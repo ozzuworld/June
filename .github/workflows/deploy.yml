@@ -1,5 +1,5 @@
-﻿# .github/workflows/deploy.yml  
-# COMPLETE FIXED VERSION - Direct gcloud commands, no string building
+﻿# .github/workflows/deploy.yml
+# CLEAN & SIMPLE VERSION - Focus on what actually matters
 
 name: Deploy Services to Cloud Run
 
@@ -11,465 +11,182 @@ on:
       - 'services/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 5 1 */3 *'
-
-defaults:
-  run:
-    shell: bash
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   REGION: ${{ vars.GCP_REGION || 'us-central1' }}
   AR_REPO: ${{ vars.ARTIFACT_REPO || 'june' }}
-  ALLOW_PUBLIC: ${{ vars.ALLOW_PUBLIC || 'true' }}
 
 jobs:
-  deploy:
-    name: Deploy Services
+  # Deploy core services first
+  deploy-core:
+    name: Deploy Core Services
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         include:
           - service: june-idp
             path: services/june-idp
+            timeout: 900
+            concurrency: 20
             cpu: "2"
             memory: "2Gi"
             min_instances: 1
-            sa_suffix: svc
-            secrets: "KC_DB_PASSWORD"
-            priority: 1
           - service: june-orchestrator  
             path: June/services/june-orchestrator
+            timeout: 3600
+            concurrency: 10
             cpu: "1"
             memory: "512Mi"
             min_instances: 0
-            sa_suffix: svc
-            secrets: ""
-            priority: 2
           - service: june-stt
             path: June/services/june-stt
+            timeout: 3600
+            concurrency: 1
             cpu: "2"
             memory: "1Gi"
             min_instances: 1
-            sa_suffix: svc
-            secrets: ""
-            priority: 3
           - service: june-tts
             path: June/services/june-tts
+            timeout: 3600
+            concurrency: 4
             cpu: "2"
             memory: "1Gi"
             min_instances: 0
-            sa_suffix: svc
-            secrets: ""
-            priority: 4
-          - service: nginx-edge
-            path: services/nginx-edge
-            cpu: "1"
-            memory: "256Mi"
-            min_instances: 0
-            sa_suffix: svc
-            secrets: ""
-            priority: 5
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Auth to Google Cloud
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOYER_SA }}
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Check if service path exists
+      - name: Build and Deploy
         run: |
-          if [[ ! -d "${{ matrix.path }}" ]]; then
-            echo "::error::Path ${{ matrix.path }} does not exist for ${{ matrix.service }}"
-            exit 1
-          fi
-          echo "✅ Found service at ${{ matrix.path }}"
-
-      - name: Build and push image
-        run: |
-          set -euo pipefail
+          # Build image
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
-          echo "Building: $IMAGE"
-          
-          docker build --pull -t "$IMAGE" "${{ matrix.path }}"
+          docker build -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
           
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-
-      - name: Wait for dependencies (nginx-edge only)
-        if: matrix.service == 'nginx-edge'
-        run: |
-          echo "🔄 Waiting for upstream services to be ready..."
+          # Determine service account
+          case "${{ matrix.service }}" in
+            june-orchestrator) SA="orchestrator-svc" ;;
+            june-idp) SA="june-idp-svc" ;;
+            *) SA="${{ matrix.service }}-svc" ;;
+          esac
+          SA="${SA#june-}"
           
-          # Function to test Keycloak health specifically
-          test_keycloak_health() {
-            local url=$1
-            echo "🔑 Testing Keycloak at $url"
-            
-            # Try Keycloak-specific endpoints with longer timeouts
-            if curl -f -s -m 30 "$url/health/ready" >/dev/null 2>&1; then
-              echo "✅ Keycloak /health/ready responded"
-              return 0
-            elif curl -f -s -m 30 "$url/auth/realms/master" >/dev/null 2>&1; then
-              echo "✅ Keycloak master realm accessible"
-              return 0
-            elif curl -f -s -m 30 "$url/" >/dev/null 2>&1; then
-              echo "✅ Keycloak root endpoint accessible"
-              return 0
-            fi
-            
-            echo "⚠️ Keycloak health checks failed"
-            return 1
-          }
-          
-          # Function to test other services
-          test_service_health() {
-            local service=$1
-            local url=$2
-            
-            if curl -f -s -m 15 "$url/healthz" >/dev/null 2>&1 || \
-               curl -f -s -m 15 "$url/health" >/dev/null 2>&1 || \
-               curl -f -s -m 15 "$url/" >/dev/null 2>&1; then
-              echo "✅ $service health check passed"
-              return 0
-            fi
-            
-            echo "⚠️ $service health checks failed"
-            return 1
-          }
-          
-          # Wait for each service with service-specific checks
-          services=("june-idp" "june-orchestrator" "june-stt" "june-tts")
-          for service in "${services[@]}"; do
-            echo "🔍 Checking $service..."
-            max_attempts=30  # 15 minutes total wait time
-            attempt=0
-            service_ready=false
-            
-            while [ $attempt -lt $max_attempts ]; do
-              # Check if service exists in Cloud Run
-              if SERVICE_URL=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
-                if [ -n "$SERVICE_URL" ]; then
-                  echo "📡 Service $service found at: $SERVICE_URL"
-                  
-                  # Check service status
-                  SERVICE_STATUS=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.conditions[0].status)' 2>/dev/null || echo "Unknown")
-                  echo "📊 Service $service status: $SERVICE_STATUS"
-                  
-                  # Service-specific health checks
-                  if [ "$service" = "june-idp" ]; then
-                    # For Keycloak, be more patient and specific
-                    if [ "$SERVICE_STATUS" = "True" ]; then
-                      if test_keycloak_health "$SERVICE_URL"; then
-                        echo "✅ $service is ready and healthy"
-                        service_ready=true
-                        break
-                      else
-                        echo "⚠️ Keycloak exists but health checks failed - checking DB connectivity"
-                        # Check if it's a DB issue by looking at recent logs
-                        if gcloud logs read --limit=5 --format="value(textPayload)" \
-                           --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="june-idp" AND textPayload:"SQLException"' \
-                           --project="$PROJECT_ID" 2>/dev/null | grep -q "SQLException"; then
-                          echo "❌ Database connection issues detected in Keycloak logs"
-                          exit 1
-                        fi
-                      fi
-                    fi
-                  else
-                    # For other services, standard check
-                    if [ "$SERVICE_STATUS" = "True" ]; then
-                      if test_service_health "$service" "$SERVICE_URL"; then
-                        echo "✅ $service is ready and healthy"
-                        service_ready=true
-                        break
-                      fi
-                    fi
-                  fi
-                fi
-              fi
-              
-              echo "⏳ Waiting for $service... ($((attempt+1))/$max_attempts) - ${SECONDS}s elapsed"
-              sleep 30
-              attempt=$((attempt + 1))
-            done
-            
-            # Special handling for Keycloak - if it exists but health checks fail, get more info
-            if [ "$service_ready" = "false" ] && [ "$service" = "june-idp" ]; then
-              if [ -n "${SERVICE_URL:-}" ]; then
-                echo "🔍 Keycloak deployment failed - checking logs for details:"
-                gcloud logs read --limit=10 --format="table(timestamp,severity,textPayload)" \
-                  --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="june-idp"' \
-                  --project="$PROJECT_ID" || echo "Could not retrieve logs"
-                echo "❌ Keycloak exists but is not healthy - check database connection"
-                exit 1
-              fi
-            fi
-            
-            if [ "$service_ready" = "false" ]; then
-              echo "❌ Timeout waiting for $service after $((max_attempts * 30)) seconds"
-              echo "🔍 Final service status check:"
-              gcloud run services describe "$service" --region="$REGION" --format='table(status.conditions[0].type,status.conditions[0].status,status.conditions[0].reason)' || echo "Service not found"
-              exit 1
-            fi
-          done
-          
-          echo "🎉 All upstream services are ready!"
-
-      - name: Deploy to Cloud Run
-        run: |
-          set -euo pipefail
-          
-          # Debug environment variables first
-          echo "DEBUG: PROJECT_ID=$PROJECT_ID"
-          echo "DEBUG: REGION=$REGION"
-          echo "DEBUG: Service=${{ matrix.service }}"
-          
-          # For nginx-edge, get upstream URLs first
-          if [ "${{ matrix.service }}" = "nginx-edge" ]; then
-            echo "🔗 Getting upstream service URLs for nginx-edge..."
-            
-            # Function to safely get service URL with retries
-            get_service_url() {
-              local service=$1
-              local max_attempts=5
-              local attempt=0
-              
-              echo "🔍 Getting URL for service: $service"
-              
-              while [ $attempt -lt $max_attempts ]; do
-                if url=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
-                  if [ -n "$url" ] && [ "$url" != "" ]; then
-                    echo "✅ Found URL for $service: $url"
-                    echo "$url"
-                    return 0
-                  fi
-                fi
-                
-                echo "⏳ Attempt $((attempt+1))/$max_attempts for $service URL..."
-                sleep 3
-                attempt=$((attempt + 1))
-              done
-              
-              echo "❌ Failed to get URL for $service after $max_attempts attempts"
-              return 1
-            }
-            
-            # Get all service URLs
-            echo "📡 Retrieving service URLs..."
-            
-            if ! UPSTREAM_IDP=$(get_service_url "june-idp"); then
-              echo "::error::Failed to get june-idp URL - this is required for nginx-edge"
-              exit 1
-            fi
-            
-            UPSTREAM_ORCH=$(get_service_url "june-orchestrator" || echo "")
-            UPSTREAM_TTS=$(get_service_url "june-tts" || echo "")
-            UPSTREAM_STT=$(get_service_url "june-stt" || echo "")
-            
-            echo "📋 Service URLs summary:"
-            echo "  🔑 IDP: $UPSTREAM_IDP (required)"
-            echo "  🎯 ORCH: ${UPSTREAM_ORCH:-'(not available)'}"
-            echo "  🗣️  TTS: ${UPSTREAM_TTS:-'(not available)'}"
-            echo "  👂 STT: ${UPSTREAM_STT:-'(not available)'}"
-          fi
-          
-          # Determine service account name
-          SA_NAME="${{ matrix.service }}"
-          if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
-            SA_NAME="orchestrator-svc"
-          elif [ "${{ matrix.service }}" = "june-idp" ]; then
-            SA_NAME="june-idp-svc"
-          else
-            SA_NAME="${{ matrix.service }}"
-            SA_NAME="${SA_NAME#june-}"  # Remove june- prefix
-            SA_NAME="${SA_NAME}-svc"    # Add -svc suffix
-          fi
-          
-          # Deploy each service with direct gcloud commands (no string building)
-          echo "🚀 Deploying ${{ matrix.service }}..."
-          
+          # Deploy with service-specific config
           if [ "${{ matrix.service }}" = "june-idp" ]; then
-            # Keycloak deployment with database configuration
-            gcloud run deploy june-idp \
-              --project="$PROJECT_ID" \
+            # Keycloak with database config
+            gcloud run deploy ${{ matrix.service }} \
               --image="$IMAGE" \
               --region="$REGION" \
-              --platform="managed" \
-              --cpu="2" \
-              --memory="2Gi" \
-              --min-instances="1" \
-              --timeout="900" \
-              --service-account="june-idp-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --cpu="${{ matrix.cpu }}" \
+              --memory="${{ matrix.memory }}" \
+              --min-instances="${{ matrix.min_instances }}" \
+              --timeout="${{ matrix.timeout }}" \
+              --concurrency="${{ matrix.concurrency }}" \
+              --service-account="${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
               --allow-unauthenticated \
-              --concurrency="20" \
-              --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_PROXY_HEADERS=xforwarded,KC_LOG_LEVEL=INFO,KC_DB_POOL_INITIAL_SIZE=1,KC_DB_POOL_MIN_SIZE=1,KC_DB_POOL_MAX_SIZE=5,KC_TRANSACTION_XA_ENABLED=false,KC_HEALTH_ENABLED=true,KC_METRICS_ENABLED=true,KC_HOSTNAME=${{ secrets.KC_BASE_URL }}" \
+              --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_TRANSACTION_XA_ENABLED=false,KC_HOSTNAME=${{ secrets.KC_BASE_URL }}" \
               --set-secrets="KC_DB_PASSWORD=KC_DB_PASSWORD:latest" \
-              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false" \
-              --labels="commit=$GITHUB_SHA,service=june-idp"
-          
-          elif [ "${{ matrix.service }}" = "nginx-edge" ]; then
-            # nginx-edge deployment with upstream URLs
-            ENV_VARS="UPSTREAM_IDP=${UPSTREAM_IDP}"
-            [ -n "${UPSTREAM_ORCH:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${UPSTREAM_ORCH}"
-            [ -n "${UPSTREAM_TTS:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${UPSTREAM_TTS}"
-            [ -n "${UPSTREAM_STT:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${UPSTREAM_STT}"
+              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false"
             
-            echo "🔧 nginx-edge env vars: $ENV_VARS"
-            
-            gcloud run deploy nginx-edge \
-              --project="$PROJECT_ID" \
-              --image="$IMAGE" \
+            # Enable session affinity for Keycloak
+            gcloud run services update ${{ matrix.service }} \
               --region="$REGION" \
-              --platform="managed" \
-              --cpu="1" \
-              --memory="256Mi" \
-              --min-instances="0" \
-              --timeout="3600" \
-              --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-              --allow-unauthenticated \
-              --concurrency="100" \
-              --set-env-vars="$ENV_VARS" \
-              --labels="commit=$GITHUB_SHA,service=nginx-edge"
-          
-          elif [ "${{ matrix.service }}" = "june-orchestrator" ]; then
-            # Orchestrator deployment
-            gcloud run deploy june-orchestrator \
-              --project="$PROJECT_ID" \
-              --image="$IMAGE" \
-              --region="$REGION" \
-              --platform="managed" \
-              --cpu="1" \
-              --memory="512Mi" \
-              --min-instances="0" \
-              --timeout="3600" \
-              --service-account="orchestrator-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-              --allow-unauthenticated \
-              --concurrency="10" \
-              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }},STT_SERVICE_URL=https://june-stt-wrqlxfokjq-uc.a.run.app,TTS_SERVICE_URL=https://june-tts-wrqlxfokjq-uc.a.run.app" \
-              --labels="commit=$GITHUB_SHA,service=june-orchestrator"
-          
-          elif [ "${{ matrix.service }}" = "june-stt" ]; then
-            # STT deployment
-            gcloud run deploy june-stt \
-              --project="$PROJECT_ID" \
-              --image="$IMAGE" \
-              --region="$REGION" \
-              --platform="managed" \
-              --cpu="2" \
-              --memory="1Gi" \
-              --min-instances="1" \
-              --timeout="3600" \
-              --service-account="stt-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-              --allow-unauthenticated \
-              --concurrency="1" \
-              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}" \
-              --labels="commit=$GITHUB_SHA,service=june-stt"
-          
-          elif [ "${{ matrix.service }}" = "june-tts" ]; then
-            # TTS deployment
-            gcloud run deploy june-tts \
-              --project="$PROJECT_ID" \
-              --image="$IMAGE" \
-              --region="$REGION" \
-              --platform="managed" \
-              --cpu="2" \
-              --memory="1Gi" \
-              --min-instances="0" \
-              --timeout="3600" \
-              --service-account="tts-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-              --allow-unauthenticated \
-              --concurrency="4" \
-              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}" \
-              --labels="commit=$GITHUB_SHA,service=june-tts"
-          
+              --session-affinity || true
+              
           else
-            echo "::error::Unknown service: ${{ matrix.service }}"
-            exit 1
+            # Other services with auth config
+            gcloud run deploy ${{ matrix.service }} \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --cpu="${{ matrix.cpu }}" \
+              --memory="${{ matrix.memory }}" \
+              --min-instances="${{ matrix.min_instances }}" \
+              --timeout="${{ matrix.timeout }}" \
+              --concurrency="${{ matrix.concurrency }}" \
+              --service-account="${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --set-env-vars="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
           fi
 
-      - name: Enable session affinity (june-idp only)
-        if: matrix.service == 'june-idp'
+      - name: Output URL
         run: |
-          gcloud run services update june-idp \
-            --project="$PROJECT_ID" \
-            --region="$REGION" \
-            --session-affinity || true
-
-      - name: Update Keycloak hostname (june-idp only)
-        if: matrix.service == 'june-idp'
-        run: |
-          # Check if KC_BASE_URL is provided, if not, update with discovered URL
-          if [ -z "${{ secrets.KC_BASE_URL }}" ]; then
-            URL=$(gcloud run services describe june-idp --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
-            echo "🔧 Updating Keycloak with discovered URL: $URL"
-            
-            gcloud run deploy june-idp \
-              --project="$PROJECT_ID" \
-              --image="$IMAGE" \
-              --region="$REGION" \
-              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--hostname=$URL" \
-              --labels="commit=$GITHUB_SHA,service=june-idp"
-            
-            echo "::notice title=Keycloak URL::$URL"
-            echo "💡 Add KC_BASE_URL='$URL' as a GitHub Secret for faster future deploys"
-          else
-            echo "✅ KC_BASE_URL is already configured: ${{ secrets.KC_BASE_URL }}"
-          fi
-
-      - name: Verify service health post-deployment
-        run: |
-          echo "🏥 Verifying ${{ matrix.service }} health..."
-          URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
-          
-          # Wait a bit for the service to start
-          sleep 15
-          
-          # Test health endpoints with service-specific logic
-          if [ "${{ matrix.service }}" = "june-idp" ]; then
-            # For Keycloak, try multiple endpoints
-            if curl -f -s -m 45 "$URL/health/ready" >/dev/null 2>&1; then
-              echo "✅ ${{ matrix.service }} health check passed (/health/ready)"
-            elif curl -f -s -m 45 "$URL/auth/realms/master" >/dev/null 2>&1; then
-              echo "✅ ${{ matrix.service }} master realm accessible"
-            elif curl -f -s -m 45 "$URL/" >/dev/null 2>&1; then
-              echo "✅ ${{ matrix.service }} root endpoint accessible"
-            else
-              echo "⚠️ ${{ matrix.service }} deployed but health checks failed"
-              echo "🔍 Checking recent logs for issues:"
-              gcloud logging read --limit=5 --format="value(textPayload)" \
-                --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="${{ matrix.service }}"' \
-                --project="$PROJECT_ID" | head -10
-            fi
-          else
-            # For other services, standard health check
-            if curl -f -s -m 30 "$URL/healthz" >/dev/null 2>&1 || \
-               curl -f -s -m 30 "$URL/health" >/dev/null 2>&1 || \
-               curl -f -s -m 30 "$URL/" >/dev/null 2>&1; then
-              echo "✅ ${{ matrix.service }} is healthy and responding"
-            else
-              echo "⚠️ ${{ matrix.service }} deployed but health check failed (this might be normal for some services)"
-            fi
-          fi
-
-      - name: Output service URL
-        run: |
-          URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
-          echo "::notice title=${{ matrix.service }} URL::$URL"
+          URL=$(gcloud run services describe ${{ matrix.service }} --region="$REGION" --format='value(status.uri)')
           echo "🌐 ${{ matrix.service }}: $URL"
+
+  # Deploy nginx-edge after core services
+  deploy-edge:
+    name: Deploy Edge Proxy
+    runs-on: ubuntu-latest
+    needs: deploy-core
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOYER_SA }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Deploy nginx-edge
+        run: |
+          # Build image
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/nginx-edge:${GITHUB_SHA}"
+          docker build -t "$IMAGE" "services/nginx-edge"
+          docker push "$IMAGE"
+          
+          # Get service URLs (simple approach)
+          IDP_URL=$(gcloud run services describe june-idp --region="$REGION" --format='value(status.uri)' || echo "")
+          ORCH_URL=$(gcloud run services describe june-orchestrator --region="$REGION" --format='value(status.uri)' || echo "")
+          STT_URL=$(gcloud run services describe june-stt --region="$REGION" --format='value(status.uri)' || echo "")
+          TTS_URL=$(gcloud run services describe june-tts --region="$REGION" --format='value(status.uri)' || echo "")
+          
+          # Build env vars
+          ENV_VARS="UPSTREAM_IDP=${IDP_URL}"
+          [ -n "$ORCH_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=${ORCH_URL}"
+          [ -n "$STT_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${STT_URL}"
+          [ -n "$TTS_URL" ] && ENV_VARS="${ENV_VARS},UPSTREAM_TTS=${TTS_URL}"
+          
+          echo "🔧 Upstream URLs: $ENV_VARS"
+          
+          # Deploy nginx-edge
+          gcloud run deploy nginx-edge \
+            --image="$IMAGE" \
+            --region="$REGION" \
+            --cpu="1" \
+            --memory="256Mi" \
+            --min-instances="0" \
+            --timeout="3600" \
+            --concurrency="100" \
+            --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --allow-unauthenticated \
+            --set-env-vars="$ENV_VARS"
+
+      - name: Output Edge URL
+        run: |
+          URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)')
+          echo "🌐 nginx-edge: $URL"
+          echo "::notice title=Edge Proxy URL::$URL"
