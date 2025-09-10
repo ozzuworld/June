@@ -172,12 +172,23 @@ async def test_auth(service_auth_data: dict = Depends(require_service_auth)):
         "service": "june-stt"
     }
 
-# Add this route if it doesn't exist  
+# At the top of June/services/june-stt/app.py, replace the duplicate healthz routes with:
+
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "service": "june-stt", "timestamp": time.time()}
+    """Health check endpoint for load balancers"""
+    return {
+        "ok": True, 
+        "service": "june-tts", 
+        "timestamp": time.time(),
+        "status": "healthy"
+    }
 
-# Also add a root route
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "status": "running"}
+    """Root endpoint"""
+    return {
+        "service": "june-tts", 
+        "status": "running",
+        "version": "1.0.0"
+    }

@@ -142,14 +142,30 @@ if service_auth:
         logger.info("✅ TTS service client initialized")
 
 # -----------------------------------------------------------------------------
-# Health and config endpoints
+# Health and config endpoints (FIXED - no duplicates)
 # -----------------------------------------------------------------------------
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True}
+    """Health check endpoint for load balancers"""
+    return {
+        "ok": True, 
+        "service": "june-orchestrator", 
+        "timestamp": time.time(),
+        "status": "healthy"
+    }
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "service": "june-orchestrator", 
+        "status": "running",
+        "version": "1.0.0"
+    }
 
 @app.get("/configz")
 async def configz():
+    """Configuration endpoint for debugging"""
     return {
         "FIREBASE_PROJECT_ID": FIREBASE_PROJECT_ID,
         "STT_WS_URL": STT_WS_URL,
@@ -344,14 +360,3 @@ async def startup_event():
         logger.info("✅ TTS client configured")
     else:
         logger.warning("⚠️ TTS client not available")
-
-
-# Add this route if it doesn't exist
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True, "service": "june-orchestrator", "timestamp": time.time()}
-
-# Also add a root route
-@app.get("/")
-async def root():
-    return {"service": "june-orchestrator", "status": "running"}
