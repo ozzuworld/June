@@ -1,5 +1,5 @@
 ﻿# .github/workflows/deploy.yml  
-# REPLACE YOUR EXISTING deploy.yml WITH THIS CLEANER VERSION
+# FIXED VERSION - Replace your existing deploy.yml with this
 
 name: Deploy Services to Cloud Run
 
@@ -137,22 +137,53 @@ jobs:
             fi
           done
 
-      - name: Get upstream URLs (nginx-edge only)
-        if: matrix.service == 'nginx-edge'
-        run: |
-          IDP_URL=$(gcloud run services describe june-idp --region="$REGION" --format='value(status.uri)')
-          ORCH_URL=$(gcloud run services describe june-orchestrator --region="$REGION" --format='value(status.uri)')
-          TTS_URL=$(gcloud run services describe june-tts --region="$REGION" --format='value(status.uri)')
-          STT_URL=$(gcloud run services describe june-stt --region="$REGION" --format='value(status.uri)')
-          
-          echo "UPSTREAM_IDP=$IDP_URL" >> $GITHUB_ENV
-          echo "UPSTREAM_ORCH=$ORCH_URL" >> $GITHUB_ENV
-          echo "UPSTREAM_TTS=$TTS_URL" >> $GITHUB_ENV
-          echo "UPSTREAM_STT=$STT_URL" >> $GITHUB_ENV
-
       - name: Deploy to Cloud Run
         run: |
           set -euo pipefail
+          
+          # For nginx-edge, get upstream URLs first
+          if [ "${{ matrix.service }}" = "nginx-edge" ]; then
+            echo "Getting upstream service URLs for nginx-edge..."
+            
+            # Function to safely get service URL with retries
+            get_service_url() {
+              local service=$1
+              local max_attempts=5
+              local attempt=0
+              
+              while [ $attempt -lt $max_attempts ]; do
+                if url=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
+                  if [ -n "$url" ]; then
+                    echo "$url"
+                    return 0
+                  fi
+                fi
+                echo "⏳ Attempt $((attempt+1))/$max_attempts for $service..."
+                sleep 5
+                attempt=$((attempt + 1))
+              done
+              
+              echo "❌ Failed to get URL for $service after $max_attempts attempts"
+              return 1
+            }
+            
+            # IDP is required, fail if not available
+            if ! UPSTREAM_IDP=$(get_service_url "june-idp"); then
+              echo "::error::june-idp service is required but not available"
+              exit 1
+            fi
+            
+            # Other services are optional
+            UPSTREAM_ORCH=$(get_service_url "june-orchestrator" || echo "")
+            UPSTREAM_TTS=$(get_service_url "june-tts" || echo "")
+            UPSTREAM_STT=$(get_service_url "june-stt" || echo "")
+            
+            echo "Service URLs found:"
+            echo "  IDP: $UPSTREAM_IDP (required)"
+            echo "  ORCH: ${UPSTREAM_ORCH:-'(not available)'}"
+            echo "  TTS: ${UPSTREAM_TTS:-'(not available)'}"
+            echo "  STT: ${UPSTREAM_STT:-'(not available)'}"
+          fi
           
           # Base command
           CMD="gcloud run deploy ${{ matrix.service }}"
