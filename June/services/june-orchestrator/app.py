@@ -4,6 +4,7 @@ import json
 import uuid
 import asyncio
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -343,3 +344,14 @@ async def startup_event():
         logger.info("✅ TTS client configured")
     else:
         logger.warning("⚠️ TTS client not available")
+
+
+# Add this route if it doesn't exist
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True, "service": "june-orchestrator", "timestamp": time.time()}
+
+# Also add a root route
+@app.get("/")
+async def root():
+    return {"service": "june-orchestrator", "status": "running"}

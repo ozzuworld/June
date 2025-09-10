@@ -3,6 +3,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, F
 from fastapi.responses import JSONResponse
 import logging, json
 import base64
+import time
 from typing import Optional
 
 from authz import verify_token_query
@@ -170,3 +171,13 @@ async def test_auth(service_auth_data: dict = Depends(require_service_auth)):
         "scopes": service_auth_data.get("scopes", []),
         "service": "june-stt"
     }
+
+# Add this route if it doesn't exist  
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True, "service": "june-stt", "timestamp": time.time()}
+
+# Also add a root route
+@app.get("/")
+async def root():
+    return {"service": "june-stt", "status": "running"}

@@ -1,193 +1,127 @@
-#!/usr/bin/env bash
-# services/nginx-edge/entrypoint.sh
-# SIMPLE VERSION - No complex sed replacements
+#!/usr/bin/env python3
+"""
+Test with the CORRECT endpoints based on your actual service code
+"""
 
-set -euo pipefail
+import asyncio
+import httpx
+import json
+import time
 
-: "${PORT:=8080}"
-
-echo "🚀 Nginx-edge starting..."
-echo "📋 Environment check:"
-echo "   PORT: $PORT"
-echo "   UPSTREAM_IDP: ${UPSTREAM_IDP:-❌ NOT_SET}"
-echo "   UPSTREAM_ORCH: ${UPSTREAM_ORCH:-⚠️  NOT_SET}"
-echo "   UPSTREAM_STT: ${UPSTREAM_STT:-⚠️  NOT_SET}"
-echo "   UPSTREAM_TTS: ${UPSTREAM_TTS:-⚠️  NOT_SET}"
-
-# Require IDP so /auth works
-if [[ -z "${UPSTREAM_IDP:-}" ]]; then
-  echo "❌ FATAL: UPSTREAM_IDP is required (Keycloak upstream)."
-  exit 1
-fi
-
-# Normalize upstreams
-IDP_UPSTREAM="${UPSTREAM_IDP%/}"
-ORCH_UPSTREAM="${UPSTREAM_ORCH:-}"
-TTS_UPSTREAM="${UPSTREAM_TTS:-}"
-STT_UPSTREAM="${UPSTREAM_STT:-}"
-
-[[ -n "$ORCH_UPSTREAM" ]] && ORCH_UPSTREAM="${ORCH_UPSTREAM%/}"
-[[ -n "$TTS_UPSTREAM"  ]] && TTS_UPSTREAM="${TTS_UPSTREAM%/}"
-[[ -n "$STT_UPSTREAM"  ]] && STT_UPSTREAM="${STT_UPSTREAM%/}"
-
-echo "✅ Normalized upstreams:"
-echo "   IDP: $IDP_UPSTREAM"
-[[ -n "$ORCH_UPSTREAM" ]] && echo "   ORCH: $ORCH_UPSTREAM" || echo "   ORCH: ❌ DISABLED"
-[[ -n "$STT_UPSTREAM" ]] && echo "   STT: $STT_UPSTREAM" || echo "   STT: ❌ DISABLED"
-[[ -n "$TTS_UPSTREAM" ]] && echo "   TTS: $TTS_UPSTREAM" || echo "   TTS: ❌ DISABLED"
-
-echo "🔧 Generating nginx configuration..."
-
-# Generate nginx.conf directly with bash variables (no sed needed)
-cat > /etc/nginx/nginx.conf <<EOF
-worker_processes  auto;
-error_log  /var/log/nginx/error.log warn;
-pid        /var/run/nginx.pid;
-
-events {
-  worker_connections  1024;
+# Direct service URLs
+SERVICES = {
+    "orchestrator": "https://june-orchestrator-359243954.us-central1.run.app",
+    "stt": "https://june-stt-359243954.us-central1.run.app", 
+    "tts": "https://june-tts-359243954.us-central1.run.app",
+    "idp": "https://june-idp-359243954.us-central1.run.app"
 }
 
-http {
-  include       /etc/nginx/mime.types;
-  default_type  application/octet-stream;
-  
-  log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                  '\$status \$body_bytes_sent "\$http_referer" '
-                  '"\$http_user_agent" "\$http_x_forwarded_for"';
-  
-  access_log  /var/log/nginx/access.log  main;
-  sendfile        on;
-  tcp_nopush      on;
-  keepalive_timeout  65;
-  server_tokens off;
+# nginx-edge URLs
+NGINX_EDGE = "https://nginx-edge-359243954.us-central1.run.app"
 
-  # Trust Cloudflare for real client IP
-  real_ip_header CF-Connecting-IP;
-  set_real_ip_from 173.245.48.0/20;
-  set_real_ip_from 103.21.244.0/22;
-  set_real_ip_from 104.16.0.0/13;
-  set_real_ip_from 172.64.0.0/13;
-
-  # Default to https if XFP missing
-  map \$http_x_forwarded_proto \$resolved_proto {
-    default \$http_x_forwarded_proto;
-    ""      "https";
-  }
-
-  server {
-    listen      ${PORT};
-    server_name _;
-
-    # Health check
-    location = /healthz { 
-      access_log off;
-      return 200 'nginx-edge healthy\\n';
-      add_header Content-Type text/plain;
-    }
+async def test_endpoint(name: str, url: str, endpoint: str):
+    """Test a single endpoint"""
+    full_url = f"{url.rstrip('/')}{endpoint}"
+    start_time = time.time()
     
-    # Root
-    location = / {
-      return 200 'nginx-edge proxy\\n';
-      add_header Content-Type text/plain;
-    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(full_url)
+            duration = time.time() - start_time
+            
+            status = "✅" if response.status_code < 400 else "❌"
+            print(f"{status} {name:12} {endpoint:20} -> {response.status_code} ({duration:.2f}s)")
+            
+            if response.status_code < 400:
+                try:
+                    data = response.json()
+                    if isinstance(data, dict) and len(str(data)) < 200:
+                        print(f"   Response: {data}")
+                except:
+                    pass
+            elif response.status_code == 404:
+                print(f"   ❓ Endpoint not found")
+            elif response.status_code == 401:
+                print(f"   🔒 Protected (expected)")
+            else:
+                print(f"   Error: {response.text[:50]}...")
+                
+            return response.status_code < 400
+            
+    except Exception as e:
+        duration = time.time() - start_time
+        print(f"❌ {name:12} {endpoint:20} -> ERROR ({duration:.2f}s)")
+        print(f"   Exception: {str(e)[:50]}...")
+        return False
 
-    # Keycloak (always enabled)
-    location /auth/ {
-      proxy_pass         ${IDP_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /auth;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-      proxy_read_timeout 120s;
-      proxy_connect_timeout 10s;
-      client_max_body_size 20m;
-    }
-EOF
+async def main():
+    print("🚀 Testing with CORRECT endpoints")
+    print("=" * 60)
+    
+    print("\n📡 Testing DIRECT service access:")
+    print("   (Based on your actual FastAPI code)")
+    
+    # Test endpoints that actually exist in your code
+    test_cases = [
+        # Orchestrator endpoints (from app.py)
+        ("orchestrator", SERVICES["orchestrator"], "/healthz"),
+        ("orchestrator", SERVICES["orchestrator"], "/configz"),
+        ("orchestrator", SERVICES["orchestrator"], "/v1/chat"),
+        ("orchestrator", SERVICES["orchestrator"], "/v1/process-audio"),
+        ("orchestrator", SERVICES["orchestrator"], "/v1/test-auth"),
+        
+        # STT endpoints (from app.py)
+        ("stt", SERVICES["stt"], "/healthz"),
+        ("stt", SERVICES["stt"], "/v1/test-auth"),
+        ("stt", SERVICES["stt"], "/v1/transcribe"),
+        
+        # TTS endpoints (from app.py)  
+        ("tts", SERVICES["tts"], "/healthz"),
+        ("tts", SERVICES["tts"], "/v1/test-auth"),
+        ("tts", SERVICES["tts"], "/v1/tts"),
+        
+        # Keycloak endpoints (known to work)
+        ("idp", SERVICES["idp"], "/realms/june"),
+        ("idp", SERVICES["idp"], "/health"),
+        ("idp", SERVICES["idp"], "/health/ready"),
+    ]
+    
+    for service_name, base_url, endpoint in test_cases:
+        await test_endpoint(service_name, base_url, endpoint)
+    
+    print(f"\n🔄 Testing through nginx-edge:")
+    print("   (Same endpoints but through reverse proxy)")
+    
+    # Test through nginx-edge
+    nginx_test_cases = [
+        ("nginx-edge", NGINX_EDGE, "/healthz"),
+        ("nginx-edge", NGINX_EDGE, "/"),
+        ("nginx-edge", NGINX_EDGE, "/auth/realms/june"),
+        ("nginx-edge", NGINX_EDGE, "/orchestrator/healthz"),
+        ("nginx-edge", NGINX_EDGE, "/orchestrator/configz"),
+        ("nginx-edge", NGINX_EDGE, "/stt/healthz"),
+        ("nginx-edge", NGINX_EDGE, "/tts/healthz"),
+    ]
+    
+    for service_name, base_url, endpoint in nginx_test_cases:
+        await test_endpoint(service_name, base_url, endpoint)
+    
+    print(f"\n📊 ANALYSIS:")
+    print("=" * 40)
+    print("Looking at your FastAPI code:")
+    print("✅ All services SHOULD have /healthz endpoints")
+    print("✅ Keycloak realm works (proves services are running)")
+    print("❓ If /healthz returns 404, check your FastAPI route definitions")
+    
+    print(f"\n🔧 LIKELY ISSUES:")
+    print("1. FastAPI services missing @app.get('/healthz') routes")
+    print("2. Services might use different health check paths")
+    print("3. nginx-edge routing might have path issues")
+    
+    print(f"\n🎯 NEXT STEPS:")
+    print("1. Check which endpoints actually work above")
+    print("2. Add missing /healthz routes to FastAPI services")
+    print("3. Test nginx-edge routing once direct endpoints work")
 
-# Add orchestrator if available
-if [[ -n "${ORCH_UPSTREAM}" ]]; then
-cat >> /etc/nginx/nginx.conf <<EOF
-
-    # Orchestrator
-    location /orchestrator/ {
-      proxy_pass         ${ORCH_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /orchestrator;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-      proxy_read_timeout 120s;
-      proxy_connect_timeout 10s;
-    }
-EOF
-fi
-
-# Add STT if available
-if [[ -n "${STT_UPSTREAM}" ]]; then
-cat >> /etc/nginx/nginx.conf <<EOF
-
-    # Speech-to-Text
-    location /stt/ {
-      proxy_pass         ${STT_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /stt;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-      proxy_read_timeout 120s;
-      proxy_connect_timeout 10s;
-    }
-EOF
-fi
-
-# Add TTS if available
-if [[ -n "${TTS_UPSTREAM}" ]]; then
-cat >> /etc/nginx/nginx.conf <<EOF
-
-    # Text-to-Speech
-    location /tts/ {
-      proxy_pass         ${TTS_UPSTREAM}/;
-      proxy_http_version 1.1;
-      proxy_set_header   Host \$proxy_host;
-      proxy_ssl_server_name on;
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
-      proxy_set_header   X-Forwarded-Prefix /tts;
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-      proxy_set_header   Connection "";
-      proxy_read_timeout 120s;
-      proxy_connect_timeout 10s;
-    }
-EOF
-fi
-
-# Close server and http blocks
-cat >> /etc/nginx/nginx.conf <<EOF
-
-  } # server
-} # http
-EOF
-
-echo "✅ Generated nginx configuration:"
-cat /etc/nginx/nginx.conf
-
-echo "🧪 Testing nginx configuration..."
-nginx -t
-
-echo "🚀 Starting nginx..."
-exec nginx -g 'daemon off;'
+if __name__ == "__main__":
+    asyncio.run(main())
