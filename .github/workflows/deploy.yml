@@ -295,6 +295,7 @@ jobs:
           fi
 
       - name: Output service URL
+        if: env.SKIP_DEPLOY != 'true'
         run: |
           URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
           echo "::notice title=${{ matrix.service }} URL::$URL"
