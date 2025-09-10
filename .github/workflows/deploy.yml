@@ -199,7 +199,23 @@ jobs:
               ;;
             nginx-edge)
               CMD+=" --concurrency=100"
-              CMD+=" --set-env-vars=UPSTREAM_IDP=${UPSTREAM_IDP},UPSTREAM_ORCH=${UPSTREAM_ORCH},UPSTREAM_TTS=${UPSTREAM_TTS},UPSTREAM_STT=${UPSTREAM_STT}"
+              # Only set upstream env vars if they're not empty
+              ENV_VARS=""
+              if [ -n "${UPSTREAM_IDP:-}" ]; then
+                ENV_VARS="UPSTREAM_IDP=${UPSTREAM_IDP}"
+              fi
+              if [ -n "${UPSTREAM_ORCH:-}" ] && [ "${UPSTREAM_ORCH}" != "https://placeholder-june-orchestrator.example.com" ]; then
+                ENV_VARS="${ENV_VARS:+$ENV_VARS,}UPSTREAM_ORCH=${UPSTREAM_ORCH}"
+              fi
+              if [ -n "${UPSTREAM_TTS:-}" ] && [ "${UPSTREAM_TTS}" != "https://placeholder-june-tts.example.com" ]; then
+                ENV_VARS="${ENV_VARS:+$ENV_VARS,}UPSTREAM_TTS=${UPSTREAM_TTS}"
+              fi
+              if [ -n "${UPSTREAM_STT:-}" ] && [ "${UPSTREAM_STT}" != "https://placeholder-june-stt.example.com" ]; then
+                ENV_VARS="${ENV_VARS:+$ENV_VARS,}UPSTREAM_STT=${UPSTREAM_STT}"
+              fi
+              if [ -n "$ENV_VARS" ]; then
+                CMD+=" --set-env-vars=${ENV_VARS}"
+              fi
               ;;
             june-orchestrator)
               CMD+=" --concurrency=10"
