@@ -222,6 +222,11 @@ jobs:
         run: |
           set -euo pipefail
           
+          # Debug environment variables first
+          echo "DEBUG: PROJECT_ID=$PROJECT_ID"
+          echo "DEBUG: REGION=$REGION"
+          echo "DEBUG: Service=${{ matrix.service }}"
+          
           # For nginx-edge, get upstream URLs first
           if [ "${{ matrix.service }}" = "nginx-edge" ]; then
             echo "🔗 Getting upstream service URLs for nginx-edge..."
