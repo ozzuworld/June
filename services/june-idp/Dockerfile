@@ -1,5 +1,5 @@
 # services/june-idp/Dockerfile
-# STREAMLINED - Completely disable clustering for Cloud Run
+# FIXED - Completely disable clustering for Cloud Run
 
 FROM quay.io/keycloak/keycloak:latest AS builder
 
@@ -8,7 +8,8 @@ ENV KC_HEALTH_ENABLED=true \
     KC_DB=postgres
 
 WORKDIR /opt/keycloak
-RUN /opt/keycloak/bin/kc.sh build --cache=local
+# Build without cache options (cache is runtime-only)
+RUN /opt/keycloak/bin/kc.sh build
 
 FROM quay.io/keycloak/keycloak:latest
 
