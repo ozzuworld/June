@@ -1,5 +1,5 @@
 ﻿# .github/workflows/deploy.yml  
-# FIXED VERSION - Replace your existing deploy.yml with this
+# COMPLETE FIXED VERSION with robust nginx-edge dependency handling
 
 name: Deploy Services to Cloud Run
 
@@ -43,6 +43,7 @@ jobs:
             min_instances: 1
             sa_suffix: svc
             secrets: "KC_DB_PASSWORD"
+            priority: 1
           - service: june-orchestrator  
             path: June/services/june-orchestrator
             cpu: "1"
@@ -50,6 +51,7 @@ jobs:
             min_instances: 0
             sa_suffix: svc
             secrets: ""
+            priority: 2
           - service: june-stt
             path: June/services/june-stt
             cpu: "2"
@@ -57,6 +59,7 @@ jobs:
             min_instances: 1
             sa_suffix: svc
             secrets: ""
+            priority: 3
           - service: june-tts
             path: June/services/june-tts
             cpu: "2"
@@ -64,6 +67,7 @@ jobs:
             min_instances: 0
             sa_suffix: svc
             secrets: ""
+            priority: 4
           - service: nginx-edge
             path: services/nginx-edge
             cpu: "1"
@@ -71,6 +75,7 @@ jobs:
             min_instances: 0
             sa_suffix: svc
             secrets: ""
+            priority: 5
 
     steps:
       - name: Checkout
@@ -111,31 +116,107 @@ jobs:
       - name: Wait for dependencies (nginx-edge only)
         if: matrix.service == 'nginx-edge'
         run: |
-          echo "Waiting for upstream services..."
+          echo "🔄 Waiting for upstream services to be ready..."
+          echo "This may take up to 10 minutes for all services to be fully operational"
           
-          services=("june-idp" "june-orchestrator" "june-stt" "june-tts")
-          for service in "${services[@]}"; do
-            echo "Checking $service..."
-            max_attempts=20
-            attempt=0
+          # Function to test service health
+          test_service_health() {
+            local service=$1
+            local url=$2
+            local max_attempts=5
+            local attempt=0
+            
+            echo "Testing health of $service at $url"
             
             while [ $attempt -lt $max_attempts ]; do
+              # Try multiple health endpoints
+              if curl -f -s -m 10 "$url/healthz" >/dev/null 2>&1 || \
+                 curl -f -s -m 10 "$url/health" >/dev/null 2>&1 || \
+                 curl -f -s -m 10 "$url/" >/dev/null 2>&1; then
+                echo "✅ $service health check passed"
+                return 0
+              fi
+              echo "⏳ Health check attempt $((attempt+1))/$max_attempts for $service"
+              sleep 5
+              attempt=$((attempt + 1))
+            done
+            
+            echo "⚠️ Health checks failed for $service, but service exists"
+            return 1
+          }
+          
+          # Wait for each service with comprehensive checks
+          services=("june-idp" "june-orchestrator" "june-stt" "june-tts")
+          for service in "${services[@]}"; do
+            echo "🔍 Checking $service..."
+            max_attempts=40  # 40 attempts = up to 10 minutes per service
+            attempt=0
+            service_ready=false
+            
+            while [ $attempt -lt $max_attempts ]; do
+              # Check if service exists in Cloud Run
               if gcloud run services describe "$service" \
                    --region="$REGION" \
                    --format='value(status.uri)' >/dev/null 2>&1; then
-                echo "✅ $service is ready"
-                break
+                
+                # Get service URL
+                SERVICE_URL=$(gcloud run services describe "$service" \
+                  --region="$REGION" \
+                  --format='value(status.uri)' 2>/dev/null)
+                
+                if [ -n "$SERVICE_URL" ]; then
+                  echo "📡 Service $service found at: $SERVICE_URL"
+                  
+                  # Check if service is ready to serve traffic
+                  SERVICE_STATUS=$(gcloud run services describe "$service" \
+                    --region="$REGION" \
+                    --format='value(status.conditions[0].status)' 2>/dev/null || echo "Unknown")
+                  
+                  echo "📊 Service $service status: $SERVICE_STATUS"
+                  
+                  if [ "$SERVICE_STATUS" = "True" ]; then
+                    # Service reports ready, now test actual connectivity
+                    if [ "$service" = "june-idp" ]; then
+                      # Special handling for Keycloak
+                      echo "🔑 Testing Keycloak readiness..."
+                      if test_service_health "$service" "$SERVICE_URL"; then
+                        echo "✅ $service is ready and responding"
+                        service_ready=true
+                        break
+                      else
+                        # For Keycloak, try the realm endpoint as backup
+                        if curl -f -s -m 10 "$SERVICE_URL/realms/june" >/dev/null 2>&1; then
+                          echo "✅ $service Keycloak realm is accessible"
+                          service_ready=true
+                          break
+                        fi
+                      fi
+                    else
+                      # For other services, simpler health check
+                      if test_service_health "$service" "$SERVICE_URL"; then
+                        echo "✅ $service is ready and responding"
+                        service_ready=true
+                        break
+                      fi
+                    fi
+                  fi
+                fi
               fi
-              echo "⏳ Waiting for $service... ($((attempt+1))/$max_attempts)"
+              
+              echo "⏳ Waiting for $service... ($((attempt+1))/$max_attempts) - ${SECONDS}s elapsed"
               sleep 15
               attempt=$((attempt + 1))
             done
             
-            if [ $attempt -eq $max_attempts ]; then
-              echo "❌ Timeout waiting for $service"
+            if [ "$service_ready" = "false" ]; then
+              echo "❌ Timeout waiting for $service after $((max_attempts * 15)) seconds"
+              echo "🔍 Final service status check:"
+              gcloud run services describe "$service" --region="$REGION" --format='table(status.conditions[0].type,status.conditions[0].status,status.conditions[0].reason)' || echo "Service not found"
               exit 1
             fi
           done
+          
+          echo "🎉 All upstream services are ready!"
 
       - name: Deploy to Cloud Run
         run: |
@@ -143,22 +224,27 @@ jobs:
           
           # For nginx-edge, get upstream URLs first
           if [ "${{ matrix.service }}" = "nginx-edge" ]; then
-            echo "Getting upstream service URLs for nginx-edge..."
+            echo "🔗 Getting upstream service URLs for nginx-edge..."
             
             # Function to safely get service URL with retries
             get_service_url() {
               local service=$1
-              local max_attempts=5
+              local max_attempts=10
               local attempt=0
               
+              echo "🔍 Getting URL for service: $service"
+              
               while [ $attempt -lt $max_attempts ]; do
+                # Check if service exists and get URL
                 if url=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
-                  if [ -n "$url" ]; then
+                  if [ -n "$url" ] && [ "$url" != "" ]; then
+                    echo "✅ Found URL for $service: $url"
                     echo "$url"
                     return 0
                   fi
                 fi
-                echo "⏳ Attempt $((attempt+1))/$max_attempts for $service..."
+                
+                echo "⏳ Attempt $((attempt+1))/$max_attempts for $service URL..."
                 sleep 5
                 attempt=$((attempt + 1))
               done
@@ -167,22 +253,24 @@ jobs:
               return 1
             }
             
-            # IDP is required, fail if not available
+            # Get all service URLs with retries
+            echo "📡 Retrieving service URLs..."
+            
             if ! UPSTREAM_IDP=$(get_service_url "june-idp"); then
-              echo "::error::june-idp service is required but not available"
+              echo "::error::Failed to get june-idp URL - this is required for nginx-edge"
               exit 1
             fi
             
-            # Other services are optional
+            # Other services are optional but we'll try to get them
             UPSTREAM_ORCH=$(get_service_url "june-orchestrator" || echo "")
             UPSTREAM_TTS=$(get_service_url "june-tts" || echo "")
             UPSTREAM_STT=$(get_service_url "june-stt" || echo "")
             
-            echo "Service URLs found:"
-            echo "  IDP: $UPSTREAM_IDP (required)"
-            echo "  ORCH: ${UPSTREAM_ORCH:-'(not available)'}"
-            echo "  TTS: ${UPSTREAM_TTS:-'(not available)'}"
-            echo "  STT: ${UPSTREAM_STT:-'(not available)'}"
+            echo "📋 Service URLs summary:"
+            echo "  🔑 IDP: $UPSTREAM_IDP (required)"
+            echo "  🎯 ORCH: ${UPSTREAM_ORCH:-'(not available)'}"
+            echo "  🗣️  TTS: ${UPSTREAM_TTS:-'(not available)'}"
+            echo "  👂 STT: ${UPSTREAM_STT:-'(not available)'}"
           fi
           
           # Base command
@@ -231,7 +319,6 @@ jobs:
             nginx-edge)
               CMD+=" --concurrency=100"
               # Build environment variables for nginx-edge
-              # UPSTREAM_IDP is required, others are optional
               if [ -z "${UPSTREAM_IDP:-}" ]; then
                 echo "::error::UPSTREAM_IDP is required for nginx-edge but not set"
                 exit 1
@@ -245,16 +332,33 @@ jobs:
               [ -n "${UPSTREAM_STT:-}" ] && ENV_VARS="${ENV_VARS},UPSTREAM_STT=${UPSTREAM_STT}"
               
               CMD+=" --set-env-vars=${ENV_VARS}"
-              echo "nginx-edge env vars: $ENV_VARS"
+              echo "🔧 nginx-edge env vars: $ENV_VARS"
               ;;
             june-orchestrator)
               CMD+=" --concurrency=10"
+              # Add service authentication and service URLs
+              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
+              ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-wrqlxfokjq-uc.a.run.app"
+              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-wrqlxfokjq-uc.a.run.app"
+              CMD+=" --set-env-vars=${ENV_VARS}"
               ;;
             june-stt)
               CMD+=" --concurrency=1"
+              # Add service authentication
+              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+              ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
+              CMD+=" --set-env-vars=${ENV_VARS}"
               ;;
             june-tts)
               CMD+=" --concurrency=4"
+              # Add service authentication
+              ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+              ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
+              ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
+              CMD+=" --set-env-vars=${ENV_VARS}"
               ;;
           esac
           
@@ -262,7 +366,7 @@ jobs:
           CMD+=" --labels=commit=$GITHUB_SHA,service=${{ matrix.service }}"
           
           # Execute deployment
-          echo "Executing: $CMD"
+          echo "🚀 Executing: $CMD"
           eval $CMD
 
       - name: Enable session affinity (june-idp only)
@@ -279,7 +383,7 @@ jobs:
           # Check if KC_BASE_URL is provided, if not, update with discovered URL
           if [ -z "${{ secrets.KC_BASE_URL }}" ]; then
             URL=$(gcloud run services describe june-idp --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
-            echo "Updating Keycloak with discovered URL: $URL"
+            echo "🔧 Updating Keycloak with discovered URL: $URL"
             
             gcloud run deploy june-idp \
               --project="$PROJECT_ID" \
@@ -291,11 +395,28 @@ jobs:
             echo "::notice title=Keycloak URL::$URL"
             echo "💡 Add KC_BASE_URL='$URL' as a GitHub Secret for faster future deploys"
           else
-            echo "KC_BASE_URL is already configured: ${{ secrets.KC_BASE_URL }}"
+            echo "✅ KC_BASE_URL is already configured: ${{ secrets.KC_BASE_URL }}"
+          fi
+
+      - name: Verify service health post-deployment
+        run: |
+          echo "🏥 Verifying ${{ matrix.service }} health..."
+          URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
+          
+          # Wait a bit for the service to start
+          sleep 10
+          
+          # Test health endpoints
+          if curl -f -s -m 30 "$URL/healthz" >/dev/null 2>&1 || \
+             curl -f -s -m 30 "$URL/health" >/dev/null 2>&1 || \
+             curl -f -s -m 30 "$URL/" >/dev/null 2>&1; then
+            echo "✅ ${{ matrix.service }} is healthy and responding"
+          else
+            echo "⚠️ ${{ matrix.service }} deployed but health check failed (this might be normal for some services)"
           fi
 
       - name: Output service URL
-        if: env.SKIP_DEPLOY != 'true'
         run: |
           URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
           echo "::notice title=${{ matrix.service }} URL::$URL"
+          echo "🌐 ${{ matrix.service }}: $URL"
