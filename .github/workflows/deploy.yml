@@ -453,7 +453,7 @@ jobs:
             else
               echo "⚠️ ${{ matrix.service }} deployed but health checks failed"
               echo "🔍 Checking recent logs for issues:"
-              gcloud logs read --limit=5 --format="value(textPayload)" \
+              gcloud logging read --limit=5 --format="value(textPayload)" \
                 --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="${{ matrix.service }}"' \
                 --project="$PROJECT_ID" | head -10
             fi
