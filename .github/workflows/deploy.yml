@@ -186,12 +186,14 @@ jobs:
           case "${{ matrix.service }}" in
             june-idp)
               CMD+=" --concurrency=20"
-              CMD+=" --set-env-vars=KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HOSTNAME_STRICT=false,KC_CACHE=local"
+              # Build env vars string, including KC_HOSTNAME if provided
+              ENV_VARS="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HOSTNAME_STRICT=false,KC_CACHE=local"
+              if [ -n "${{ secrets.KC_BASE_URL }}" ]; then
+                ENV_VARS="${ENV_VARS},KC_HOSTNAME=${{ secrets.KC_BASE_URL }}"
+              fi
+              CMD+=" --set-env-vars=${ENV_VARS}"
               CMD+=" --set-secrets=KC_DB_PASSWORD=KC_DB_PASSWORD:latest"
               CMD+=" --args=start,--http-enabled=true,--proxy-headers=xforwarded,--cache=local"
-              if [ -n "${{ secrets.KC_BASE_URL }}" ]; then
-                CMD+=" --update-env-vars KC_HOSTNAME=${{ secrets.KC_BASE_URL }}"
-              fi
               ;;
             nginx-edge)
               CMD+=" --concurrency=100"
