@@ -1,5 +1,5 @@
 ﻿# .github/workflows/deploy.yml  
-# COMPLETE FIXED VERSION with robust nginx-edge dependency handling
+# COMPLETE FIXED VERSION with database connection fix for Keycloak
 
 name: Deploy Services to Cloud Run
 
@@ -117,84 +117,86 @@ jobs:
         if: matrix.service == 'nginx-edge'
         run: |
           echo "🔄 Waiting for upstream services to be ready..."
-          echo "This may take up to 10 minutes for all services to be fully operational"
           
-          # Function to test service health
-          test_service_health() {
-            local service=$1
-            local url=$2
-            local max_attempts=5
-            local attempt=0
+          # Function to test Keycloak health specifically
+          test_keycloak_health() {
+            local url=$1
+            echo "🔑 Testing Keycloak at $url"
             
-            echo "Testing health of $service at $url"
+            # Try Keycloak-specific endpoints with longer timeouts
+            if curl -f -s -m 30 "$url/health/ready" >/dev/null 2>&1; then
+              echo "✅ Keycloak /health/ready responded"
+              return 0
+            elif curl -f -s -m 30 "$url/auth/realms/master" >/dev/null 2>&1; then
+              echo "✅ Keycloak master realm accessible"
+              return 0
+            elif curl -f -s -m 30 "$url/" >/dev/null 2>&1; then
+              echo "✅ Keycloak root endpoint accessible"
+              return 0
+            fi
             
-            while [ $attempt -lt $max_attempts ]; do
-              # Try multiple health endpoints
-              if curl -f -s -m 10 "$url/healthz" >/dev/null 2>&1 || \
-                 curl -f -s -m 10 "$url/health" >/dev/null 2>&1 || \
-                 curl -f -s -m 10 "$url/" >/dev/null 2>&1; then
-                echo "✅ $service health check passed"
-                return 0
-              fi
-              echo "⏳ Health check attempt $((attempt+1))/$max_attempts for $service"
-              sleep 5
-              attempt=$((attempt + 1))
-            done
-            
-            echo "⚠️ Health checks failed for $service, but service exists"
+            echo "⚠️ Keycloak health checks failed"
             return 1
           }
           
-          # Wait for each service with comprehensive checks
+          # Function to test other services
+          test_service_health() {
+            local service=$1
+            local url=$2
+            
+            if curl -f -s -m 15 "$url/healthz" >/dev/null 2>&1 || \
+               curl -f -s -m 15 "$url/health" >/dev/null 2>&1 || \
+               curl -f -s -m 15 "$url/" >/dev/null 2>&1; then
+              echo "✅ $service health check passed"
+              return 0
+            fi
+            
+            echo "⚠️ $service health checks failed"
+            return 1
+          }
+          
+          # Wait for each service with service-specific checks
           services=("june-idp" "june-orchestrator" "june-stt" "june-tts")
           for service in "${services[@]}"; do
             echo "🔍 Checking $service..."
-            max_attempts=40  # 40 attempts = up to 10 minutes per service
+            max_attempts=30  # 15 minutes total wait time
             attempt=0
             service_ready=false
             
             while [ $attempt -lt $max_attempts ]; do
               # Check if service exists in Cloud Run
-              if gcloud run services describe "$service" \
-                   --region="$REGION" \
-                   --format='value(status.uri)' >/dev/null 2>&1; then
-                
-                # Get service URL
-                SERVICE_URL=$(gcloud run services describe "$service" \
-                  --region="$REGION" \
-                  --format='value(status.uri)' 2>/dev/null)
-                
+              if SERVICE_URL=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
                 if [ -n "$SERVICE_URL" ]; then
                   echo "📡 Service $service found at: $SERVICE_URL"
                   
-                  # Check if service is ready to serve traffic
-                  SERVICE_STATUS=$(gcloud run services describe "$service" \
-                    --region="$REGION" \
-                    --format='value(status.conditions[0].status)' 2>/dev/null || echo "Unknown")
-                  
+                  # Check service status
+                  SERVICE_STATUS=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.conditions[0].status)' 2>/dev/null || echo "Unknown")
                   echo "📊 Service $service status: $SERVICE_STATUS"
                   
-                  if [ "$SERVICE_STATUS" = "True" ]; then
-                    # Service reports ready, now test actual connectivity
-                    if [ "$service" = "june-idp" ]; then
-                      # Special handling for Keycloak
-                      echo "🔑 Testing Keycloak readiness..."
-                      if test_service_health "$service" "$SERVICE_URL"; then
-                        echo "✅ $service is ready and responding"
+                  # Service-specific health checks
+                  if [ "$service" = "june-idp" ]; then
+                    # For Keycloak, be more patient and specific
+                    if [ "$SERVICE_STATUS" = "True" ]; then
+                      if test_keycloak_health "$SERVICE_URL"; then
+                        echo "✅ $service is ready and healthy"
                         service_ready=true
                         break
                       else
-                        # For Keycloak, try the realm endpoint as backup
-                        if curl -f -s -m 10 "$SERVICE_URL/realms/june" >/dev/null 2>&1; then
-                          echo "✅ $service Keycloak realm is accessible"
-                          service_ready=true
-                          break
+                        echo "⚠️ Keycloak exists but health checks failed - checking DB connectivity"
+                        # Check if it's a DB issue by looking at recent logs
+                        if gcloud logs read --limit=5 --format="value(textPayload)" \
+                           --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="june-idp" AND textPayload:"SQLException"' \
+                           --project="$PROJECT_ID" 2>/dev/null | grep -q "SQLException"; then
+                          echo "❌ Database connection issues detected in Keycloak logs"
+                          exit 1
                         fi
                       fi
-                    else
-                      # For other services, simpler health check
+                    fi
+                  else
+                    # For other services, standard check
+                    if [ "$SERVICE_STATUS" = "True" ]; then
                       if test_service_health "$service" "$SERVICE_URL"; then
-                        echo "✅ $service is ready and responding"
+                        echo "✅ $service is ready and healthy"
                         service_ready=true
                         break
                       fi
@@ -204,12 +206,24 @@ jobs:
               fi
               
               echo "⏳ Waiting for $service... ($((attempt+1))/$max_attempts) - ${SECONDS}s elapsed"
-              sleep 15
+              sleep 30
               attempt=$((attempt + 1))
             done
             
+            # Special handling for Keycloak - if it exists but health checks fail, get more info
+            if [ "$service_ready" = "false" ] && [ "$service" = "june-idp" ]; then
+              if [ -n "${SERVICE_URL:-}" ]; then
+                echo "🔍 Keycloak deployment failed - checking logs for details:"
+                gcloud logs read --limit=10 --format="table(timestamp,severity,textPayload)" \
+                  --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="june-idp"' \
+                  --project="$PROJECT_ID" || echo "Could not retrieve logs"
+                echo "❌ Keycloak exists but is not healthy - check database connection"
+                exit 1
+              fi
+            fi
+            
             if [ "$service_ready" = "false" ]; then
-              echo "❌ Timeout waiting for $service after $((max_attempts * 15)) seconds"
+              echo "❌ Timeout waiting for $service after $((max_attempts * 30)) seconds"
               echo "🔍 Final service status check:"
               gcloud run services describe "$service" --region="$REGION" --format='table(status.conditions[0].type,status.conditions[0].status,status.conditions[0].reason)' || echo "Service not found"
               exit 1
@@ -234,13 +248,12 @@ jobs:
             # Function to safely get service URL with retries
             get_service_url() {
               local service=$1
-              local max_attempts=10
+              local max_attempts=5
               local attempt=0
               
               echo "🔍 Getting URL for service: $service"
               
               while [ $attempt -lt $max_attempts ]; do
-                # Check if service exists and get URL
                 if url=$(gcloud run services describe "$service" --region="$REGION" --format='value(status.uri)' 2>/dev/null); then
                   if [ -n "$url" ] && [ "$url" != "" ]; then
                     echo "✅ Found URL for $service: $url"
@@ -250,7 +263,7 @@ jobs:
                 fi
                 
                 echo "⏳ Attempt $((attempt+1))/$max_attempts for $service URL..."
-                sleep 5
+                sleep 3
                 attempt=$((attempt + 1))
               done
               
@@ -258,7 +271,7 @@ jobs:
               return 1
             }
             
-            # Get all service URLs with retries
+            # Get all service URLs
             echo "📡 Retrieving service URLs..."
             
             if ! UPSTREAM_IDP=$(get_service_url "june-idp"); then
@@ -266,7 +279,6 @@ jobs:
               exit 1
             fi
             
-            # Other services are optional but we'll try to get them
             UPSTREAM_ORCH=$(get_service_url "june-orchestrator" || echo "")
             UPSTREAM_TTS=$(get_service_url "june-tts" || echo "")
             UPSTREAM_STT=$(get_service_url "june-stt" || echo "")
@@ -312,14 +324,38 @@ jobs:
           case "${{ matrix.service }}" in
             june-idp)
               CMD+=" --concurrency=20"
-              # Build env vars string, including KC_HOSTNAME if provided
-              ENV_VARS="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HOSTNAME_STRICT=false,KC_CACHE=local"
+              CMD+=" --timeout=900"  # Extended timeout for DB connection
+              
+              # Enhanced database configuration with connection pool settings
+              ENV_VARS="KC_DB=postgres"
+              ENV_VARS="${ENV_VARS},KC_DB_URL=${{ secrets.KC_DB_URL }}"
+              ENV_VARS="${ENV_VARS},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }}"
+              ENV_VARS="${ENV_VARS},KC_BOOTSTRAP_ADMIN_USERNAME=admin"
+              ENV_VARS="${ENV_VARS},KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp"
+              ENV_VARS="${ENV_VARS},KC_HTTP_ENABLED=true"
+              ENV_VARS="${ENV_VARS},KC_HOSTNAME_STRICT=false"
+              ENV_VARS="${ENV_VARS},KC_PROXY_HEADERS=xforwarded"
+              ENV_VARS="${ENV_VARS},KC_LOG_LEVEL=INFO"
+              
+              # Database connection pool settings to prevent timeouts
+              ENV_VARS="${ENV_VARS},KC_DB_POOL_INITIAL_SIZE=1"
+              ENV_VARS="${ENV_VARS},KC_DB_POOL_MIN_SIZE=1"
+              ENV_VARS="${ENV_VARS},KC_DB_POOL_MAX_SIZE=5"
+              ENV_VARS="${ENV_VARS},KC_TRANSACTION_XA_ENABLED=false"
+              
+              # Health check settings
+              ENV_VARS="${ENV_VARS},KC_HEALTH_ENABLED=true"
+              ENV_VARS="${ENV_VARS},KC_METRICS_ENABLED=true"
+              
               if [ -n "${{ secrets.KC_BASE_URL }}" ]; then
                 ENV_VARS="${ENV_VARS},KC_HOSTNAME=${{ secrets.KC_BASE_URL }}"
               fi
+              
               CMD+=" --set-env-vars=${ENV_VARS}"
               CMD+=" --set-secrets=KC_DB_PASSWORD=KC_DB_PASSWORD:latest"
-              CMD+=" --args=start,--http-enabled=true,--proxy-headers=xforwarded,--cache=local"
+              
+              # Enhanced startup command with database-friendly settings
+              CMD+=" --args=start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false"
               ;;
             nginx-edge)
               CMD+=" --concurrency=100"
@@ -394,7 +430,7 @@ jobs:
               --project="$PROJECT_ID" \
               --image="$IMAGE" \
               --region="$REGION" \
-              --args="start,--http-enabled=true,--proxy-headers=xforwarded,--hostname=$URL" \
+              --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--hostname=$URL" \
               --labels="commit=$GITHUB_SHA,service=june-idp"
             
             echo "::notice title=Keycloak URL::$URL"
@@ -409,15 +445,33 @@ jobs:
           URL=$(gcloud run services describe ${{ matrix.service }} --project="$PROJECT_ID" --region="$REGION" --format='value(status.uri)')
           
           # Wait a bit for the service to start
-          sleep 10
+          sleep 15
           
-          # Test health endpoints
-          if curl -f -s -m 30 "$URL/healthz" >/dev/null 2>&1 || \
-             curl -f -s -m 30 "$URL/health" >/dev/null 2>&1 || \
-             curl -f -s -m 30 "$URL/" >/dev/null 2>&1; then
-            echo "✅ ${{ matrix.service }} is healthy and responding"
+          # Test health endpoints with service-specific logic
+          if [ "${{ matrix.service }}" = "june-idp" ]; then
+            # For Keycloak, try multiple endpoints
+            if curl -f -s -m 45 "$URL/health/ready" >/dev/null 2>&1; then
+              echo "✅ ${{ matrix.service }} health check passed (/health/ready)"
+            elif curl -f -s -m 45 "$URL/auth/realms/master" >/dev/null 2>&1; then
+              echo "✅ ${{ matrix.service }} master realm accessible"
+            elif curl -f -s -m 45 "$URL/" >/dev/null 2>&1; then
+              echo "✅ ${{ matrix.service }} root endpoint accessible"
+            else
+              echo "⚠️ ${{ matrix.service }} deployed but health checks failed"
+              echo "🔍 Checking recent logs for issues:"
+              gcloud logs read --limit=5 --format="value(textPayload)" \
+                --filter='resource.type="cloud_run_revision" AND resource.labels.service_name="${{ matrix.service }}"' \
+                --project="$PROJECT_ID" | head -10
+            fi
           else
-            echo "⚠️ ${{ matrix.service }} deployed but health check failed (this might be normal for some services)"
+            # For other services, standard health check
+            if curl -f -s -m 30 "$URL/healthz" >/dev/null 2>&1 || \
+               curl -f -s -m 30 "$URL/health" >/dev/null 2>&1 || \
+               curl -f -s -m 30 "$URL/" >/dev/null 2>&1; then
+              echo "✅ ${{ matrix.service }} is healthy and responding"
+            else
+              echo "⚠️ ${{ matrix.service }} deployed but health check failed (this might be normal for some services)"
+            fi
           fi
 
       - name: Output service URL
