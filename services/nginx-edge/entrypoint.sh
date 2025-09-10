@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # services/nginx-edge/entrypoint.sh
-# Improved version with better debugging and error handling
+# Fixed version with proper EOF delimiter
 
 set -euo pipefail
 
@@ -42,11 +42,9 @@ CONF="/etc/nginx/nginx.conf"
 
 echo "🔧 Generating nginx configuration..."
 
-# Write full nginx.conf (events + http + server)
-# NOTE: We escape NGINX runtime variables like $host as \$host so Bash doesn't expand them.
-cat > "$CONF" <<EOF
+# Write nginx configuration with FIXED here-document
+cat > "$CONF" <<'NGINX_CONFIG_EOF'
 # Generated nginx configuration for nginx-edge
-# Generated at: $(date)
 worker_processes  auto;
 error_log  /var/log/nginx/error.log warn;
 pid        /var/run/nginx.pid;
@@ -60,9 +58,9 @@ http {
   default_type  application/octet-stream;
   
   # Logging
-  log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                  '\$status \$body_bytes_sent "\$http_referer" '
-                  '"\$http_user_agent" "\$http_x_forwarded_for"';
+  log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                  '$status $body_bytes_sent "$http_referer" '
+                  '"$http_user_agent" "$http_x_forwarded_for"';
   
   access_log  /var/log/nginx/access.log  main;
 
@@ -71,32 +69,23 @@ http {
   keepalive_timeout  65;
   server_tokens off;
 
-  # Trust Cloudflare for real client IP (IPv4 ranges)
+  # Trust Cloudflare for real client IP
   real_ip_header CF-Connecting-IP;
   set_real_ip_from 173.245.48.0/20;
   set_real_ip_from 103.21.244.0/22;
-  set_real_ip_from 103.22.200.0/22;
-  set_real_ip_from 103.31.4.0/22;
   set_real_ip_from 141.101.64.0/18;
   set_real_ip_from 108.162.192.0/18;
-  set_real_ip_from 190.93.240.0/20;
-  set_real_ip_from 188.114.96.0/20;
-  set_real_ip_from 197.234.240.0/22;
-  set_real_ip_from 198.41.128.0/17;
-  set_real_ip_from 162.158.0.0/15;
   set_real_ip_from 104.16.0.0/13;
-  set_real_ip_from 104.24.0.0/14;
   set_real_ip_from 172.64.0.0/13;
-  set_real_ip_from 131.0.72.0/22;
 
-  # Default to https if XFP missing (some proxies strip it)
-  map \$http_x_forwarded_proto \$resolved_proto {
-    default \$http_x_forwarded_proto;
+  # Default to https if XFP missing
+  map $http_x_forwarded_proto $resolved_proto {
+    default $http_x_forwarded_proto;
     ""      "https";
   }
 
   server {
-    listen      ${PORT};
+    listen      PORT_PLACEHOLDER;
     server_name _;
 
     # Health check endpoint
@@ -114,23 +103,101 @@ http {
 
     # ---- Keycloak (IDP) - ALWAYS ENABLED ----
     location /auth/ {
-      proxy_pass         ${IDP_UPSTREAM}/;
+      proxy_pass         IDP_UPSTREAM_PLACEHOLDER/;
       proxy_http_version 1.1;
-
-      # Use upstream host for Cloud Run routing (fixes 502)
-      proxy_set_header   Host \$proxy_host;
+      proxy_set_header   Host $proxy_host;
       proxy_ssl_server_name on;
-
-      # Forward external context so Keycloak builds correct URLs
-      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
-      proxy_set_header   X-Forwarded-Host  \$host;
-      proxy_set_header   X-Forwarded-Port  \$server_port;
+      proxy_set_header   X-Forwarded-Proto $resolved_proto;
+      proxy_set_header   X-Forwarded-Host  $host;
+      proxy_set_header   X-Forwarded-Port  $server_port;
       proxy_set_header   X-Forwarded-Prefix /auth;
-
-      # Client IP chain (Cloudflare sends CF-Connecting-IP)
-      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-
+      proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header   Connection "";
       proxy_read_timeout 120s;
       proxy_connect_timeout 10s;
-      client_
+      client_max_body_size 20m;
+    }
+
+CONDITIONALLY_ADDED_LOCATIONS
+
+  } # server
+} # http
+NGINX_CONFIG_EOF
+
+# Replace placeholders with actual values
+sed -i "s|PORT_PLACEHOLDER|${PORT}|g" "$CONF"
+sed -i "s|IDP_UPSTREAM_PLACEHOLDER|${IDP_UPSTREAM}|g" "$CONF"
+
+# Add conditional service locations
+CONDITIONAL_LOCATIONS=""
+
+if [[ -n "${ORCH_UPSTREAM}" ]]; then
+CONDITIONAL_LOCATIONS+="
+    # ---- Orchestrator ----
+    location /orchestrator/ {
+      proxy_pass         ${ORCH_UPSTREAM}/;
+      proxy_http_version 1.1;
+      proxy_set_header   Host \$proxy_host;
+      proxy_ssl_server_name on;
+      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
+      proxy_set_header   X-Forwarded-Host  \$host;
+      proxy_set_header   X-Forwarded-Port  \$server_port;
+      proxy_set_header   X-Forwarded-Prefix /orchestrator;
+      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header   Connection \"\";
+      proxy_read_timeout 120s;
+      proxy_connect_timeout 10s;
+    }
+"
+fi
+
+if [[ -n "${STT_UPSTREAM}" ]]; then
+CONDITIONAL_LOCATIONS+="
+    # ---- Speech-to-Text ----
+    location /stt/ {
+      proxy_pass         ${STT_UPSTREAM}/;
+      proxy_http_version 1.1;
+      proxy_set_header   Host \$proxy_host;
+      proxy_ssl_server_name on;
+      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
+      proxy_set_header   X-Forwarded-Host  \$host;
+      proxy_set_header   X-Forwarded-Port  \$server_port;
+      proxy_set_header   X-Forwarded-Prefix /stt;
+      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header   Connection \"\";
+      proxy_read_timeout 120s;
+      proxy_connect_timeout 10s;
+    }
+"
+fi
+
+if [[ -n "${TTS_UPSTREAM}" ]]; then
+CONDITIONAL_LOCATIONS+="
+    # ---- Text-to-Speech ----
+    location /tts/ {
+      proxy_pass         ${TTS_UPSTREAM}/;
+      proxy_http_version 1.1;
+      proxy_set_header   Host \$proxy_host;
+      proxy_ssl_server_name on;
+      proxy_set_header   X-Forwarded-Proto \$resolved_proto;
+      proxy_set_header   X-Forwarded-Host  \$host;
+      proxy_set_header   X-Forwarded-Port  \$server_port;
+      proxy_set_header   X-Forwarded-Prefix /tts;
+      proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header   Connection \"\";
+      proxy_read_timeout 120s;
+      proxy_connect_timeout 10s;
+    }
+"
+fi
+
+# Replace the placeholder with actual conditional locations
+sed -i "s|CONDITIONALLY_ADDED_LOCATIONS|${CONDITIONAL_LOCATIONS}|g" "$CONF"
+
+echo ">>> Final /etc/nginx/nginx.conf"
+cat "$CONF"
+echo "------------------------------------------"
+
+# Validate and start nginx
+nginx -t
+exec nginx -g 'daemon off;'
