@@ -1,0 +1,81 @@
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream idp_backend {
+        server june-idp-359243954.us-central1.run.app:443;
+    }
+    
+    upstream orch_backend {
+        server june-orchestrator-359243954.us-central1.run.app:443;
+    }
+    
+    upstream stt_backend {
+        server june-stt-359243954.us-central1.run.app:443;
+    }
+    
+    upstream tts_backend {
+        server june-tts-359243954.us-central1.run.app:443;
+    }
+
+    server {
+        listen 8080;
+        
+        # Health check FIRST
+        location = /healthz {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Root returns service info
+        location = / {
+            return 200 '{"service": "nginx-edge", "status": "running"}\n';
+            add_header Content-Type application/json;
+        }
+        
+        # Keycloak/IDP routes
+        location /auth/ {
+            rewrite ^/auth/(.*)$ /$1 break;
+            proxy_pass https://idp_backend;
+            proxy_ssl_server_name on;
+            proxy_set_header Host june-idp-359243954.us-central1.run.app;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+        
+        # Orchestrator routes
+        location /orchestrator/ {
+            rewrite ^/orchestrator/(.*)$ /$1 break;
+            proxy_pass https://orch_backend;
+            proxy_ssl_server_name on;
+            proxy_set_header Host june-orchestrator-359243954.us-central1.run.app;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+        
+        # STT routes
+        location /stt/ {
+            rewrite ^/stt/(.*)$ /$1 break;
+            proxy_pass https://stt_backend;
+            proxy_ssl_server_name on;
+            proxy_set_header Host june-stt-359243954.us-central1.run.app;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+        
+        # TTS routes
+        location /tts/ {
+            rewrite ^/tts/(.*)$ /$1 break;
+            proxy_pass https://tts_backend;
+            proxy_ssl_server_name on;
+            proxy_set_header Host june-tts-359243954.us-central1.run.app;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+}
