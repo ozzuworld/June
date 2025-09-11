@@ -36,14 +36,6 @@ def get_client():
         _tts_client = build_tts_client()
     return _tts_client
 
-@app.get("/healthz")
-async def healthz():
-    try:
-        _ = get_client()
-        return {"ok": True, "service": APP_TITLE}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
-
 # -----------------------------------------------------------------------------
 # Service-to-Service TTS Endpoint (NEW)
 # Protected by service authentication

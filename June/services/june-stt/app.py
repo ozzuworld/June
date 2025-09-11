@@ -13,13 +13,6 @@ app = FastAPI(title="June STT Service", version="1.0.0")
 logger = logging.getLogger("uvicorn.error")
 
 # -----------------------------------------------------------------------------
-# Health endpoint
-# -----------------------------------------------------------------------------
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True, "service": "june-stt"}
-
-# -----------------------------------------------------------------------------
 # Service-to-Service Transcription Endpoint (NEW)
 # -----------------------------------------------------------------------------
 @app.post("/v1/transcribe")
