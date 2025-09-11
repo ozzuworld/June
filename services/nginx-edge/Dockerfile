@@ -1,12 +1,13 @@
 FROM nginx:1.27-alpine
 
-# Remove default site to avoid conflicts
+# Remove default site so only our server block is active
 RUN rm -f /etc/nginx/conf.d/default.conf
 
-# Copy clean config and validate at build
-COPY nginx.conf /etc/nginx/nginx.conf
+# Drop our conf.d file (included inside http {})
+COPY edge.conf /etc/nginx/conf.d/edge.conf
+
+# Validate at build to catch syntax errors early
 RUN nginx -t
 
 EXPOSE 8080
-# Validate again at runtime (helps in Cloud Run logs), then run
-CMD ["sh","-c","nginx -t && exec nginx -g 'daemon off;'"]
+CMD ["sh","-c","nginx -T && exec nginx -g 'daemon off;'"]
