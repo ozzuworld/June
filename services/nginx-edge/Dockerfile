@@ -1,11 +1,12 @@
-# services/nginx-edge/Dockerfile
 FROM nginx:1.27-alpine
 
-# Keep it simple: no envsubst/template dance
+# Remove default site to avoid conflicts
 RUN rm -f /etc/nginx/conf.d/default.conf
 
-# Copy trimmed config directly into place
-COPY nginx.conf.fixed /etc/nginx/nginx.conf
+# Copy clean config and validate at build
+COPY nginx.conf /etc/nginx/nginx.conf
+RUN nginx -t
 
 EXPOSE 8080
-CMD ["nginx","-g","daemon off;"]
+# Validate again at runtime (helps in Cloud Run logs), then run
+CMD ["sh","-c","nginx -t && exec nginx -g 'daemon off;'"]
