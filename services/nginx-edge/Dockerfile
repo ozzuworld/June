@@ -5,6 +5,7 @@ FROM nginx:1.27-alpine
 RUN apk add --no-cache bash curl
 
 # Bring in the dynamic entrypoint
+COPY nginx.conf.fixed /etc/nginx/nginx.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

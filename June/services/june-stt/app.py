@@ -172,7 +172,7 @@ async def healthz():
     """Health check endpoint for load balancers"""
     return {
         "ok": True, 
-        "service": "june-tts", 
+        "service": "june-stt",  
         "timestamp": time.time(),
         "status": "healthy"
     }
@@ -181,7 +181,7 @@ async def healthz():
 async def root():
     """Root endpoint"""
     return {
-        "service": "june-tts", 
+        "service": "june-stt", 
         "status": "running",
         "version": "1.0.0"
     }
