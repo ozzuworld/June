@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional, Dict, Any
 import tempfile
 import subprocess
+from pathlib import Path
 
 from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -27,9 +28,50 @@ app = FastAPI(title="June Kokoro TTS", version="1.0.0")
 # Global variables for model
 kokoro_pipeline = None
 available_voices = {}
+model_download_lock = asyncio.Lock()
+
+def download_kokoro_model_if_needed():
+    """Download Kokoro model if not present"""
+    import subprocess
+    import sys
+    
+    try:
+        # Run the download script
+        result = subprocess.run([sys.executable, "/app/download_model.py"], 
+                              capture_output=True, text=True, timeout=300)
+        
+        # Print output for debugging
+        if result.stdout:
+            logger.info(f"Model download output: {result.stdout}")
+        if result.stderr:
+            logger.warning(f"Model download stderr: {result.stderr}")
+        
+        # Check if required files exist
+        model_dir = Path("/app/models")
+        required_files = ["config.json", "pytorch_model.bin", "voices.bin"]
+        
+        missing = []
+        for f in required_files:
+            file_path = model_dir / f
+            if not file_path.exists() or file_path.stat().st_size < 100:
+                missing.append(f)
+        
+        if missing:
+            logger.warning(f"⚠️ Missing or small model files: {missing}")
+            return False
+        
+        logger.info("✅ Kokoro model is ready")
+        return True
+        
+    except subprocess.TimeoutExpired:
+        logger.error("❌ Model download timed out")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Failed to run model download: {e}")
+        return False
 
 class KokoroTTSEngine:
-    """Kokoro TTS Engine with CPU optimization"""
+    """Kokoro TTS Engine with CPU optimization and auto-download"""
     
     def __init__(self, model_path: str = "/app/models"):
         self.model_path = model_path
@@ -39,9 +81,15 @@ class KokoroTTSEngine:
         self.sample_rate = 24000
         
     async def initialize(self):
-        """Initialize the Kokoro model"""
+        """Initialize the Kokoro model with auto-download"""
         try:
             logger.info("🚀 Initializing Kokoro TTS...")
+            
+            # Download model if needed
+            async with model_download_lock:
+                if not download_kokoro_model_if_needed():
+                    logger.error("❌ Failed to download Kokoro model")
+                    return await self._initialize_fallback()
             
             # Try importing kokoro
             try:
@@ -49,11 +97,15 @@ class KokoroTTSEngine:
                 logger.info("✅ Kokoro library imported successfully")
             except ImportError as e:
                 logger.error(f"❌ Failed to import Kokoro: {e}")
-                # Fallback to manual implementation
-                return await self._initialize_manual()
+                return await self._initialize_fallback()
             
             # Initialize pipeline with American English
-            self.pipeline = KPipeline(lang_code='a')  # 'a' for American English
+            try:
+                self.pipeline = KPipeline(lang_code='a')  # 'a' for American English
+                logger.info("✅ Kokoro pipeline initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize Kokoro pipeline: {e}")
+                return await self._initialize_fallback()
             
             # Load available voices
             self.voices = {
@@ -75,35 +127,18 @@ class KokoroTTSEngine:
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize Kokoro TTS: {e}")
-            return False
+            return await self._initialize_fallback()
     
-    async def _initialize_manual(self):
-        """Manual initialization if kokoro package fails"""
-        logger.warning("⚠️ Using manual Kokoro implementation")
+    async def _initialize_fallback(self):
+        """Fallback initialization with eSpeak-NG"""
+        logger.warning("⚠️ Using eSpeak-NG fallback")
         
-        # Check if model files exist
-        model_files = [
-            "pytorch_model.bin",
-            "config.json", 
-            "voices.bin"
-        ]
-        
-        missing_files = []
-        for file in model_files:
-            if not os.path.exists(os.path.join(self.model_path, file)):
-                missing_files.append(file)
-        
-        if missing_files:
-            logger.error(f"❌ Missing model files: {missing_files}")
-            return False
-        
-        # Simple voice mapping for manual mode
         self.voices = {
-            'af_bella': 'American Female - Bella (Manual)',
+            'af_bella': 'eSpeak Female Voice',
             'cpu_voice': 'CPU Optimized Voice'
         }
         
-        logger.info("✅ Manual Kokoro mode initialized")
+        logger.info("✅ Fallback TTS mode initialized")
         return True
     
     async def _test_synthesis(self):
@@ -132,8 +167,8 @@ class KokoroTTSEngine:
             logger.info(f"🎵 Synthesizing: '{text[:50]}...' with voice '{voice}'")
             
             if not self.pipeline:
-                # Use manual synthesis
-                return await self._manual_synthesize(text, voice, speed, output_format)
+                # Use fallback synthesis
+                return await self._fallback_synthesis(text, voice, speed, output_format)
             
             # Use Kokoro pipeline
             generator = self.pipeline(text, voice=voice)
@@ -150,7 +185,7 @@ class KokoroTTSEngine:
             
             if not audio_chunks:
                 logger.error("❌ No audio generated")
-                return None
+                return await self._fallback_synthesis(text, voice, speed, output_format)
             
             # Concatenate audio chunks
             full_audio = np.concatenate(audio_chunks)
@@ -164,16 +199,16 @@ class KokoroTTSEngine:
             
         except Exception as e:
             logger.error(f"❌ Synthesis failed: {e}")
-            return await self._fallback_synthesis(text, output_format)
+            return await self._fallback_synthesis(text, voice, speed, output_format)
     
-    async def _manual_synthesize(
+    async def _fallback_synthesis(
         self,
         text: str,
         voice: str,
         speed: float,
         output_format: str
     ) -> Optional[bytes]:
-        """Manual synthesis using eSpeak-NG as fallback"""
+        """Fallback synthesis using eSpeak-NG"""
         try:
             logger.info("🔧 Using eSpeak-NG fallback synthesis")
             
@@ -202,20 +237,6 @@ class KokoroTTSEngine:
                 return await self._convert_wav_to_mp3(audio_data)
             
             return audio_data
-            
-        except Exception as e:
-            logger.error(f"❌ Manual synthesis failed: {e}")
-            return None
-    
-    async def _fallback_synthesis(self, text: str, output_format: str) -> Optional[bytes]:
-        """Ultra-simple fallback using eSpeak-NG"""
-        try:
-            logger.warning("⚠️ Using ultra-simple fallback")
-            
-            cmd = ["espeak-ng", "--stdout", text]
-            result = subprocess.run(cmd, capture_output=True, check=True)
-            
-            return result.stdout
             
         except Exception as e:
             logger.error(f"❌ Fallback synthesis failed: {e}")
@@ -310,13 +331,15 @@ async def startup_event():
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint"""
+    model_status = "kokoro" if kokoro_pipeline and kokoro_pipeline.pipeline else "espeak-fallback"
     return {
         "ok": True,
         "service": "june-kokoro-tts",
         "timestamp": time.time(),
         "status": "healthy",
-        "engine": "kokoro" if kokoro_pipeline and kokoro_pipeline.pipeline else "espeak-fallback",
-        "voices_available": len(available_voices)
+        "engine": model_status,
+        "voices_available": len(available_voices),
+        "model_path": "/app/models"
     }
 
 @app.get("/")
