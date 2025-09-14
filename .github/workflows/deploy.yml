@@ -1,7 +1,4 @@
-﻿# Streamlined .github/workflows/deploy.yml
-# Removes complexity while keeping scalability
-# Fixes: Service discovery, timing issues, Keycloak clustering
-
+﻿# .github/workflows/deploy.yml - Updated for Kokoro TTS
 name: Deploy Services to Cloud Run
 
 on:
@@ -58,6 +55,14 @@ jobs:
             cpu: "2"
             memory: "1Gi"
             min_instances: 0
+          # NEW: Add Kokoro TTS service
+          - service: june-kokoro-tts
+            path: June/services/june-kokoro-tts
+            timeout: 900
+            concurrency: 2
+            cpu: "2"
+            memory: "4Gi"
+            min_instances: 0
 
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +87,7 @@ jobs:
             june-idp) SA="june-idp-svc" ;;
             june-stt) SA="stt-svc" ;;
             june-tts) SA="tts-svc" ;;
+            june-kokoro-tts) SA="kokoro-tts-svc" ;;
             *) SA="${{ matrix.service }}-svc" ;;
           esac
           
@@ -101,6 +107,24 @@ jobs:
               --set-env-vars="KC_DB=postgres,KC_DB_URL=${{ secrets.KC_DB_URL }},KC_DB_USERNAME=${{ secrets.KC_DB_USERNAME }},KC_BOOTSTRAP_ADMIN_USERNAME=admin,KC_BOOTSTRAP_ADMIN_PASSWORD=bootstrap-temp,KC_HTTP_ENABLED=true,KC_HOSTNAME_STRICT=false,KC_TRANSACTION_XA_ENABLED=false,KC_HOSTNAME=${{ secrets.KC_BASE_URL }},KC_CACHE=local" \
               --set-secrets="KC_DB_PASSWORD=KC_DB_PASSWORD:latest" \
               --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false,--cache=local"
+          elif [ "${{ matrix.service }}" = "june-kokoro-tts" ]; then
+            # NEW: Kokoro TTS specific deployment
+            ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
+            ENV_VARS="${ENV_VARS},KOKORO_CLIENT_ID=${{ secrets.KOKORO_CLIENT_ID }}"
+            ENV_VARS="${ENV_VARS},KOKORO_CLIENT_SECRET=${{ secrets.KOKORO_CLIENT_SECRET }}"
+            ENV_VARS="${ENV_VARS},MODEL_PATH=/app/models,DEVICE=cpu,LOG_LEVEL=INFO"
+            
+            gcloud run deploy ${{ matrix.service }} \
+              --image="$IMAGE" \
+              --region="$REGION" \
+              --cpu="${{ matrix.cpu }}" \
+              --memory="${{ matrix.memory }}" \
+              --min-instances="${{ matrix.min_instances }}" \
+              --timeout="${{ matrix.timeout }}" \
+              --concurrency="${{ matrix.concurrency }}" \
+              --service-account="${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
+              --allow-unauthenticated \
+              --set-env-vars="$ENV_VARS"
           else
             # Other services
             ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
@@ -108,7 +132,8 @@ jobs:
             # Add service-specific credentials and URLs
             if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
               ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-359243954.us-central1.run.app"
-              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
+              # UPDATED: Point to Kokoro TTS instead of legacy TTS
+              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-kokoro-tts-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
               ENV_VARS="${ENV_VARS},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
@@ -133,9 +158,7 @@ jobs:
               --set-env-vars="$ENV_VARS"
           fi
 
-  # Deploy nginx-edge after core services - STREAMLINED
-  # Replace the deploy-edge job in your deploy.yml with this simplified version
-
+  # Deploy nginx-edge after core services - UPDATED for Kokoro TTS
   deploy-edge:
     name: Deploy Edge Proxy
     runs-on: ubuntu-latest
@@ -161,19 +184,21 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Use known service URLs - no waiting needed
+          # UPDATED: Point to Kokoro TTS for routing
           ENV_VARS="UPSTREAM_IDP=https://june-idp-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=https://june-orchestrator-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_STT=https://june-stt-359243954.us-central1.run.app"
-          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-tts-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-kokoro-tts-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_LEGACY_TTS=https://june-tts-359243954.us-central1.run.app"
           
-          echo "🚀 Deploying nginx-edge with upstream services:"
+          echo "🚀 Deploying nginx-edge with Kokoro TTS routing:"
           echo "   IDP: https://june-idp-359243954.us-central1.run.app"
           echo "   ORCH: https://june-orchestrator-359243954.us-central1.run.app"
           echo "   STT: https://june-stt-359243954.us-central1.run.app"
-          echo "   TTS: https://june-tts-359243954.us-central1.run.app"
+          echo "   TTS (Kokoro): https://june-kokoro-tts-359243954.us-central1.run.app"
+          echo "   TTS (Legacy): https://june-tts-359243954.us-central1.run.app"
           
-          # Deploy nginx-edge immediately
+          # Deploy nginx-edge
           gcloud run deploy nginx-edge \
             --project="$PROJECT_ID" \
             --image="$IMAGE" \
@@ -199,3 +224,4 @@ jobs:
           echo "   $EDGE_URL/orchestrator/healthz"
           echo "   $EDGE_URL/stt/healthz"
           echo "   $EDGE_URL/tts/healthz"
+          echo "   $EDGE_URL/kokoro-tts/healthz"

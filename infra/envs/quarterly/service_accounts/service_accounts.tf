@@ -16,6 +16,11 @@ locals {
       account_id   = "tts-svc"
       display_name = "June TTS Runtime SA"
     }
+    # NEW: Add Kokoro TTS service account
+    "june-kokoro-tts" = {
+      account_id   = "kokoro-tts-svc"
+      display_name = "June Kokoro TTS Runtime SA"
+    }
     "nginx-edge" = {
       account_id   = "nginx-edge-svc"
       display_name = "Nginx Edge Runtime SA"
