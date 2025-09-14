@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Query, Depends
+from fastapi import FastAPI, Query, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from google.cloud import texttospeech
 from google.oauth2 import service_account
 import io, os, json
 import time
+import urllib.parse
 
 from authz import get_current_user  # Firebase auth for client requests
 from shared.auth_service import require_service_auth  # Service-to-service auth
@@ -37,7 +38,7 @@ def get_client():
     return _tts_client
 
 # -----------------------------------------------------------------------------
-# Service-to-Service TTS Endpoint (NEW)
+# Service-to-Service TTS Endpoint (FIXED)
 # Protected by service authentication
 # -----------------------------------------------------------------------------
 @app.post("/v1/tts")
@@ -54,143 +55,83 @@ async def synthesize_speech_service(
     """
     calling_service = service_auth_data.get("client_id", "unknown")
     
-    client = get_client()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
+    try:
+        # Validate input length
+        if len(text) > 5000:
+            raise HTTPException(status_code=400, detail="Text too long (max 5000 characters)")
+        
+        # URL decode the text if needed
+        decoded_text = urllib.parse.unquote(text)
+        
+        logger = logging.getLogger("uvicorn.error")
+        logger.info(f"TTS request from {calling_service}: '{decoded_text[:100]}...' ({len(decoded_text)} chars)")
+        
+        client = get_client()
+        synthesis_input = texttospeech.SynthesisInput(text=decoded_text)
 
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=language_code,
-        name=voice_name,
-    )
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=language_code,
+            name=voice_name,
+        )
 
-    # Coerce encoding symbol safely
-    encoding_symbol = getattr(texttospeech.AudioEncoding, audio_encoding.upper(), texttospeech.AudioEncoding.MP3)
+        # Coerce encoding symbol safely
+        encoding_symbol = getattr(texttospeech.AudioEncoding, audio_encoding.upper(), texttospeech.AudioEncoding.MP3)
 
-    audio_config = texttospeech.AudioConfig(audio_encoding=encoding_symbol)
+        audio_config = texttospeech.AudioConfig(audio_encoding=encoding_symbol)
 
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config,
-    )
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config,
+        )
 
-    audio_bytes = response.audio_content
-    
-    # Determine media type for response
-    enc_upper = audio_encoding.upper()
-    if enc_upper == "MP3":
-        media_type = "audio/mpeg"
-        ext = "mp3"
-    elif enc_upper == "OGG_OPUS":
-        media_type = "audio/ogg"
-        ext = "ogg"
-    else:  # LINEAR16 and others treated as WAV container
-        media_type = "audio/wav"
-        ext = "wav"
+        audio_bytes = response.audio_content
+        
+        # Determine media type for response
+        enc_upper = audio_encoding.upper()
+        if enc_upper == "MP3":
+            media_type = "audio/mpeg"
+            ext = "mp3"
+        elif enc_upper == "OGG_OPUS":
+            media_type = "audio/ogg"
+            ext = "ogg"
+        else:  # LINEAR16 and others treated as WAV container
+            media_type = "audio/wav"
+            ext = "wav"
 
-    filename = f"speech.{ext}"
-    
-    # Log the service call
-    import logging
-    logger = logging.getLogger("uvicorn.error")
-    logger.info(f"TTS request from service: {calling_service}, text length: {len(text)}")
-    
-    return StreamingResponse(
-        io.BytesIO(audio_bytes),
-        media_type=media_type,
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "X-Processed-By": "june-tts",
-            "X-Caller-Service": calling_service
-        }
-    )
+        filename = f"speech.{ext}"
+        
+        logger.info(f"✅ TTS successful: {len(audio_bytes)} bytes generated")
+        
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Processed-By": "june-tts",
+                "X-Caller-Service": calling_service
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTS synthesis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
-# -----------------------------------------------------------------------------
-# Client TTS Endpoint (EXISTING) 
-# Protected by Firebase authentication for direct client requests
-# -----------------------------------------------------------------------------
-@app.post("/v1/tts-client")
-async def synthesize_speech_client(
-    text: str = Query(..., description="Text to synthesize"),
-    language_code: str = Query("en-US"),
-    voice_name: str = Query("en-US-Wavenet-D"),
-    audio_encoding: str = Query("MP3"),  # MP3 | LINEAR16 | OGG_OPUS
-    user=Depends(get_current_user),      # Firebase auth for clients
-):
-    """
-    TTS endpoint for direct client requests
-    Protected by Firebase authentication
-    """
-    client = get_client()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=language_code,
-        name=voice_name,
-    )
-
-    # Coerce encoding symbol safely
-    encoding_symbol = getattr(texttospeech.AudioEncoding, audio_encoding.upper(), texttospeech.AudioEncoding.MP3)
-
-    audio_config = texttospeech.AudioConfig(audio_encoding=encoding_symbol)
-
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config,
-    )
-
-    audio_bytes = response.audio_content
-    
-    # Correct media types for common encodings
-    enc_upper = audio_encoding.upper()
-    if enc_upper == "MP3":
-        media_type = "audio/mpeg"
-        ext = "mp3"
-    elif enc_upper == "OGG_OPUS":
-        media_type = "audio/ogg"
-        ext = "ogg"
-    else:  # LINEAR16 and others treated as WAV container
-        media_type = "audio/wav"
-        ext = "wav"
-
-    filename = f"speech.{ext}"
-    
-    # Log the client call
-    import logging
-    logger = logging.getLogger("uvicorn.error")
-    logger.info(f"TTS request from client: {user.get('uid', 'unknown')}, text length: {len(text)}")
-    
-    return StreamingResponse(
-        io.BytesIO(audio_bytes),
-        media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-# -----------------------------------------------------------------------------
-# Test endpoint to verify service authentication
-# -----------------------------------------------------------------------------
-@app.get("/v1/test-auth")
-async def test_auth(service_auth_data: dict = Depends(require_service_auth)):
-    """Test endpoint to verify service authentication is working"""
-    return {
-        "message": "Service authentication successful",
-        "caller": service_auth_data.get("client_id"),
-        "scopes": service_auth_data.get("scopes", []),
-        "service": "june-tts"
-    }
-
-
-# Add this route if it doesn't exist
+# Keep all your other existing endpoints...
 @app.get("/healthz") 
 async def healthz():
-    return {"ok": True, "service": "june-tts", "timestamp": time.time()}
+    return {
+        "ok": True, 
+        "service": "june-tts", 
+        "timestamp": time.time(),
+        "status": "healthy"
+    }
 
-# Also add a root route
 @app.get("/")
 async def root():
     return {"service": "june-tts", "status": "running"}
-
-
 
 if __name__ == "__main__":
     import uvicorn
