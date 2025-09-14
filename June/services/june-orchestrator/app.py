@@ -13,6 +13,9 @@ from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, Depends
 # Import the shared auth module
 from shared.auth_service import create_service_auth_client, require_service_auth, ServiceAuthClient
 
+# Import Firebase auth (keeping existing functionality)
+from authz import get_current_user
+
 # -----------------------------------------------------------------------------
 # FastAPI app
 # -----------------------------------------------------------------------------
@@ -28,6 +31,47 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 FIREBASE_PROJECT_ID    = os.getenv("FIREBASE_PROJECT_ID", "")
 FIREBASE_WEB_API_KEY   = os.getenv("FIREBASE_WEB_API_KEY", "")
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")
+
+# AI Configuration
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Initialize AI if available
+ai_model = None
+try:
+    if GEMINI_API_KEY:
+        import google.generativeai as genai
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold
+        
+        genai.configure(api_key=GEMINI_API_KEY)
+        
+        # Create AI model with safety settings
+        generation_config = {
+            "temperature": 0.7,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 1024,
+        }
+        
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+        }
+        
+        ai_model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+        )
+        
+        logger.info("✅ Gemini AI model initialized")
+    else:
+        logger.warning("⚠️ GEMINI_API_KEY not set - using fallback responses")
+except ImportError:
+    logger.warning("⚠️ google-generativeai not installed - using fallback responses")
+except Exception as e:
+    logger.error(f"⚠️ Failed to initialize AI model: {e}")
 
 # Service URLs (for calling other services)
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
@@ -49,6 +93,41 @@ STT_HANDSHAKE              = os.getenv("STT_HANDSHAKE", "start").lower()
 STT_REQUIRE_CLOUDRUN_AUTH  = os.getenv("STT_REQUIRE_CLOUDRUN_AUTH", "false").lower() == "true"
 
 # -----------------------------------------------------------------------------
+# AI Helper Functions
+# -----------------------------------------------------------------------------
+async def generate_ai_response(user_input: str, user_context: dict = None) -> str:
+    """Generate AI response using Gemini"""
+    if not ai_model:
+        return f"I received your message: '{user_input}'. However, AI is currently not configured. This is a placeholder response."
+    
+    try:
+        # Create a conversational prompt
+        system_prompt = """You are June, a helpful AI assistant. You are knowledgeable, friendly, and concise. 
+        You can help with various tasks, answer questions, and have engaging conversations.
+        
+        Key traits:
+        - Be helpful and informative
+        - Keep responses conversational and engaging
+        - If you don't know something, say so honestly
+        - Be concise but thorough when needed
+        """
+        
+        # Combine system prompt with user input
+        full_prompt = f"{system_prompt}\n\nUser: {user_input}\n\nJune:"
+        
+        # Generate response
+        response = ai_model.generate_content(full_prompt)
+        
+        if response.text:
+            return response.text.strip()
+        else:
+            return "I'm having trouble generating a response right now. Could you try rephrasing your question?"
+            
+    except Exception as e:
+        logger.error(f"AI generation error: {e}")
+        return f"I'm experiencing some technical difficulties. Here's what I can tell you about '{user_input}': I'd be happy to help, but I'm having trouble processing that right now."
+
+# -----------------------------------------------------------------------------
 # Service authentication setup
 # -----------------------------------------------------------------------------
 try:
@@ -59,7 +138,7 @@ except Exception as e:
     service_auth = None
 
 # -----------------------------------------------------------------------------
-# Enhanced STT and TTS clients with authentication
+# Enhanced STT and TTS clients with authentication (keeping existing code)
 # -----------------------------------------------------------------------------
 class AuthenticatedSTTClient:
     def __init__(self, base_url: str, auth_client: ServiceAuthClient):
@@ -142,7 +221,7 @@ if service_auth:
         logger.info("✅ TTS service client initialized")
 
 # -----------------------------------------------------------------------------
-# Health and config endpoints (FIXED - no duplicates)
+# Health and config endpoints
 # -----------------------------------------------------------------------------
 @app.get("/healthz")
 async def healthz():
@@ -151,7 +230,8 @@ async def healthz():
         "ok": True, 
         "service": "june-orchestrator", 
         "timestamp": time.time(),
-        "status": "healthy"
+        "status": "healthy",
+        "ai_enabled": ai_model is not None
     }
 
 @app.get("/")
@@ -160,7 +240,8 @@ async def root():
     return {
         "service": "june-orchestrator", 
         "status": "running",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "ai_enabled": ai_model is not None
     }
 
 @app.get("/configz")
@@ -181,26 +262,51 @@ async def configz():
         "STT_REQUIRE_CLOUDRUN_AUTH": STT_REQUIRE_CLOUDRUN_AUTH,
         "service_auth_enabled": service_auth is not None,
         "stt_client_ready": stt_client is not None,
-        "tts_client_ready": tts_client is not None
+        "tts_client_ready": tts_client is not None,
+        "ai_model_enabled": ai_model is not None,
+        "gemini_api_key_present": bool(GEMINI_API_KEY)
     }
 
 # -----------------------------------------------------------------------------
-# Protected service endpoints (for other services to call)
+# Protected service endpoints (for other services to call) - UPDATED WITH AI
 # -----------------------------------------------------------------------------
 @app.post("/v1/chat")
 async def chat(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Chat endpoint protected by service authentication"""
+    """Chat endpoint protected by service authentication with AI integration"""
     user_text = (payload or {}).get("user_input", "")
     calling_service = service_auth_data.get("client_id", "unknown")
     
     logger.info(f"Chat request from service: {calling_service}")
     
-    # TODO: plug your LLM/agent here; for now, simple echo-style reply
-    reply = f"You said: {user_text}".strip()
-    return {"reply": reply, "processed_by": "orchestrator", "caller": calling_service}
+    if not user_text.strip():
+        return {
+            "reply": "I didn't receive any message. What would you like to talk about?",
+            "processed_by": "orchestrator",
+            "caller": calling_service
+        }
+    
+    # Generate AI response
+    try:
+        reply = await generate_ai_response(user_text, {"caller": calling_service})
+        
+        return {
+            "reply": reply,
+            "processed_by": "orchestrator", 
+            "caller": calling_service,
+            "ai_model": "gemini-1.5-flash" if ai_model else "fallback"
+        }
+        
+    except Exception as e:
+        logger.error(f"Chat processing error: {e}")
+        return {
+            "reply": f"I apologize, but I'm having trouble processing your message right now. Error: {str(e)}",
+            "processed_by": "orchestrator",
+            "caller": calling_service,
+            "error": str(e)
+        }
 
 @app.post("/v1/process-audio")
 async def process_audio(
@@ -227,8 +333,8 @@ async def process_audio(
         else:
             text = "STT service not available"
         
-        # Process through LLM (local processing)
-        reply = f"You said: {text}. Here's my response!"
+        # Process through AI (instead of local processing)
+        reply = await generate_ai_response(text, {"caller": calling_service})
         
         # Call TTS service  
         if tts_client:
@@ -250,8 +356,16 @@ async def process_audio(
         return {"error": str(e)}
 
 # -----------------------------------------------------------------------------
-# Existing functionality - keep all your original WebSocket and helper code
+# Firebase-authenticated endpoints (keeping existing functionality)
 # -----------------------------------------------------------------------------
+@app.get("/whoami")
+async def whoami(user=Depends(get_current_user)):
+    """Debug endpoint to see Firebase user claims"""
+    return {"firebase_user": user}
+
+# Keep all existing WebSocket functionality below...
+# (Existing functionality continues here - all the _fetch_gcp_id_token, _llm_generate_reply_via_http, etc.)
+
 async def _fetch_gcp_id_token(audience: str) -> str:
     """Get a Google-signed ID token for Cloud Run (audience = HTTPS base URL)."""
     url = "http://metadata/computeMetadata/v1/instance/service-accounts/default/identity"
@@ -298,10 +412,7 @@ async def _tts_stream(reply_text: str, locale: str, id_token: str, client_ws: We
                 await client_ws.send_bytes(chunk)
             await client_ws.send_text(json.dumps({"type":"tts.done", "turn_id": turn_id}))
 
-# -----------------------------------------------------------------------------
 # Voice bridge (client <-> STT; on final -> call LLM -> stream TTS)
-# Keep all your existing WebSocket code here
-# -----------------------------------------------------------------------------
 @voice_router.websocket("/v1/voice")
 async def voice_ws(ws: WebSocket):
     """Client connects here with WebSocket for voice functionality"""
@@ -325,13 +436,11 @@ async def voice_ws(ws: WebSocket):
         await ws.close(code=1011)
 
 async def _stt_bridge(client_ws: WebSocket, id_token: str, locale: str, encoding: str):
-    """Keep your existing STT bridge implementation"""
+    """Your existing STT bridge implementation"""
     if not STT_WS_URL:
         await client_ws.send_text(json.dumps({"type":"error","code":"CONFIG","message":"STT_WS_URL not set"}))
         return
 
-    # Your existing WebSocket STT bridge code goes here...
-    # I'm keeping this minimal to focus on the service auth changes
     await client_ws.send_text(json.dumps({"type": "connected", "message": "Voice WebSocket ready"}))
 
 # Include the voice router
@@ -360,76 +469,8 @@ async def startup_event():
         logger.info("✅ TTS client configured")
     else:
         logger.warning("⚠️ TTS client not available")
-
-# -----------------------------------------------------------------------------
-# Add this to June/services/june-orchestrator/app.py
-# This creates a mobile-specific endpoint that accepts Firebase tokens
-
-@app.post("/v1/process-audio-mobile")
-async def process_audio_mobile(
-    payload: dict,
-    user=Depends(get_current_user)  # Firebase auth from authz.py
-):
-    """
-    Mobile-specific audio processing endpoint
-    Accepts Firebase authentication tokens from mobile apps
-    """
-    logger.info(f"Mobile audio processing request from user: {user.get('uid', 'unknown')}")
     
-    audio_data = payload.get("audio_data")  # base64 encoded audio
-    if not audio_data:
-        return {"error": "No audio data provided"}
-    
-    try:
-        # Decode audio
-        import base64
-        audio_bytes = base64.b64decode(audio_data)
-        
-        # Call STT service using service authentication
-        if stt_client:
-            stt_result = await stt_client.transcribe_audio(audio_bytes)
-            text = stt_result.get("text", "")
-        else:
-            text = "STT service not available"
-        
-        # Process through LLM (local processing)
-        reply = f"You said: {text}. Here's my response from June AI!"
-        
-        # Call TTS service using service authentication
-        if tts_client:
-            audio_response = await tts_client.synthesize_speech(reply)
-            audio_b64 = base64.b64encode(audio_response).decode()
-        else:
-            audio_b64 = None
-        
-        return {
-            "transcription": text,
-            "response_text": reply,
-            "response_audio": audio_b64,
-            "processed_by": "orchestrator-mobile",
-            "user_id": user.get('uid')
-        }
-        
-    except Exception as e:
-        logger.error(f"Mobile audio processing failed: {e}")
-        return {"error": str(e)}
-
-@app.post("/v1/chat-mobile")
-async def chat_mobile(
-    payload: dict,
-    user=Depends(get_current_user)  # Firebase auth
-):
-    """Mobile-specific chat endpoint"""
-    user_text = (payload or {}).get("user_input", "")
-    user_id = user.get('uid', 'unknown')
-    
-    logger.info(f"Mobile chat request from user: {user_id}")
-    
-    # TODO: plug your LLM/agent here; for now, simple reply
-    reply = f"Hello! You said: {user_text}. I'm June AI responding to your mobile app."
-    
-    return {
-        "reply": reply, 
-        "processed_by": "orchestrator-mobile", 
-        "user_id": user_id
-    }
+    if ai_model:
+        logger.info("✅ AI model configured and ready")
+    else:
+        logger.warning("⚠️ AI model not available - using fallback responses")
