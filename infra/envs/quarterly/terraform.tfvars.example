@@ -1,0 +1,40 @@
+# infra/envs/quarterly/terraform.tfvars.example
+# Copy this to terraform.tfvars and fill in your actual values
+
+# Project settings
+project_id = "main-buffer-469817-v7"
+region     = "us-central1"
+
+# Container images (update with your actual image tags)
+image_idp            = "us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-idp:latest"
+image_orchestrator   = "us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest"
+image_stt            = "us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-stt:latest"
+image_tts            = "us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:latest"
+image_kokoro_tts     = "us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-kokoro-tts:latest"
+
+# Keycloak configuration
+KC_BASE_URL      = "https://june-idp-359243954.us-central1.run.app"
+KC_DB_URL        = "postgresql://neondb_owner:npg_iUK0knRfSNd6@ep-dry-art-ad9moi68-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+KC_DB_USERNAME   = "neondb_owner"
+KC_REALM         = "june"
+KC_CLIENT_ID     = "your-client-id"
+KC_CLIENT_SECRET = "your-client-secret"
+
+# Service client credentials (set these up in Keycloak)
+STT_CLIENT_ID       = "stt-service"
+STT_CLIENT_SECRET   = "3dGLCBW2Wy98gDJvQ0un7PNYZdYmiJRa"
+TTS_CLIENT_ID       = "tts-service"
+TTS_CLIENT_SECRET   = "gYrRDYAv2iJSupZ0zE8oMlnfy8F9IvtB"
+KOKORO_CLIENT_ID    = "kokoro-service"
+KOKORO_CLIENT_SECRET = "p8BysqEM9ioh4pTxqwHq0ILWJCaxFdYM"
+
+# External services
+NEON_DB_URL                = "postgresql://neondb_owner:npg_iUK0knRfSNd6@ep-dry-art-ad9moi68-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+UPSTASH_REDIS_REST_URL     = "https://gusc1-honest-tetra-30382.upstash.io"
+UPSTASH_REDIS_REST_TOKEN   = "AXauASQgYmNkNjFjNTEtNTZkOS00ZTRhLTlhNDYtNWY4ZTc5MmI1YmM1MDkxOWI2YTkyZDJkNGNhZWJmMjkzMDRiNDRiNDYwNDU="
+QDRANT_URL                 = "https://e44b1607-7542-4314-b080-03ae5339036d.us-east4-0.gcp.cloud.qdrant.io:6333"
+QDRANT_API_KEY             = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.HAx88Xm3jlPwDy1NvXnZUxGHTrD2LYCgAiSuyCDbgUg"
+GEMINI_API_KEY             = "AIzaSyAMeP3OGf5s6Yw9jtOCb6RMpbxHXNfBQgI"
+
+# CI/CD (optional, for manual deployment)
+deployer_sa_email = "github-deployer@main-buffer-469817-v7.iam.gserviceaccount.com"
