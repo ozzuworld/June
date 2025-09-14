@@ -1,3 +1,4 @@
+# infra/envs/quarterly/variables.tf
 variable "project_id" {
   description = "GCP project ID"
   type        = string
@@ -31,7 +32,13 @@ variable "image_stt" {
 }
 
 variable "image_tts" {
-  description = "Container image for TTS service"
+  description = "Container image for TTS service (legacy)"
+  type        = string
+}
+
+# NEW: Kokoro TTS image
+variable "image_kokoro_tts" {
+  description = "Container image for Kokoro TTS service"
   type        = string
 }
 
@@ -64,6 +71,20 @@ variable "KC_CLIENT_ID" {
 
 variable "KC_CLIENT_SECRET" {
   description = "Keycloak client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# NEW: Kokoro TTS specific credentials
+variable "KOKORO_CLIENT_ID" {
+  description = "Keycloak client ID for Kokoro TTS service"
+  type        = string
+  default     = ""
+}
+
+variable "KOKORO_CLIENT_SECRET" {
+  description = "Keycloak client secret for Kokoro TTS service"
   type        = string
   default     = ""
   sensitive   = true
