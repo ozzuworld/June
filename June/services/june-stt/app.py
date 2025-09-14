@@ -1,4 +1,4 @@
-# June/services/june-stt/app.py
+# June/services/june-stt/app.py - ENHANCED VERSION
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends
 from fastapi.responses import JSONResponse
 import logging, json
@@ -8,6 +8,7 @@ import io
 from typing import Optional
 import tempfile
 import os
+import subprocess
 
 from authz import verify_token_query
 from shared.auth_service import require_service_auth
@@ -26,7 +27,7 @@ except Exception as e:
 app = FastAPI(title="June STT Service", version="1.0.0")
 
 # -----------------------------------------------------------------------------
-# Service-to-Service Transcription Endpoint (ENHANCED)
+# Enhanced Service-to-Service Transcription Endpoint
 # -----------------------------------------------------------------------------
 @app.post("/v1/transcribe")
 async def transcribe_audio(
@@ -35,8 +36,7 @@ async def transcribe_audio(
     service_auth_data: dict = Depends(require_service_auth)
 ):
     """
-    Transcribe audio endpoint for service-to-service communication
-    Protected by service authentication
+    Enhanced transcription endpoint with better audio format handling
     """
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"Transcription request from service: {calling_service}")
@@ -62,132 +62,146 @@ async def transcribe_audio(
                 "caller": calling_service
             }
         
-        # Determine audio format from content type and file extension
+        # ENHANCED: Better audio format detection and conversion
         content_type = audio.content_type or ""
         filename = audio.filename or ""
         
-        logger.info(f"Audio content type: {content_type}, filename: {filename}")
+        logger.info(f"Audio details - Content Type: {content_type}, Filename: {filename}, Size: {len(audio_content)} bytes")
         
-        # Try to determine the best encoding format
-        encoding_format = speech.RecognitionConfig.AudioEncoding.LINEAR16  # Default
+        # Create temporary files for processing
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".original") as temp_input:
+            temp_input.write(audio_content)
+            temp_input_path = temp_input.name
         
-        if ".wav" in filename.lower() or "wav" in content_type.lower():
-            encoding_format = speech.RecognitionConfig.AudioEncoding.LINEAR16
-        elif ".m4a" in filename.lower() or ".aac" in filename.lower() or "mp4" in content_type.lower():
-            encoding_format = speech.RecognitionConfig.AudioEncoding.MP3  # Close enough for m4a
-        elif ".flac" in filename.lower() or "flac" in content_type.lower():
-            encoding_format = speech.RecognitionConfig.AudioEncoding.FLAC
-        elif ".opus" in filename.lower() or "opus" in content_type.lower():
-            encoding_format = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
-        
-        # Configure recognition with detected format
-        config = speech.RecognitionConfig(
-            encoding=encoding_format,
-            sample_rate_hertz=16000,
-            language_code=language,
-            enable_automatic_punctuation=True,
-            use_enhanced=True,  # Use enhanced model if available
-            model="latest_long",  # Best model for general use
-        )
-        
-        logger.info(f"Using audio encoding: {encoding_format}")
-        
-        # If the format detection fails, try multiple formats
-        audio_formats_to_try = [
-            encoding_format,  # Detected format first
-            speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            speech.RecognitionConfig.AudioEncoding.MP3,
-            speech.RecognitionConfig.AudioEncoding.FLAC,
-            speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-            speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
-        ]
-        
-        transcription_result = None
-        confidence = 0.0
-        
-        for encoding_format in audio_formats_to_try:
-            try:
-                config.encoding = encoding_format
-                audio_speech = speech.RecognitionAudio(content=audio_content)
-                
-                # Perform the transcription
-                logger.info(f"Trying transcription with encoding: {encoding_format}")
-                response = speech_client.recognize(config=config, audio=audio_speech)
-                
-                if response.results:
-                    transcription_result = response.results[0].alternatives[0].transcript
-                    confidence = response.results[0].alternatives[0].confidence
-                    logger.info(f"✅ Transcription successful with {encoding_format}: '{transcription_result}' (confidence: {confidence})")
-                    break
-                else:
-                    logger.warning(f"No results with {encoding_format}")
-                    
-            except Exception as format_error:
-                logger.warning(f"Failed with {encoding_format}: {format_error}")
-                continue
-        
-        if not transcription_result:
-            # If all formats fail, try to convert the audio using ffmpeg if available
-            logger.warning("All audio formats failed, attempting conversion...")
+        try:
+            # ENHANCED: Try multiple approaches for audio processing
+            transcription_result = None
+            confidence = 0.0
             
-            try:
-                # Save audio to temp file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".original") as temp_file:
-                    temp_file.write(audio_content)
-                    temp_input = temp_file.name
-                
-                # Convert to WAV using ffmpeg
-                temp_output = temp_input + ".wav"
-                
-                # Try ffmpeg conversion
-                import subprocess
-                result = subprocess.run([
-                    'ffmpeg', '-i', temp_input, 
-                    '-ar', '16000', '-ac', '1', '-f', 'wav',
-                    temp_output
-                ], capture_output=True, text=True, timeout=30)
-                
-                if result.returncode == 0 and os.path.exists(temp_output):
-                    # Read converted audio
-                    with open(temp_output, 'rb') as f:
-                        converted_audio = f.read()
+            # Approach 1: Try direct transcription with multiple formats
+            for encoding_format in [
+                speech.RecognitionConfig.AudioEncoding.MP3,  # Try MP3 first (good for m4a)
+                speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                speech.RecognitionConfig.AudioEncoding.FLAC,
+                speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+                speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
+            ]:
+                try:
+                    config = speech.RecognitionConfig(
+                        encoding=encoding_format,
+                        sample_rate_hertz=16000,  # Match the mobile app setting
+                        language_code=language,
+                        enable_automatic_punctuation=True,
+                        use_enhanced=True,
+                        model="latest_long",
+                    )
                     
-                    # Try transcription with converted audio
-                    config.encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
-                    audio_speech = speech.RecognitionAudio(content=converted_audio)
+                    audio_speech = speech.RecognitionAudio(content=audio_content)
+                    
+                    logger.info(f"Trying transcription with encoding: {encoding_format}")
                     response = speech_client.recognize(config=config, audio=audio_speech)
                     
                     if response.results:
                         transcription_result = response.results[0].alternatives[0].transcript
                         confidence = response.results[0].alternatives[0].confidence
-                        logger.info(f"✅ Transcription successful after conversion: '{transcription_result}'")
+                        logger.info(f"✅ Transcription successful with {encoding_format}: '{transcription_result}' (confidence: {confidence})")
+                        break
+                    else:
+                        logger.warning(f"No results with {encoding_format}")
+                        
+                except Exception as format_error:
+                    logger.warning(f"Failed with {encoding_format}: {format_error}")
+                    continue
+            
+            # Approach 2: If direct transcription fails, convert using ffmpeg
+            if not transcription_result:
+                logger.warning("Direct transcription failed, attempting audio conversion...")
+                
+                # Convert to WAV using ffmpeg
+                temp_output_path = temp_input_path + ".wav"
+                
+                try:
+                    # Enhanced ffmpeg command for better audio conversion
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-i', temp_input_path,
+                        '-ar', '16000',  # Match sample rate
+                        '-ac', '1',      # Mono
+                        '-f', 'wav',     # WAV format
+                        '-acodec', 'pcm_s16le',  # 16-bit PCM
+                        '-y',            # Overwrite output
+                        temp_output_path
+                    ]
                     
-                    # Cleanup
-                    os.unlink(temp_output)
+                    result = subprocess.run(
+                        ffmpeg_cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=30
+                    )
+                    
+                    if result.returncode == 0 and os.path.exists(temp_output_path):
+                        logger.info("✅ Audio conversion successful")
+                        
+                        # Read converted audio
+                        with open(temp_output_path, 'rb') as f:
+                            converted_audio = f.read()
+                        
+                        # Try transcription with converted audio
+                        config = speech.RecognitionConfig(
+                            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                            sample_rate_hertz=16000,
+                            language_code=language,
+                            enable_automatic_punctuation=True,
+                            use_enhanced=True,
+                            model="latest_long",
+                        )
+                        
+                        audio_speech = speech.RecognitionAudio(content=converted_audio)
+                        response = speech_client.recognize(config=config, audio=audio_speech)
+                        
+                        if response.results:
+                            transcription_result = response.results[0].alternatives[0].transcript
+                            confidence = response.results[0].alternatives[0].confidence
+                            logger.info(f"✅ Transcription successful after conversion: '{transcription_result}'")
+                        
+                        # Cleanup converted file
+                        os.unlink(temp_output_path)
+                    else:
+                        logger.error(f"ffmpeg conversion failed: {result.stderr}")
+                        
+                except subprocess.TimeoutExpired:
+                    logger.error("Audio conversion timed out")
+                except Exception as conv_error:
+                    logger.error(f"Audio conversion failed: {conv_error}")
+            
+            # Approach 3: Final fallback with better messaging
+            if not transcription_result:
+                logger.warning(f"All transcription attempts failed for audio from {calling_service}")
                 
-                # Cleanup
-                os.unlink(temp_input)
-                
-            except Exception as conv_error:
-                logger.error(f"Audio conversion failed: {conv_error}")
-        
-        if not transcription_result:
-            # Final fallback
-            if len(audio_content) > 1000:
-                transcription_result = "I detected audio but couldn't transcribe it clearly. The audio format might not be supported."
-            else:
-                transcription_result = "No clear audio detected. Please try speaking louder or closer to the microphone."
-            confidence = 0.1
-        
-        return {
-            "text": transcription_result,
-            "language": language,
-            "confidence": confidence,
-            "duration": len(audio_content) / 16000,
-            "processed_by": "june-stt",
-            "caller": calling_service,
-            "audio_size_bytes": len(audio_content)
-        }
+                if len(audio_content) > 1000:
+                    transcription_result = "I detected audio but couldn't transcribe it clearly. Please try speaking more clearly or check your microphone."
+                else:
+                    transcription_result = "The audio seems too short or empty. Please try recording a longer message."
+                confidence = 0.1
+            
+            return {
+                "text": transcription_result,
+                "language": language,
+                "confidence": confidence,
+                "duration": len(audio_content) / 16000,
+                "processed_by": "june-stt",
+                "caller": calling_service,
+                "audio_size_bytes": len(audio_content),
+                "original_format": content_type,
+                "filename": filename
+            }
+            
+        finally:
+            # Cleanup temporary files
+            try:
+                os.unlink(temp_input_path)
+            except:
+                pass
         
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
@@ -196,3 +210,20 @@ async def transcribe_audio(
             content={"error": f"Transcription failed: {str(e)}"}
         )
 
+# Keep your existing health endpoints
+@app.get("/healthz")
+async def healthz():
+    """Health check endpoint for load balancers"""
+    return {
+        "ok": True, 
+        "service": "june-stt", 
+        "timestamp": time.time(),
+        "status": "healthy",
+        "speech_client_available": speech_client is not None,
+        "ffmpeg_available": subprocess.run(['which', 'ffmpeg'], capture_output=True).returncode == 0
+    }
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"service": "june-stt", "status": "running"}
