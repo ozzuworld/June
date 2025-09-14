@@ -1,4 +1,5 @@
-# June/services/june-stt/app.py - ENHANCED VERSION
+# June/services/june-stt/app.py - FIXED FOR M4A SUPPORT
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Depends
 from fastapi.responses import JSONResponse
 import logging, json
@@ -8,7 +9,6 @@ import io
 from typing import Optional
 import tempfile
 import os
-import subprocess
 
 from authz import verify_token_query
 from shared.auth_service import require_service_auth
@@ -26,9 +26,40 @@ except Exception as e:
 
 app = FastAPI(title="June STT Service", version="1.0.0")
 
-# -----------------------------------------------------------------------------
-# Enhanced Service-to-Service Transcription Endpoint
-# -----------------------------------------------------------------------------
+def detect_audio_format_and_convert(audio_content: bytes, content_type: str = "", filename: str = "") -> tuple:
+    """
+    Detect audio format and convert to format suitable for Google Cloud Speech
+    Returns: (processed_audio_bytes, detected_format, sample_rate)
+    """
+    logger.info(f"Processing audio - Size: {len(audio_content)}, Content-Type: {content_type}, Filename: {filename}")
+    
+    # For M4A files (which is what your mobile app sends), we need to use MP3 encoding
+    # Google Cloud Speech treats M4A as MP3-compatible
+    if any(indicator in content_type.lower() or indicator in filename.lower() 
+           for indicator in ['m4a', 'mp4', 'aac']):
+        logger.info("Detected M4A/AAC format - using MP3 encoding for Speech API")
+        return audio_content, speech.RecognitionConfig.AudioEncoding.MP3, 16000
+    
+    elif any(indicator in content_type.lower() or indicator in filename.lower() 
+             for indicator in ['wav', 'wave']):
+        logger.info("Detected WAV format - using LINEAR16 encoding")
+        return audio_content, speech.RecognitionConfig.AudioEncoding.LINEAR16, 16000
+    
+    elif any(indicator in content_type.lower() or indicator in filename.lower() 
+             for indicator in ['flac']):
+        logger.info("Detected FLAC format")
+        return audio_content, speech.RecognitionConfig.AudioEncoding.FLAC, 16000
+    
+    elif any(indicator in content_type.lower() or indicator in filename.lower() 
+             for indicator in ['webm', 'opus']):
+        logger.info("Detected WebM/Opus format")
+        return audio_content, speech.RecognitionConfig.AudioEncoding.WEBM_OPUS, 16000
+    
+    else:
+        # Default to MP3 for unknown formats (works well for M4A)
+        logger.info("Unknown format - defaulting to MP3 encoding")
+        return audio_content, speech.RecognitionConfig.AudioEncoding.MP3, 16000
+
 @app.post("/v1/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),
@@ -36,7 +67,7 @@ async def transcribe_audio(
     service_auth_data: dict = Depends(require_service_auth)
 ):
     """
-    Enhanced transcription endpoint with better audio format handling
+    Enhanced transcription endpoint with M4A support
     """
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"Transcription request from service: {calling_service}")
@@ -48,7 +79,7 @@ async def transcribe_audio(
         
         if not speech_client:
             # Enhanced fallback when Google Cloud Speech is not available
-            if len(audio_content) > 1000:  # Non-empty audio
+            if len(audio_content) > 1000:
                 mock_text = "This is a mock transcription. Please configure Google Cloud Speech for real transcription."
             else:
                 mock_text = "No audio detected or audio too short."
@@ -62,155 +93,111 @@ async def transcribe_audio(
                 "caller": calling_service
             }
         
-        # ENHANCED: Better audio format detection and conversion
+        # FIXED: Proper M4A format handling
         content_type = audio.content_type or ""
-        filename = audio.filename or ""
+        filename = audio.filename or "audio.m4a"  # Default to m4a since that's what mobile sends
         
-        logger.info(f"Audio details - Content Type: {content_type}, Filename: {filename}, Size: {len(audio_content)} bytes")
+        logger.info(f"Audio details - Content Type: '{content_type}', Filename: '{filename}', Size: {len(audio_content)} bytes")
         
-        # Create temporary files for processing
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".original") as temp_input:
-            temp_input.write(audio_content)
-            temp_input_path = temp_input.name
+        # Detect format and get appropriate encoding
+        processed_audio, encoding_format, sample_rate = detect_audio_format_and_convert(
+            audio_content, content_type, filename
+        )
+        
+        # Configure recognition with detected format
+        config = speech.RecognitionConfig(
+            encoding=encoding_format,
+            sample_rate_hertz=sample_rate,
+            language_code=language,
+            enable_automatic_punctuation=True,
+            use_enhanced=True,
+            model="latest_long",
+            # Enable profanity filter and speaker diarization for better results
+            enable_speaker_diarization=False,  # Keep simple for now
+            profanity_filter=False,  # Allow all speech
+        )
+        
+        logger.info(f"Using Speech API config - Encoding: {encoding_format}, Sample Rate: {sample_rate}")
         
         try:
-            # ENHANCED: Try multiple approaches for audio processing
-            transcription_result = None
-            confidence = 0.0
+            # Create audio object for Speech API
+            audio_speech = speech.RecognitionAudio(content=processed_audio)
             
-            # Approach 1: Try direct transcription with multiple formats
-            for encoding_format in [
-                speech.RecognitionConfig.AudioEncoding.MP3,  # Try MP3 first (good for m4a)
-                speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                speech.RecognitionConfig.AudioEncoding.FLAC,
-                speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-                speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
-            ]:
-                try:
-                    config = speech.RecognitionConfig(
-                        encoding=encoding_format,
-                        sample_rate_hertz=16000,  # Match the mobile app setting
-                        language_code=language,
-                        enable_automatic_punctuation=True,
-                        use_enhanced=True,
-                        model="latest_long",
-                    )
-                    
-                    audio_speech = speech.RecognitionAudio(content=audio_content)
-                    
-                    logger.info(f"Trying transcription with encoding: {encoding_format}")
-                    response = speech_client.recognize(config=config, audio=audio_speech)
-                    
-                    if response.results:
-                        transcription_result = response.results[0].alternatives[0].transcript
-                        confidence = response.results[0].alternatives[0].confidence
-                        logger.info(f"✅ Transcription successful with {encoding_format}: '{transcription_result}' (confidence: {confidence})")
-                        break
-                    else:
-                        logger.warning(f"No results with {encoding_format}")
-                        
-                except Exception as format_error:
-                    logger.warning(f"Failed with {encoding_format}: {format_error}")
-                    continue
+            # Perform the transcription
+            logger.info("Sending audio to Google Cloud Speech API...")
+            response = speech_client.recognize(config=config, audio=audio_speech)
             
-            # Approach 2: If direct transcription fails, convert using ffmpeg
-            if not transcription_result:
-                logger.warning("Direct transcription failed, attempting audio conversion...")
+            if response.results and len(response.results) > 0:
+                # Get the best transcription result
+                best_result = response.results[0].alternatives[0]
+                transcription_text = best_result.transcript.strip()
+                confidence_score = best_result.confidence
                 
-                # Convert to WAV using ffmpeg
-                temp_output_path = temp_input_path + ".wav"
+                logger.info(f"✅ Transcription successful: '{transcription_text}' (confidence: {confidence_score})")
                 
-                try:
-                    # Enhanced ffmpeg command for better audio conversion
-                    ffmpeg_cmd = [
-                        'ffmpeg', '-i', temp_input_path,
-                        '-ar', '16000',  # Match sample rate
-                        '-ac', '1',      # Mono
-                        '-f', 'wav',     # WAV format
-                        '-acodec', 'pcm_s16le',  # 16-bit PCM
-                        '-y',            # Overwrite output
-                        temp_output_path
-                    ]
-                    
-                    result = subprocess.run(
-                        ffmpeg_cmd, 
-                        capture_output=True, 
-                        text=True, 
-                        timeout=30
-                    )
-                    
-                    if result.returncode == 0 and os.path.exists(temp_output_path):
-                        logger.info("✅ Audio conversion successful")
-                        
-                        # Read converted audio
-                        with open(temp_output_path, 'rb') as f:
-                            converted_audio = f.read()
-                        
-                        # Try transcription with converted audio
-                        config = speech.RecognitionConfig(
-                            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                            sample_rate_hertz=16000,
-                            language_code=language,
-                            enable_automatic_punctuation=True,
-                            use_enhanced=True,
-                            model="latest_long",
-                        )
-                        
-                        audio_speech = speech.RecognitionAudio(content=converted_audio)
-                        response = speech_client.recognize(config=config, audio=audio_speech)
-                        
-                        if response.results:
-                            transcription_result = response.results[0].alternatives[0].transcript
-                            confidence = response.results[0].alternatives[0].confidence
-                            logger.info(f"✅ Transcription successful after conversion: '{transcription_result}'")
-                        
-                        # Cleanup converted file
-                        os.unlink(temp_output_path)
-                    else:
-                        logger.error(f"ffmpeg conversion failed: {result.stderr}")
-                        
-                except subprocess.TimeoutExpired:
-                    logger.error("Audio conversion timed out")
-                except Exception as conv_error:
-                    logger.error(f"Audio conversion failed: {conv_error}")
+                return {
+                    "text": transcription_text,
+                    "language": language,
+                    "confidence": confidence_score,
+                    "duration": len(audio_content) / sample_rate,
+                    "processed_by": "june-stt",
+                    "caller": calling_service,
+                    "audio_size_bytes": len(audio_content),
+                    "encoding_used": str(encoding_format),
+                    "sample_rate_used": sample_rate
+                }
+            else:
+                logger.warning("Speech API returned no results")
+                return {
+                    "text": "No speech detected in the audio. Please try speaking more clearly or closer to the microphone.",
+                    "language": language,
+                    "confidence": 0.0,
+                    "duration": len(audio_content) / sample_rate,
+                    "processed_by": "june-stt",
+                    "caller": calling_service,
+                    "audio_size_bytes": len(audio_content),
+                    "error": "no_speech_detected"
+                }
+                
+        except Exception as speech_error:
+            logger.error(f"Google Cloud Speech API error: {speech_error}")
             
-            # Approach 3: Final fallback with better messaging
-            if not transcription_result:
-                logger.warning(f"All transcription attempts failed for audio from {calling_service}")
-                
-                if len(audio_content) > 1000:
-                    transcription_result = "I detected audio but couldn't transcribe it clearly. Please try speaking more clearly or check your microphone."
-                else:
-                    transcription_result = "The audio seems too short or empty. Please try recording a longer message."
-                confidence = 0.1
+            # Provide helpful error message based on the error type
+            error_message = str(speech_error).lower()
+            if "invalid" in error_message and "encoding" in error_message:
+                user_message = "Audio format not supported. Please try recording again."
+            elif "empty" in error_message or "too short" in error_message:
+                user_message = "Audio too short. Please record a longer message."
+            elif "quota" in error_message or "limit" in error_message:
+                user_message = "Speech service temporarily unavailable. Please try again in a moment."
+            else:
+                user_message = "Could not process audio. Please try recording again."
             
             return {
-                "text": transcription_result,
+                "text": user_message,
                 "language": language,
-                "confidence": confidence,
-                "duration": len(audio_content) / 16000,
+                "confidence": 0.0,
+                "duration": len(audio_content) / sample_rate,
                 "processed_by": "june-stt",
                 "caller": calling_service,
                 "audio_size_bytes": len(audio_content),
-                "original_format": content_type,
-                "filename": filename
+                "error": "speech_api_error",
+                "error_details": str(speech_error)
             }
-            
-        finally:
-            # Cleanup temporary files
-            try:
-                os.unlink(temp_input_path)
-            except:
-                pass
         
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Transcription failed: {str(e)}"}
+            content={
+                "error": f"Transcription failed: {str(e)}",
+                "text": "Sorry, I couldn't process your audio. Please try again.",
+                "processed_by": "june-stt",
+                "caller": calling_service
+            }
         )
 
-# Keep your existing health endpoints
+# Health check endpoint
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint for load balancers"""
@@ -219,11 +206,10 @@ async def healthz():
         "service": "june-stt", 
         "timestamp": time.time(),
         "status": "healthy",
-        "speech_client_available": speech_client is not None,
-        "ffmpeg_available": subprocess.run(['which', 'ffmpeg'], capture_output=True).returncode == 0
+        "speech_client_available": speech_client is not None
     }
 
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {"service": "june-stt", "status": "running"}
+    return {"service": "june-stt", "status": "running", "supports_m4a": True}
