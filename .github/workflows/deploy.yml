@@ -111,6 +111,7 @@ jobs:
               ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
+              ENV_VARS="${ENV_VARS},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
             elif [ "${{ matrix.service }}" = "june-stt" ]; then
               ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},STT_CLIENT_SECRET=${{ secrets.STT_CLIENT_SECRET }}"
