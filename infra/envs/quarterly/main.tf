@@ -22,12 +22,15 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
+  # Remove the credentials line - ADC will be used automatically
 }
 
 provider "google-beta" {
   project = var.project_id
   region  = var.region
+  # Remove the credentials line - ADC will be used automatically
 }
+
 
 # Service accounts are defined in service_accounts.tf
 
@@ -146,42 +149,6 @@ module "tts" {
   }
 }
 
-# NEW: Kokoro TTS service
-module "kokoro_tts" {
-  source  = "GoogleCloudPlatform/cloud-run/google"
-  version = "~> 0.21"
-
-  service_name = "june-kokoro-tts"
-  project_id   = var.project_id
-  location     = var.region
-  image        = var.image_kokoro_tts
-
-  service_account_email = local.runtime_sas["june-kokoro-tts"]
-  
-  env_vars = [
-    { name = "KC_BASE_URL", value = var.KC_BASE_URL },
-    { name = "KC_REALM", value = var.KC_REALM },
-    { name = "KOKORO_CLIENT_ID", value = var.KOKORO_CLIENT_ID },
-    { name = "KOKORO_CLIENT_SECRET", value = var.KOKORO_CLIENT_SECRET },
-    { name = "MODEL_PATH", value = "/app/models" },
-    { name = "DEVICE", value = "cpu" },
-    { name = "LOG_LEVEL", value = "INFO" }
-  ]
-
-  limits = {
-    cpu    = "2000m"  # 2 CPU cores for model inference
-    memory = "4Gi"    # 4GB RAM for model loading
-  }
-
-  template_annotations = {
-    "autoscaling.knative.dev/minScale" = "0"  # Scale to zero
-    "autoscaling.knative.dev/maxScale" = "5"  # Limit instances
-    "run.googleapis.com/startup-cpu-boost" = "true"  # Faster cold starts
-  }
-
-  timeout_seconds = 900  # 15 minutes for model loading
-}
-
 # Outputs
 output "orchestrator_url" {
   value = module.orchestrator.service_url
@@ -195,10 +162,5 @@ output "tts_url" {
   value = module.tts.service_url
 }
 
-# NEW: Kokoro TTS output
-output "kokoro_tts_url" {
-  value = module.kokoro_tts.service_url
-  description = "URL of the Kokoro TTS service"
-}
-
 # NOTE: IDP module and its output are in june-idp.tf
+# NOTE: Kokoro TTS module and its output are in kokoro-tts.tf

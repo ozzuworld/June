@@ -46,7 +46,7 @@ resource "google_service_account_iam_member" "deployer_can_impersonate" {
   member             = "serviceAccount:${var.deployer_sa_email}"
 }
 
-# Output for use in main.tf
+# Output for use in main.tf - THIS WAS MISSING!
 locals {
   runtime_service_accounts = {
     for name, sa in google_service_account.runtime :

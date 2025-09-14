@@ -1,4 +1,5 @@
 # infra/envs/quarterly/variables.tf
+
 variable "project_id" {
   description = "GCP project ID"
   type        = string
@@ -71,6 +72,33 @@ variable "KC_CLIENT_ID" {
 
 variable "KC_CLIENT_SECRET" {
   description = "Keycloak client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# Service client credentials
+variable "STT_CLIENT_ID" {
+  description = "Keycloak client ID for STT service"
+  type        = string
+  default     = ""
+}
+
+variable "STT_CLIENT_SECRET" {
+  description = "Keycloak client secret for STT service"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "TTS_CLIENT_ID" {
+  description = "Keycloak client ID for legacy TTS service"
+  type        = string
+  default     = ""
+}
+
+variable "TTS_CLIENT_SECRET" {
+  description = "Keycloak client secret for legacy TTS service"
   type        = string
   default     = ""
   sensitive   = true
