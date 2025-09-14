@@ -360,3 +360,76 @@ async def startup_event():
         logger.info("✅ TTS client configured")
     else:
         logger.warning("⚠️ TTS client not available")
+
+# -----------------------------------------------------------------------------
+# Add this to June/services/june-orchestrator/app.py
+# This creates a mobile-specific endpoint that accepts Firebase tokens
+
+@app.post("/v1/process-audio-mobile")
+async def process_audio_mobile(
+    payload: dict,
+    user=Depends(get_current_user)  # Firebase auth from authz.py
+):
+    """
+    Mobile-specific audio processing endpoint
+    Accepts Firebase authentication tokens from mobile apps
+    """
+    logger.info(f"Mobile audio processing request from user: {user.get('uid', 'unknown')}")
+    
+    audio_data = payload.get("audio_data")  # base64 encoded audio
+    if not audio_data:
+        return {"error": "No audio data provided"}
+    
+    try:
+        # Decode audio
+        import base64
+        audio_bytes = base64.b64decode(audio_data)
+        
+        # Call STT service using service authentication
+        if stt_client:
+            stt_result = await stt_client.transcribe_audio(audio_bytes)
+            text = stt_result.get("text", "")
+        else:
+            text = "STT service not available"
+        
+        # Process through LLM (local processing)
+        reply = f"You said: {text}. Here's my response from June AI!"
+        
+        # Call TTS service using service authentication
+        if tts_client:
+            audio_response = await tts_client.synthesize_speech(reply)
+            audio_b64 = base64.b64encode(audio_response).decode()
+        else:
+            audio_b64 = None
+        
+        return {
+            "transcription": text,
+            "response_text": reply,
+            "response_audio": audio_b64,
+            "processed_by": "orchestrator-mobile",
+            "user_id": user.get('uid')
+        }
+        
+    except Exception as e:
+        logger.error(f"Mobile audio processing failed: {e}")
+        return {"error": str(e)}
+
+@app.post("/v1/chat-mobile")
+async def chat_mobile(
+    payload: dict,
+    user=Depends(get_current_user)  # Firebase auth
+):
+    """Mobile-specific chat endpoint"""
+    user_text = (payload or {}).get("user_input", "")
+    user_id = user.get('uid', 'unknown')
+    
+    logger.info(f"Mobile chat request from user: {user_id}")
+    
+    # TODO: plug your LLM/agent here; for now, simple reply
+    reply = f"Hello! You said: {user_text}. I'm June AI responding to your mobile app."
+    
+    return {
+        "reply": reply, 
+        "processed_by": "orchestrator-mobile", 
+        "user_id": user_id
+    }
