@@ -328,8 +328,32 @@ async def process_audio(
         
         # Call STT service
         if stt_client:
-            stt_result = await stt_client.transcribe_audio(audio_bytes)
-            text = stt_result.get("text", "")
+            # Create a temporary file-like object for the audio
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_file:
+                temp_file.write(audio_bytes)
+                temp_file.flush()
+                
+                # Call STT service with file upload
+                with open(temp_file.name, "rb") as audio_file:
+                    files = {"audio": ("audio.m4a", audio_file, "audio/m4a")}
+                    data = {"language": "en-US"}
+                    
+                    response = await stt_client.auth.make_authenticated_request(
+                        "POST",
+                        f"{STT_SERVICE_URL}/v1/transcribe",
+                        files=files,
+                        data=data,
+                        timeout=30.0
+                    )
+                    
+                    response.raise_for_status()
+                    stt_result = response.json()
+                    text = stt_result.get("text", "Could not transcribe audio")
+                    
+                # Clean up temp file
+                import os
+                os.unlink(temp_file.name)
         else:
             text = "STT service not available"
         
@@ -337,11 +361,33 @@ async def process_audio(
         reply = await generate_ai_response(text, {"caller": calling_service})
         
         # Call TTS service  
-        if tts_client:
-            audio_response = await tts_client.synthesize_speech(reply)
-            audio_b64 = base64.b64encode(audio_response).decode()
-        else:
-            audio_b64 = None
+        audio_b64 = None
+        if tts_client and reply:
+            try:
+                # URL encode the text properly
+                import urllib.parse
+                encoded_text = urllib.parse.quote(reply)
+                
+                response = await tts_client.auth.make_authenticated_request(
+                    "POST",
+                    f"{TTS_SERVICE_URL}/v1/tts",
+                    params={
+                        "text": encoded_text,
+                        "language_code": "en-US",
+                        "voice_name": "en-US-Wavenet-D",
+                        "audio_encoding": "MP3"
+                    },
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    audio_response = response.content
+                    audio_b64 = base64.b64encode(audio_response).decode()
+                else:
+                    logger.error(f"TTS service returned {response.status_code}: {response.text}")
+                    
+            except Exception as tts_error:
+                logger.error(f"TTS service call failed: {tts_error}")
         
         return {
             "transcription": text,
