@@ -1,4 +1,4 @@
-# June/services/june-orchestrator/app.py
+# June/services/june-orchestrator/app.py - UPDATED FOR KOKORO TTS
 import os
 import json
 import uuid
@@ -75,22 +75,10 @@ except Exception as e:
 
 # Service URLs (for calling other services)
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
-TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "")
-
-# Downstream WebSocket services (existing functionality)
-STT_WS_URL  = os.getenv("STT_WS_URL", "")
-STT_HTTP_URL = os.getenv("STT_HTTP_URL") or (STT_WS_URL.replace("wss://", "https://").removesuffix("/ws") if STT_WS_URL else "")
-TTS_URL     = os.getenv("TTS_URL", "")
+TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "")  # Now points to Kokoro TTS
 
 # Audio defaults
 DEFAULT_LOCALE        = os.getenv("DEFAULT_LOCALE", "en-US")
-DEFAULT_STT_RATE      = int(os.getenv("DEFAULT_STT_RATE", "16000"))
-DEFAULT_STT_ENCODING  = os.getenv("DEFAULT_STT_ENCODING", "pcm16")
-DEFAULT_TTS_ENCODING  = os.getenv("DEFAULT_TTS_ENCODING", "MP3")
-
-# Handshake + private STT options
-STT_HANDSHAKE              = os.getenv("STT_HANDSHAKE", "start").lower()
-STT_REQUIRE_CLOUDRUN_AUTH  = os.getenv("STT_REQUIRE_CLOUDRUN_AUTH", "false").lower() == "true"
 
 # -----------------------------------------------------------------------------
 # AI Helper Functions
@@ -138,8 +126,71 @@ except Exception as e:
     service_auth = None
 
 # -----------------------------------------------------------------------------
-# Enhanced STT and TTS clients with authentication (keeping existing code)
+# Enhanced Kokoro TTS client with authentication
 # -----------------------------------------------------------------------------
+class KokoroTTSClient:
+    def __init__(self, base_url: str, auth_client: ServiceAuthClient):
+        self.base_url = base_url.rstrip('/')
+        self.auth = auth_client
+        self.available_voices = {}
+        
+    async def initialize(self):
+        """Initialize and get available voices"""
+        try:
+            response = await self.auth.make_authenticated_request(
+                "GET",
+                f"{self.base_url}/v1/voices",
+                timeout=10.0
+            )
+            response.raise_for_status()
+            voice_data = response.json()
+            self.available_voices = voice_data.get("voices", {})
+            logger.info(f"✅ Kokoro TTS initialized with voices: {list(self.available_voices.keys())}")
+        except Exception as e:
+            logger.error(f"⚠️ Failed to initialize Kokoro TTS: {e}")
+            self.available_voices = {"af_bella": "American Female - Bella (fallback)"}
+    
+    async def synthesize_speech(
+        self, 
+        text: str, 
+        voice: str = "af_bella",
+        speed: float = 1.0,
+        audio_encoding: str = "MP3"
+    ) -> bytes:
+        """Call Kokoro TTS service with service authentication"""
+        if not self.auth:
+            raise Exception("Service authentication not configured")
+        
+        # Validate voice
+        if voice not in self.available_voices and voice != "default":
+            logger.warning(f"Voice '{voice}' not available, using af_bella")
+            voice = "af_bella"
+        
+        url = f"{self.base_url}/v1/tts"
+        
+        params = {
+            "text": text,
+            "voice": voice,
+            "speed": speed,
+            "audio_encoding": audio_encoding
+        }
+        
+        try:
+            response = await self.auth.make_authenticated_request(
+                "POST",
+                url,
+                params=params,
+                timeout=30.0
+            )
+            
+            response.raise_for_status()
+            logger.info(f"✅ Kokoro TTS synthesis successful: {len(response.content)} bytes")
+            return response.content
+            
+        except Exception as e:
+            logger.error(f"❌ Kokoro TTS service call failed: {e}")
+            raise
+
 class AuthenticatedSTTClient:
     def __init__(self, base_url: str, auth_client: ServiceAuthClient):
         self.base_url = base_url.rstrip('/')
@@ -168,46 +219,7 @@ class AuthenticatedSTTClient:
             logger.error(f"STT service call failed: {e}")
             raise
 
-class AuthenticatedTTSClient:
-    def __init__(self, base_url: str, auth_client: ServiceAuthClient):
-        self.base_url = base_url.rstrip('/')
-        self.auth = auth_client
-    
-    async def synthesize_speech(
-        self, 
-        text: str, 
-        language_code: str = "en-US",
-        voice_name: str = "en-US-Wavenet-D"
-    ) -> bytes:
-        """Call TTS service with service authentication"""
-        if not self.auth:
-            raise Exception("Service authentication not configured")
-        
-        url = f"{self.base_url}/v1/tts"
-        
-        params = {
-            "text": text,
-            "language_code": language_code,
-            "voice_name": voice_name,
-            "audio_encoding": "MP3"
-        }
-        
-        try:
-            response = await self.auth.make_authenticated_request(
-                "POST",
-                url,
-                params=params,
-                timeout=30.0
-            )
-            
-            response.raise_for_status()
-            return response.content
-            
-        except Exception as e:
-            logger.error(f"TTS service call failed: {e}")
-            raise
-
-# Initialize service clients (only if auth is available)
+# Initialize service clients
 stt_client = None
 tts_client = None
 
@@ -217,8 +229,8 @@ if service_auth:
         logger.info("✅ STT service client initialized")
     
     if TTS_SERVICE_URL:
-        tts_client = AuthenticatedTTSClient(TTS_SERVICE_URL, service_auth)
-        logger.info("✅ TTS service client initialized")
+        tts_client = KokoroTTSClient(TTS_SERVICE_URL, service_auth)
+        logger.info("✅ Kokoro TTS service client initialized")
 
 # -----------------------------------------------------------------------------
 # Health and config endpoints
@@ -231,7 +243,8 @@ async def healthz():
         "service": "june-orchestrator", 
         "timestamp": time.time(),
         "status": "healthy",
-        "ai_enabled": ai_model is not None
+        "ai_enabled": ai_model is not None,
+        "tts_engine": "kokoro"
     }
 
 @app.get("/")
@@ -241,7 +254,8 @@ async def root():
         "service": "june-orchestrator", 
         "status": "running",
         "version": "1.0.0",
-        "ai_enabled": ai_model is not None
+        "ai_enabled": ai_model is not None,
+        "tts_engine": "kokoro"
     }
 
 @app.get("/configz")
@@ -249,26 +263,20 @@ async def configz():
     """Configuration endpoint for debugging"""
     return {
         "FIREBASE_PROJECT_ID": FIREBASE_PROJECT_ID,
-        "STT_WS_URL": STT_WS_URL,
-        "STT_HTTP_URL": STT_HTTP_URL,
-        "TTS_URL": TTS_URL,
         "STT_SERVICE_URL": STT_SERVICE_URL,
         "TTS_SERVICE_URL": TTS_SERVICE_URL,
         "DEFAULT_LOCALE": DEFAULT_LOCALE,
-        "DEFAULT_STT_RATE": DEFAULT_STT_RATE,
-        "DEFAULT_STT_ENCODING": DEFAULT_STT_ENCODING,
-        "DEFAULT_TTS_ENCODING": DEFAULT_TTS_ENCODING,
-        "STT_HANDSHAKE": STT_HANDSHAKE,
-        "STT_REQUIRE_CLOUDRUN_AUTH": STT_REQUIRE_CLOUDRUN_AUTH,
         "service_auth_enabled": service_auth is not None,
         "stt_client_ready": stt_client is not None,
         "tts_client_ready": tts_client is not None,
         "ai_model_enabled": ai_model is not None,
-        "gemini_api_key_present": bool(GEMINI_API_KEY)
+        "gemini_api_key_present": bool(GEMINI_API_KEY),
+        "tts_engine": "kokoro",
+        "available_voices": getattr(tts_client, 'available_voices', {}) if tts_client else {}
     }
 
 # -----------------------------------------------------------------------------
-# Protected service endpoints (for other services to call) - UPDATED WITH AI
+# Protected service endpoints with Kokoro TTS
 # -----------------------------------------------------------------------------
 @app.post("/v1/chat")
 async def chat(
@@ -313,7 +321,7 @@ async def process_audio(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Process audio through STT -> LLM -> TTS pipeline"""
+    """Process audio through STT -> LLM -> Kokoro TTS pipeline"""
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"Audio processing request from service: {calling_service}")
     
@@ -357,140 +365,43 @@ async def process_audio(
         else:
             text = "STT service not available"
         
-        # Process through AI (instead of local processing)
+        # Process through AI
         reply = await generate_ai_response(text, {"caller": calling_service})
         
-        # Call TTS service  
+        # Call Kokoro TTS service  
         audio_b64 = None
         if tts_client and reply:
             try:
-                # URL encode the text properly
-                import urllib.parse
-                encoded_text = urllib.parse.quote(reply)
+                logger.info(f"🎵 Generating speech with Kokoro TTS: '{reply[:50]}...'")
                 
-                response = await tts_client.auth.make_authenticated_request(
-                    "POST",
-                    f"{TTS_SERVICE_URL}/v1/tts",
-                    params={
-                        "text": encoded_text,
-                        "language_code": "en-US",
-                        "voice_name": "en-US-Wavenet-D",
-                        "audio_encoding": "MP3"
-                    },
-                    timeout=30.0
+                audio_response = await tts_client.synthesize_speech(
+                    text=reply,
+                    voice="af_bella",  # Use default Kokoro voice
+                    speed=1.0,
+                    audio_encoding="MP3"
                 )
                 
-                if response.status_code == 200:
-                    audio_response = response.content
+                if audio_response:
                     audio_b64 = base64.b64encode(audio_response).decode()
+                    logger.info(f"✅ Kokoro TTS audio generated: {len(audio_response)} bytes")
                 else:
-                    logger.error(f"TTS service returned {response.status_code}: {response.text}")
+                    logger.error("❌ Kokoro TTS returned empty audio")
                     
             except Exception as tts_error:
-                logger.error(f"TTS service call failed: {tts_error}")
+                logger.error(f"❌ Kokoro TTS service call failed: {tts_error}")
         
         return {
             "transcription": text,
             "response_text": reply,
             "response_audio": audio_b64,
             "processed_by": "orchestrator",
-            "caller": calling_service
+            "caller": calling_service,
+            "tts_engine": "kokoro"
         }
         
     except Exception as e:
         logger.error(f"Audio processing failed: {e}")
         return {"error": str(e)}
-
-# -----------------------------------------------------------------------------
-# Firebase-authenticated endpoints (keeping existing functionality)
-# -----------------------------------------------------------------------------
-@app.get("/whoami")
-async def whoami(user=Depends(get_current_user)):
-    """Debug endpoint to see Firebase user claims"""
-    return {"firebase_user": user}
-
-# Keep all existing WebSocket functionality below...
-# (Existing functionality continues here - all the _fetch_gcp_id_token, _llm_generate_reply_via_http, etc.)
-
-async def _fetch_gcp_id_token(audience: str) -> str:
-    """Get a Google-signed ID token for Cloud Run (audience = HTTPS base URL)."""
-    url = "http://metadata/computeMetadata/v1/instance/service-accounts/default/identity"
-    headers = {"Metadata-Flavor": "Google"}
-    params = {"audience": audience, "format": "full"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url, headers=headers, params=params)
-        r.raise_for_status()
-        return r.text.strip()
-
-async def _llm_generate_reply_via_http(text: str, id_token: str, base_url: str = "http://127.0.0.1:8080") -> str:
-    """Calls this same service's /v1/chat to reuse your existing chain/agent."""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as client:
-            r = await client.post(
-                f"{base_url}/v1/chat",
-                headers={"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
-                json={"user_input": text},
-            )
-            r.raise_for_status()
-            data = r.json()
-            return (data.get("reply") or "").strip()
-    except Exception:
-        logger.exception("[voice] /v1/chat failed; falling back")
-        return f"You said: {text}"
-
-async def _tts_stream(reply_text: str, locale: str, id_token: str, client_ws: WebSocket, turn_id: str):
-    """Streams audio bytes from TTS to the WebSocket client."""
-    if not TTS_URL:
-        await client_ws.send_text(json.dumps({"type":"error", "code":"CONFIG", "message":"TTS_URL not set"}))
-        return
-
-    params = {"text": reply_text, "language_code": locale, "audio_encoding": DEFAULT_TTS_ENCODING}
-    headers = {"Authorization": f"Bearer {id_token}"}
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=60.0)) as client:
-        async with client.stream("POST", TTS_URL, params=params, headers=headers) as r:
-            r.raise_for_status()
-            ctype = r.headers.get("content-type", "audio/mpeg")
-            await client_ws.send_text(json.dumps({"type":"tts.start", "turn_id": turn_id, "content_type": ctype}))
-            async for chunk in r.aiter_bytes(chunk_size=32768):
-                if not chunk:
-                    break
-                await client_ws.send_bytes(chunk)
-            await client_ws.send_text(json.dumps({"type":"tts.done", "turn_id": turn_id}))
-
-# Voice bridge (client <-> STT; on final -> call LLM -> stream TTS)
-@voice_router.websocket("/v1/voice")
-async def voice_ws(ws: WebSocket):
-    """Client connects here with WebSocket for voice functionality"""
-    token: Optional[str] = ws.query_params.get("token")
-    locale: str = ws.query_params.get("locale") or DEFAULT_LOCALE
-
-    await ws.accept()
-    if not token:
-        await ws.send_text(json.dumps({"type":"error","code":"AUTH","message":"Missing ?token"}))
-        await ws.close(code=4401)
-        return
-
-    try:
-        await _stt_bridge(ws, token, locale, DEFAULT_STT_ENCODING)
-    except Exception:
-        logger.exception("[voice] unhandled")
-        try:
-            await ws.send_text(json.dumps({"type":"error","code":"VOICE","message":"internal error"}))
-        except Exception:
-            pass
-        await ws.close(code=1011)
-
-async def _stt_bridge(client_ws: WebSocket, id_token: str, locale: str, encoding: str):
-    """Your existing STT bridge implementation"""
-    if not STT_WS_URL:
-        await client_ws.send_text(json.dumps({"type":"error","code":"CONFIG","message":"STT_WS_URL not set"}))
-        return
-
-    await client_ws.send_text(json.dumps({"type": "connected", "message": "Voice WebSocket ready"}))
-
-# Include the voice router
-app.include_router(voice_router)
 
 # -----------------------------------------------------------------------------
 # Startup event
@@ -512,11 +423,18 @@ async def startup_event():
         logger.warning("⚠️ STT client not available")
     
     if tts_client:
-        logger.info("✅ TTS client configured")
+        logger.info("✅ Kokoro TTS client configured")
+        # Initialize Kokoro TTS and get available voices
+        try:
+            await tts_client.initialize()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Kokoro TTS: {e}")
     else:
-        logger.warning("⚠️ TTS client not available")
+        logger.warning("⚠️ Kokoro TTS client not available")
     
     if ai_model:
         logger.info("✅ AI model configured and ready")
     else:
         logger.warning("⚠️ AI model not available - using fallback responses")
+
+# Include existing voice router and other endpoints...

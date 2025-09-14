@@ -1,0 +1,164 @@
+# docker-compose.local.yml - Local development with Kokoro TTS
+version: '3.8'
+
+services:
+  # Keycloak for authentication
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    ports:
+      - "8080:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin123
+      KC_DB: dev-file
+      KC_HTTP_ENABLED: true
+      KC_HOSTNAME_STRICT: false
+    command: start-dev
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Kokoro TTS Service
+  kokoro-tts:
+    build:
+      context: ./services/june-kokoro-tts
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      KC_BASE_URL: http://keycloak:8080
+      KC_REALM: june
+      KOKORO_CLIENT_ID: kokoro-service
+      KOKORO_CLIENT_SECRET: your-secret-here
+      MODEL_PATH: /app/models
+      DEVICE: cpu
+      LOG_LEVEL: INFO
+    volumes:
+      - kokoro_models:/app/models
+      - ./services/june-kokoro-tts:/app
+    depends_on:
+      - keycloak
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Orchestrator (updated to use Kokoro)
+  orchestrator:
+    build:
+      context: ./June/services/june-orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+    environment:
+      KC_BASE_URL: http://keycloak:8080
+      KC_REALM: june
+      ORCHESTRATOR_CLIENT_ID: orchestrator-service
+      ORCHESTRATOR_CLIENT_SECRET: your-secret-here
+      STT_SERVICE_URL: http://stt:8080
+      TTS_SERVICE_URL: http://kokoro-tts:8080  # Point to Kokoro instead
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    depends_on:
+      - keycloak
+      - kokoro-tts
+    volumes:
+      - ./June/services/june-orchestrator:/app
+
+  # STT Service
+  stt:
+    build:
+      context: ./June/services/june-stt
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8080"
+    environment:
+      KC_BASE_URL: http://keycloak:8080
+      KC_REALM: june
+      STT_CLIENT_ID: stt-service
+      STT_CLIENT_SECRET: your-secret-here
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials.json
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - ./June/services/june-stt:/app
+      - ./credentials/gcp-credentials.json:/app/credentials.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Test Web Interface (Optional)
+  test-ui:
+    build:
+      context: ./test-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_ORCHESTRATOR_URL: http://localhost:8082
+      REACT_APP_KEYCLOAK_URL: http://localhost:8080
+      REACT_APP_KEYCLOAK_REALM: june
+      REACT_APP_KEYCLOAK_CLIENT_ID: test-client
+      REACT_APP_TTS_ENGINE: kokoro
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    profiles:
+      - testing
+
+  # Redis for caching (Optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    profiles:
+      - caching
+
+  # Nginx Edge (Optional - for testing edge routing)
+  nginx-edge:
+    build:
+      context: ./services/nginx-edge
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8080"
+    environment:
+      UPSTREAM_IDP: http://keycloak:8080
+      UPSTREAM_ORCH: http://orchestrator:8080
+      UPSTREAM_STT: http://stt:8080
+      UPSTREAM_TTS: http://kokoro-tts:8080
+    depends_on:
+      - keycloak
+      - orchestrator
+      - stt
+      - kokoro-tts
+    profiles:
+      - edge
+
+volumes:
+  keycloak_data:
+    driver: local
+  kokoro_models:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    name: june-local
+    driver: bridge
