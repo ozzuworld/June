@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 import io, os, json
 import time
 import urllib.parse
+import logging
 
 from authz import get_current_user  # Firebase auth for client requests
 from shared.auth_service import require_service_auth  # Service-to-service auth
