@@ -303,9 +303,74 @@ def determine_media_type(audio_format: str) -> str:
 # API ENDPOINTS
 # =============================================================================
 
+@app.get("/healthz")
+async def healthz():
+    """Health check endpoint for load balancers - FIXED for proper startup handling"""
+    try:
+        # Calculate startup time
+        startup_time = time.time() - (getattr(app.state, 'startup_time', time.time()))
+        
+        health_data = {
+            "ok": True,
+            "service": "june-chatterbox-tts",
+            "timestamp": time.time(),
+            "status": "healthy",
+            "tts_available": TTS_AVAILABLE,
+            "device": config.device,
+            "multilingual_enabled": config.enable_multilingual,
+            "supported_languages": tts_service.supported_languages,
+            "voice_profiles": list(VOICE_PROFILES.keys()),
+            "engine": "coqui-tts",
+            "startup_time": startup_time
+        }
+        
+        # Check if TTS service is properly initialized
+        if not tts_service.is_initialized:
+            # During startup period (first 5 minutes), return initializing status
+            if startup_time < 300:  # 5 minutes grace period
+                health_data.update({
+                    "status": "initializing",
+                    "message": "TTS models are loading, please wait...",
+                    "estimated_ready_in": max(0, 300 - startup_time)
+                })
+                return health_data  # Return 200 but with initializing status
+            else:
+                health_data.update({
+                    "status": "unhealthy",
+                    "message": "TTS initialization failed or timed out"
+                })
+                return health_data
+        
+        # Service is ready
+        health_data.update({
+            "models_loaded": True,
+            "ready_for_synthesis": True,
+            "features": {
+                "emotion_control": config.enable_emotion_control,
+                "voice_cloning": config.enable_voice_cloning,
+                "multilingual": config.enable_multilingual
+            }
+        })
+        
+        return health_data
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "ok": False,
+            "service": "june-chatterbox-tts",
+            "timestamp": time.time(),
+            "status": "unhealthy",
+            "error": str(e)
+        }
+
+# ALSO ADD this to your app startup to track startup time
 @app.on_event("startup")
 async def startup_event():
     """Initialize service on startup"""
+    # Track startup time for health checks
+    app.state.startup_time = time.time()
+    
     logger.info("Starting June TTS Service...")
     
     success = await tts_service.initialize()
@@ -313,22 +378,6 @@ async def startup_event():
         logger.info("✅ TTS service initialized successfully")
     else:
         logger.error("❌ Failed to initialize TTS service")
-
-@app.get("/healthz")
-async def healthz():
-    """Health check endpoint"""
-    return {
-        "ok": True,
-        "service": "june-chatterbox-tts",
-        "timestamp": time.time(),
-        "status": "healthy" if tts_service.is_initialized else "initializing",
-        "tts_available": TTS_AVAILABLE,
-        "device": config.device,
-        "multilingual_enabled": config.enable_multilingual,
-        "supported_languages": tts_service.supported_languages,
-        "voice_profiles": list(VOICE_PROFILES.keys()),
-        "engine": "coqui-tts"
-    }
 
 @app.get("/")
 async def root():
