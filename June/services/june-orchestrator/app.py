@@ -1,4 +1,4 @@
-# June/services/june-orchestrator/app.py - UPDATED FOR KOKORO TTS
+# June/services/june-orchestrator/app.py - CHATTERBOX TTS ONLY
 import os
 import json
 import uuid
@@ -73,12 +73,12 @@ except ImportError:
 except Exception as e:
     logger.error(f"⚠️ Failed to initialize AI model: {e}")
 
-# Service URLs (for calling other services)
+# Service URLs - ONLY CHATTERBOX TTS
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
-TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "")  # Now points to Kokoro TTS
+TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "")  # Points ONLY to Chatterbox TTS
 
 # Audio defaults
-DEFAULT_LOCALE        = os.getenv("DEFAULT_LOCALE", "en-US")
+DEFAULT_LOCALE = os.getenv("DEFAULT_LOCALE", "en-US")
 
 # -----------------------------------------------------------------------------
 # AI Helper Functions
@@ -126,9 +126,9 @@ except Exception as e:
     service_auth = None
 
 # -----------------------------------------------------------------------------
-# Enhanced Kokoro TTS client with authentication
+# Chatterbox TTS client with authentication
 # -----------------------------------------------------------------------------
-class KokoroTTSClient:
+class ChatterboxTTSClient:
     def __init__(self, base_url: str, auth_client: ServiceAuthClient):
         self.base_url = base_url.rstrip('/')
         self.auth = auth_client
@@ -145,51 +145,66 @@ class KokoroTTSClient:
             response.raise_for_status()
             voice_data = response.json()
             self.available_voices = voice_data.get("voices", {})
-            logger.info(f"✅ Kokoro TTS initialized with voices: {list(self.available_voices.keys())}")
+            logger.info(f"✅ Chatterbox TTS initialized with voices: {list(self.available_voices.keys())}")
         except Exception as e:
-            logger.error(f"⚠️ Failed to initialize Kokoro TTS: {e}")
-            self.available_voices = {"af_bella": "American Female - Bella (fallback)"}
+            logger.error(f"⚠️ Failed to initialize Chatterbox TTS: {e}")
+            self.available_voices = {"assistant_female": "American Female Assistant (fallback)"}
     
     async def synthesize_speech(
         self, 
         text: str, 
-        voice: str = "af_bella",
+        voice: str = "assistant_female",
         speed: float = 1.0,
-        audio_encoding: str = "MP3"
+        audio_encoding: str = "MP3",
+        emotion_settings: dict = None
     ) -> bytes:
-        """Call Kokoro TTS service with service authentication"""
+        """Call Chatterbox TTS service with service authentication"""
         if not self.auth:
             raise Exception("Service authentication not configured")
         
         # Validate voice
         if voice not in self.available_voices and voice != "default":
-            logger.warning(f"Voice '{voice}' not available, using af_bella")
-            voice = "af_bella"
+            logger.warning(f"Voice '{voice}' not available, using assistant_female")
+            voice = "assistant_female"
         
         url = f"{self.base_url}/v1/tts"
         
-        params = {
-            "text": text,
-            "voice": voice,
-            "speed": speed,
-            "audio_encoding": audio_encoding
-        }
-        
-        try:
+        # Use advanced endpoint if emotion settings provided
+        if emotion_settings:
+            url = f"{self.base_url}/v1/tts/advanced"
+            payload = {
+                "text": text,
+                "voice_profile": voice,
+                "speed_factor": speed,
+                "audio_format": audio_encoding.lower(),
+                **emotion_settings
+            }
+            
+            response = await self.auth.make_authenticated_request(
+                "POST",
+                url,
+                json=payload,
+                timeout=30.0
+            )
+        else:
+            # Standard TTS endpoint
+            params = {
+                "text": text,
+                "voice": voice,
+                "speed": speed,
+                "audio_encoding": audio_encoding
+            }
+            
             response = await self.auth.make_authenticated_request(
                 "POST",
                 url,
                 params=params,
                 timeout=30.0
             )
-            
-            response.raise_for_status()
-            logger.info(f"✅ Kokoro TTS synthesis successful: {len(response.content)} bytes")
-            return response.content
-            
-        except Exception as e:
-            logger.error(f"❌ Kokoro TTS service call failed: {e}")
-            raise
+        
+        response.raise_for_status()
+        logger.info(f"✅ Chatterbox TTS synthesis successful: {len(response.content)} bytes")
+        return response.content
 
 class AuthenticatedSTTClient:
     def __init__(self, base_url: str, auth_client: ServiceAuthClient):
@@ -229,8 +244,8 @@ if service_auth:
         logger.info("✅ STT service client initialized")
     
     if TTS_SERVICE_URL:
-        tts_client = KokoroTTSClient(TTS_SERVICE_URL, service_auth)
-        logger.info("✅ Kokoro TTS service client initialized")
+        tts_client = ChatterboxTTSClient(TTS_SERVICE_URL, service_auth)
+        logger.info("✅ Chatterbox TTS service client initialized")
 
 # -----------------------------------------------------------------------------
 # Health and config endpoints
@@ -244,7 +259,7 @@ async def healthz():
         "timestamp": time.time(),
         "status": "healthy",
         "ai_enabled": ai_model is not None,
-        "tts_engine": "kokoro"
+        "tts_engine": "chatterbox"
     }
 
 @app.get("/")
@@ -255,7 +270,7 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "ai_enabled": ai_model is not None,
-        "tts_engine": "kokoro"
+        "tts_engine": "chatterbox"
     }
 
 @app.get("/configz")
@@ -271,12 +286,12 @@ async def configz():
         "tts_client_ready": tts_client is not None,
         "ai_model_enabled": ai_model is not None,
         "gemini_api_key_present": bool(GEMINI_API_KEY),
-        "tts_engine": "kokoro",
+        "tts_engine": "chatterbox",
         "available_voices": getattr(tts_client, 'available_voices', {}) if tts_client else {}
     }
 
 # -----------------------------------------------------------------------------
-# Protected service endpoints with Kokoro TTS
+# Protected service endpoints with Chatterbox TTS
 # -----------------------------------------------------------------------------
 @app.post("/v1/chat")
 async def chat(
@@ -304,7 +319,8 @@ async def chat(
             "reply": reply,
             "processed_by": "orchestrator", 
             "caller": calling_service,
-            "ai_model": "gemini-1.5-flash" if ai_model else "fallback"
+            "ai_model": "gemini-1.5-flash" if ai_model else "fallback",
+            "tts_engine": "chatterbox"
         }
         
     except Exception as e:
@@ -321,7 +337,7 @@ async def process_audio(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Process audio through STT -> LLM -> Kokoro TTS pipeline"""
+    """Process audio through STT -> LLM -> Chatterbox TTS pipeline"""
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"Audio processing request from service: {calling_service}")
     
@@ -368,27 +384,35 @@ async def process_audio(
         # Process through AI
         reply = await generate_ai_response(text, {"caller": calling_service})
         
-        # Call Kokoro TTS service  
+        # Call Chatterbox TTS service  
         audio_b64 = None
         if tts_client and reply:
             try:
-                logger.info(f"🎵 Generating speech with Kokoro TTS: '{reply[:50]}...'")
+                logger.info(f"🎵 Generating speech with Chatterbox TTS: '{reply[:50]}...'")
+                
+                # Use emotion-aware synthesis based on content
+                emotion_settings = {}
+                if any(word in reply.lower() for word in ["excited", "amazing", "wonderful", "fantastic"]):
+                    emotion_settings = {"exaggeration": 0.8, "temperature": 1.2}
+                elif any(word in reply.lower() for word in ["sorry", "unfortunately", "problem"]):
+                    emotion_settings = {"exaggeration": 0.3, "temperature": 0.8}
                 
                 audio_response = await tts_client.synthesize_speech(
                     text=reply,
-                    voice="af_bella",  # Use default Kokoro voice
+                    voice="assistant_female",
                     speed=1.0,
-                    audio_encoding="MP3"
+                    audio_encoding="MP3",
+                    emotion_settings=emotion_settings if emotion_settings else None
                 )
                 
                 if audio_response:
                     audio_b64 = base64.b64encode(audio_response).decode()
-                    logger.info(f"✅ Kokoro TTS audio generated: {len(audio_response)} bytes")
+                    logger.info(f"✅ Chatterbox TTS audio generated: {len(audio_response)} bytes")
                 else:
-                    logger.error("❌ Kokoro TTS returned empty audio")
+                    logger.error("❌ Chatterbox TTS returned empty audio")
                     
             except Exception as tts_error:
-                logger.error(f"❌ Kokoro TTS service call failed: {tts_error}")
+                logger.error(f"❌ Chatterbox TTS service call failed: {tts_error}")
         
         return {
             "transcription": text,
@@ -396,7 +420,7 @@ async def process_audio(
             "response_audio": audio_b64,
             "processed_by": "orchestrator",
             "caller": calling_service,
-            "tts_engine": "kokoro"
+            "tts_engine": "chatterbox"
         }
         
     except Exception as e:
@@ -423,18 +447,16 @@ async def startup_event():
         logger.warning("⚠️ STT client not available")
     
     if tts_client:
-        logger.info("✅ Kokoro TTS client configured")
-        # Initialize Kokoro TTS and get available voices
+        logger.info("✅ Chatterbox TTS client configured")
+        # Initialize Chatterbox TTS and get available voices
         try:
             await tts_client.initialize()
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Kokoro TTS: {e}")
+            logger.error(f"❌ Failed to initialize Chatterbox TTS: {e}")
     else:
-        logger.warning("⚠️ Kokoro TTS client not available")
+        logger.warning("⚠️ Chatterbox TTS client not available")
     
     if ai_model:
         logger.info("✅ AI model configured and ready")
     else:
         logger.warning("⚠️ AI model not available - using fallback responses")
-
-# Include existing voice router and other endpoints...
