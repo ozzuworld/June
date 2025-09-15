@@ -116,7 +116,7 @@ jobs:
             ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
             ENV_VARS="${ENV_VARS},DEVICE=cpu,LOG_LEVEL=INFO"
             ENV_VARS="${ENV_VARS},EXAGGERATION=0.5,CFG_WEIGHT=0.5,TEMPERATURE=1.0"
-            ENV_VARS="${ENV_VARS},HOST=0.0.0.0"
+            
             
             echo "🎭 Deploying Working Chatterbox TTS (travisvn/chatterbox-tts-api):"
             echo "   • OpenAI-compatible API endpoints"
