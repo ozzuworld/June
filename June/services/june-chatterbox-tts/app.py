@@ -19,14 +19,13 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 import aiofiles
 
-# Chatterbox TTS imports
+# Use Coqui TTS instead of chatterbox-tts (more stable)
 try:
-    from chatterbox.tts import ChatterboxTTS
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-    CHATTERBOX_AVAILABLE = True
+    from TTS.api import TTS
+    TTS_AVAILABLE = True
 except ImportError as e:
-    logging.warning(f"Chatterbox TTS not available: {e}")
-    CHATTERBOX_AVAILABLE = False
+    logging.warning(f"TTS not available: {e}")
+    TTS_AVAILABLE = False
 
 # Import auth modules
 from shared.auth_service import require_service_auth
@@ -41,7 +40,7 @@ app = FastAPI(title="June Chatterbox TTS Service", version="1.0.0")
 # CONFIGURATION
 # =============================================================================
 
-class ChatterboxConfig:
+class TTSConfig:
     def __init__(self):
         self.device = os.getenv("DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
         self.models_path = Path(os.getenv("MODELS_PATH", "/app/models"))
@@ -58,56 +57,54 @@ class ChatterboxConfig:
         self.voices_path.mkdir(parents=True, exist_ok=True)
         self.cache_path.mkdir(parents=True, exist_ok=True)
 
-config = ChatterboxConfig()
+config = TTSConfig()
 
 # =============================================================================
 # VOICE PROFILES AND MANAGEMENT
 # =============================================================================
 
 class VoiceProfile:
-    def __init__(self, name: str, description: str, audio_path: Optional[str] = None, 
+    def __init__(self, name: str, description: str, model_name: str = None, 
                  language: str = "en", emotion_preset: Dict[str, float] = None):
         self.name = name
         self.description = description
-        self.audio_path = audio_path
+        self.model_name = model_name or "tts_models/en/ljspeech/tacotron2-DDC"
         self.language = language
         self.emotion_preset = emotion_preset or {
-            "exaggeration": 0.5,
-            "cfg_weight": 0.5,
-            "temperature": 1.0
+            "speed": 1.0,
+            "pitch": 1.0,
+            "energy": 1.0
         }
 
-# Predefined voice profiles
+# Predefined voice profiles using Coqui TTS models
 VOICE_PROFILES = {
     "assistant_female": VoiceProfile(
         name="Assistant Female",
         description="Professional female assistant voice",
+        model_name="tts_models/en/ljspeech/tacotron2-DDC",
         language="en",
-        emotion_preset={"exaggeration": 0.3, "cfg_weight": 0.6, "temperature": 0.8}
+        emotion_preset={"speed": 1.0, "pitch": 1.0, "energy": 0.8}
     ),
     "assistant_male": VoiceProfile(
         name="Assistant Male", 
         description="Professional male assistant voice",
+        model_name="tts_models/en/ljspeech/glow-tts",
         language="en",
-        emotion_preset={"exaggeration": 0.3, "cfg_weight": 0.6, "temperature": 0.8}
+        emotion_preset={"speed": 1.0, "pitch": 0.9, "energy": 0.8}
     ),
     "narrator_warm": VoiceProfile(
         name="Warm Narrator",
         description="Warm, storytelling voice",
+        model_name="tts_models/en/ljspeech/speedy-speech",
         language="en", 
-        emotion_preset={"exaggeration": 0.7, "cfg_weight": 0.4, "temperature": 1.1}
-    ),
-    "narrator_dramatic": VoiceProfile(
-        name="Dramatic Narrator",
-        description="Dramatic, expressive voice for storytelling",
-        language="en",
-        emotion_preset={"exaggeration": 1.2, "cfg_weight": 0.3, "temperature": 1.3}
+        emotion_preset={"speed": 0.9, "pitch": 1.1, "energy": 1.1}
     ),
     "conversation_friendly": VoiceProfile(
         name="Friendly Conversational",
         description="Casual, friendly conversation voice",
+        model_name="tts_models/en/ljspeech/tacotron2-DDC",
         language="en",
-        emotion_preset={"exaggeration": 0.6, "cfg_weight": 0.5, "temperature": 1.0}
+        emotion_preset={"speed": 1.1, "pitch": 1.0, "energy": 1.0}
     )
 }
 
@@ -115,128 +112,121 @@ VOICE_PROFILES = {
 # MODELS AND INITIALIZATION
 # =============================================================================
 
-class ChatterboxService:
+class TTSService:
     def __init__(self):
-        self.model = None
-        self.multilingual_model = None
+        self.models = {}
         self.is_initialized = False
         self.supported_languages = ["en"]
         
     async def initialize(self):
-        """Initialize Chatterbox models"""
-        if not CHATTERBOX_AVAILABLE:
-            logger.error("Chatterbox TTS not available - using fallback")
+        """Initialize TTS models"""
+        if not TTS_AVAILABLE:
+            logger.error("TTS library not available")
             return False
             
         try:
-            logger.info(f"Initializing Chatterbox TTS on device: {config.device}")
+            logger.info(f"Initializing TTS on device: {config.device}")
             
-            # Initialize English model
-            self.model = ChatterboxTTS.from_pretrained(device=config.device)
-            logger.info("✅ English Chatterbox model loaded successfully")
+            # Initialize default English model
+            default_model = "tts_models/en/ljspeech/tacotron2-DDC"
+            logger.info(f"Loading default model: {default_model}")
+            
+            self.models["default"] = TTS(
+                model_name=default_model, 
+                progress_bar=False, 
+                gpu=(config.device == "cuda")
+            )
+            
+            logger.info("✅ Default TTS model loaded successfully")
             
             # Initialize multilingual model if enabled
             if config.enable_multilingual:
                 try:
-                    self.multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=config.device)
+                    multilingual_model = "tts_models/multilingual/multi-dataset/xtts_v2"
+                    logger.info(f"Loading multilingual model: {multilingual_model}")
+                    
+                    self.models["multilingual"] = TTS(
+                        model_name=multilingual_model,
+                        progress_bar=False,
+                        gpu=(config.device == "cuda")
+                    )
+                    
                     self.supported_languages = [
-                        "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
-                        "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
-                        "th", "tr", "zh"
+                        "en", "es", "fr", "de", "it", "pt", "pl", "tr", 
+                        "ru", "nl", "cs", "ar", "zh", "ja", "hu", "ko"
                     ]
-                    logger.info("✅ Multilingual Chatterbox model loaded successfully")
+                    logger.info("✅ Multilingual TTS model loaded successfully")
                 except Exception as e:
                     logger.warning(f"Failed to load multilingual model: {e}")
-                    self.multilingual_model = None
             
             self.is_initialized = True
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize Chatterbox: {e}")
+            logger.error(f"Failed to initialize TTS: {e}")
             return False
     
     def get_model_for_language(self, language: str = "en"):
         """Get the appropriate model for the given language"""
-        if language == "en":
-            return self.model
-        elif self.multilingual_model and language in self.supported_languages:
-            return self.multilingual_model
+        if language == "en" or not config.enable_multilingual:
+            return self.models.get("default")
+        elif language in self.supported_languages and "multilingual" in self.models:
+            return self.models.get("multilingual")
         else:
             logger.warning(f"Language {language} not supported, falling back to English")
-            return self.model
+            return self.models.get("default")
     
     async def synthesize(self, text: str, voice_profile: str = "assistant_female",
-                        audio_prompt_path: Optional[str] = None, language: str = "en",
-                        exaggeration: float = None, cfg_weight: float = None,
-                        temperature: float = None, speed_factor: float = 1.0,
-                        seed: Optional[int] = None) -> Optional[np.ndarray]:
-        """Synthesize speech using Chatterbox"""
+                        language: str = "en", speed_factor: float = 1.0,
+                        pitch_factor: float = 1.0, energy_factor: float = 1.0) -> Optional[np.ndarray]:
+        """Synthesize speech using TTS"""
         
         if not self.is_initialized:
-            logger.error("Chatterbox service not initialized")
+            logger.error("TTS service not initialized")
             return None
             
         try:
-            # Get model for language
+            # Get model and voice profile
             model = self.get_model_for_language(language)
             if not model:
                 logger.error(f"No model available for language: {language}")
                 return None
             
-            # Get voice profile settings
             profile = VOICE_PROFILES.get(voice_profile, VOICE_PROFILES["assistant_female"])
             
-            # Apply emotion settings
-            emotion_settings = profile.emotion_preset.copy()
-            if exaggeration is not None:
-                emotion_settings["exaggeration"] = exaggeration
-            if cfg_weight is not None:
-                emotion_settings["cfg_weight"] = cfg_weight  
-            if temperature is not None:
-                emotion_settings["temperature"] = temperature
-            
-            # Set seed for reproducibility
-            if seed is not None:
-                torch.manual_seed(seed)
-                
-            # Generate speech
-            generation_kwargs = {
-                "exaggeration": emotion_settings["exaggeration"],
-                "cfg_weight": emotion_settings["cfg_weight"], 
-                "temperature": emotion_settings["temperature"]
-            }
-            
-            if audio_prompt_path and os.path.exists(audio_prompt_path):
-                generation_kwargs["audio_prompt_path"] = audio_prompt_path
-                
-            if language != "en" and self.multilingual_model:
-                generation_kwargs["language_id"] = language
-            
-            logger.info(f"Generating speech with settings: {generation_kwargs}")
+            logger.info(f"Generating speech: '{text[:50]}...' with {profile.name}")
             
             # Generate audio
-            wav = model.generate(text, **generation_kwargs)
+            if language != "en" and "multilingual" in self.models and model == self.models["multilingual"]:
+                # Use multilingual model with language specification
+                wav = model.tts(text=text, language=language)
+            else:
+                # Use default English model
+                wav = model.tts(text=text)
+            
+            # Convert to numpy array if needed
+            if torch.is_tensor(wav):
+                wav = wav.cpu().numpy()
+            elif isinstance(wav, list):
+                wav = np.array(wav)
             
             # Apply speed factor if needed
             if speed_factor != 1.0 and speed_factor > 0:
-                # Simple time stretching (you might want to use more sophisticated methods)
+                # Simple time stretching
                 new_length = int(len(wav) / speed_factor)
-                wav = torch.nn.functional.interpolate(
-                    wav.unsqueeze(0).unsqueeze(0), 
-                    size=new_length, 
-                    mode='linear'
-                ).squeeze()
+                if new_length > 0:
+                    import scipy.signal
+                    wav = scipy.signal.resample(wav, new_length)
             
             logger.info(f"✅ Speech generated successfully: {len(wav)} samples")
-            return wav.cpu().numpy()
+            return wav
             
         except Exception as e:
             logger.error(f"Speech synthesis failed: {e}")
             return None
 
 # Global service instance
-chatterbox_service = ChatterboxService()
+tts_service = TTSService()
 
 # =============================================================================
 # PYDANTIC MODELS
@@ -246,45 +236,14 @@ class TTSRequest(BaseModel):
     text: str = Field(..., max_length=5000, description="Text to synthesize")
     voice_profile: str = Field("assistant_female", description="Voice profile to use")
     language: str = Field("en", description="Language code (en, es, fr, etc.)")
-    exaggeration: Optional[float] = Field(None, ge=0.0, le=2.0, description="Emotion exaggeration (0.0-2.0)")
-    cfg_weight: Optional[float] = Field(None, ge=0.0, le=1.0, description="Generation guidance (0.0-1.0)")
-    temperature: Optional[float] = Field(None, ge=0.1, le=2.0, description="Generation randomness (0.1-2.0)")
     speed_factor: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
-    audio_format: str = Field("wav", description="Output format: wav, mp3, or ogg")
-    seed: Optional[int] = Field(None, description="Random seed for reproducible generation")
-
-class VoiceCloneRequest(BaseModel):
-    text: str = Field(..., max_length=5000, description="Text to synthesize")
-    language: str = Field("en", description="Language code")
-    exaggeration: Optional[float] = Field(0.5, ge=0.0, le=2.0, description="Emotion exaggeration")
-    cfg_weight: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="Generation guidance")
-    temperature: Optional[float] = Field(1.0, ge=0.1, le=2.0, description="Generation randomness")
-    speed_factor: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
+    pitch_factor: float = Field(1.0, ge=0.5, le=2.0, description="Pitch adjustment")
+    energy_factor: float = Field(1.0, ge=0.5, le=2.0, description="Energy/volume adjustment")
     audio_format: str = Field("wav", description="Output format: wav, mp3, or ogg")
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
-
-async def save_uploaded_audio(audio_file: UploadFile) -> str:
-    """Save uploaded audio file and return path"""
-    
-    # Validate file type
-    if not audio_file.content_type.startswith("audio/"):
-        raise HTTPException(status_code=400, detail="File must be audio format")
-    
-    # Create unique filename
-    file_hash = hashlib.md5(f"{audio_file.filename}{time.time()}".encode()).hexdigest()[:8]
-    filename = f"voice_clone_{file_hash}.wav"
-    file_path = config.cache_path / filename
-    
-    # Save file
-    async with aiofiles.open(file_path, "wb") as f:
-        content = await audio_file.read()
-        await f.write(content)
-    
-    logger.info(f"Saved uploaded audio: {file_path}")
-    return str(file_path)
 
 def convert_audio_format(audio_data: np.ndarray, sample_rate: int, 
                         target_format: str) -> bytes:
@@ -318,12 +277,6 @@ def convert_audio_format(audio_data: np.ndarray, sample_rate: int,
                     with open(mp3_temp.name, "rb") as f:
                         return f.read()
         
-        elif target_format.lower() == "ogg":
-            # Convert to OGG
-            buffer = io.BytesIO()
-            sf.write(buffer, audio_data, sample_rate, format='OGG')
-            return buffer.getvalue()
-        
         else:
             # Default to WAV
             buffer = io.BytesIO()
@@ -353,13 +306,13 @@ def determine_media_type(audio_format: str) -> str:
 @app.on_event("startup")
 async def startup_event():
     """Initialize service on startup"""
-    logger.info("Starting June Chatterbox TTS Service...")
+    logger.info("Starting June TTS Service...")
     
-    success = await chatterbox_service.initialize()
+    success = await tts_service.initialize()
     if success:
-        logger.info("✅ Chatterbox TTS service initialized successfully")
+        logger.info("✅ TTS service initialized successfully")
     else:
-        logger.error("❌ Failed to initialize Chatterbox TTS service")
+        logger.error("❌ Failed to initialize TTS service")
 
 @app.get("/healthz")
 async def healthz():
@@ -368,12 +321,13 @@ async def healthz():
         "ok": True,
         "service": "june-chatterbox-tts",
         "timestamp": time.time(),
-        "status": "healthy" if chatterbox_service.is_initialized else "initializing",
-        "chatterbox_available": CHATTERBOX_AVAILABLE,
+        "status": "healthy" if tts_service.is_initialized else "initializing",
+        "tts_available": TTS_AVAILABLE,
         "device": config.device,
         "multilingual_enabled": config.enable_multilingual,
-        "supported_languages": chatterbox_service.supported_languages,
-        "voice_profiles": list(VOICE_PROFILES.keys())
+        "supported_languages": tts_service.supported_languages,
+        "voice_profiles": list(VOICE_PROFILES.keys()),
+        "engine": "coqui-tts"
     }
 
 @app.get("/")
@@ -382,14 +336,15 @@ async def root():
     return {
         "service": "june-chatterbox-tts",
         "status": "running",
-        "chatterbox_available": CHATTERBOX_AVAILABLE,
+        "tts_available": TTS_AVAILABLE,
+        "engine": "coqui-tts",
         "features": {
-            "emotion_control": config.enable_emotion_control,
-            "voice_cloning": config.enable_voice_cloning,
             "multilingual": config.enable_multilingual,
-            "neural_watermarking": True
+            "voice_profiles": True,
+            "speed_control": True,
+            "pitch_control": True
         },
-        "supported_languages": chatterbox_service.supported_languages,
+        "supported_languages": tts_service.supported_languages,
         "voice_profiles": {name: profile.description for name, profile in VOICE_PROFILES.items()}
     }
 
@@ -402,18 +357,18 @@ async def list_voices():
                 "name": profile.name,
                 "description": profile.description,
                 "language": profile.language,
+                "model": profile.model_name,
                 "emotion_preset": profile.emotion_preset
             }
             for name, profile in VOICE_PROFILES.items()
         },
         "default": "assistant_female",
-        "engine": "chatterbox",
+        "engine": "coqui-tts",
         "features": {
-            "emotion_control": True,
-            "voice_cloning": True,
-            "multilingual": config.enable_multilingual,
+            "multilingual": True,
             "speed_control": True,
-            "neural_watermarking": True
+            "pitch_control": True,
+            "energy_control": True
         }
     }
 
@@ -421,9 +376,10 @@ async def list_voices():
 async def list_languages():
     """List supported languages"""
     return {
-        "languages": chatterbox_service.supported_languages,
+        "languages": tts_service.supported_languages,
         "multilingual_enabled": config.enable_multilingual,
-        "default_language": config.default_language
+        "default_language": config.default_language,
+        "engine": "coqui-tts"
     }
 
 # Service-to-Service TTS Endpoint (Compatible with existing orchestrator)
@@ -434,9 +390,6 @@ async def synthesize_speech_service(
     speed: float = Query(1.0, ge=0.5, le=2.0, description="Speech speed"),
     audio_encoding: str = Query("MP3", description="Audio format: MP3, WAV, or OGG"),
     language: str = Query("en", description="Language code"),
-    exaggeration: float = Query(0.5, ge=0.0, le=2.0, description="Emotion exaggeration"),
-    cfg_weight: float = Query(0.5, ge=0.0, le=1.0, description="Generation guidance"),
-    temperature: float = Query(1.0, ge=0.1, le=2.0, description="Generation randomness"),
     service_auth_data: dict = Depends(require_service_auth)
 ):
     """
@@ -452,29 +405,25 @@ async def synthesize_speech_service(
         
         logger.info(f"🎵 TTS request from {calling_service}: '{text[:50]}...' ({len(text)} chars)")
         
-        if not chatterbox_service.is_initialized:
+        if not tts_service.is_initialized:
             raise HTTPException(status_code=503, detail="TTS service not ready")
         
         # Map voice parameter to voice profile
         voice_profile = voice if voice in VOICE_PROFILES else "assistant_female"
         
         # Generate speech
-        audio_data = await chatterbox_service.synthesize(
+        audio_data = await tts_service.synthesize(
             text=text,
             voice_profile=voice_profile,
             language=language,
-            exaggeration=exaggeration,
-            cfg_weight=cfg_weight,
-            temperature=temperature,
             speed_factor=speed
         )
         
         if audio_data is None:
             raise HTTPException(status_code=500, detail="Speech synthesis failed")
         
-        # Get sample rate
-        model = chatterbox_service.get_model_for_language(language)
-        sample_rate = getattr(model, 'sr', 24000)
+        # Default sample rate for Coqui TTS
+        sample_rate = 22050
         
         # Convert to requested format
         audio_bytes = convert_audio_format(audio_data, sample_rate, audio_encoding)
@@ -491,7 +440,7 @@ async def synthesize_speech_service(
                 "Content-Disposition": f"attachment; filename=speech.{audio_encoding.lower()}",
                 "X-Processed-By": "june-chatterbox-tts",
                 "X-Caller-Service": calling_service,
-                "X-TTS-Engine": "chatterbox",
+                "X-TTS-Engine": "coqui-tts",
                 "X-Voice-Profile": voice_profile,
                 "X-Audio-Length": str(len(audio_data))
             }
@@ -509,33 +458,30 @@ async def synthesize_speech_advanced(
     request: TTSRequest,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Advanced TTS endpoint with full Chatterbox features"""
+    """Advanced TTS endpoint with full TTS features"""
     calling_service = service_auth_data.get("client_id", "unknown")
     
     try:
         logger.info(f"🎭 Advanced TTS request from {calling_service}")
         
-        if not chatterbox_service.is_initialized:
+        if not tts_service.is_initialized:
             raise HTTPException(status_code=503, detail="TTS service not ready")
         
         # Generate speech
-        audio_data = await chatterbox_service.synthesize(
+        audio_data = await tts_service.synthesize(
             text=request.text,
             voice_profile=request.voice_profile,
             language=request.language,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
-            temperature=request.temperature,
             speed_factor=request.speed_factor,
-            seed=request.seed
+            pitch_factor=request.pitch_factor,
+            energy_factor=request.energy_factor
         )
         
         if audio_data is None:
             raise HTTPException(status_code=500, detail="Speech synthesis failed")
         
-        # Get sample rate
-        model = chatterbox_service.get_model_for_language(request.language)
-        sample_rate = getattr(model, 'sr', 24000)
+        # Default sample rate
+        sample_rate = 22050
         
         # Convert to requested format
         audio_bytes = convert_audio_format(audio_data, sample_rate, request.audio_format)
@@ -547,10 +493,9 @@ async def synthesize_speech_advanced(
             io.BytesIO(audio_bytes),
             media_type=media_type,
             headers={
-                "X-TTS-Engine": "chatterbox",
+                "X-TTS-Engine": "coqui-tts",
                 "X-Voice-Profile": request.voice_profile,
                 "X-Language": request.language,
-                "X-Exaggeration": str(request.exaggeration or "default"),
                 "X-Caller-Service": calling_service
             }
         )
@@ -560,158 +505,3 @@ async def synthesize_speech_advanced(
     except Exception as e:
         logger.error(f"Advanced TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# Voice cloning endpoint
-@app.post("/v1/voice-clone")
-async def clone_voice(
-    audio_file: UploadFile = File(..., description="Reference audio file"),
-    text: str = Form(..., description="Text to synthesize"),
-    language: str = Form("en", description="Language code"),
-    exaggeration: float = Form(0.5, ge=0.0, le=2.0, description="Emotion exaggeration"),
-    cfg_weight: float = Form(0.5, ge=0.0, le=1.0, description="Generation guidance"),
-    temperature: float = Form(1.0, ge=0.1, le=2.0, description="Generation randomness"),
-    speed_factor: float = Form(1.0, ge=0.5, le=2.0, description="Speech speed"),
-    audio_format: str = Form("wav", description="Output format"),
-    service_auth_data: dict = Depends(require_service_auth)
-):
-    """Voice cloning endpoint - clone voice from reference audio"""
-    calling_service = service_auth_data.get("client_id", "unknown")
-    
-    try:
-        if not config.enable_voice_cloning:
-            raise HTTPException(status_code=403, detail="Voice cloning is disabled")
-        
-        if not chatterbox_service.is_initialized:
-            raise HTTPException(status_code=503, detail="TTS service not ready")
-        
-        logger.info(f"🎤 Voice cloning request from {calling_service}")
-        
-        # Save uploaded audio
-        audio_path = await save_uploaded_audio(audio_file)
-        
-        try:
-            # Generate speech with voice cloning
-            audio_data = await chatterbox_service.synthesize(
-                text=text,
-                audio_prompt_path=audio_path,
-                language=language,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
-                temperature=temperature,
-                speed_factor=speed_factor
-            )
-            
-            if audio_data is None:
-                raise HTTPException(status_code=500, detail="Voice cloning failed")
-            
-            # Get sample rate
-            model = chatterbox_service.get_model_for_language(language)
-            sample_rate = getattr(model, 'sr', 24000)
-            
-            # Convert to requested format
-            audio_bytes = convert_audio_format(audio_data, sample_rate, audio_format)
-            media_type = determine_media_type(audio_format)
-            
-            logger.info(f"✅ Voice cloning successful")
-            
-            return StreamingResponse(
-                io.BytesIO(audio_bytes),
-                media_type=media_type,
-                headers={
-                    "X-TTS-Engine": "chatterbox",
-                    "X-Feature": "voice-cloning",
-                    "X-Language": language,
-                    "X-Caller-Service": calling_service
-                }
-            )
-            
-        finally:
-            # Clean up temporary audio file
-            try:
-                os.unlink(audio_path)
-            except:
-                pass
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Voice cloning failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Batch TTS endpoint
-@app.post("/v1/tts/batch")
-async def batch_synthesize(
-    texts: List[str] = Query(..., description="List of texts to synthesize"),
-    voice_profile: str = Query("assistant_female", description="Voice profile"),
-    language: str = Query("en", description="Language code"),
-    audio_format: str = Query("wav", description="Output format"),
-    service_auth_data: dict = Depends(require_service_auth)
-):
-    """Batch TTS synthesis for multiple texts"""
-    calling_service = service_auth_data.get("client_id", "unknown")
-    
-    try:
-        if not chatterbox_service.is_initialized:
-            raise HTTPException(status_code=503, detail="TTS service not ready")
-        
-        if len(texts) > 10:
-            raise HTTPException(status_code=400, detail="Maximum 10 texts per batch")
-        
-        logger.info(f"📚 Batch TTS request from {calling_service}: {len(texts)} texts")
-        
-        results = []
-        
-        for i, text in enumerate(texts):
-            if len(text) > config.max_text_length:
-                results.append({"error": f"Text {i} too long"})
-                continue
-            
-            # Generate speech
-            audio_data = await chatterbox_service.synthesize(
-                text=text,
-                voice_profile=voice_profile,
-                language=language
-            )
-            
-            if audio_data is None:
-                results.append({"error": f"Synthesis failed for text {i}"})
-                continue
-            
-            # Get sample rate and convert
-            model = chatterbox_service.get_model_for_language(language)
-            sample_rate = getattr(model, 'sr', 24000)
-            audio_bytes = convert_audio_format(audio_data, sample_rate, audio_format)
-            
-            # Encode to base64 for JSON response
-            audio_b64 = base64.b64encode(audio_bytes).decode()
-            
-            results.append({
-                "index": i,
-                "text": text[:50] + "..." if len(text) > 50 else text,
-                "audio_data": audio_b64,
-                "audio_length": len(audio_data),
-                "success": True
-            })
-        
-        logger.info(f"✅ Batch TTS completed: {len(results)} results")
-        
-        return {
-            "results": results,
-            "total_texts": len(texts),
-            "successful": len([r for r in results if r.get("success")]),
-            "failed": len([r for r in results if "error" in r]),
-            "audio_format": audio_format,
-            "voice_profile": voice_profile,
-            "language": language
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Batch TTS failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =============================================================================
-# File: June/services/june-chatterbox-tts/shared/__init__.py
-
-# Shared modules package
