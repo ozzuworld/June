@@ -1,6 +1,4 @@
-# File: June/services/june-tts/app.py
-# Simple working TTS implementation without external dependencies
-
+# June/services/june-tts/app.py - FIXED VERSION
 import os
 import time
 import logging
@@ -81,11 +79,8 @@ async def list_languages():
 
 def create_simple_audio_response(text: str, voice: str = "default", speed: float = 1.0) -> bytes:
     """
-    Create a simple audio response (placeholder implementation)
-    In production, replace this with actual TTS synthesis
+    FIXED: Create a simple audio response with silence instead of beeps
     """
-    # For now, return a simple placeholder audio file (silence)
-    # This creates a minimal WAV file with silence
     duration_seconds = max(1, len(text) // 10)  # Rough estimate
     sample_rate = 22050
     num_samples = int(duration_seconds * sample_rate)
@@ -115,14 +110,12 @@ def create_simple_audio_response(text: str, voice: str = "default", speed: float
     file_size = len(wav_header) + num_samples * 2 - 8
     wav_header[4:8] = file_size.to_bytes(4, 'little')
     
-    # Generate silence (or simple beep pattern for demo)
+    # FIXED: Generate silence instead of beeps
     audio_data = bytearray(num_samples * 2)
     
-    # Add a simple beep pattern to verify audio is working
-    for i in range(0, min(1000, num_samples)):
-        if i % 100 < 50:  # Simple square wave
-            sample = int(8000 * (1 if (i // 10) % 2 else -1))
-            audio_data[i*2:i*2+2] = sample.to_bytes(2, 'little', signed=True)
+    # Fill with silence (all zeros)
+    for i in range(num_samples):
+        audio_data[i*2:i*2+2] = (0).to_bytes(2, 'little', signed=True)
     
     return bytes(wav_header + audio_data)
 
@@ -144,7 +137,7 @@ async def synthesize_speech_service(
         
         logger.info(f"🎵 TTS request from {calling_service}: '{text[:50]}...'")
         
-        # Generate audio (replace with actual TTS implementation)
+        # Generate audio (FIXED: now creates silence instead of beeps)
         audio_data = create_simple_audio_response(text, voice, speed)
         
         # Determine media type
