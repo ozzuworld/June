@@ -1,5 +1,5 @@
 # File: June/services/june-tts/requirements.txt
-# Service dependencies only (Chatterbox installed via git in Dockerfile)
+# Simplified TTS service dependencies
 
 # Core web framework
 fastapi==0.111.0
@@ -14,6 +14,10 @@ httpx==0.27.0
 python-multipart==0.0.9
 aiofiles==23.2.0
 
-# Note: Chatterbox TTS and its dependencies (PyTorch, torchaudio, etc.) 
-# are installed directly from GitHub in the Dockerfile using:
-# git clone https://github.com/resemble-ai/chatterbox.git && pip install -e .
+# Data processing
+pydantic==2.8.2
+
+# Optional: Add actual TTS libraries here when ready
+# torch==2.1.0
+# torchaudio==2.1.0
+# coqui-tts==0.24.2

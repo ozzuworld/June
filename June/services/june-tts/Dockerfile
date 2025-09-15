@@ -1,5 +1,5 @@
 # File: June/services/june-tts/Dockerfile
-# Working Chatterbox TTS using travisvn/chatterbox-tts-api
+# Simple working TTS implementation
 
 FROM python:3.11-slim
 
@@ -11,43 +11,29 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    ffmpeg \
-    libsndfile1 \
     curl \
-    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the working chatterbox-tts-api implementation
-RUN git clone https://github.com/travisvn/chatterbox-tts-api.git /tmp/chatterbox-api && \
-    cp -r /tmp/chatterbox-api/* /app/ && \
-    rm -rf /tmp/chatterbox-api
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Install dependencies from the working implementation
+# Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy our custom integration layer
-COPY app.py /app/june_tts_wrapper.py
-COPY shared/ /app/shared/
+# Copy application code
+COPY . .
 
-# Create directories for models and cache
-RUN mkdir -p /app/models /app/voices /app/cache
-
-# Set environment variables for the API
+# Set environment variables
 ENV DEVICE=cpu \
-    LOG_LEVEL=INFO \
-    EXAGGERATION=0.5 \
-    CFG_WEIGHT=0.5 \
-    TEMPERATURE=1.0
+    LOG_LEVEL=INFO
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8080}/healthz || exit 1
 
 # Expose port
 EXPOSE 8080
 
-# Start both the chatterbox API and our wrapper
-CMD ["python", "june_tts_wrapper.py"]
+# Start the application
+CMD ["python", "app.py"]
