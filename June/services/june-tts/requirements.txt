@@ -1,26 +1,27 @@
-# June TTS Service - Chatterbox TTS Implementation
-# File: June/services/june-tts/requirements.txt
+# Alternative requirements.txt if Chatterbox TTS installation fails
+# File: June/services/june-tts/requirements-alternative.txt
 
-# IMPORTANT: Install numpy and scipy first (build dependencies)
+# Build dependencies first
 numpy>=1.21.0
 scipy>=1.9.0
+setuptools>=65.0
+wheel>=0.37.0
 
 # Core web framework
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 
-# PyTorch ecosystem (install before chatterbox-tts)
-torch>=2.0.0
-torchaudio>=2.0.0
-transformers>=4.30.0
+# PyTorch ecosystem (CPU-only for compatibility)
+torch>=2.0.0,<2.5.0 --index-url https://download.pytorch.org/whl/cpu
+torchaudio>=2.0.0,<2.5.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Audio processing (install before chatterbox-tts)
+# Audio processing
 soundfile>=0.12.1
 librosa>=0.10.0
 pydub>=0.25.1
 
-# Chatterbox TTS - Resemble AI (MIT License) - install AFTER dependencies
-chatterbox-tts>=0.1.0
+# Install Chatterbox TTS directly from GitHub (more reliable)
+git+https://github.com/resemble-ai/chatterbox.git
 
 # Authentication and HTTP
 PyJWT[crypto]==2.8.0
@@ -30,3 +31,7 @@ httpx==0.27.0
 # File handling
 python-multipart==0.0.9
 aiofiles>=23.0.0
+
+# Additional dependencies that might be needed
+transformers>=4.30.0
+accelerate>=0.20.0
