@@ -1,31 +1,22 @@
 # File: June/services/june-tts/app.py
-# Complete Chatterbox TTS Service - Official Implementation
+# Fixed version using travisvn/chatterbox-tts-api proxy approach
 
 import os
-import io
 import time
 import logging
-import tempfile
-import base64
+import asyncio
+import subprocess
+import signal
+import sys
 from typing import Optional, Dict, Any
 from pathlib import Path
 
-import torchaudio as ta
+import httpx
 from fastapi import FastAPI, Query, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-# Import Chatterbox TTS using official method
-try:
-    from chatterbox.tts import ChatterboxTTS
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-    CHATTERBOX_AVAILABLE = True
-    logging.info("✅ Chatterbox TTS imported successfully")
-except ImportError as e:
-    CHATTERBOX_AVAILABLE = False
-    logging.error(f"❌ Chatterbox TTS not available: {e}")
-
-# Import auth modules
+# Import auth modules (keep existing)
 from shared.auth_service import require_service_auth
 
 # Configure logging
@@ -34,137 +25,84 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="June Chatterbox TTS Service", version="1.0.0")
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
+# Configuration
+CHATTERBOX_API_PORT = 4123
+CHATTERBOX_API_URL = f"http://localhost:{CHATTERBOX_API_PORT}"
+WRAPPER_PORT = int(os.getenv("PORT", "8080"))
 
-class TTSConfig:
+# Global process handle for the chatterbox API
+chatterbox_process = None
+
+class ChatterboxService:
     def __init__(self):
-        self.device = os.getenv("DEVICE", "cuda" if CHATTERBOX_AVAILABLE else "cpu")
-        self.enable_multilingual = os.getenv("ENABLE_MULTILINGUAL", "true").lower() == "true"
-        self.max_text_length = int(os.getenv("MAX_TEXT_LENGTH", "5000"))
+        self.is_ready = False
+        self.api_url = CHATTERBOX_API_URL
         
-        logger.info(f"TTS Config - Device: {self.device}, Multilingual: {self.enable_multilingual}")
-
-config = TTSConfig()
-
-# =============================================================================
-# CHATTERBOX TTS SERVICE
-# =============================================================================
-
-class ChatterboxTTSService:
-    def __init__(self):
-        self.english_model = None
-        self.multilingual_model = None
-        self.is_initialized = False
-        self.supported_languages = ["en"]
+    async def start_chatterbox_api(self):
+        """Start the chatterbox-tts-api server in the background"""
+        global chatterbox_process
         
-    async def initialize(self):
-        """Initialize Chatterbox TTS models using official method"""
-        if not CHATTERBOX_AVAILABLE:
-            logger.error("❌ Chatterbox TTS not available")
-            return False
-            
         try:
-            logger.info("🎤 Initializing Chatterbox TTS...")
+            logger.info("🚀 Starting Chatterbox TTS API...")
             
-            # Initialize English model (always available)
-            logger.info("📥 Loading Chatterbox English model...")
-            self.english_model = ChatterboxTTS.from_pretrained(device=config.device)
-            logger.info("✅ English model loaded")
+            # Set environment variables for chatterbox API
+            env = os.environ.copy()
+            env.update({
+                "HOST": "127.0.0.1",
+                "PORT": str(CHATTERBOX_API_PORT),
+                "DEVICE": os.getenv("DEVICE", "cpu"),
+                "LOG_LEVEL": "INFO",
+            })
             
-            # Initialize multilingual model if enabled
-            if config.enable_multilingual:
-                try:
-                    logger.info("📥 Loading Chatterbox Multilingual model...")
-                    self.multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=config.device)
-                    self.supported_languages = [
-                        "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", 
-                        "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", 
-                        "sw", "tr", "zh"
-                    ]
-                    logger.info("✅ Multilingual model loaded")
-                except Exception as e:
-                    logger.warning(f"⚠️ Multilingual model failed: {e}")
+            # Start the chatterbox API process
+            chatterbox_process = subprocess.Popen([
+                "python", "-m", "uvicorn", "app.main:app",
+                "--host", "127.0.0.1",
+                "--port", str(CHATTERBOX_API_PORT),
+                "--workers", "1"
+            ], env=env, cwd="/app")
             
-            self.is_initialized = True
-            logger.info("🎉 Chatterbox TTS fully initialized!")
-            return True
+            # Wait for the API to be ready
+            await self.wait_for_ready()
             
         except Exception as e:
-            logger.error(f"❌ Failed to initialize: {e}")
-            return False
+            logger.error(f"❌ Failed to start Chatterbox API: {e}")
+            raise
     
-    async def synthesize(self, text: str, language: str = "en", 
-                        exaggeration: float = 0.5, cfg_weight: float = 0.5,
-                        temperature: float = 1.0, reference_audio_path: str = None) -> Optional[bytes]:
-        """Synthesize speech using official Chatterbox method"""
+    async def wait_for_ready(self, timeout=300):
+        """Wait for the chatterbox API to be ready"""
+        start_time = time.time()
         
-        if not self.is_initialized:
-            logger.error("❌ Service not initialized")
-            return None
+        while time.time() - start_time < timeout:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"{self.api_url}/health", timeout=5.0)
+                    if response.status_code == 200:
+                        self.is_ready = True
+                        logger.info("✅ Chatterbox API is ready!")
+                        return
+            except Exception:
+                pass
             
-        try:
-            # Choose model based on language
-            if language == "en" or not self.multilingual_model:
-                model = self.english_model
-                logger.info(f"🗣️ Using English model for: '{text[:50]}...'")
-            else:
-                model = self.multilingual_model
-                logger.info(f"🌍 Using multilingual model for {language}: '{text[:50]}...'")
-            
-            # Generate audio using official Chatterbox API
-            if reference_audio_path:
-                # Voice cloning
-                wav = model.generate(
-                    text=text,
-                    reference_path=reference_audio_path,
-                    language=language if language != "en" else None,
-                    exaggeration=exaggeration,
-                    cfg_weight=cfg_weight,
-                    temperature=temperature
-                )
-            else:
-                # Standard generation
-                if language != "en" and self.multilingual_model:
-                    wav = model.generate(
-                        text=text,
-                        language=language,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature
-                    )
-                else:
-                    wav = model.generate(
-                        text=text,
-                        exaggeration=exaggeration,
-                        cfg_weight=cfg_weight,
-                        temperature=temperature
-                    )
-            
-            # Convert to audio bytes using torchaudio (official method)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-                ta.save(tmp_file.name, wav, model.sr)
-                
-                with open(tmp_file.name, "rb") as f:
-                    audio_bytes = f.read()
-                
-                os.unlink(tmp_file.name)
-            
-            logger.info(f"✅ Generated {len(audio_bytes)} bytes of audio")
-            return audio_bytes
-            
-        except Exception as e:
-            logger.error(f"❌ Synthesis failed: {e}")
-            return None
+            await asyncio.sleep(2)
+        
+        raise TimeoutError("❌ Chatterbox API failed to start within timeout")
+    
+    async def proxy_request(self, method: str, endpoint: str, **kwargs) -> httpx.Response:
+        """Proxy request to the chatterbox API"""
+        if not self.is_ready:
+            raise HTTPException(status_code=503, detail="Chatterbox API not ready")
+        
+        url = f"{self.api_url}{endpoint}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(method, url, **kwargs)
+            return response
 
 # Global service instance
-tts_service = ChatterboxTTSService()
+chatterbox_service = ChatterboxService()
 
-# =============================================================================
-# PYDANTIC MODELS
-# =============================================================================
-
+# Keep existing Pydantic models
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=5000)
     language: str = Field("en", description="Language code")
@@ -172,10 +110,7 @@ class TTSRequest(BaseModel):
     cfg_weight: float = Field(0.5, ge=0.0, le=1.0, description="Config weight")
     temperature: float = Field(1.0, ge=0.5, le=2.0, description="Temperature")
 
-# =============================================================================
-# API ENDPOINTS
-# =============================================================================
-
+# Keep existing endpoints but update implementation
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint"""
@@ -185,16 +120,20 @@ async def healthz():
         "ok": True,
         "service": "june-chatterbox-tts",
         "timestamp": time.time(),
-        "status": "healthy" if tts_service.is_initialized else "initializing",
-        "chatterbox_available": CHATTERBOX_AVAILABLE,
-        "device": config.device,
-        "supported_languages": tts_service.supported_languages,
-        "engine": "chatterbox-official",
+        "status": "healthy" if chatterbox_service.is_ready else "initializing",
+        "chatterbox_available": chatterbox_service.is_ready,
+        "device": os.getenv("DEVICE", "cpu"),
+        "supported_languages": [
+            "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
+            "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
+            "sw", "tr", "zh"
+        ],
+        "engine": "chatterbox-travisvn",
         "startup_time": startup_time,
         "features": {
             "emotion_control": True,
             "voice_cloning": True,
-            "multilingual": config.enable_multilingual,
+            "multilingual": True,
             "watermarking": True
         }
     }
@@ -205,11 +144,11 @@ async def startup_event():
     app.state.startup_time = time.time()
     logger.info("🚀 Starting Chatterbox TTS Service...")
     
-    success = await tts_service.initialize()
-    if success:
+    try:
+        await chatterbox_service.start_chatterbox_api()
         logger.info("✅ Service ready")
-    else:
-        logger.error("❌ Service failed to initialize")
+    except Exception as e:
+        logger.error(f"❌ Service failed to initialize: {e}")
 
 @app.get("/")
 async def root():
@@ -217,35 +156,46 @@ async def root():
     return {
         "service": "june-chatterbox-tts",
         "status": "running",
-        "engine": "chatterbox-official",
+        "engine": "chatterbox-travisvn",
         "version": "1.0.0",
         "license": "MIT",
-        "chatterbox_available": CHATTERBOX_AVAILABLE,
-        "supported_languages": tts_service.supported_languages
+        "chatterbox_available": chatterbox_service.is_ready
     }
 
 @app.get("/v1/voices")
 async def list_voices():
     """List available voice profiles"""
+    try:
+        if chatterbox_service.is_ready:
+            response = await chatterbox_service.proxy_request("GET", "/v1/voices")
+            return response.json()
+    except Exception as e:
+        logger.error(f"Failed to get voices from API: {e}")
+    
+    # Fallback response
     return {
         "voices": {
             "assistant_female": {"name": "Assistant Female", "description": "Default female voice"},
             "assistant_male": {"name": "Assistant Male", "description": "Default male voice"}
         },
         "default": "assistant_female",
-        "engine": "chatterbox-official"
+        "engine": "chatterbox-travisvn"
     }
 
 @app.get("/v1/languages")
 async def list_languages():
     """List supported languages"""
     return {
-        "languages": tts_service.supported_languages,
+        "languages": [
+            "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
+            "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
+            "sw", "tr", "zh"
+        ],
         "default_language": "en",
-        "engine": "chatterbox-official"
+        "engine": "chatterbox-travisvn"
     }
 
-# Main TTS endpoint (compatible with orchestrator)
+# Main TTS endpoint (keep same interface for orchestrator compatibility)
 @app.post("/v1/tts")
 async def synthesize_speech_service(
     text: str = Query(..., description="Text to synthesize"),
@@ -259,46 +209,45 @@ async def synthesize_speech_service(
     calling_service = service_auth_data.get("client_id", "unknown")
     
     try:
-        if len(text) > config.max_text_length:
-            raise HTTPException(status_code=400, detail=f"Text too long (max {config.max_text_length} characters)")
+        if len(text) > 5000:
+            raise HTTPException(status_code=400, detail="Text too long (max 5000 characters)")
         
         logger.info(f"🎵 TTS request from {calling_service}: '{text[:50]}...'")
         
-        if not tts_service.is_initialized:
+        if not chatterbox_service.is_ready:
             raise HTTPException(status_code=503, detail="Chatterbox TTS service not ready")
         
-        # Map speed to cfg_weight (inverse relationship for better control)
+        # Convert parameters to chatterbox API format
         cfg_weight = 1.0 / speed if speed > 0 else 0.5
         cfg_weight = max(0.1, min(1.0, cfg_weight))
         
-        # Generate speech using official Chatterbox
-        audio_bytes = await tts_service.synthesize(
-            text=text,
-            language=language,
-            cfg_weight=cfg_weight,
-            exaggeration=0.5,  # Default emotion level
-            temperature=1.0
+        # Call chatterbox API using OpenAI-compatible endpoint
+        response = await chatterbox_service.proxy_request(
+            "POST",
+            "/v1/audio/speech",
+            json={
+                "input": text,
+                "voice": voice,
+                "exaggeration": 0.5,
+                "cfg_weight": cfg_weight,
+                "temperature": 1.0,
+                "language": language if language != "en" else None
+            }
         )
         
-        if audio_bytes is None:
-            raise HTTPException(status_code=500, detail="Speech synthesis failed")
+        response.raise_for_status()
         
-        # Convert to requested format if needed
+        # Determine media type
         media_type = "audio/mpeg" if audio_encoding.upper() == "MP3" else "audio/wav"
         
-        # For MP3 conversion, we'd need additional processing
-        if audio_encoding.upper() == "MP3":
-            # For now, return WAV (add MP3 conversion later if needed)
-            media_type = "audio/wav"
-        
-        logger.info(f"✅ Chatterbox synthesis successful: {len(audio_bytes)} bytes")
+        logger.info(f"✅ Chatterbox synthesis successful: {len(response.content)} bytes")
         
         return StreamingResponse(
-            io.BytesIO(audio_bytes),
+            iter([response.content]),
             media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename=speech.{audio_encoding.lower()}",
-                "X-TTS-Engine": "chatterbox-official",
+                "X-TTS-Engine": "chatterbox-travisvn",
                 "X-Caller-Service": calling_service,
                 "X-Features": "emotion-control,voice-cloning,watermarking"
             }
@@ -310,7 +259,7 @@ async def synthesize_speech_service(
         logger.error(f"❌ TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
-# Advanced TTS endpoint with full Chatterbox features
+# Advanced TTS endpoint
 @app.post("/v1/tts/advanced")
 async def synthesize_speech_advanced(
     request: TTSRequest,
@@ -322,28 +271,32 @@ async def synthesize_speech_advanced(
     try:
         logger.info(f"🎭 Advanced TTS request from {calling_service}")
         
-        if not tts_service.is_initialized:
+        if not chatterbox_service.is_ready:
             raise HTTPException(status_code=503, detail="Chatterbox TTS service not ready")
         
-        # Generate speech with advanced parameters
-        audio_bytes = await tts_service.synthesize(
-            text=request.text,
-            language=request.language,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
-            temperature=request.temperature
+        # Call chatterbox API with advanced parameters
+        response = await chatterbox_service.proxy_request(
+            "POST",
+            "/v1/audio/speech",
+            json={
+                "input": request.text,
+                "voice": "assistant_female",
+                "exaggeration": request.exaggeration,
+                "cfg_weight": request.cfg_weight,
+                "temperature": request.temperature,
+                "language": request.language if request.language != "en" else None
+            }
         )
         
-        if audio_bytes is None:
-            raise HTTPException(status_code=500, detail="Speech synthesis failed")
+        response.raise_for_status()
         
         logger.info(f"✅ Advanced synthesis successful")
         
         return StreamingResponse(
-            io.BytesIO(audio_bytes),
+            iter([response.content]),
             media_type="audio/wav",
             headers={
-                "X-TTS-Engine": "chatterbox-official",
+                "X-TTS-Engine": "chatterbox-travisvn",
                 "X-Language": request.language,
                 "X-Caller-Service": calling_service,
                 "X-Emotion-Config": f"exag={request.exaggeration},cfg={request.cfg_weight},temp={request.temperature}"
@@ -373,39 +326,38 @@ async def voice_clone_synthesis(
     try:
         logger.info(f"🎤 Voice cloning request from {calling_service}")
         
-        if not tts_service.is_initialized:
+        if not chatterbox_service.is_ready:
             raise HTTPException(status_code=503, detail="Chatterbox TTS service not ready")
         
-        # Save reference audio to temporary file
+        # Read reference audio
         reference_audio_data = await reference_audio.read()
         
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
-            ref_file.write(reference_audio_data)
-            ref_file.flush()
-            
-            # Generate speech with voice cloning
-            audio_bytes = await tts_service.synthesize(
-                text=text,
-                language=language,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
-                temperature=temperature,
-                reference_audio_path=ref_file.name
-            )
-            
-            # Clean up temp file
-            os.unlink(ref_file.name)
+        # Call chatterbox API with voice cloning
+        files = {"voice_sample": ("reference.wav", reference_audio_data, "audio/wav")}
+        data = {
+            "input": text,
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight,
+            "temperature": temperature,
+            "language": language if language != "en" else None
+        }
         
-        if audio_bytes is None:
-            raise HTTPException(status_code=500, detail="Voice cloning failed")
+        response = await chatterbox_service.proxy_request(
+            "POST",
+            "/v1/audio/speech",
+            files=files,
+            data=data
+        )
+        
+        response.raise_for_status()
         
         logger.info(f"✅ Voice cloning successful")
         
         return StreamingResponse(
-            io.BytesIO(audio_bytes),
+            iter([response.content]),
             media_type="audio/wav",
             headers={
-                "X-TTS-Engine": "chatterbox-official",
+                "X-TTS-Engine": "chatterbox-travisvn",
                 "X-Feature": "voice-cloning",
                 "X-Language": language,
                 "X-Caller-Service": calling_service,
@@ -418,3 +370,43 @@ async def voice_clone_synthesis(
     except Exception as e:
         logger.error(f"❌ Voice cloning failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Shutdown handler
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean shutdown"""
+    global chatterbox_process
+    
+    logger.info("🛑 Shutting down June Chatterbox TTS Service...")
+    
+    if chatterbox_process:
+        try:
+            chatterbox_process.terminate()
+            chatterbox_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            chatterbox_process.kill()
+        except Exception as e:
+            logger.error(f"Error stopping chatterbox process: {e}")
+
+# Signal handlers for graceful shutdown
+def signal_handler(signum, frame):
+    logger.info(f"Received signal {signum}, shutting down...")
+    global chatterbox_process
+    
+    if chatterbox_process:
+        try:
+            chatterbox_process.terminate()
+            chatterbox_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            chatterbox_process.kill()
+    
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    logger.info(f"Starting June Chatterbox TTS Service on port {WRAPPER_PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=WRAPPER_PORT, workers=1)
