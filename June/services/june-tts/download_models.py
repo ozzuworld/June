@@ -1,8 +1,6 @@
-# File: June/services/june-chatterbox-tts/download_models.py
-
 #!/usr/bin/env python3
 """
-Download and cache Chatterbox models
+Download and cache Chatterbox TTS models
 """
 
 import os
@@ -31,7 +29,7 @@ def download_chatterbox_models():
             multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
             logger.info("✅ Multilingual model downloaded successfully")
         
-        logger.info("🎉 All models downloaded successfully!")
+        logger.info("🎉 All Chatterbox models downloaded successfully!")
         
     except Exception as e:
         logger.error(f"❌ Failed to download models: {e}")
