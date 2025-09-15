@@ -1,5 +1,5 @@
 # infra/envs/quarterly/service_accounts.tf
-# Service accounts defined directly instead of using a module
+# Service accounts - CHATTERBOX TTS ONLY
 
 locals {
   # Define all services that need runtime service accounts
@@ -12,14 +12,10 @@ locals {
       account_id   = "stt-svc"
       display_name = "June STT Runtime SA"
     }
-    "june-tts" = {
-      account_id   = "tts-svc"
-      display_name = "June TTS Runtime SA"
-    }
-    # NEW: Add Kokoro TTS service account
-    "june-kokoro-tts" = {
-      account_id   = "kokoro-tts-svc"
-      display_name = "June Kokoro TTS Runtime SA"
+    # ONLY Chatterbox TTS - no other TTS services
+    "june-chatterbox-tts" = {
+      account_id   = "chatterbox-tts-svc"
+      display_name = "June Chatterbox TTS Runtime SA"
     }
     "nginx-edge" = {
       account_id   = "nginx-edge-svc"
@@ -46,7 +42,7 @@ resource "google_service_account_iam_member" "deployer_can_impersonate" {
   member             = "serviceAccount:${var.deployer_sa_email}"
 }
 
-# Output for use in main.tf - THIS WAS MISSING!
+# Output for use in main.tf
 locals {
   runtime_service_accounts = {
     for name, sa in google_service_account.runtime :

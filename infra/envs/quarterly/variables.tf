@@ -1,4 +1,4 @@
-# infra/envs/quarterly/variables.tf
+# infra/envs/quarterly/variables.tf - CHATTERBOX TTS ONLY
 
 variable "project_id" {
   description = "GCP project ID"
@@ -32,14 +32,9 @@ variable "image_stt" {
   type        = string
 }
 
-variable "image_tts" {
-  description = "Container image for TTS service (legacy)"
-  type        = string
-}
-
-# NEW: Kokoro TTS image
-variable "image_kokoro_tts" {
-  description = "Container image for Kokoro TTS service"
+# ONLY Chatterbox TTS - removed all other TTS variables
+variable "image_chatterbox_tts" {
+  description = "Container image for Chatterbox TTS service"
   type        = string
 }
 
@@ -91,28 +86,15 @@ variable "STT_CLIENT_SECRET" {
   sensitive   = true
 }
 
-variable "TTS_CLIENT_ID" {
-  description = "Keycloak client ID for legacy TTS service"
+# ONLY Chatterbox TTS credentials - removed all other TTS variables
+variable "CHATTERBOX_CLIENT_ID" {
+  description = "Keycloak client ID for Chatterbox TTS service"
   type        = string
   default     = ""
 }
 
-variable "TTS_CLIENT_SECRET" {
-  description = "Keycloak client secret for legacy TTS service"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-# NEW: Kokoro TTS specific credentials
-variable "KOKORO_CLIENT_ID" {
-  description = "Keycloak client ID for Kokoro TTS service"
-  type        = string
-  default     = ""
-}
-
-variable "KOKORO_CLIENT_SECRET" {
-  description = "Keycloak client secret for Kokoro TTS service"
+variable "CHATTERBOX_CLIENT_SECRET" {
+  description = "Keycloak client secret for Chatterbox TTS service"
   type        = string
   default     = ""
   sensitive   = true
@@ -153,24 +135,5 @@ variable "QDRANT_API_KEY" {
 variable "GEMINI_API_KEY" {
   description = "Google Gemini API key"
   type        = string
-  sensitive   = true
-}
-
-# Add to infra/envs/quarterly/variables.tf
-variable "image_chatterbox_tts" {
-  description = "Container image for Chatterbox TTS service"
-  type        = string
-}
-
-variable "CHATTERBOX_CLIENT_ID" {
-  description = "Keycloak client ID for Chatterbox TTS service"
-  type        = string
-  default     = ""
-}
-
-variable "CHATTERBOX_CLIENT_SECRET" {
-  description = "Keycloak client secret for Chatterbox TTS service"
-  type        = string
-  default     = ""
   sensitive   = true
 }
