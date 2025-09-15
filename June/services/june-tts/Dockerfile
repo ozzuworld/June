@@ -1,5 +1,5 @@
 # File: June/services/june-tts/Dockerfile
-# Official Chatterbox TTS Installation Method
+# Working Chatterbox TTS using travisvn/chatterbox-tts-api
 
 FROM python:3.11-slim
 
@@ -19,35 +19,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chatterbox TTS using the OFFICIAL method
-RUN git clone https://github.com/resemble-ai/chatterbox.git /tmp/chatterbox && \
-    cd /tmp/chatterbox && \
-    pip install -e . && \
-    cd / && \
-    rm -rf /tmp/chatterbox
+# Clone the working chatterbox-tts-api implementation
+RUN git clone https://github.com/travisvn/chatterbox-tts-api.git /tmp/chatterbox-api && \
+    cp -r /tmp/chatterbox-api/* /app/ && \
+    rm -rf /tmp/chatterbox-api
 
-# Install additional required dependencies
-RUN pip install --no-cache-dir \
-    fastapi==0.111.0 \
-    uvicorn[standard]==0.30.1 \
-    PyJWT[crypto]==2.8.0 \
-    cryptography==41.0.7 \
-    httpx==0.27.0 \
-    python-multipart==0.0.9 \
-    aiofiles==23.2.0
+# Install dependencies from the working implementation
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy our custom integration layer
+COPY app.py /app/june_tts_wrapper.py
+COPY shared/ /app/shared/
 
-# Create directories
+# Create directories for models and cache
 RUN mkdir -p /app/models /app/voices /app/cache
+
+# Set environment variables for the API
+ENV HOST=0.0.0.0 \
+    PORT=8080 \
+    DEVICE=cpu \
+    LOG_LEVEL=INFO \
+    EXAGGERATION=0.5 \
+    CFG_WEIGHT=0.5 \
+    TEMPERATURE=1.0
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
-    CMD curl -f http://localhost:8080/healthz || exit 1
+    CMD curl -f http://localhost:8080/health || exit 1
 
 # Expose port
 EXPOSE 8080
 
-# Start the service
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+# Start both the chatterbox API and our wrapper
+CMD ["python", "june_tts_wrapper.py"]
