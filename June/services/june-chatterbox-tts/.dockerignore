@@ -1,0 +1,44 @@
+# File: June/services/june-chatterbox-tts/.dockerignore
+
+# Python cache & build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.env
+.venv/
+venv/
+ENV/
+env/
+*.env
+
+# Model cache (will be downloaded at runtime)
+models/
+cache/
+
+# Secrets (never send to Docker build context!)
+secrets/
+secrets/*
+*.json
+
+# Git & editor junk
+.git
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# OS files
+Thumbs.db
+
+# Test files
+test_*.py
+tests/
