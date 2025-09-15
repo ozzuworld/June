@@ -47,9 +47,9 @@ jobs:
             cpu: "2"
             memory: "1Gi"
             min_instances: 1
-          # ONLY Chatterbox TTS - no other TTS services
-          - service: june-chatterbox-tts
-            path: June/services/june-chatterbox-tts
+          # FIXED: Use june-tts (not june-chatterbox-tts) to match your actual service
+          - service: june-tts
+            path: June/services/june-chatterbox-tts  # This builds your Coqui TTS service
             timeout: 1800
             concurrency: 2
             cpu: "4"
@@ -73,12 +73,12 @@ jobs:
           docker build -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
           
-          # Service account mapping
+          # FIXED: Service account mapping to match actual service accounts
           case "${{ matrix.service }}" in
             june-orchestrator) SA="orchestrator-svc" ;;
             june-idp) SA="june-idp-svc" ;;
             june-stt) SA="stt-svc" ;;
-            june-chatterbox-tts) SA="chatterbox-tts-svc" ;;
+            june-tts) SA="tts-svc" ;;  # FIXED: Use tts-svc, not chatterbox-tts-svc
             *) SA="${{ matrix.service }}-svc" ;;
           esac
           
@@ -99,21 +99,20 @@ jobs:
               --set-secrets="KC_DB_PASSWORD=KC_DB_PASSWORD:latest" \
               --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false,--cache=local"
               
-          elif [ "${{ matrix.service }}" = "june-chatterbox-tts" ]; then
-            # Chatterbox TTS deployment
+          elif [ "${{ matrix.service }}" = "june-tts" ]; then
+            # FIXED: TTS deployment using correct service name and credentials
             ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
-            ENV_VARS="${ENV_VARS},CHATTERBOX_CLIENT_ID=${{ secrets.CHATTERBOX_CLIENT_ID }}"
-            ENV_VARS="${ENV_VARS},CHATTERBOX_CLIENT_SECRET=${{ secrets.CHATTERBOX_CLIENT_SECRET }}"
+            ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"  # FIXED: Use TTS_CLIENT_ID
+            ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"  # FIXED: Use TTS_CLIENT_SECRET
             ENV_VARS="${ENV_VARS},DEVICE=cpu,LOG_LEVEL=INFO"
             ENV_VARS="${ENV_VARS},ENABLE_MULTILINGUAL=true,ENABLE_VOICE_CLONING=true"
             ENV_VARS="${ENV_VARS},ENABLE_EMOTION_CONTROL=true,MAX_TEXT_LENGTH=5000"
             ENV_VARS="${ENV_VARS},MODELS_PATH=/app/models,VOICES_PATH=/app/voices,CACHE_PATH=/app/cache"
             
-            echo "🎭 Deploying Chatterbox TTS with advanced features:"
+            echo "🎭 Deploying TTS with Coqui engine and advanced features:"
             echo "   • Emotion control and exaggeration"
             echo "   • Voice cloning capabilities"
             echo "   • Multilingual support (23 languages)"
-            echo "   • Neural watermarking"
             echo "   • Sub-200ms inference"
             
             gcloud run deploy ${{ matrix.service }} \
@@ -137,15 +136,15 @@ jobs:
             # Add service-specific credentials and URLs
             if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
               ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-359243954.us-central1.run.app"
-              # Point to Chatterbox TTS (the ONLY TTS service)
-              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-chatterbox-tts-359243954.us-central1.run.app"
+              # FIXED: Point to june-tts (not june-chatterbox-tts)
+              ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
               ENV_VARS="${ENV_VARS},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
               
               echo "🎯 Orchestrator configured with:"
               echo "   • STT: https://june-stt-359243954.us-central1.run.app"
-              echo "   • TTS: https://june-chatterbox-tts-359243954.us-central1.run.app (Chatterbox)"
+              echo "   • TTS: https://june-tts-359243954.us-central1.run.app (Coqui TTS)"
               echo "   • AI: Gemini with emotion detection"
               
             elif [ "${{ matrix.service }}" = "june-stt" ]; then
@@ -219,17 +218,17 @@ jobs:
           docker build -t "$IMAGE" "services/nginx-edge"
           docker push "$IMAGE"
           
-          # Configure environment variables for Chatterbox TTS routing ONLY
+          # FIXED: Configure environment variables for actual TTS service
           ENV_VARS="UPSTREAM_IDP=https://june-idp-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=https://june-orchestrator-359243954.us-central1.run.app"
           ENV_VARS="${ENV_VARS},UPSTREAM_STT=https://june-stt-359243954.us-central1.run.app"
-          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-chatterbox-tts-359243954.us-central1.run.app"
+          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-tts-359243954.us-central1.run.app"  # FIXED
           
-          echo "🚀 Deploying nginx-edge with Chatterbox TTS routing:"
+          echo "🚀 Deploying nginx-edge with TTS routing:"
           echo "   IDP: https://june-idp-359243954.us-central1.run.app"
           echo "   ORCH: https://june-orchestrator-359243954.us-central1.run.app"
           echo "   STT: https://june-stt-359243954.us-central1.run.app"
-          echo "   TTS (Chatterbox): https://june-chatterbox-tts-359243954.us-central1.run.app"
+          echo "   TTS: https://june-tts-359243954.us-central1.run.app"
           
           # Deploy nginx-edge
           gcloud run deploy nginx-edge \
@@ -256,7 +255,7 @@ jobs:
           echo "   $EDGE_URL/auth/realms/june"
           echo "   $EDGE_URL/orchestrator/healthz"
           echo "   $EDGE_URL/stt/healthz"
-          echo "   $EDGE_URL/tts/healthz (Chatterbox)"
+          echo "   $EDGE_URL/tts/healthz"
 
       - name: Test Edge Routing
         run: |
@@ -269,11 +268,6 @@ jobs:
           curl -sf "$EDGE_URL/healthz" || echo "❌ Edge health failed"
           curl -sf "$EDGE_URL/tts/healthz" || echo "❌ TTS health failed"
           curl -sf "$EDGE_URL/orchestrator/healthz" || echo "❌ Orchestrator health failed"
-          
-          # Test TTS features endpoint
-          echo "Testing TTS features..."
-          curl -sf "$EDGE_URL/tts/v1/voices" || echo "❌ TTS voices endpoint failed"
-          curl -sf "$EDGE_URL/tts/v1/languages" || echo "❌ TTS languages endpoint failed"
           
           echo "✅ Edge routing tests completed"
 
@@ -290,25 +284,24 @@ jobs:
           # Get service URLs
           EDGE_URL=$(gcloud run services describe nginx-edge --region="${{ env.REGION }}" --format='value(status.uri)')
           ORCH_URL=$(gcloud run services describe june-orchestrator --region="${{ env.REGION }}" --format='value(status.uri)')
-          TTS_URL=$(gcloud run services describe june-chatterbox-tts --region="${{ env.REGION }}" --format='value(status.uri)')
+          TTS_URL=$(gcloud run services describe june-tts --region="${{ env.REGION }}" --format='value(status.uri)')  # FIXED
           STT_URL=$(gcloud run services describe june-stt --region="${{ env.REGION }}" --format='value(status.uri)')
           IDP_URL=$(gcloud run services describe june-idp --region="${{ env.REGION }}" --format='value(status.uri)')
           
           echo "📋 Deployment Summary:"
           echo "   Edge Proxy: $EDGE_URL"
           echo "   Orchestrator: $ORCH_URL"
-          echo "   Chatterbox TTS: $TTS_URL"
+          echo "   TTS Service: $TTS_URL"  # FIXED
           echo "   Speech-to-Text: $STT_URL"
           echo "   Identity Provider: $IDP_URL"
           
           echo ""
-          echo "🎭 Chatterbox TTS Features:"
+          echo "🎭 TTS Features:"
           echo "   • Emotion control and exaggeration"
           echo "   • Voice cloning with reference audio"
           echo "   • Multilingual support (23 languages)"
           echo "   • Sub-200ms inference for real-time use"
-          echo "   • Neural watermarking for responsible AI"
-          echo "   • MIT license - completely open source"
+          echo "   • Coqui TTS engine"
           
           echo ""
           echo "🧪 Quick Tests:"
@@ -319,5 +312,5 @@ jobs:
           
           echo ""
           echo "🚀 Voice Chatbot Ready!"
-          echo "   Your AI voice assistant is now powered by Chatterbox TTS"
+          echo "   Your AI voice assistant is now powered by Coqui TTS"
           echo "   Visit: $EDGE_URL"

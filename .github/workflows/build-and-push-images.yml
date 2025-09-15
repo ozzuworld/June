@@ -6,7 +6,7 @@ on:
     paths:
       - 'June/services/june-orchestrator/**'
       - 'June/services/june-stt/**'
-      - 'June/services/june-tts/**'
+      - 'June/services/june-chatterbox-tts/**'  # This builds as june-tts
       - '.github/workflows/build-and-push-images.yml'
 
 jobs:
@@ -42,10 +42,11 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/june-stt:latest
 
+      # FIXED: Build as june-tts but from the chatterbox-tts directory
       - name: Build + push tts
         id: tts
         uses: docker/build-push-action@v5
         with:
-          context: ./June/services/june-tts
+          context: ./June/services/june-chatterbox-tts
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/june-tts:latest

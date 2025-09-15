@@ -1,4 +1,4 @@
-# infra/envs/quarterly/variables.tf - CHATTERBOX TTS ONLY
+# infra/envs/quarterly/variables.tf - FIXED VARIABLE NAMES
 
 variable "project_id" {
   description = "GCP project ID"
@@ -32,9 +32,9 @@ variable "image_stt" {
   type        = string
 }
 
-# ONLY Chatterbox TTS - removed all other TTS variables
-variable "image_chatterbox_tts" {
-  description = "Container image for Chatterbox TTS service"
+# FIXED: Use image_tts instead of image_chatterbox_tts
+variable "image_tts" {
+  description = "Container image for TTS service (Coqui TTS engine)"
   type        = string
 }
 
@@ -86,15 +86,15 @@ variable "STT_CLIENT_SECRET" {
   sensitive   = true
 }
 
-# ONLY Chatterbox TTS credentials - removed all other TTS variables
-variable "CHATTERBOX_CLIENT_ID" {
-  description = "Keycloak client ID for Chatterbox TTS service"
+# FIXED: Use TTS_CLIENT_* instead of CHATTERBOX_CLIENT_*
+variable "TTS_CLIENT_ID" {
+  description = "Keycloak client ID for TTS service"
   type        = string
   default     = ""
 }
 
-variable "CHATTERBOX_CLIENT_SECRET" {
-  description = "Keycloak client secret for Chatterbox TTS service"
+variable "TTS_CLIENT_SECRET" {
+  description = "Keycloak client secret for TTS service"
   type        = string
   default     = ""
   sensitive   = true

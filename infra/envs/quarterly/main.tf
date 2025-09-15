@@ -1,4 +1,4 @@
-# infra/envs/quarterly/main.tf - CHATTERBOX TTS ONLY
+# infra/envs/quarterly/main.tf - FIXED SERVICE NAMES
 terraform {
   required_providers {
     google = {
@@ -62,8 +62,8 @@ module "orchestrator" {
   
   env_vars = [
     for k, v in merge(local.base_env, {
-      # Point to Chatterbox TTS (the ONLY TTS service)
-      TTS_SERVICE_URL = "https://june-chatterbox-tts-359243954.us-central1.run.app"
+      # FIXED: Point to june-tts (not june-chatterbox-tts)
+      TTS_SERVICE_URL = "https://june-tts-359243954.us-central1.run.app"
       STT_SERVICE_URL = "https://june-stt-359243954.us-central1.run.app"
     }) : {
       name  = k
@@ -113,23 +113,23 @@ module "stt" {
   }
 }
 
-# Chatterbox TTS - THE ONLY TTS SERVICE
-module "chatterbox_tts" {
+# FIXED: TTS Service (using june-tts name but with Coqui/Chatterbox code)
+module "tts" {
   source  = "GoogleCloudPlatform/cloud-run/google"
   version = "~> 0.21"
 
-  service_name = "june-chatterbox-tts"
+  service_name = "june-tts"  # FIXED: Use june-tts consistently
   project_id   = var.project_id
   location     = var.region
-  image        = var.image_chatterbox_tts
+  image        = var.image_tts
 
-  service_account_email = local.runtime_sas["june-chatterbox-tts"]
+  service_account_email = local.runtime_sas["june-tts"]
   
   env_vars = [
     { name = "KC_BASE_URL", value = var.KC_BASE_URL },
     { name = "KC_REALM", value = var.KC_REALM },
-    { name = "CHATTERBOX_CLIENT_ID", value = var.CHATTERBOX_CLIENT_ID },
-    { name = "CHATTERBOX_CLIENT_SECRET", value = var.CHATTERBOX_CLIENT_SECRET },
+    { name = "TTS_CLIENT_ID", value = var.TTS_CLIENT_ID },       # FIXED: Use TTS_CLIENT_ID
+    { name = "TTS_CLIENT_SECRET", value = var.TTS_CLIENT_SECRET }, # FIXED: Use TTS_CLIENT_SECRET
     { name = "DEVICE", value = "cpu" },
     { name = "LOG_LEVEL", value = "INFO" },
     { name = "ENABLE_MULTILINGUAL", value = "true" },
@@ -166,9 +166,9 @@ output "stt_url" {
   value = module.stt.service_url
 }
 
-output "chatterbox_tts_url" {
-  value = module.chatterbox_tts.service_url
-  description = "URL of the Chatterbox TTS service"
+output "tts_url" {
+  value = module.tts.service_url
+  description = "URL of the TTS service"
 }
 
 # NOTE: IDP module and its output are in june-idp.tf
