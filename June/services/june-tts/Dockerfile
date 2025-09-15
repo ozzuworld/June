@@ -37,7 +37,6 @@ RUN mkdir -p /app/models /app/voices /app/cache
 
 # Set environment variables for the API
 ENV HOST=0.0.0.0 \
-    PORT=8080 \
     DEVICE=cpu \
     LOG_LEVEL=INFO \
     EXAGGERATION=0.5 \
