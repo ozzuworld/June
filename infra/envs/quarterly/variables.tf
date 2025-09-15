@@ -155,3 +155,22 @@ variable "GEMINI_API_KEY" {
   type        = string
   sensitive   = true
 }
+
+# Add to infra/envs/quarterly/variables.tf
+variable "image_chatterbox_tts" {
+  description = "Container image for Chatterbox TTS service"
+  type        = string
+}
+
+variable "CHATTERBOX_CLIENT_ID" {
+  description = "Keycloak client ID for Chatterbox TTS service"
+  type        = string
+  default     = ""
+}
+
+variable "CHATTERBOX_CLIENT_SECRET" {
+  description = "Keycloak client secret for Chatterbox TTS service"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
