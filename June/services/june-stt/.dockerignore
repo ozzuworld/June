@@ -1,0 +1,34 @@
+# Python cache & build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.env
+.venv/
+venv/
+ENV/
+env/
+*.env
+
+# Secrets (never send to Docker build context!)
+secrets/
+secrets/*
+*.json
+
+# Git & editor junk
+#.git
+#.gitignore
+#.gitattributes
+#.github/
+#.idea/
+.vscode/
+.DS_Store
+
+# OS files
+Thumbs.db
