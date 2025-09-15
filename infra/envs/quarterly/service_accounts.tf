@@ -1,6 +1,3 @@
-# infra/envs/quarterly/service_accounts.tf
-# Service accounts - FIXED to match actual services
-
 locals {
   # Define all services that need runtime service accounts
   services = {
@@ -20,6 +17,11 @@ locals {
     "nginx-edge" = {
       account_id   = "nginx-edge-svc"
       display_name = "Nginx Edge Runtime SA"
+    }
+    # FIXED: Add june-idp service account
+    "june-idp" = {
+      account_id   = "june-idp-svc"
+      display_name = "June IDP Runtime SA"
     }
   }
 }
@@ -49,3 +51,5 @@ locals {
     name => sa.email
   }
 }
+
+---
