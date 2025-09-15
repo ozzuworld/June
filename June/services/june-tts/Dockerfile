@@ -36,8 +36,7 @@ COPY shared/ /app/shared/
 RUN mkdir -p /app/models /app/voices /app/cache
 
 # Set environment variables for the API
-ENV HOST=0.0.0.0 \
-    DEVICE=cpu \
+ENV DEVICE=cpu \
     LOG_LEVEL=INFO \
     EXAGGERATION=0.5 \
     CFG_WEIGHT=0.5 \
