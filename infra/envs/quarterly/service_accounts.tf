@@ -1,5 +1,5 @@
 # infra/envs/quarterly/service_accounts.tf
-# Service accounts - CHATTERBOX TTS ONLY
+# Service accounts - FIXED to match actual services
 
 locals {
   # Define all services that need runtime service accounts
@@ -12,10 +12,10 @@ locals {
       account_id   = "stt-svc"
       display_name = "June STT Runtime SA"
     }
-    # ONLY Chatterbox TTS - no other TTS services
-    "june-chatterbox-tts" = {
-      account_id   = "chatterbox-tts-svc"
-      display_name = "June Chatterbox TTS Runtime SA"
+    # FIXED: Use june-tts (not june-chatterbox-tts)
+    "june-tts" = {
+      account_id   = "tts-svc"
+      display_name = "June TTS Runtime SA"
     }
     "nginx-edge" = {
       account_id   = "nginx-edge-svc"
