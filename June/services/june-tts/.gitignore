@@ -1,0 +1,23 @@
+# June/services/june-tts/.dockerignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.egg-info/
+build/
+dist/
+.env
+.venv/
+venv/
+ENV/
+env/
+*.env
+models/
+cache/
+secrets/
+.git
+.DS_Store
+Thumbs.db
+test_*.py
+tests/

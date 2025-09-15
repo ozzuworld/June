@@ -1,3 +1,6 @@
+# File: June/services/june-tts/Dockerfile
+# Chatterbox TTS Service Docker Image
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,21 +26,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create directories
+# Create directories for models, voices, and cache
 RUN mkdir -p /app/models /app/voices /app/cache
 
-# Download default voice samples (optional)
-RUN mkdir -p /app/default_voices
+# Set permissions for any scripts
+RUN chmod +x /app/*.py || true
 
-# Set permissions
-RUN chmod +x /app/download_models.py
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=180s --retries=3 \
+# Health check (extended timeout for model loading)
+HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
     CMD curl -f http://localhost:8080/healthz || exit 1
 
 # Expose port
 EXPOSE 8080
 
-# Start the service
+# Start the Chatterbox TTS service
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

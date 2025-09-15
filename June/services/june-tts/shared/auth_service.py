@@ -1,5 +1,4 @@
-# File: June/services/june-chatterbox-tts/shared/auth_service.py
-
+# File: June/services/june-tts/shared/auth_service.py
 # Shared authentication module for service-to-service communication
 
 import os

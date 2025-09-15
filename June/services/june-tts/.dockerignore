@@ -1,4 +1,4 @@
-# File: June/services/june-chatterbox-tts/.dockerignore
+# File: June/services/june-tts/.dockerignore
 
 # Python cache & build artifacts
 __pycache__/

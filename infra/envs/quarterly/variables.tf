@@ -1,184 +1,135 @@
-# infra/envs/quarterly/main.tf - FIXED SERVICE NAMES AND CONFIGURATION
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = ">= 6.0.0, < 7.0.0"
-    }
-    google-beta = {
-      source  = "hashicorp/google-beta"
-      version = ">= 6.0.0, < 7.0.0"
-    }
-  }
-  backend "remote" {
-    organization = "allsafe-world"
-    
-    workspaces {
-      name = "quarterly"
-    }
-  }
+# infra/envs/quarterly/variables.tf - FIXED SERVICE NAMES AND CREDENTIALS
+
+# Project settings
+variable "project_id" {
+  description = "GCP Project ID"
+  type        = string
 }
 
-provider "google" {
-  project = var.project_id
-  region  = var.region
+variable "region" {
+  description = "GCP region to deploy services"
+  type        = string
+  default     = "us-central1"
 }
 
-provider "google-beta" {
-  project = var.project_id
-  region  = var.region
+# Container images
+variable "image_idp" {
+  description = "June IDP (Keycloak) container image"
+  type        = string
 }
 
-# Common environment variables
-locals {
-  base_env = {
-    NEON_DB_URL              = var.NEON_DB_URL
-    UPSTASH_REDIS_REST_URL   = var.UPSTASH_REDIS_REST_URL
-    UPSTASH_REDIS_REST_TOKEN = var.UPSTASH_REDIS_REST_TOKEN
-    QDRANT_URL               = var.QDRANT_URL
-    QDRANT_API_KEY           = var.QDRANT_API_KEY
-    GEMINI_API_KEY           = var.GEMINI_API_KEY
-    KC_BASE_URL              = var.KC_BASE_URL
-    KC_REALM                 = var.KC_REALM
-    KC_CLIENT_ID             = var.KC_CLIENT_ID
-    KC_CLIENT_SECRET         = var.KC_CLIENT_SECRET
-  }
-
-  # Reference the local service accounts from service_accounts.tf
-  runtime_sas = local.runtime_service_accounts
+variable "image_orchestrator" {
+  description = "June Orchestrator container image"
+  type        = string
 }
 
-# Orchestrator using the official module
-module "orchestrator" {
-  source  = "GoogleCloudPlatform/cloud-run/google"
-  version = "~> 0.21"
-
-  service_name = "june-orchestrator"
-  project_id   = var.project_id
-  location     = var.region
-  image        = var.image_orchestrator
-
-  service_account_email = local.runtime_sas["june-orchestrator"]
-  
-  env_vars = [
-    for k, v in merge(local.base_env, {
-      # FIXED: Point to june-tts (not june-chatterbox-tts)
-      TTS_SERVICE_URL = "https://june-tts-359243954.us-central1.run.app"
-      STT_SERVICE_URL = "https://june-stt-359243954.us-central1.run.app"
-      # FIXED: Add missing service credentials
-      ORCHESTRATOR_CLIENT_ID     = var.ORCHESTRATOR_CLIENT_ID
-      ORCHESTRATOR_CLIENT_SECRET = var.ORCHESTRATOR_CLIENT_SECRET
-    }) : {
-      name  = k
-      value = v
-    }
-  ]
-
-  limits = {
-    cpu    = "1000m"
-    memory = "512Mi"
-  }
-
-  template_annotations = {
-    "autoscaling.knative.dev/minScale" = "0"
-    "autoscaling.knative.dev/maxScale" = "20"
-  }
-
-  timeout_seconds = 3600
+variable "image_stt" {
+  description = "June STT container image"
+  type        = string
 }
 
-# Speech-to-Text using the official module
-module "stt" {
-  source  = "GoogleCloudPlatform/cloud-run/google"
-  version = "~> 0.21"
-
-  service_name = "june-stt"
-  project_id   = var.project_id
-  location     = var.region
-  image        = var.image_stt
-
-  service_account_email = local.runtime_sas["june-stt"]
-  
-  env_vars = [
-    { name = "KC_BASE_URL", value = var.KC_BASE_URL },
-    { name = "KC_REALM", value = var.KC_REALM },
-    # FIXED: Add missing STT credentials
-    { name = "STT_CLIENT_ID", value = var.STT_CLIENT_ID },
-    { name = "STT_CLIENT_SECRET", value = var.STT_CLIENT_SECRET },
-    { name = "GEMINI_API_KEY", value = var.GEMINI_API_KEY },
-    # FIXED: Add Firebase project ID
-    { name = "FIREBASE_PROJECT_ID", value = var.project_id }
-  ]
-
-  limits = {
-    cpu    = "2000m"
-    memory = "1Gi"
-  }
-
-  template_annotations = {
-    "autoscaling.knative.dev/minScale" = "1"
-    "autoscaling.knative.dev/maxScale" = "10"
-  }
-
-  timeout_seconds = 3600
+variable "image_tts" {
+  description = "June TTS (Chatterbox) container image"
+  type        = string
 }
 
-# FIXED: TTS Service (using june-tts name but with Coqui/Chatterbox code)
-module "tts" {
-  source  = "GoogleCloudPlatform/cloud-run/google"
-  version = "~> 0.21"
-
-  service_name = "june-tts"  # FIXED: Use june-tts consistently
-  project_id   = var.project_id
-  location     = var.region
-  image        = var.image_tts
-
-  service_account_email = local.runtime_sas["june-tts"]
-  
-  env_vars = [
-    { name = "KC_BASE_URL", value = var.KC_BASE_URL },
-    { name = "KC_REALM", value = var.KC_REALM },
-    { name = "TTS_CLIENT_ID", value = var.TTS_CLIENT_ID },       # FIXED: Use TTS_CLIENT_ID
-    { name = "TTS_CLIENT_SECRET", value = var.TTS_CLIENT_SECRET }, # FIXED: Use TTS_CLIENT_SECRET
-    { name = "DEVICE", value = "cpu" },
-    { name = "LOG_LEVEL", value = "INFO" },
-    { name = "ENABLE_MULTILINGUAL", value = "true" },
-    { name = "ENABLE_VOICE_CLONING", value = "true" },
-    { name = "ENABLE_EMOTION_CONTROL", value = "true" },
-    { name = "MAX_TEXT_LENGTH", value = "5000" },
-    { name = "MODELS_PATH", value = "/app/models" },
-    { name = "VOICES_PATH", value = "/app/voices" },
-    { name = "CACHE_PATH", value = "/app/cache" }
-  ]
-
-  limits = {
-    cpu    = "4000m"  # 4 CPU cores for better model performance
-    memory = "8Gi"    # 8GB RAM for model loading and processing
-  }
-
-  template_annotations = {
-    "autoscaling.knative.dev/minScale" = "0"   # Scale to zero when not in use
-    "autoscaling.knative.dev/maxScale" = "10"  # Limit concurrent instances
-    "run.googleapis.com/startup-cpu-boost" = "true"  # Faster cold starts
-    "run.googleapis.com/execution-environment" = "gen2"  # Better performance
-  }
-
-  # Extended timeout for model loading and synthesis
-  timeout_seconds = 1800  # 30 minutes
+# Keycloak configuration
+variable "KC_BASE_URL" {
+  description = "Keycloak base URL"
+  type        = string
 }
 
-# Outputs
-output "orchestrator_url" {
-  value = module.orchestrator.service_url
+variable "KC_DB_URL" {
+  description = "Keycloak database connection URL"
+  type        = string
 }
 
-output "stt_url" {
-  value = module.stt.service_url
+variable "KC_DB_USERNAME" {
+  description = "Keycloak database username"
+  type        = string
 }
 
-output "tts_url" {
-  value = module.tts.service_url
-  description = "URL of the TTS service"
+variable "KC_REALM" {
+  description = "Keycloak realm name"
+  type        = string
+  default     = "june"
 }
 
-# NOTE: IDP module and its output are in june-idp.tf
+variable "KC_CLIENT_ID" {
+  description = "Keycloak client ID"
+  type        = string
+}
+
+variable "KC_CLIENT_SECRET" {
+  description = "Keycloak client secret"
+  type        = string
+}
+
+# FIXED: Service client credentials
+variable "ORCHESTRATOR_CLIENT_ID" {
+  description = "Orchestrator service client ID"
+  type        = string
+}
+
+variable "ORCHESTRATOR_CLIENT_SECRET" {
+  description = "Orchestrator service client secret"
+  type        = string
+}
+
+variable "STT_CLIENT_ID" {
+  description = "STT service client ID"
+  type        = string
+}
+
+variable "STT_CLIENT_SECRET" {
+  description = "STT service client secret"
+  type        = string
+}
+
+variable "TTS_CLIENT_ID" {
+  description = "TTS (Chatterbox) service client ID"
+  type        = string
+}
+
+variable "TTS_CLIENT_SECRET" {
+  description = "TTS (Chatterbox) service client secret"
+  type        = string
+}
+
+# External services
+variable "NEON_DB_URL" {
+  description = "Neon database connection URL"
+  type        = string
+}
+
+variable "UPSTASH_REDIS_REST_URL" {
+  description = "Upstash Redis REST URL"
+  type        = string
+}
+
+variable "UPSTASH_REDIS_REST_TOKEN" {
+  description = "Upstash Redis REST token"
+  type        = string
+}
+
+variable "QDRANT_URL" {
+  description = "Qdrant vector database URL"
+  type        = string
+}
+
+variable "QDRANT_API_KEY" {
+  description = "Qdrant API key"
+  type        = string
+}
+
+variable "GEMINI_API_KEY" {
+  description = "Google Gemini API key"
+  type        = string
+}
+
+# CI/CD (optional, for manual deployment)
+variable "deployer_sa_email" {
+  description = "Service account email for the GitHub Actions deployer"
+  type        = string
+  default     = ""
+}
