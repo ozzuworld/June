@@ -1,53 +1,14 @@
-# docker-compose.yml - Local development!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-version: '3.8'
-
 services:
-  june-tts:
-    build:
-      context: June/services/june-tts
-      dockerfile: Dockerfile
+  chatterbox-tts:
+    build: .
     ports:
-      - "8080:8080"
+      - '4123:4123'
     environment:
-      - LOG_LEVEL=DEBUG
-      - CHATTERBOX_API_URL=http://localhost:8000
-      - DEFAULT_VOICE=af_bella
-      - ENABLE_VOICE_CLONING=true
-      - KC_BASE_URL=https://your-keycloak.run.app
-      - KC_REALM=june
-      - TTS_CLIENT_ID=tts-service
-      - TTS_CLIENT_SECRET=your-secret
+      - EXAGGERATION=0.7
     volumes:
-      - ./June/services/june-tts:/app
-    networks:
-      - june-network
+      - .:/app
+      - chatterbox-models:/cache
+    command: uvicorn api:app --host=0.0.0.0 --port=4123 --reload
 
-  june-orchestrator:
-    build:
-      context: June/services/june-orchestrator
-    ports:
-      - "8081:8080"
-    environment:
-      - LOG_LEVEL=DEBUG
-      - TTS_SERVICE_URL=http://june-tts:8080
-      - STT_SERVICE_URL=http://june-stt:8080
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-    depends_on:
-      - june-tts
-      - june-stt
-    networks:
-      - june-network
-
-  june-stt:
-    build:
-      context: June/services/june-stt
-    ports:
-      - "8082:8080"
-    environment:
-      - LOG_LEVEL=DEBUG
-    networks:
-      - june-network
-
-networks:
-  june-network:
-    driver: bridge
+volumes:
+  chatterbox-models:
