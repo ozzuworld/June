@@ -337,9 +337,9 @@ async def process_audio(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Process audio through STT -> LLM -> Chatterbox TTS pipeline"""
+    """Process audio through STT -> LLM -> TTS pipeline"""
     calling_service = service_auth_data.get("client_id", "unknown")
-    logger.info(f"Audio processing request from service: {calling_service}")
+    logger.info(f"🎤 Audio processing request from service: {calling_service}")
     
     audio_data = payload.get("audio_data")  # base64 encoded audio
     if not audio_data:
@@ -349,83 +349,88 @@ async def process_audio(
         # Decode audio
         import base64
         audio_bytes = base64.b64decode(audio_data)
+        logger.info(f"📊 Received audio: {len(audio_bytes)} bytes")
         
-        # Call STT service
+        # Step 1: Call STT service
+        transcription_text = "Could not transcribe audio"
         if stt_client:
-            # Create a temporary file-like object for the audio
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_file:
-                temp_file.write(audio_bytes)
-                temp_file.flush()
+            try:
+                # Save audio to temporary file for multipart upload
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as temp_file:
+                    temp_file.write(audio_bytes)
+                    temp_file.flush()
+                    temp_path = temp_file.name
                 
-                # Call STT service with file upload
-                with open(temp_file.name, "rb") as audio_file:
-                    files = {"audio": ("audio.m4a", audio_file, "audio/m4a")}
-                    data = {"language": "en-US"}
-                    
+                # Call STT with proper multipart form
+                with open(temp_path, "rb") as audio_file:
                     response = await stt_client.auth.make_authenticated_request(
                         "POST",
                         f"{STT_SERVICE_URL}/v1/transcribe",
-                        files=files,
-                        data=data,
+                        files={"audio": ("audio.m4a", audio_file, "audio/mp4")},
+                        data={"language": "en-US"},
                         timeout=30.0
                     )
-                    
-                    response.raise_for_status()
-                    stt_result = response.json()
-                    text = stt_result.get("text", "Could not transcribe audio")
-                    
+                
                 # Clean up temp file
-                import os
-                os.unlink(temp_file.name)
-        else:
-            text = "STT service not available"
+                os.unlink(temp_path)
+                
+                if response.status_code == 200:
+                    stt_result = response.json()
+                    transcription_text = stt_result.get("text", "Could not transcribe audio")
+                    logger.info(f"✅ STT transcription: '{transcription_text}'")
+                else:
+                    logger.error(f"❌ STT failed with status {response.status_code}")
+                    
+            except Exception as stt_error:
+                logger.error(f"❌ STT service call failed: {stt_error}")
         
-        # Process through AI
-        reply = await generate_ai_response(text, {"caller": calling_service})
+        # Step 2: Process through AI
+        reply = await generate_ai_response(transcription_text, {"caller": calling_service})
+        logger.info(f"🤖 AI response: '{reply[:100]}...'")
         
-        # Call Chatterbox TTS service  
+        # Step 3: Generate TTS audio
         audio_b64 = None
         if tts_client and reply:
             try:
-                logger.info(f"🎵 Generating speech with Chatterbox TTS: '{reply[:50]}...'")
+                logger.info(f"🎵 Generating speech for: '{reply[:50]}...'")
                 
-                # Use emotion-aware synthesis based on content
-                emotion_settings = {}
-                if any(word in reply.lower() for word in ["excited", "amazing", "wonderful", "fantastic"]):
-                    emotion_settings = {"exaggeration": 0.8, "temperature": 1.2}
-                elif any(word in reply.lower() for word in ["sorry", "unfortunately", "problem"]):
-                    emotion_settings = {"exaggeration": 0.3, "temperature": 0.8}
-                
+                # Call TTS service
                 audio_response = await tts_client.synthesize_speech(
                     text=reply,
-                    voice="assistant_female",
+                    voice="default",
                     speed=1.0,
-                    audio_encoding="MP3",
-                    emotion_settings=emotion_settings if emotion_settings else None
+                    audio_encoding="MP3"
                 )
                 
                 if audio_response:
-                    audio_b64 = base64.b64encode(audio_response).decode()
-                    logger.info(f"✅ Chatterbox TTS audio generated: {len(audio_response)} bytes")
+                    # Encode audio to base64 for response
+                    audio_b64 = base64.b64encode(audio_response).decode('utf-8')
+                    logger.info(f"✅ TTS audio generated: {len(audio_response)} bytes")
                 else:
-                    logger.error("❌ Chatterbox TTS returned empty audio")
+                    logger.error("❌ TTS returned empty audio")
                     
             except Exception as tts_error:
-                logger.error(f"❌ Chatterbox TTS service call failed: {tts_error}")
+                logger.error(f"❌ TTS service call failed: {tts_error}")
         
+        # Return complete response
         return {
-            "transcription": text,
+            "transcription": transcription_text,
             "response_text": reply,
-            "response_audio": audio_b64,
+            "response_audio": audio_b64,  # Base64 encoded MP3
             "processed_by": "orchestrator",
             "caller": calling_service,
-            "tts_engine": "chatterbox"
+            "tts_available": audio_b64 is not None
         }
         
     except Exception as e:
-        logger.error(f"Audio processing failed: {e}")
-        return {"error": str(e)}
+        logger.error(f"❌ Audio processing failed: {e}")
+        return {
+            "error": str(e),
+            "transcription": "Error processing audio",
+            "response_text": "I apologize, but I encountered an error processing your audio.",
+            "response_audio": None
+        }
 
 # -----------------------------------------------------------------------------
 # Startup event

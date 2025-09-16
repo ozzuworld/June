@@ -1,10 +1,11 @@
-# June/services/june-tts/app.py - FIXED VERSION
+# June/services/june-tts/app.py - REAL TTS IMPLEMENTATION
 import os
 import time
 import logging
 import tempfile
 import base64
 from typing import Optional
+import io
 
 from fastapi import FastAPI, Query, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -19,6 +20,25 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="June TTS Service", version="1.0.0")
 
+# Try to use Google Cloud TTS (best option)
+try:
+    from google.cloud import texttospeech
+    tts_client = texttospeech.TextToSpeechClient()
+    GOOGLE_TTS_AVAILABLE = True
+    logger.info("✅ Google Cloud Text-to-Speech initialized")
+except Exception as e:
+    GOOGLE_TTS_AVAILABLE = False
+    logger.warning(f"⚠️ Google Cloud TTS not available: {e}")
+
+# Fallback: Try gTTS (Google Text-to-Speech unofficial)
+try:
+    from gtts import gTTS
+    GTTS_AVAILABLE = True
+    logger.info("✅ gTTS initialized as fallback")
+except ImportError:
+    GTTS_AVAILABLE = False
+    logger.warning("⚠️ gTTS not available")
+
 # Configuration
 WRAPPER_PORT = int(os.getenv("PORT", "8080"))
 
@@ -28,6 +48,75 @@ class TTSRequest(BaseModel):
     voice: str = Field("default", description="Voice profile")
     speed: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed")
 
+def synthesize_with_google_tts(text: str, language: str = "en-US", voice_name: str = None) -> bytes:
+    """Use Google Cloud Text-to-Speech"""
+    try:
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        # Configure voice
+        if not voice_name:
+            voice_name = "en-US-Journey-F" if "en" in language else f"{language}-Standard-A"
+        
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=language[:5] if len(language) > 5 else language,
+            name=voice_name,
+        )
+        
+        # Configure audio
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=1.0,
+            pitch=0.0,
+        )
+        
+        # Generate speech
+        response = tts_client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+        
+        logger.info(f"✅ Google TTS synthesis successful: {len(response.audio_content)} bytes")
+        return response.audio_content
+        
+    except Exception as e:
+        logger.error(f"❌ Google TTS failed: {e}")
+        raise
+
+def synthesize_with_gtts(text: str, language: str = "en") -> bytes:
+    """Use gTTS as fallback"""
+    try:
+        # Map language codes
+        lang_map = {
+            "en-US": "en",
+            "es-ES": "es", 
+            "fr-FR": "fr",
+            "de-DE": "de",
+            "it-IT": "it",
+            "pt-BR": "pt",
+            "zh-CN": "zh",
+            "ja-JP": "ja",
+            "ko-KR": "ko",
+        }
+        
+        gtts_lang = lang_map.get(language, language[:2] if len(language) > 2 else language)
+        
+        # Generate speech
+        tts = gTTS(text=text, lang=gtts_lang, slow=False)
+        
+        # Save to bytes
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        audio_bytes = audio_buffer.read()
+        
+        logger.info(f"✅ gTTS synthesis successful: {len(audio_bytes)} bytes")
+        return audio_bytes
+        
+    except Exception as e:
+        logger.error(f"❌ gTTS failed: {e}")
+        raise
+
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint"""
@@ -36,96 +125,19 @@ async def healthz():
         "service": "june-tts",
         "timestamp": time.time(),
         "status": "healthy",
-        "device": os.getenv("DEVICE", "cpu"),
-        "supported_languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh", "ja", "ko"],
-        "engine": "simple-tts",
-        "features": {
-            "basic_synthesis": True,
-            "multilingual": True
+        "engines": {
+            "google_cloud_tts": GOOGLE_TTS_AVAILABLE,
+            "gtts": GTTS_AVAILABLE,
         }
     }
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": "june-tts",
-        "status": "running",
-        "engine": "simple-tts",
-        "version": "1.0.0"
-    }
-
-@app.get("/v1/voices")
-async def list_voices():
-    """List available voice profiles"""
-    return {
-        "voices": {
-            "default": {"name": "Default Voice", "description": "Standard synthesized voice"},
-            "assistant_female": {"name": "Assistant Female", "description": "Female assistant voice"},
-            "assistant_male": {"name": "Assistant Male", "description": "Male assistant voice"}
-        },
-        "default": "default",
-        "engine": "simple-tts"
-    }
-
-@app.get("/v1/languages")
-async def list_languages():
-    """List supported languages"""
-    return {
-        "languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh", "ja", "ko"],
-        "default_language": "en",
-        "engine": "simple-tts"
-    }
-
-def create_simple_audio_response(text: str, voice: str = "default", speed: float = 1.0) -> bytes:
-    """
-    FIXED: Create a simple audio response with silence instead of beeps
-    """
-    duration_seconds = max(1, len(text) // 10)  # Rough estimate
-    sample_rate = 22050
-    num_samples = int(duration_seconds * sample_rate)
-    
-    # WAV header for 16-bit mono PCM
-    wav_header = bytearray([
-        0x52, 0x49, 0x46, 0x46,  # "RIFF"
-        0x00, 0x00, 0x00, 0x00,  # File size (to be filled)
-        0x57, 0x41, 0x56, 0x45,  # "WAVE"
-        0x66, 0x6D, 0x74, 0x20,  # "fmt "
-        0x10, 0x00, 0x00, 0x00,  # Subchunk1Size (16)
-        0x01, 0x00,              # AudioFormat (PCM)
-        0x01, 0x00,              # NumChannels (mono)
-    ])
-    
-    # Add sample rate, byte rate, etc.
-    wav_header.extend(sample_rate.to_bytes(4, 'little'))  # SampleRate
-    wav_header.extend((sample_rate * 2).to_bytes(4, 'little'))  # ByteRate
-    wav_header.extend((2).to_bytes(2, 'little'))  # BlockAlign
-    wav_header.extend((16).to_bytes(2, 'little'))  # BitsPerSample
-    
-    # Data chunk
-    wav_header.extend([0x64, 0x61, 0x74, 0x61])  # "data"
-    wav_header.extend((num_samples * 2).to_bytes(4, 'little'))  # Subchunk2Size
-    
-    # Update file size in header
-    file_size = len(wav_header) + num_samples * 2 - 8
-    wav_header[4:8] = file_size.to_bytes(4, 'little')
-    
-    # FIXED: Generate silence instead of beeps
-    audio_data = bytearray(num_samples * 2)
-    
-    # Fill with silence (all zeros)
-    for i in range(num_samples):
-        audio_data[i*2:i*2+2] = (0).to_bytes(2, 'little', signed=True)
-    
-    return bytes(wav_header + audio_data)
 
 @app.post("/v1/tts")
 async def synthesize_speech_service(
     text: str = Query(..., description="Text to synthesize"),
     voice: str = Query("default", description="Voice profile to use"),
     speed: float = Query(1.0, ge=0.5, le=2.0, description="Speech speed"),
-    audio_encoding: str = Query("WAV", description="Audio format"),
-    language: str = Query("en", description="Language code"),
+    audio_encoding: str = Query("MP3", description="Audio format"),
+    language: str = Query("en-US", description="Language code"),
     service_auth_data: dict = Depends(require_service_auth)
 ):
     """TTS endpoint for service-to-service communication"""
@@ -137,22 +149,38 @@ async def synthesize_speech_service(
         
         logger.info(f"🎵 TTS request from {calling_service}: '{text[:50]}...'")
         
-        # Generate audio (FIXED: now creates silence instead of beeps)
-        audio_data = create_simple_audio_response(text, voice, speed)
+        audio_data = None
         
-        # Determine media type
-        media_type = "audio/wav" if audio_encoding.upper() == "WAV" else "audio/mpeg"
+        # Try Google Cloud TTS first
+        if GOOGLE_TTS_AVAILABLE:
+            try:
+                audio_data = synthesize_with_google_tts(text, language, voice if voice != "default" else None)
+            except Exception as e:
+                logger.warning(f"Google TTS failed, trying fallback: {e}")
+        
+        # Fallback to gTTS
+        if not audio_data and GTTS_AVAILABLE:
+            try:
+                audio_data = synthesize_with_gtts(text, language)
+            except Exception as e:
+                logger.error(f"gTTS also failed: {e}")
+        
+        # Last resort: return error
+        if not audio_data:
+            logger.error("❌ No TTS engine available")
+            raise HTTPException(status_code=503, detail="No TTS engine available")
         
         logger.info(f"✅ TTS synthesis successful: {len(audio_data)} bytes")
         
         return StreamingResponse(
             iter([audio_data]),
-            media_type=media_type,
+            media_type="audio/mpeg",
             headers={
-                "Content-Disposition": f"attachment; filename=speech.{audio_encoding.lower()}",
-                "X-TTS-Engine": "simple-tts",
+                "Content-Disposition": f"attachment; filename=speech.mp3",
+                "X-TTS-Engine": "google-tts" if GOOGLE_TTS_AVAILABLE else "gtts",
                 "X-Caller-Service": calling_service,
-                "X-Text-Length": str(len(text))
+                "X-Text-Length": str(len(text)),
+                "X-Audio-Length": str(len(audio_data))
             }
         )
         
@@ -162,41 +190,7 @@ async def synthesize_speech_service(
         logger.error(f"❌ TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
-@app.post("/v1/tts/advanced")
-async def synthesize_speech_advanced(
-    request: TTSRequest,
-    service_auth_data: dict = Depends(require_service_auth)
-):
-    """Advanced TTS endpoint"""
-    calling_service = service_auth_data.get("client_id", "unknown")
-    
-    try:
-        logger.info(f"🎭 Advanced TTS request from {calling_service}")
-        
-        # Generate audio with advanced parameters
-        audio_data = create_simple_audio_response(request.text, request.voice, request.speed)
-        
-        logger.info(f"✅ Advanced synthesis successful")
-        
-        return StreamingResponse(
-            iter([audio_data]),
-            media_type="audio/wav",
-            headers={
-                "X-TTS-Engine": "simple-tts",
-                "X-Language": request.language,
-                "X-Caller-Service": calling_service,
-                "X-Voice": request.voice
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Advanced synthesis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
-    
     logger.info(f"Starting June TTS Service on port {WRAPPER_PORT}")
     uvicorn.run(app, host="0.0.0.0", port=WRAPPER_PORT, workers=1)
