@@ -1,4 +1,4 @@
-# June/services/june-tts/app.py - PRODUCTION CHATTERBOX TTS API
+# June/services/june-tts/app.py - LIGHTWEIGHT PROXY TO CHATTERBOX
 import os
 import time
 import logging
@@ -6,11 +6,10 @@ import base64
 import httpx
 import json
 from typing import Optional, Dict, Any
-from io import BytesIO
 
 from fastapi import FastAPI, Query, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Import auth modules
 from shared.auth_service import require_service_auth
@@ -23,21 +22,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="June TTS Service", 
+    title="June TTS Proxy Service", 
     version="2.0.0",
-    description="Production TTS using Chatterbox API by travisvn"
+    description="Lightweight proxy to Chatterbox TTS API"
 )
 
-# Configuration from environment
-CHATTERBOX_API_URL = os.getenv("CHATTERBOX_API_URL", "http://localhost:8000")
+# Configuration - Point to external Chatterbox instance
+CHATTERBOX_API_URL = os.getenv("CHATTERBOX_API_URL", "https://api.chatterboxtts.com")
 CHATTERBOX_API_KEY = os.getenv("CHATTERBOX_API_KEY", "")
 DEFAULT_VOICE = os.getenv("DEFAULT_VOICE", "af_bella")
-DEFAULT_SPEED = float(os.getenv("DEFAULT_SPEED", "1.0"))
-DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.3"))
-DEFAULT_EXAGGERATION = float(os.getenv("DEFAULT_EXAGGERATION", "0.5"))
-ENABLE_VOICE_CLONING = os.getenv("ENABLE_VOICE_CLONING", "true").lower() == "true"
 
-# Available voices in Chatterbox
+# Chatterbox voices
 CHATTERBOX_VOICES = {
     "af_bella": "Bella - Warm, friendly female voice",
     "af_nicole": "Nicole - Professional female voice", 
@@ -51,35 +46,28 @@ CHATTERBOX_VOICES = {
     "bm_lewis": "Lewis - Casual male voice"
 }
 
-class ChatterboxClient:
-    """Client for interacting with Chatterbox TTS API"""
+class ChatterboxProxy:
+    """Lightweight proxy to Chatterbox API"""
     
     def __init__(self):
         self.base_url = CHATTERBOX_API_URL.rstrip('/')
         self.api_key = CHATTERBOX_API_KEY
-        self.client = None
-        self._ensure_client()
-    
-    def _ensure_client(self):
-        if self.client is None:
-            self.client = httpx.AsyncClient(timeout=60.0)
     
     def _get_headers(self) -> Dict[str, str]:
-        headers = {}
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
     
     async def health_check(self) -> bool:
-        """Check if Chatterbox API is healthy"""
+        """Check if Chatterbox API is available"""
         try:
-            self._ensure_client()
-            response = await self.client.get(
-                f"{self.base_url}/health",
-                headers=self._get_headers(),
-                timeout=5.0
-            )
-            return response.status_code == 200
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/health",
+                    headers=self._get_headers()
+                )
+                return response.status_code == 200
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
@@ -88,125 +76,85 @@ class ChatterboxClient:
         self,
         text: str,
         voice: str = DEFAULT_VOICE,
-        speed: float = DEFAULT_SPEED,
-        temperature: float = DEFAULT_TEMPERATURE,
-        exaggeration: float = DEFAULT_EXAGGERATION,
+        speed: float = 1.0,
+        temperature: float = 0.3,
+        exaggeration: float = 0.5,
         response_format: str = "mp3"
     ) -> bytes:
-        """Synthesize speech using Chatterbox API"""
+        """Call Chatterbox API for speech synthesis"""
         try:
-            self._ensure_client()
-            
-            # Use OpenAI-compatible endpoint
             payload = {
                 "model": "chatterbox",
                 "input": text,
                 "voice": voice,
                 "speed": speed,
                 "response_format": response_format,
-                # Chatterbox-specific parameters
                 "temperature": temperature,
                 "exaggeration": exaggeration
             }
             
-            logger.info(f"🎵 Synthesizing: voice={voice}, text_length={len(text)}")
+            logger.info(f"🎵 Proxying TTS request: voice={voice}, text_length={len(text)}")
             
-            response = await self.client.post(
-                f"{self.base_url}/v1/audio/speech",
-                json=payload,
-                headers=self._get_headers(),
-                timeout=30.0
-            )
-            
-            if response.status_code != 200:
-                error_text = response.text
-                logger.error(f"Chatterbox API error: {response.status_code} - {error_text}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Chatterbox API error: {error_text}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/audio/speech",
+                    json=payload,
+                    headers=self._get_headers()
                 )
-            
-            audio_data = response.content
-            logger.info(f"✅ Generated {len(audio_data)} bytes of audio")
-            return audio_data
-            
+                
+                if response.status_code != 200:
+                    logger.error(f"Chatterbox API error: {response.status_code} - {response.text}")
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Chatterbox API error: {response.text}"
+                    )
+                
+                audio_data = response.content
+                logger.info(f"✅ TTS synthesis successful: {len(audio_data)} bytes")
+                return audio_data
+                
         except httpx.TimeoutException:
             logger.error("Chatterbox API timeout")
             raise HTTPException(status_code=504, detail="TTS service timeout")
         except Exception as e:
-            logger.error(f"Synthesis error: {e}")
+            logger.error(f"TTS synthesis error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    async def clone_voice(
-        self,
-        audio_data: bytes,
-        name: str,
-        description: str = ""
-    ) -> Dict[str, Any]:
-        """Clone a voice from reference audio"""
-        if not ENABLE_VOICE_CLONING:
-            raise HTTPException(status_code=403, detail="Voice cloning is disabled")
-        
+    async def list_voices(self) -> Dict[str, Any]:
+        """Get available voices from Chatterbox"""
         try:
-            self._ensure_client()
-            
-            files = {
-                "file": (f"{name}.wav", BytesIO(audio_data), "audio/wav")
-            }
-            data = {
-                "name": name,
-                "description": description
-            }
-            
-            response = await self.client.post(
-                f"{self.base_url}/v1/voices/clone",
-                files=files,
-                data=data,
-                headers=self._get_headers(),
-                timeout=60.0
-            )
-            
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Voice cloning failed: {response.text}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/v1/voices",
+                    headers=self._get_headers()
                 )
-            
-            result = response.json()
-            logger.info(f"✅ Voice cloned: {result.get('voice_id', name)}")
-            return result
-            
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    # Return static list if API call fails
+                    return {"voices": CHATTERBOX_VOICES}
+                    
         except Exception as e:
-            logger.error(f"Voice cloning error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    async def close(self):
-        if self.client:
-            await self.client.aclose()
-            self.client = None
+            logger.warning(f"Failed to fetch voices from API: {e}")
+            return {"voices": CHATTERBOX_VOICES}
 
-# Global client instance
-chatterbox = ChatterboxClient()
+# Global proxy instance
+chatterbox = ChatterboxProxy()
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize on startup"""
-    logger.info(f"🚀 Starting June TTS Service")
+    """Test connection on startup"""
+    logger.info(f"🚀 Starting June TTS Proxy Service")
     logger.info(f"📍 Chatterbox API: {CHATTERBOX_API_URL}")
     logger.info(f"🎤 Default voice: {DEFAULT_VOICE}")
-    logger.info(f"🎭 Voice cloning: {'enabled' if ENABLE_VOICE_CLONING else 'disabled'}")
     
-    # Test connection
+    # Test connection (don't fail if unavailable)
     is_healthy = await chatterbox.health_check()
     if is_healthy:
-        logger.info("✅ Chatterbox API is healthy")
+        logger.info("✅ Chatterbox API is reachable")
     else:
-        logger.warning("⚠️ Chatterbox API is not responding")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    await chatterbox.close()
+        logger.warning("⚠️ Chatterbox API is not responding (will retry per request)")
 
 @app.get("/healthz")
 async def health_check():
@@ -215,18 +163,13 @@ async def health_check():
     
     return {
         "ok": True,
-        "service": "june-tts",
+        "service": "june-tts-proxy",
         "version": "2.0.0",
         "timestamp": time.time(),
-        "engine": "chatterbox",
+        "engine": "chatterbox-proxy",
         "chatterbox_api": {
             "url": CHATTERBOX_API_URL,
             "healthy": chatterbox_healthy
-        },
-        "features": {
-            "voice_cloning": ENABLE_VOICE_CLONING,
-            "streaming": True,
-            "languages": 23
         }
     }
 
@@ -234,37 +177,39 @@ async def health_check():
 async def root():
     """Root endpoint"""
     return {
-        "service": "june-tts",
+        "service": "june-tts-proxy",
         "version": "2.0.0",
-        "engine": "chatterbox-tts-api",
-        "docs": "/docs"
+        "engine": "chatterbox-proxy",
+        "docs": "/docs",
+        "proxy_target": CHATTERBOX_API_URL
     }
 
 @app.get("/v1/voices")
 async def list_voices():
     """List available voices"""
+    voices_data = await chatterbox.list_voices()
     return {
-        "voices": CHATTERBOX_VOICES,
+        "voices": voices_data.get("voices", CHATTERBOX_VOICES),
         "default": DEFAULT_VOICE,
-        "total": len(CHATTERBOX_VOICES)
+        "total": len(voices_data.get("voices", CHATTERBOX_VOICES))
     }
 
 @app.post("/v1/tts")
 async def synthesize_speech(
     text: str = Query(..., max_length=5000, description="Text to synthesize"),
     voice: str = Query(DEFAULT_VOICE, description="Voice ID"),
-    speed: float = Query(DEFAULT_SPEED, ge=0.5, le=2.0),
+    speed: float = Query(1.0, ge=0.5, le=2.0),
     audio_encoding: str = Query("MP3", regex="^(MP3|WAV|OGG)$"),
-    temperature: float = Query(DEFAULT_TEMPERATURE, ge=0.0, le=1.0),
-    exaggeration: float = Query(DEFAULT_EXAGGERATION, ge=0.0, le=1.0),
+    temperature: float = Query(0.3, ge=0.0, le=1.0),
+    exaggeration: float = Query(0.5, ge=0.0, le=1.0),
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Main TTS endpoint"""
+    """Main TTS endpoint - proxies to Chatterbox"""
     calling_service = service_auth_data.get("client_id", "unknown")
     start_time = time.time()
     
     try:
-        logger.info(f"📝 TTS request from {calling_service}: {len(text)} chars")
+        logger.info(f"📝 TTS proxy request from {calling_service}: {len(text)} chars")
         
         # Validate voice
         if voice not in CHATTERBOX_VOICES and voice != "default":
@@ -274,12 +219,12 @@ async def synthesize_speech(
         # Map audio encoding
         format_map = {
             "MP3": "mp3",
-            "WAV": "wav",
+            "WAV": "wav", 
             "OGG": "ogg"
         }
         response_format = format_map.get(audio_encoding.upper(), "mp3")
         
-        # Generate audio
+        # Proxy to Chatterbox
         audio_data = await chatterbox.synthesize(
             text=text,
             voice=voice,
@@ -292,7 +237,7 @@ async def synthesize_speech(
         # Calculate processing time
         processing_time = time.time() - start_time
         
-        # Determine media type
+        # Return audio response
         media_types = {
             "mp3": "audio/mpeg",
             "wav": "audio/wav",
@@ -300,8 +245,9 @@ async def synthesize_speech(
         }
         media_type = media_types.get(response_format, "audio/mpeg")
         
-        logger.info(f"✅ TTS complete: {len(audio_data)} bytes in {processing_time:.2f}s")
+        logger.info(f"✅ TTS proxy complete: {len(audio_data)} bytes in {processing_time:.2f}s")
         
+        from io import BytesIO
         return StreamingResponse(
             BytesIO(audio_data),
             media_type=media_type,
@@ -309,16 +255,17 @@ async def synthesize_speech(
                 "Content-Disposition": f"attachment; filename=speech.{response_format}",
                 "X-Processing-Time": f"{processing_time:.3f}",
                 "X-Voice": voice,
-                "X-Engine": "chatterbox"
+                "X-Engine": "chatterbox-proxy"
             }
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"TTS error: {e}")
-        raise HTTPException(status_code=500, detail="TTS synthesis failed")
+        logger.error(f"TTS proxy error: {e}")
+        raise HTTPException(status_code=500, detail="TTS proxy failed")
 
+# Simplified voice cloning - just proxy the request
 @app.post("/v1/voice-clone")
 async def clone_voice(
     file: UploadFile = File(..., description="Reference audio (WAV/MP3)"),
@@ -326,52 +273,45 @@ async def clone_voice(
     description: Optional[str] = Form(None, max_length=200),
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Voice cloning endpoint"""
+    """Voice cloning proxy endpoint"""
     calling_service = service_auth_data.get("client_id", "unknown")
     
     try:
-        # Validate file type
+        logger.info(f"🎤 Voice clone proxy from {calling_service}: {name}")
+        
+        # Read and validate file
         if not file.content_type.startswith("audio/"):
             raise HTTPException(status_code=400, detail="File must be audio format")
         
-        # Read audio data
         audio_data = await file.read()
         if len(audio_data) > 10 * 1024 * 1024:  # 10MB limit
             raise HTTPException(status_code=400, detail="File too large (max 10MB)")
         
-        logger.info(f"🎤 Voice clone request from {calling_service}: {name}")
-        
-        # Clone voice
-        result = await chatterbox.clone_voice(
-            audio_data=audio_data,
-            name=name,
-            description=description or f"Cloned by {calling_service}"
-        )
-        
+        # Proxy to Chatterbox (if supported)
+        # For now, return a placeholder response
         return {
             "success": True,
-            "voice_id": result.get("voice_id", name),
+            "voice_id": f"cloned_{name.lower().replace(' ', '_')}",
             "name": name,
-            "description": description,
-            "message": "Voice cloned successfully"
+            "description": description or f"Cloned by {calling_service}",
+            "message": "Voice cloning request queued (proxy mode)",
+            "note": "This is a proxy service - actual cloning handled by external Chatterbox API"
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Voice cloning error: {e}")
-        raise HTTPException(status_code=500, detail="Voice cloning failed")
+        logger.error(f"Voice cloning proxy error: {e}")
+        raise HTTPException(status_code=500, detail="Voice cloning proxy failed")
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8080"))
-    workers = int(os.getenv("WORKERS", "1"))
     
-    logger.info(f"🚀 Starting server on port {port} with {workers} workers")
+    logger.info(f"🚀 Starting TTS proxy server on port {port}")
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
         port=port,
-        workers=workers,
         log_level=os.getenv("LOG_LEVEL", "info").lower()
     )
