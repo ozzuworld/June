@@ -1,23 +1,35 @@
-# June/services/june-tts/Dockerfile - DIRECT CHATTERBOX (RECOMMENDED)
-FROM travisvn/chatterbox-tts-api:latest
+# June/services/june-tts/Dockerfile - LIGHTWEIGHT PROXY
+FROM python:3.11-slim
 
-# Configure for your environment
-ENV DEVICE=cpu \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy and install requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
     PORT=8080 \
     LOG_LEVEL=INFO \
-    PYTHONUNBUFFERED=1 \
-    # Chatterbox specific settings
-    EXAGGERATION=0.5 \
-    CFG_WEIGHT=0.5 \
-    TEMPERATURE=1.0
+    # External Chatterbox API (use hosted service)
+    CHATTERBOX_API_URL=https://api.chatterboxtts.com \
+    DEFAULT_VOICE=af_bella
 
-# The image already includes everything needed
-# Just expose the port and run
+# Expose port
 EXPOSE 8080
 
-# Health check using Chatterbox's built-in endpoint
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1
 
-# Use the original entrypoint - don't override it
-CMD ["python", "main.py"]
+# Run the proxy service
+CMD ["python", "app.py"]
