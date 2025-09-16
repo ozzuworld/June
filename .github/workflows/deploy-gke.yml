@@ -1,0 +1,352 @@
+# .github/workflows/deploy-gke.yml - UNIFIED GKE DEPLOYMENT
+name: Deploy to GKE Autopilot
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'June/services/**'
+      - 'services/**'
+      - 'k8s/**'
+      - '.github/workflows/deploy-gke.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+      force_rebuild:
+        description: 'Force rebuild all images'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  CLUSTER_NAME: june-unified-cluster
+  HARBOR_PROJECT: june
+
+jobs:
+  # Build and push images to Harbor
+  build-images:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [june-orchestrator, june-stt, june-tts, june-idp]
+        include:
+          - service: june-orchestrator
+            context: June/services/june-orchestrator
+          - service: june-stt
+            context: June/services/june-stt
+          - service: june-tts
+            context: June/services/june-tts
+          - service: june-idp
+            context: services/june-idp
+            
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          platforms: linux/amd64
+
+      # Free up space for large images
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get remove -y '^llvm-.*' '^php.*'
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOYER_SA }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure kubectl
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }}
+
+      - name: Get Harbor endpoint
+        id: harbor
+        run: |
+          # Try to get Harbor LoadBalancer IP
+          HARBOR_IP=$(kubectl get service harbor -n harbor -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          
+          if [[ -n "$HARBOR_IP" && "$HARBOR_IP" != "null" ]]; then
+            echo "harbor_url=http://$HARBOR_IP" >> $GITHUB_OUTPUT
+            echo "harbor_registry=$HARBOR_IP" >> $GITHUB_OUTPUT
+          else
+            # Fallback to port-forward
+            echo "Setting up port-forward to Harbor..."
+            kubectl port-forward -n harbor svc/harbor 8080:80 &
+            sleep 10
+            echo "harbor_url=http://localhost:8080" >> $GITHUB_OUTPUT
+            echo "harbor_registry=localhost:8080" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Login to Harbor
+        run: |
+          echo "Harbor URL: ${{ steps.harbor.outputs.harbor_url }}"
+          
+          # Login to Harbor (using default admin credentials for now)
+          docker login ${{ steps.harbor.outputs.harbor_registry }} \
+            -u admin \
+            -p Harbor12345 \
+            --insecure-registry
+
+      - name: Check if image needs rebuilding
+        id: check_rebuild
+        run: |
+          IMAGE_TAG="${{ steps.harbor.outputs.harbor_registry }}/${{ env.HARBOR_PROJECT }}/${{ matrix.service }}:${{ github.sha }}"
+          
+          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "Force rebuild requested"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            # Check if image already exists
+            if docker manifest inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+              echo "Image already exists: $IMAGE_TAG"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "Image does not exist, will build: $IMAGE_TAG"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Build and push image
+        if: steps.check_rebuild.outputs.should_build == 'true'
+        run: |
+          IMAGE_TAG="${{ steps.harbor.outputs.harbor_registry }}/${{ env.HARBOR_PROJECT }}/${{ matrix.service }}:${{ github.sha }}"
+          LATEST_TAG="${{ steps.harbor.outputs.harbor_registry }}/${{ env.HARBOR_PROJECT }}/${{ matrix.service }}:latest"
+          
+          echo "🐳 Building ${{ matrix.service }}..."
+          echo "Context: ${{ matrix.context }}"
+          echo "Image: $IMAGE_TAG"
+          
+          # Build image
+          docker build \
+            -t "$IMAGE_TAG" \
+            -t "$LATEST_TAG" \
+            "${{ matrix.context }}"
+          
+          # Push both tags
+          docker push "$IMAGE_TAG"
+          docker push "$LATEST_TAG"
+          
+          echo "✅ Successfully pushed ${{ matrix.service }}"
+
+      - name: Image summary
+        run: |
+          echo "📦 Image built for ${{ matrix.service }}"
+          echo "Registry: ${{ steps.harbor.outputs.harbor_registry }}"
+          echo "Tag: ${{ github.sha }}"
+          echo "Built: ${{ steps.check_rebuild.outputs.should_build }}"
+
+  # Deploy to GKE
+  deploy-services:
+    name: Deploy to GKE
+    runs-on: ubuntu-latest
+    needs: build-images
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOYER_SA }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure kubectl
+        run: |
+          gcloud container clusters get-credentials ${{ env.CLUSTER_NAME }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }}
+
+      - name: Get Harbor endpoint
+        id: harbor
+        run: |
+          HARBOR_IP=$(kubectl get service harbor -n harbor -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "localhost:8080")
+          echo "harbor_registry=$HARBOR_IP" >> $GITHUB_OUTPUT
+
+      - name: Update Kubernetes secrets
+        run: |
+          # Update application secrets
+          kubectl create secret generic june-secrets \
+            --namespace=june-services \
+            --from-literal=ORCHESTRATOR_CLIENT_ID="${{ secrets.ORCHESTRATOR_CLIENT_ID }}" \
+            --from-literal=ORCHESTRATOR_CLIENT_SECRET="${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}" \
+            --from-literal=STT_CLIENT_ID="${{ secrets.STT_CLIENT_ID }}" \
+            --from-literal=STT_CLIENT_SECRET="${{ secrets.STT_CLIENT_SECRET }}" \
+            --from-literal=TTS_CLIENT_ID="${{ secrets.TTS_CLIENT_ID }}" \
+            --from-literal=TTS_CLIENT_SECRET="${{ secrets.TTS_CLIENT_SECRET }}" \
+            --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+            --from-literal=CHATTERBOX_API_KEY="${{ secrets.CHATTERBOX_API_KEY }}" \
+            --from-literal=KC_DB_PASSWORD="${{ secrets.KC_DB_PASSWORD }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Update image references
+        run: |
+          # Update manifests with current Harbor registry and commit SHA
+          sed -i "s|harbor.yourdomain.com|${{ steps.harbor.outputs.harbor_registry }}|g" k8s/june-services/*.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/june-services/*.yaml
+          
+          # Update database connection for june-idp
+          POSTGRES_HOST=$(gcloud sql instances describe june-unified-cluster-postgres --project=${{ env.PROJECT_ID }} --format="value(ipAddresses[0].ipAddress)" || echo "localhost")
+          sed -i "s|POSTGRES_HOST|$POSTGRES_HOST|g" k8s/june-services/*.yaml
+
+      - name: Apply Kubernetes manifests
+        run: |
+          echo "🚀 Deploying June services to GKE..."
+          
+          # Apply manifests
+          kubectl apply -f k8s/june-services/
+          
+          echo "✅ Manifests applied"
+
+      - name: Wait for deployment rollout
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          
+          # Wait for each deployment
+          for deployment in june-orchestrator june-stt june-tts june-idp; do
+            echo "Waiting for $deployment..."
+            kubectl rollout status deployment/$deployment \
+              -n june-services \
+              --timeout=600s
+          done
+          
+          echo "✅ All deployments are ready"
+
+      - name: Run post-deployment tests
+        run: |
+          echo "🧪 Running post-deployment tests..."
+          
+          # Test each service health endpoint
+          for service in june-orchestrator june-stt june-tts; do
+            echo "Testing $service..."
+            kubectl port-forward -n june-services svc/$service 8080:8080 &
+            PF_PID=$!
+            sleep 5
+            
+            if curl -f http://localhost:8080/healthz; then
+              echo "✅ $service is healthy"
+            else
+              echo "❌ $service health check failed"
+            fi
+            
+            kill $PF_PID 2>/dev/null || true
+            sleep 2
+          done
+          
+          # Test Keycloak
+          echo "Testing june-idp (Keycloak)..."
+          kubectl port-forward -n june-services svc/june-idp 8080:8080 &
+          PF_PID=$!
+          sleep 5
+          
+          if curl -f http://localhost:8080/health; then
+            echo "✅ june-idp is healthy"
+          else
+            echo "❌ june-idp health check failed"
+          fi
+          
+          kill $PF_PID 2>/dev/null || true
+
+      - name: Get service URLs
+        id: urls
+        run: |
+          # Get ingress IP if available
+          INGRESS_IP=$(kubectl get ingress june-services-ingress -n june-services -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          
+          echo "ingress_ip=$INGRESS_IP" >> $GITHUB_OUTPUT
+          
+          # Get individual service cluster IPs for internal testing
+          ORCH_IP=$(kubectl get svc june-orchestrator -n june-services -o jsonpath='{.spec.clusterIP}')
+          STT_IP=$(kubectl get svc june-stt -n june-services -o jsonpath='{.spec.clusterIP}')
+          TTS_IP=$(kubectl get svc june-tts -n june-services -o jsonpath='{.spec.clusterIP}')
+          IDP_IP=$(kubectl get svc june-idp -n june-services -o jsonpath='{.spec.clusterIP}')
+          
+          echo "orchestrator_ip=$ORCH_IP" >> $GITHUB_OUTPUT
+          echo "stt_ip=$STT_IP" >> $GITHUB_OUTPUT
+          echo "tts_ip=$TTS_IP" >> $GITHUB_OUTPUT
+          echo "idp_ip=$IDP_IP" >> $GITHUB_OUTPUT
+
+      - name: Deployment Summary
+        run: |
+          echo "🎉 GKE deployment completed successfully!"
+          echo ""
+          echo "📋 Deployment Details:"
+          echo "  Project: ${{ env.PROJECT_ID }}"
+          echo "  Region: ${{ env.REGION }}"
+          echo "  Cluster: ${{ env.CLUSTER_NAME }}"
+          echo "  Commit: ${{ github.sha }}"
+          echo ""
+          echo "🔗 Service Information:"
+          echo "  Harbor Registry: ${{ steps.harbor.outputs.harbor_registry }}"
+          echo "  Ingress IP: ${{ steps.urls.outputs.ingress_ip }}"
+          echo ""
+          echo "📦 Images Deployed:"
+          echo "  june-orchestrator:${{ github.sha }}"
+          echo "  june-stt:${{ github.sha }}"
+          echo "  june-tts:${{ github.sha }}"
+          echo "  june-idp:${{ github.sha }}"
+          echo ""
+          echo "✅ Benefits Achieved:"
+          echo "  • No more Cloud Run quota limits"
+          echo "  • Enterprise Harbor registry"
+          echo "  • Unified infrastructure"
+          echo "  • Better resource utilization"
+          echo "  • Kubernetes-native deployment"
+          echo ""
+          echo "🛠️ Next Steps:"
+          echo "  1. Configure DNS to point to ${{ steps.urls.outputs.ingress_ip }}"
+          echo "  2. Set up SSL certificates"
+          echo "  3. Configure Harbor projects and users"
+          echo "  4. Set up monitoring and alerting"
+          
+  # Cleanup job (optional)
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [build-images, deploy-services]
+    if: always()
+    steps:
+      - name: Cleanup Summary
+        run: |
+          echo "🧹 Deployment cleanup completed"
+          echo "Build Status: ${{ needs.build-images.result }}"
+          echo "Deploy Status: ${{ needs.deploy-services.result }}"

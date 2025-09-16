@@ -1,0 +1,418 @@
+# k8s/june-services/june-orchestrator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+        version: v1
+    spec:
+      serviceAccountName: june-orchestrator
+      containers:
+      - name: june-orchestrator
+        image: harbor.yourdomain.com/june/june-orchestrator:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: KC_BASE_URL
+          value: "http://june-idp.june-services.svc.cluster.local:8080"
+        - name: KC_REALM
+          value: "june"
+        - name: STT_SERVICE_URL
+          value: "http://june-stt.june-services.svc.cluster.local:8080"
+        - name: TTS_SERVICE_URL
+          value: "http://june-tts.june-services.svc.cluster.local:8080"
+        - name: ORCHESTRATOR_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_ID
+        - name: ORCHESTRATOR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_SECRET
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: GEMINI_API_KEY
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# june-stt.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-stt
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: june-stt
+  template:
+    metadata:
+      labels:
+        app: june-stt
+        version: v1
+    spec:
+      serviceAccountName: june-stt
+      containers:
+      - name: june-stt
+        image: harbor.yourdomain.com/june/june-stt:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: KC_BASE_URL
+          value: "http://june-idp.june-services.svc.cluster.local:8080"
+        - name: KC_REALM
+          value: "june"
+        - name: STT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: STT_CLIENT_ID
+        - name: STT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: STT_CLIENT_SECRET
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: GEMINI_API_KEY
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june-services
+spec:
+  selector:
+    app: june-stt
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# june-tts.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: june-services
+  labels:
+    app: june-tts
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+        version: v1
+    spec:
+      serviceAccountName: june-tts
+      containers:
+      - name: june-tts
+        image: harbor.yourdomain.com/june/june-tts:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: KC_BASE_URL
+          value: "http://june-idp.june-services.svc.cluster.local:8080"
+        - name: KC_REALM
+          value: "june"
+        - name: TTS_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: TTS_CLIENT_ID
+        - name: TTS_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: TTS_CLIENT_SECRET
+        - name: CHATTERBOX_API_URL
+          value: "https://api.chatterboxtts.com"
+        - name: CHATTERBOX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: CHATTERBOX_API_KEY
+              optional: true
+        - name: DEFAULT_VOICE
+          value: "af_bella"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: june-services
+spec:
+  selector:
+    app: june-tts
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# june-idp.yaml (Keycloak)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+    version: v1
+spec:
+  replicas: 1  # Keycloak needs session affinity, single replica for simplicity
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+        version: v1
+    spec:
+      serviceAccountName: june-idp
+      containers:
+      - name: june-idp
+        image: harbor.yourdomain.com/june/june-idp:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://POSTGRES_HOST:5432/june_idp"  # Will be replaced
+        - name: KC_DB_USERNAME
+          value: "june_idp"
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: KC_DB_PASSWORD
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: "admin"
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: "admin123"  # Change in production
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_TRANSACTION_XA_ENABLED
+          value: "false"
+        - name: KC_CACHE
+          value: "local"
+        args:
+        - "start"
+        - "--http-enabled=true"
+        - "--hostname-strict=false"
+        - "--proxy-headers=xforwarded"
+        - "--db=postgres"
+        - "--transaction-xa-enabled=false"
+        - "--cache=local"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+  sessionAffinity: ClientIP  # Important for Keycloak
+
+---
+# Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: june-services-ingress
+  namespace: june-services
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
+    networking.gke.io/managed-certificates: "june-services-ssl"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  rules:
+  - host: api.yourdomain.com  # Replace with your domain
+    http:
+      paths:
+      - path: /orchestrator
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+      - path: /stt
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+      - path: /tts
+        pathType: Prefix
+        backend:
+          service:
+            name: june-tts
+            port:
+              number: 8080
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+      - path: /realms
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+
+---
+# Managed SSL Certificate
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: june-services-ssl
+  namespace: june-services
+spec:
+  domains:
+    - api.yourdomain.com  # Replace with your domain
