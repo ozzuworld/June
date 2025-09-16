@@ -1,23 +1,16 @@
-# File: June/services/june-tts/requirements.txt
-# Simplified TTS service dependencies
-
-# Core web framework
+# June/services/june-tts/requirements.txt - CHATTERBOX VERSION
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
-
-# Authentication and HTTP
+torch==2.1.0
+torchaudio==2.1.0
+chatterbox @ git+https://github.com/resemble-ai/chatterbox.git
+numpy==1.24.3
+scipy==1.11.4
+librosa==0.10.1
+soundfile==0.12.1
 PyJWT[crypto]==2.8.0
 cryptography==41.0.7
 httpx==0.27.0
-
-# File handling
 python-multipart==0.0.9
 aiofiles==23.2.0
-
-# Data processing
 pydantic==2.8.2
-
-# Optional: Add actual TTS libraries here when ready
-# torch==2.1.0
-# torchaudio==2.1.0
-# coqui-tts==0.24.2
