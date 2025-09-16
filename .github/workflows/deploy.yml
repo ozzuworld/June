@@ -1,5 +1,4 @@
-﻿# File: .github/workflows/deploy.yml - WORKING CHATTERBOX TTS VERSION
-
+﻿# .github/workflows/deploy.yml - FIXED FOR CHATTERBOX
 name: Deploy Services to Cloud Run
 
 on:
@@ -17,7 +16,6 @@ env:
   AR_REPO: ${{ vars.ARTIFACT_REPO || 'june' }}
 
 jobs:
-  # Deploy core services
   deploy-core:
     name: Deploy Core Services
     runs-on: ubuntu-latest
@@ -51,7 +49,7 @@ jobs:
             memory: "1Gi"
             min_instances: 1
           - service: june-tts
-            path: June/services/june-tts  # WORKING: Now uses travisvn/chatterbox-tts-api
+            path: June/services/june-tts
             timeout: 1800
             concurrency: 2
             cpu: "4"
@@ -73,13 +71,17 @@ jobs:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOYER_SA }}
           project_id: ${{ env.PROJECT_ID }}
+
       - uses: google-github-actions/setup-gcloud@v2
+
       - name: Configure Docker
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
       - name: Build and Deploy
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${{ matrix.service }}:${GITHUB_SHA}"
+          
+          # Build image
           docker build -t "$IMAGE" "${{ matrix.path }}"
           docker push "$IMAGE"
           
@@ -110,21 +112,22 @@ jobs:
               --args="start,--http-enabled=true,--hostname-strict=false,--proxy-headers=xforwarded,--db=postgres,--transaction-xa-enabled=false,--cache=local"
               
           elif [ "${{ matrix.service }}" = "june-tts" ]; then
-            # WORKING: Chatterbox TTS using travisvn/chatterbox-tts-api
+            # FIXED: Chatterbox TTS deployment with proper environment
             ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
             ENV_VARS="${ENV_VARS},TTS_CLIENT_ID=${{ secrets.TTS_CLIENT_ID }}"
             ENV_VARS="${ENV_VARS},TTS_CLIENT_SECRET=${{ secrets.TTS_CLIENT_SECRET }}"
+            # Chatterbox-specific settings
             ENV_VARS="${ENV_VARS},DEVICE=cpu,LOG_LEVEL=INFO"
             ENV_VARS="${ENV_VARS},EXAGGERATION=0.5,CFG_WEIGHT=0.5,TEMPERATURE=1.0"
+            # Optional: Enable features
+            ENV_VARS="${ENV_VARS},ENABLE_VOICE_CLONING=true"
+            ENV_VARS="${ENV_VARS},MAX_AUDIO_LENGTH=300"
             
-            
-            echo "🎭 Deploying Working Chatterbox TTS (travisvn/chatterbox-tts-api):"
-            echo "   • OpenAI-compatible API endpoints"
+            echo "🎭 Deploying Chatterbox TTS:"
             echo "   • Voice cloning with reference audio"
-            echo "   • Multilingual support (23 languages)"
+            echo "   • Multilingual support (23+ languages)"
             echo "   • Emotion control and exaggeration"
-            echo "   • Working dependency management"
-            echo "   • Production-ready Docker container"
+            echo "   • OpenAI-compatible API endpoints"
             
             gcloud run deploy ${{ matrix.service }} \
               --image="$IMAGE" \
@@ -138,24 +141,19 @@ jobs:
               --allow-unauthenticated \
               --set-env-vars="$ENV_VARS" \
               --execution-environment="gen2" \
-              --platform="managed"
+              --platform="managed" \
+              --max-instances="10"
               
           else
             # Other services (orchestrator, stt)
             ENV_VARS="KC_BASE_URL=${{ secrets.KC_BASE_URL }},KC_REALM=${{ secrets.KC_REALM || 'june' }}"
             
-            # Add service-specific credentials and URLs
             if [ "${{ matrix.service }}" = "june-orchestrator" ]; then
               ENV_VARS="${ENV_VARS},STT_SERVICE_URL=https://june-stt-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},TTS_SERVICE_URL=https://june-tts-359243954.us-central1.run.app"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_ID=${{ secrets.ORCHESTRATOR_CLIENT_ID }}"
               ENV_VARS="${ENV_VARS},ORCHESTRATOR_CLIENT_SECRET=${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}"
               ENV_VARS="${ENV_VARS},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}"
-              
-              echo "🎯 Orchestrator configured with:"
-              echo "   • STT: https://june-stt-359243954.us-central1.run.app"
-              echo "   • TTS: https://june-tts-359243954.us-central1.run.app (Working Chatterbox)"
-              echo "   • AI: Gemini with emotion detection"
               
             elif [ "${{ matrix.service }}" = "june-stt" ]; then
               ENV_VARS="${ENV_VARS},STT_CLIENT_ID=${{ secrets.STT_CLIENT_ID }}"
@@ -176,138 +174,3 @@ jobs:
               --allow-unauthenticated \
               --set-env-vars="$ENV_VARS"
           fi
-
-      - name: Wait for Service Deployment
-        run: |
-          echo "✅ ${{ matrix.service }} deployed successfully"
-          SERVICE_URL=$(gcloud run services describe ${{ matrix.service }} \
-            --region="$REGION" \
-            --format='value(status.uri)' 2>/dev/null || echo "Unknown")
-          echo "🔗 Service URL: $SERVICE_URL"
-          
-          # Give services time to start up
-          case "${{ matrix.service }}" in
-            june-idp) 
-              echo "⏳ Allowing Keycloak 4 minutes to initialize..."
-              sleep 240
-              ;;
-            june-tts) 
-              echo "⏳ Allowing Chatterbox TTS 3 minutes to initialize models..."
-              sleep 180
-              ;;
-            june-stt) 
-              echo "⏳ Allowing STT 1 minute to start..."
-              sleep 60
-              ;;
-            *) 
-              echo "⏳ Allowing service 30 seconds to start..."
-              sleep 30
-              ;;
-          esac
-
-  # Deploy nginx-edge after core services
-  deploy-edge:
-    name: Deploy Edge Proxy
-    runs-on: ubuntu-latest
-    needs: deploy-core
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SA }}
-          project_id: ${{ env.PROJECT_ID }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Configure Docker
-        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
-
-      - name: Deploy nginx-edge
-        run: |
-          # Build and push image
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/nginx-edge:${GITHUB_SHA}"
-          docker build -t "$IMAGE" "services/nginx-edge"
-          docker push "$IMAGE"
-          
-          # Configure environment variables
-          ENV_VARS="UPSTREAM_IDP=https://june-idp-359243954.us-central1.run.app"
-          ENV_VARS="${ENV_VARS},UPSTREAM_ORCH=https://june-orchestrator-359243954.us-central1.run.app"
-          ENV_VARS="${ENV_VARS},UPSTREAM_STT=https://june-stt-359243954.us-central1.run.app"
-          ENV_VARS="${ENV_VARS},UPSTREAM_TTS=https://june-tts-359243954.us-central1.run.app"
-          
-          echo "🚀 Deploying nginx-edge with Working Chatterbox TTS:"
-          echo "   TTS: https://june-tts-359243954.us-central1.run.app (travisvn/chatterbox-tts-api)"
-          
-          # Deploy nginx-edge
-          gcloud run deploy nginx-edge \
-            --project="$PROJECT_ID" \
-            --image="$IMAGE" \
-            --region="$REGION" \
-            --cpu="1" \
-            --memory="512Mi" \
-            --min-instances="0" \
-            --max-instances="10" \
-            --timeout="300" \
-            --concurrency="100" \
-            --service-account="nginx-edge-svc@${PROJECT_ID}.iam.gserviceaccount.com" \
-            --allow-unauthenticated \
-            --set-env-vars="$ENV_VARS"
-
-      - name: Test Edge Deployment
-        run: |
-          sleep 30
-          EDGE_URL=$(gcloud run services describe nginx-edge --region="$REGION" --format='value(status.uri)' 2>/dev/null || echo "")
-          if [[ -n "$EDGE_URL" ]]; then
-            echo "🚀 nginx-edge deployed: $EDGE_URL"
-            echo "✅ Edge deployment completed"
-          else
-            echo "⚠️ Could not get edge URL"
-          fi
-
-  # Final validation
-  validate-deployment:
-    name: Validate Deployment
-    runs-on: ubuntu-latest
-    needs: [deploy-core, deploy-edge]
-    steps:
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SA }}
-          project_id: ${{ env.PROJECT_ID }}
-      - uses: google-github-actions/setup-gcloud@v2
-      
-      - name: Show Final URLs
-        run: |
-          echo "🔍 Final deployment summary..."
-          
-          # Get service URLs
-          EDGE_URL=$(gcloud run services describe nginx-edge --region="${{ env.REGION }}" --format='value(status.uri)' 2>/dev/null || echo "")
-          ORCH_URL=$(gcloud run services describe june-orchestrator --region="${{ env.REGION }}" --format='value(status.uri)' 2>/dev/null || echo "")
-          TTS_URL=$(gcloud run services describe june-tts --region="${{ env.REGION }}" --format='value(status.uri)' 2>/dev/null || echo "")
-          STT_URL=$(gcloud run services describe june-stt --region="${{ env.REGION }}" --format='value(status.uri)' 2>/dev/null || echo "")
-          IDP_URL=$(gcloud run services describe june-idp --region="${{ env.REGION }}" --format='value(status.uri)' 2>/dev/null || echo "")
-          
-          echo "📋 Deployment Summary:"
-          echo "   Edge Proxy: $EDGE_URL"
-          echo "   Orchestrator: $ORCH_URL"
-          echo "   TTS Service: $TTS_URL (Working Chatterbox TTS)"
-          echo "   Speech-to-Text: $STT_URL"
-          echo "   Identity Provider: $IDP_URL"
-          
-          echo ""
-          echo "🎭 Working Chatterbox TTS Features:"
-          echo "   • Proven travisvn/chatterbox-tts-api implementation"
-          echo "   • OpenAI-compatible API endpoints"
-          echo "   • Voice cloning with reference audio"
-          echo "   • Multilingual support (23 languages)"
-          echo "   • Emotion control and exaggeration"
-          echo "   • No dependency conflicts"
-          echo "   • Production-ready Docker container"
-          
-          echo ""
-          echo "🚀 Voice Chatbot Ready!"
-          echo "   Your AI voice assistant now uses the working Chatterbox TTS implementation"
-          [[ -n "$EDGE_URL" ]] && echo "   Visit: $EDGE_URL"
