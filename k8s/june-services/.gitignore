@@ -7,3 +7,12 @@ tnsnames.ora
 sqlnet.ora
 *wallet*/**
 *.ora
+# Oracle ADB wallet / secrets (DO NOT COMMIT)
+keycloakdb_wallet.zip
+keycloakdb_wallet/
+ewallet.sso
+cwallet.sso
+tnsnames.ora
+sqlnet.ora
+*wallet*/**
+*.ora
