@@ -1,0 +1,12 @@
+keycloakdb_high = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.us-ashburn-1.oraclecloud.com))(connect_data=(service_name=ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+keycloakdb_low = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.us-ashburn-1.oraclecloud.com))(connect_data=(service_name=ga342747dd21cdf_keycloakdb_low.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+keycloakdb_medium = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.us-ashburn-1.oraclecloud.com))(connect_data=(service_name=ga342747dd21cdf_keycloakdb_medium.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+keycloakdb_tp = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.us-ashburn-1.oraclecloud.com))(connect_data=(service_name=ga342747dd21cdf_keycloakdb_tp.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+keycloakdb_tpurgent = (description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.us-ashburn-1.oraclecloud.com))(connect_data=(service_name=ga342747dd21cdf_keycloakdb_tpurgent.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))
+
+
+
