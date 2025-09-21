@@ -1,21 +1,21 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: june-orchestrator
+  name: june-tts
   namespace: june-services
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: june-orchestrator
+      app: june-tts
   template:
     metadata:
       labels:
-        app: june-orchestrator
+        app: june-tts
     spec:
       containers:
-      - name: june-orchestrator
-        image: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/june/june-orchestrator:latest
+      - name: june-tts
+        image: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/june/june-tts:latest
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -30,12 +30,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: june-orchestrator
+  name: june-tts
   namespace: june-services
 spec:
   type: ClusterIP
   selector:
-    app: june-orchestrator
+    app: june-tts
   ports:
   - port: 8080
     targetPort: 8080

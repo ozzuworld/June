@@ -1,0 +1,12 @@
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: allsafe-certs
+  namespace: june-services
+spec:
+  domains:
+    - june-idp.allsafe.world
+    - june-orchestrator.allsafe.world
+    - june-stt.allsafe.world
+    - june-tts.allsafe.world
+    - pg-backup.allsafe.world

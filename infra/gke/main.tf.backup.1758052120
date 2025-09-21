@@ -1,5 +1,3 @@
-# Minimal working Terraform configuration (Option 2: custom VPC + subnet + secondary ranges)
-
 terraform {
   required_providers {
     google = {
@@ -78,6 +76,12 @@ resource "google_compute_subnetwork" "main" {
   }
 }
 
+
+  secondary_ip_range {
+    range_name    = "${var.cluster_name}-services"
+    ip_cidr_range = "10.6.0.0/20"
+  }
+}
 
 # -----------------------------
 # GKE Autopilot cluster on custom VPC/Subnet
