@@ -1,0 +1,26 @@
+June AI Platform - Basic Deployment Status
+==========================================
+
+Deployment Time: Tue, Sep 16, 2025  3:21:06 PM
+Project: main-buffer-469817-v7
+Region: us-central1
+Cluster: june-unified-cluster
+
+Infrastructure:
+- PostgreSQL IP: 34.57.214.141
+- Redis Host: 10.174.195.83
+- LoadBalancer IP: 34.68.229.87
+
+Services Deployed:
+- june-orchestrator: ✅ DEPLOYED
+
+Next Steps:
+1. Test: curl http://34.68.229.87/healthz
+2. Check logs: kubectl logs -n june-services deployment/june-orchestrator
+3. Deploy remaining services
+4. Set up external DNS
+
+Commands:
+- Connect: gcloud container clusters get-credentials june-unified-cluster --region=us-central1 --project=main-buffer-469817-v7
+- Pods: kubectl get pods -n june-services
+- Services: kubectl get svc -n june-services
