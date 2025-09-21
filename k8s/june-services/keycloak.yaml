@@ -11,73 +11,42 @@ spec:
     metadata:
       labels: { app: june-idp }
     spec:
-      initContainers:
-        - name: add-oracle-jars
-          image: curlimages/curl:8.8.0
-          command:
-            - sh
-            - -c
-            - >
-              set -e;
-              mkdir -p /providers &&
-              echo "Downloading ojdbc17..." &&
-              curl -fsSL
-              https://repo1.maven.org/maven2/com/oracle/database/jdbc/ojdbc17/23.9.0.25.07/ojdbc17-23.9.0.25.07.jar
-              -o /providers/ojdbc17.jar &&
-              echo "Downloading orai18n..." &&
-              curl -fsSL
-              https://repo1.maven.org/maven2/com/oracle/database/nls/orai18n/23.6.0.24.10/orai18n-23.6.0.24.10.jar
-              -o /providers/orai18n.jar &&
-              ls -l /providers
-          volumeMounts:
-            - name: providers
-              mountPath: /providers
-
       containers:
         - name: keycloak
-          # If you later build & push your own image, swap this for your registry path
-          image: quay.io/keycloak/keycloak:26.3.4
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/keycloak-oracle:26.3.4
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
-
           env:
-            # Admin bootstrap (you already created this secret)
-            - name: KEYCLOAK_ADMIN
-              valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: username }
-            - name: KEYCLOAK_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloak-admin, key: password }
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
 
-            # IMPORTANT: Do NOT set KC_DB (removing the build-time --db option)
-            # Use JDBC URL + creds instead:
+            # Oracle ADB via wallet (your TNS alias is keycloakdb_high)
+            - name: KC_DB
+              value: "oracle"
             - name: KC_DB_URL
-              value: "jdbc:oracle:thin:@keycloakdb_high?TNS_ADMIN=/opt/oracle/wallet"
+              value: "jdbc:oracle:thin:@keycloakdb_high?TNS_ADMIN=/opt/keycloak/wallet"
             - name: KC_DB_USERNAME
-              valueFrom:
-                secretKeyRef: { name: keycloakdb-credentials, key: username }
+              valueFrom: { secretKeyRef: { name: keycloakdb-credentials, key: username } }
             - name: KC_DB_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: keycloakdb-credentials, key: password }
+              valueFrom: { secretKeyRef: { name: keycloakdb-credentials, key: password } }
 
-            # Ensure the driver reads the wallet
+            # Optional but helpful
             - name: JAVA_OPTS_APPEND
-              value: "-Doracle.net.tns_admin=/opt/oracle/wallet -Doracle.net.ssl_server_dn_match=true"
+              value: "-Doracle.net.tns_admin=/opt/keycloak/wallet -Doracle.net.ssl_server_dn_match=true"
 
-            # Hostname/proxy if you’re behind ingress (adjust for your domain)
+            # Replace with your public host if you’ll ingress it
             - name: KC_HOSTNAME
-              value: "idp.your-domain.tld"
+              value: "idp.allsafe.world"
             - name: KC_PROXY
               value: "edge"
 
           volumeMounts:
             - name: wallet
-              mountPath: /opt/oracle/wallet
-              readOnly: true
-            - name: providers
-              mountPath: /opt/keycloak/providers
+              mountPath: /opt/keycloak/wallet
               readOnly: true
 
           readinessProbe:
@@ -101,5 +70,16 @@ spec:
           secret:
             secretName: keycloakdb-wallet
             defaultMode: 0440
-        - name: providers
-          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  selector: { app: june-idp }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

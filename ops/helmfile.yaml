@@ -1,0 +1,93 @@
+repositories:
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+  - name: nats
+    url: https://nats-io.github.io/k8s/helm/charts/
+  - name: qdrant
+    url: https://qdrant.github.io/qdrant-helm
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+  - name: grafana
+    url: https://grafana.github.io/helm-charts
+
+releases:
+  - name: minio
+    namespace: infra
+    chart: bitnami/minio
+    version: 13.0.5
+    values:
+      - persistence:
+          enabled: true
+        auth:
+          rootUser: admin
+          rootPassword: change-me
+        defaultBuckets: "media,transcripts,models"
+
+  - name: redis
+    namespace: infra
+    chart: bitnami/redis
+    version: 19.5.0
+    values:
+      - architecture: standalone
+        auth:
+          enabled: false
+
+  - name: nats
+    namespace: infra
+    chart: nats/nats
+    version: 0.19.20
+    values:
+      - nats:
+          jetstream:
+            enabled: true
+
+  - name: qdrant
+    namespace: infra
+    chart: qdrant/qdrant
+    version: 0.7.5
+    values:
+      - resources:
+          requests: { cpu: "250m", memory: "512Mi" }
+        persistence:
+          enabled: true
+
+  - name: kube-prom-stack
+    namespace: observability
+    chart: prometheus-community/kube-prometheus-stack
+    version: 62.7.0
+    values:
+      - grafana:
+          adminPassword: "change-me"
+        prometheus:
+          prometheusSpec:
+            retention: "7d"
+
+  - name: loki
+    namespace: observability
+    chart: grafana/loki
+    version: 6.6.3
+    values:
+      - loki:
+          commonConfig:
+            replication_factor: 1
+        singleBinary:
+          replicas: 1
+
+  - name: tempo
+    namespace: observability
+    chart: grafana/tempo
+    version: 1.7.1
+    values:
+      - tempo:
+          storage:
+            trace:
+              backend: filesystem
+
+  # Example SFU (LiveKit) – swap for ion-sfu if you prefer.
+  - name: livekit
+    namespace: media
+    chart: bitnami/livekit
+    version: 1.0.8
+    values:
+      - service:
+          type: ClusterIP
