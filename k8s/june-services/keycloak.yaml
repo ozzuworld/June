@@ -1,85 +1,238 @@
+# k8s/june-services/keycloak-oracle.yaml
+# FIXED: Keycloak deployment with Oracle - NO HARBOR REFERENCES
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+data:
+  # Keycloak Oracle Database Configuration
+  KC_DB: "oracle"
+  KC_DB_URL_HOST: "adb.us-ashburn-1.oraclecloud.com"
+  KC_DB_URL_PORT: "1522"
+  KC_DB_URL_DATABASE: "ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com"
+  KC_DB_SCHEMA: "keycloak_user"
+  KC_DB_USERNAME: "keycloak_user"
+  
+  # Keycloak Configuration
+  KC_HOSTNAME_STRICT: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  KC_TRANSACTION_XA_ENABLED: "false"
+  KC_CACHE: "local"
+  KC_PROXY: "edge"
+  KC_LOG_LEVEL: "INFO"
+  
+  # Oracle Wallet Configuration
+  TNS_ADMIN: "/opt/oracle/wallet"
+  ORACLE_HOME: "/opt/oracle"
+  ORACLE_NET_TNS_ADMIN: "/opt/oracle/wallet"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-secrets
+  namespace: june-services
+type: Opaque
+stringData:
+  KC_DB_PASSWORD: "KeycloakPass123!@#"
+  KEYCLOAK_ADMIN: "admin"
+  KEYCLOAK_ADMIN_PASSWORD: "admin123456"
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-idp
   namespace: june-services
-  labels: { app: june-idp }
+  labels:
+    app: june-idp
+    component: identity-provider
 spec:
   replicas: 1
-  selector: { matchLabels: { app: june-idp } }
+  selector:
+    matchLabels:
+      app: june-idp
   template:
     metadata:
-      labels: { app: june-idp }
+      labels:
+        app: june-idp
+        component: identity-provider
     spec:
+      serviceAccountName: june-idp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
+      initContainers:
+      # Init container to verify Oracle wallet
+      - name: oracle-wallet-check
+        image: oraclelinux:8-slim
+        command: ['sh', '-c']
+        args:
+          - |
+            echo "=== Oracle Wallet Verification ==="
+            ls -la /opt/oracle/wallet/
+            echo "TNS_ADMIN: $TNS_ADMIN"
+            
+            # Check required wallet files
+            for file in cwallet.sso tnsnames.ora sqlnet.ora; do
+              if [ -f "/opt/oracle/wallet/$file" ]; then
+                echo "✓ $file found"
+              else
+                echo "✗ $file missing"
+                exit 1
+              fi
+            done
+            
+            # Verify database entries in tnsnames.ora
+            if grep -q "keycloakdb_high" /opt/oracle/wallet/tnsnames.ora; then
+              echo "✓ keycloakdb_high found in tnsnames.ora"
+            else
+              echo "✗ keycloakdb_high not found in tnsnames.ora"
+              exit 1
+            fi
+            
+            echo "=== Wallet verification complete ==="
+        env:
+        - name: TNS_ADMIN
+          value: "/opt/oracle/wallet"
+        volumeMounts:
+        - name: oracle-wallet
+          mountPath: /opt/oracle/wallet
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      
       containers:
-        - name: keycloak
-          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/keycloak-oracle:26.3.4
-          imagePullPolicy: IfNotPresent
-          ports:
-            - name: http
-              containerPort: 8080
-          env:
-            - name: KC_BOOTSTRAP_ADMIN_USERNAME
-              valueFrom: { secretKeyRef: { name: keycloak-admin, key: username } }
-            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-              valueFrom: { secretKeyRef: { name: keycloak-admin, key: password } }
-
-            # Oracle ADB via wallet (your TNS alias is keycloakdb_high)
-            - name: KC_DB
-              value: "oracle"
-            - name: KC_DB_URL
-              value: "jdbc:oracle:thin:@keycloakdb_high?TNS_ADMIN=/opt/keycloak/wallet"
-            - name: KC_DB_USERNAME
-              valueFrom: { secretKeyRef: { name: keycloakdb-credentials, key: username } }
-            - name: KC_DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: keycloakdb-credentials, key: password } }
-
-            # Optional but helpful
-            - name: JAVA_OPTS_APPEND
-              value: "-Doracle.net.tns_admin=/opt/keycloak/wallet -Doracle.net.ssl_server_dn_match=true"
-
-            # Replace with your public host if you’ll ingress it
-            - name: KC_HOSTNAME
-              value: "idp.allsafe.world"
-            - name: KC_PROXY
-              value: "edge"
-
-          volumeMounts:
-            - name: wallet
-              mountPath: /opt/keycloak/wallet
-              readOnly: true
-
-          readinessProbe:
-            httpGet: { path: /health/ready, port: 8080 }
-            initialDelaySeconds: 20
-            periodSeconds: 5
-            timeoutSeconds: 3
-            failureThreshold: 12
-          livenessProbe:
-            httpGet: { path: /health/live, port: 8080 }
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 6
-          resources:
-            requests: { cpu: "250m", memory: "1Gi" }
-            limits:   { cpu: "1",    memory: "2Gi" }
-
+      - name: keycloak
+        # Use our custom-built Keycloak image with Oracle support
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-idp:latest
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        # Environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: keycloak-config
+        
+        # Environment variables from Secret and Oracle-specific settings
+        env:
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KC_DB_PASSWORD
+        - name: KEYCLOAK_ADMIN
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KEYCLOAK_ADMIN
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KEYCLOAK_ADMIN_PASSWORD
+        
+        # CRITICAL: Proper Oracle JDBC URL
+        - name: KC_DB_URL
+          value: "jdbc:oracle:thin:@tcps://adb.us-ashburn-1.oraclecloud.com:1522/ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com?wallet_location=/opt/oracle/wallet"
+        
+        # Oracle client configuration
+        - name: TNS_ADMIN
+          value: "/opt/oracle/wallet"
+        - name: ORACLE_HOME
+          value: "/opt/oracle"
+        
+        # Volume mounts for Oracle wallet
+        volumeMounts:
+        - name: oracle-wallet
+          mountPath: /opt/oracle/wallet
+          readOnly: true
+        
+        # Resource specifications for Autopilot
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 5
+        
+        # Startup probe for Oracle connection establishment
+        startupProbe:
+          httpGet:
+            path: /health/started
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 40  # Allow 10 minutes for Oracle setup
+      
+      # Volumes
       volumes:
-        - name: wallet
-          secret:
-            secretName: keycloakdb-wallet
-            defaultMode: 0440
+      - name: oracle-wallet
+        secret:
+          secretName: oracle-wallet
+          defaultMode: 0600
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: june-idp
   namespace: june-services
+  labels:
+    app: june-idp
 spec:
-  selector: { app: june-idp }
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
   type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-idp
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+  annotations:
+    iam.gke.io/gcp-service-account: june-idp-gke@main-buffer-469817-v7.iam.gserviceaccount.com

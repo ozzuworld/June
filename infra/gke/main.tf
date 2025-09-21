@@ -1,11 +1,13 @@
-# infra/gke/main-dev.tf
-# SIMPLIFIED Terraform for development - single zone, minimal resources
-
+# infra/gke/main.tf - FIXED: No Harbor, Oracle backend only
 terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
       version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.23"
     }
   }
 }
@@ -13,7 +15,6 @@ terraform {
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
-  default     = "main-buffer-469817-v7"
 }
 
 variable "region" {
@@ -22,117 +23,192 @@ variable "region" {
   default     = "us-central1"
 }
 
-variable "zone" {
-  description = "GCP Zone (single zone for dev)"
-  type        = string
-  default     = "us-central1-a"
-}
-
 variable "cluster_name" {
   description = "GKE cluster name"
   type        = string
-  default     = "june-dev-cluster"
+  default     = "june-unified-cluster"
 }
 
-# Enable required APIs
-resource "google_project_service" "required_apis" {
+# Enable required APIs (minimal set for Oracle backend)
+resource "google_project_service" "apis" {
   for_each = toset([
     "container.googleapis.com",
-    "compute.googleapis.com"
+    "compute.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "secretmanager.googleapis.com"
   ])
-  
-  project = var.project_id
-  service = each.value
+  project            = var.project_id
+  service            = each.value
   disable_on_destroy = false
 }
 
-# Simple single-zone GKE cluster
-resource "google_container_cluster" "dev_cluster" {
-  name     = var.cluster_name
-  location = var.zone  # Single zone instead of region
-  project  = var.project_id
-
-  # Remove Autopilot for simpler setup
-  remove_default_node_pool = true
-  initial_node_count       = 1
-
-  # Basic IP allocation
-  ip_allocation_policy {
-    cluster_secondary_range_name  = "pods"
-    services_secondary_range_name = "services"
-  }
-
-  # Basic networking
-  network    = "default"
-  subnetwork = "default"
-
-  depends_on = [google_project_service.required_apis]
+# VPC and Subnet for GKE
+resource "google_compute_network" "main" {
+  name                    = "${var.cluster_name}-vpc"
+  project                 = var.project_id
+  auto_create_subnetworks = false
 }
 
-# Simple node pool
-resource "google_container_node_pool" "dev_nodes" {
-  name       = "${var.cluster_name}-dev-pool"
-  location   = var.zone
-  cluster    = google_container_cluster.dev_cluster.name
-  project    = var.project_id
+resource "google_compute_subnetwork" "main" {
+  name                     = "${var.cluster_name}-subnet"
+  project                  = var.project_id
+  region                   = var.region
+  network                  = google_compute_network.main.id
+  ip_cidr_range            = "192.168.0.0/16"
+  private_ip_google_access = true
 
-  # Start with 1 node, can scale up to 3
-  initial_node_count = 1
-
-  autoscaling {
-    min_node_count = 1
-    max_node_count = 3
+  # Secondary ranges for GKE pods and services
+  secondary_ip_range {
+    range_name    = "${var.cluster_name}-pods"
+    ip_cidr_range = "172.16.0.0/14"
   }
 
-  # Use smaller, cheaper machines for development
-  node_config {
-    machine_type = "e2-standard-2"  # 2 vCPU, 8GB RAM
-    disk_size_gb = 20
-    disk_type    = "pd-standard"
-    
-    # Basic security
-    service_account = "default"
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
-    ]
+  secondary_ip_range {
+    range_name    = "${var.cluster_name}-services"
+    ip_cidr_range = "172.20.0.0/20"
+  }
+}
 
-    # Cost optimization
-    preemptible = false  # Set to true if you want even cheaper (but less reliable)
-    
-    metadata = {
-      disable-legacy-endpoints = "true"
+# GKE Autopilot Cluster - Oracle Backend Ready
+resource "google_container_cluster" "cluster" {
+  name     = var.cluster_name
+  location = var.region
+  project  = var.project_id
+
+  enable_autopilot = true
+
+  network    = google_compute_network.main.id
+  subnetwork = google_compute_subnetwork.main.name
+
+  ip_allocation_policy {
+    cluster_secondary_range_name  = google_compute_subnetwork.main.secondary_ip_range[0].range_name
+    services_secondary_range_name = google_compute_subnetwork.main.secondary_ip_range[1].range_name
+  }
+
+  # Workload Identity for secure service account access
+  workload_identity_config {
+    workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# Artifact Registry for container images (handle existing)
+resource "google_artifact_registry_repository" "june_repo" {
+  count         = 1
+  location      = var.region
+  project       = var.project_id
+  repository_id = "june"
+  description   = "June AI Platform container registry"
+  format        = "DOCKER"
+
+  labels = {
+    purpose = "june-platform"
+  }
+
+  lifecycle {
+    ignore_changes = [labels, description]
+  }
+}
+
+# Service accounts for workload identity (June services only)
+resource "google_service_account" "workload_identity" {
+  for_each = toset([
+    "june-orchestrator",
+    "june-stt", 
+    "june-tts",
+    "june-idp"
+  ])
+  
+  account_id   = "${each.key}-gke"
+  display_name = "${each.key} GKE Service Account"
+  project      = var.project_id
+}
+
+# IAM permissions for service accounts (no Harbor)
+resource "google_project_iam_member" "workload_permissions" {
+  for_each = {
+    "orchestrator-monitoring" = {
+      sa   = "june-orchestrator"
+      role = "roles/monitoring.metricWriter"
+    }
+    "stt-monitoring" = {
+      sa   = "june-stt"
+      role = "roles/monitoring.metricWriter"
+    }
+    "tts-monitoring" = {
+      sa   = "june-tts"
+      role = "roles/monitoring.metricWriter"
+    }
+    "idp-monitoring" = {
+      sa   = "june-idp"
+      role = "roles/monitoring.metricWriter"
+    }
+    # Secret Manager access for Oracle wallet and credentials
+    "idp-secrets" = {
+      sa   = "june-idp"
+      role = "roles/secretmanager.secretAccessor"
     }
   }
+  
+  project = var.project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.workload_identity[each.value.sa].email}"
+}
 
-  management {
-    auto_repair  = true
-    auto_upgrade = true
-  }
+# Workload Identity bindings (no Harbor)
+resource "google_service_account_iam_member" "workload_identity_binding" {
+  for_each = toset([
+    "june-orchestrator",
+    "june-stt", 
+    "june-tts",
+    "june-idp"
+  ])
+  
+  service_account_id = google_service_account.workload_identity[each.key].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[june-services/${each.key}]"
+}
+
+# Global static IP for ingress
+resource "google_compute_global_address" "june_ip" {
+  name    = "june-services-ip"
+  project = var.project_id
 }
 
 # Outputs
 output "cluster_name" {
-  description = "GKE cluster name"
-  value       = google_container_cluster.dev_cluster.name
-}
-
-output "cluster_zone" {
-  description = "GKE cluster zone"
-  value       = var.zone
-}
-
-output "get_credentials_command" {
-  description = "Command to configure kubectl"
-  value       = "gcloud container clusters get-credentials ${google_container_cluster.dev_cluster.name} --zone=${var.zone} --project=${var.project_id}"
+  value = google_container_cluster.cluster.name
 }
 
 output "cluster_endpoint" {
-  description = "GKE cluster endpoint"
-  value       = google_container_cluster.dev_cluster.endpoint
-  sensitive   = true
+  value     = google_container_cluster.cluster.endpoint
+  sensitive = true
+}
+
+output "get_credentials_command" {
+  value = "gcloud container clusters get-credentials ${google_container_cluster.cluster.name} --region=${var.region} --project=${var.project_id}"
+}
+
+output "artifact_registry_url" {
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/june"
+}
+
+output "static_ip" {
+  value = google_compute_global_address.june_ip.address
 }
 
 output "project_id" {
-  description = "GCP Project ID"
-  value       = var.project_id
+  value = var.project_id
+}
+
+output "region" {
+  value = var.region
+}
+
+output "service_accounts" {
+  description = "GCP service account emails for workload identity"
+  value = {
+    for k, v in google_service_account.workload_identity : k => v.email
+  }
 }
