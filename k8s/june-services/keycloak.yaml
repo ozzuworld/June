@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels: { app: june-idp }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: june-idp } }
+  template:
+    metadata:
+      labels: { app: june-idp }
+    spec:
+      initContainers:
+        - name: add-oracle-jars
+          image: curlimages/curl:8.8.0
+          command:
+            - sh
+            - -c
+            - >
+              set -e;
+              mkdir -p /providers &&
+              echo "Downloading ojdbc17..." &&
+              curl -fsSL
+              https://repo1.maven.org/maven2/com/oracle/database/jdbc/ojdbc17/23.9.0.25.07/ojdbc17-23.9.0.25.07.jar
+              -o /providers/ojdbc17.jar &&
+              echo "Downloading orai18n..." &&
+              curl -fsSL
+              https://repo1.maven.org/maven2/com/oracle/database/nls/orai18n/23.6.0.24.10/orai18n-23.6.0.24.10.jar
+              -o /providers/orai18n.jar &&
+              ls -l /providers
+          volumeMounts:
+            - name: providers
+              mountPath: /providers
+
+      containers:
+        - name: keycloak
+          # If you later build & push your own image, swap this for your registry path
+          image: quay.io/keycloak/keycloak:26.3.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+
+          env:
+            # Admin bootstrap (you already created this secret)
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin, key: username }
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: keycloak-admin, key: password }
+
+            # IMPORTANT: Do NOT set KC_DB (removing the build-time --db option)
+            # Use JDBC URL + creds instead:
+            - name: KC_DB_URL
+              value: "jdbc:oracle:thin:@keycloakdb_high?TNS_ADMIN=/opt/oracle/wallet"
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef: { name: keycloakdb-credentials, key: username }
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: keycloakdb-credentials, key: password }
+
+            # Ensure the driver reads the wallet
+            - name: JAVA_OPTS_APPEND
+              value: "-Doracle.net.tns_admin=/opt/oracle/wallet -Doracle.net.ssl_server_dn_match=true"
+
+            # Hostname/proxy if you’re behind ingress (adjust for your domain)
+            - name: KC_HOSTNAME
+              value: "idp.your-domain.tld"
+            - name: KC_PROXY
+              value: "edge"
+
+          volumeMounts:
+            - name: wallet
+              mountPath: /opt/oracle/wallet
+              readOnly: true
+            - name: providers
+              mountPath: /opt/keycloak/providers
+              readOnly: true
+
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests: { cpu: "250m", memory: "1Gi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+
+      volumes:
+        - name: wallet
+          secret:
+            secretName: keycloakdb-wallet
+            defaultMode: 0440
+        - name: providers
+          emptyDir: {}
