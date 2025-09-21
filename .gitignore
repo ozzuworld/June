@@ -6,3 +6,12 @@ crash.log
 *.tfvars
 !*.example.tfvars
 !.terraform.lock.hcl
+keycloakdb_wallet.zip
+keycloakdb_wallet/
+ewallet.sso
+cwallet.sso
+*.ora
+*wallet*/**
+*.p12
+*.jks
+*.pem
