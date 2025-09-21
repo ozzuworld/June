@@ -1,5 +1,5 @@
-# k8s/june-services/keycloak-oracle.yaml
-# Keycloak deployment with Oracle Autonomous Database backend
+# k8s/june-services/keycloak-oracle-fixed.yaml
+# FIXED Keycloak deployment with Oracle Autonomous Database backend
 
 apiVersion: v1
 kind: ConfigMap
@@ -9,7 +9,7 @@ metadata:
 data:
   # Oracle JDBC configuration
   KC_DB: "oracle"
-  KC_DB_URL: "jdbc:oracle:thin:@tcps://adb.us-ashburn-1.oraclecloud.com:1522/ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com"
+  KC_DB_URL: "jdbc:oracle:thin:@tcps://adb.us-ashburn-1.oraclecloud.com:1522/ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com?wallet_location=/opt/oracle/wallet"
   KC_DB_USERNAME: "keycloak_user"
   KC_HOSTNAME_STRICT: "false"
   KC_HTTP_ENABLED: "true"
@@ -18,9 +18,12 @@ data:
   KC_TRANSACTION_XA_ENABLED: "false"
   KC_CACHE: "local"
   KC_LOG_LEVEL: "INFO"
+  KC_PROXY: "edge"
   # Oracle wallet location
   TNS_ADMIN: "/opt/oracle/wallet"
   ORACLE_HOME: "/opt/oracle"
+  # JVM optimizations for Autopilot
+  JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0 -XX:+UseContainerSupport -XX:+UnlockExperimentalVMOptions"
 
 ---
 apiVersion: v1
@@ -42,6 +45,7 @@ metadata:
   namespace: june-services
   labels:
     app: june-idp
+    component: keycloak
 spec:
   replicas: 1
   selector:
@@ -51,27 +55,27 @@ spec:
     metadata:
       labels:
         app: june-idp
+        component: keycloak
     spec:
       serviceAccountName: june-idp
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsNonRoot: false  # Keycloak needs root for some operations
         fsGroup: 1000
       
       initContainers:
-      # Init container to wait for Oracle database connectivity
-      - name: wait-for-oracle
-        image: busybox:1.35
+      # Init container to setup Oracle wallet permissions
+      - name: setup-oracle-wallet
+        image: oraclelinux:8-slim
         command: ['sh', '-c']
         args:
           - |
-            echo "Waiting for Oracle database connectivity..."
-            until nc -z adb.us-ashburn-1.oraclecloud.com 1522; do
-              echo "Waiting for Oracle database..."
-              sleep 5
-            done
-            echo "Oracle database is ready!"
+            echo "Setting up Oracle wallet permissions..."
+            chmod 644 /opt/oracle/wallet/*
+            ls -la /opt/oracle/wallet/
+            echo "Oracle wallet setup complete"
+        volumeMounts:
+        - name: oracle-wallet
+          mountPath: /opt/oracle/wallet
         resources:
           requests:
             memory: "64Mi"
@@ -79,6 +83,30 @@ spec:
           limits:
             memory: "128Mi"
             cpu: "100m"
+      
+      # Init container to wait for Oracle database connectivity
+      - name: wait-for-oracle
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+          - |
+            echo "Testing Oracle database connectivity..."
+            until nc -z adb.us-ashburn-1.oraclecloud.com 1522; do
+              echo "Waiting for Oracle database... (attempt $((i++)))"
+              sleep 10
+              if [ $i -gt 30 ]; then
+                echo "Timeout waiting for Oracle database"
+                exit 1
+              fi
+            done
+            echo "Oracle database is reachable!"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
       
       containers:
       - name: keycloak
@@ -88,11 +116,12 @@ spec:
           - "--db=oracle"
           - "--http-enabled=true"
           - "--hostname-strict=false"
-          - "--proxy-headers=xforwarded"
+          - "--proxy=edge"
           - "--transaction-xa-enabled=false"
           - "--cache=local"
           - "--health-enabled=true"
           - "--metrics-enabled=true"
+          - "--log-level=INFO"
         
         ports:
         - name: http
@@ -125,55 +154,52 @@ spec:
               name: keycloak-secrets
               key: KEYCLOAK_ADMIN_PASSWORD
         
-        # Oracle connection configuration
-        - name: KC_DB_URL
-          value: "jdbc:oracle:thin:@tcps://adb.us-ashburn-1.oraclecloud.com:1522/ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com?wallet_location=/opt/oracle/wallet"
-        - name: KC_DB_USERNAME
-          value: "keycloak_user"
-        
         # Volume mounts for Oracle wallet
         volumeMounts:
         - name: oracle-wallet
           mountPath: /opt/oracle/wallet
           readOnly: true
         
-        # REQUIRED: Resource specifications for Autopilot
+        # OPTIMIZED: Resource specifications for Autopilot
         resources:
           requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
             memory: "1Gi"
             cpu: "500m"
-          limits:
-            memory: "2Gi"
-            cpu: "1000m"
         
-        # Health checks
+        # FIXED: Health checks with proper timeouts
         livenessProbe:
           httpGet:
             path: /health/live
             port: 8080
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120  # Increased for Oracle connection setup
           periodSeconds: 30
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 5
+          successThreshold: 1
         
         readinessProbe:
           httpGet:
             path: /health/ready
             port: 8080
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60   # Allow time for Oracle setup
           periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 3
+          failureThreshold: 10
+          successThreshold: 1
         
-        # Startup probe for longer initialization
+        # Startup probe for initial Oracle connection
         startupProbe:
           httpGet:
             path: /health/started
             port: 8080
           initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 30  # Allow 5 minutes for startup
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 40      # Allow up to 10 minutes for startup
+          successThreshold: 1
       
       # Volumes
       volumes:
@@ -214,3 +240,23 @@ metadata:
     app: june-idp
   annotations:
     iam.gke.io/gcp-service-account: june-idp-gke@main-buffer-469817-v7.iam.gserviceaccount.com
+
+---
+# External LoadBalancer for testing (optional)
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp-lb
+  namespace: june-services
+  labels:
+    app: june-idp
+    purpose: external-access
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-idp
