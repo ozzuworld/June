@@ -1,10 +1,16 @@
+# k8s/june-services/june-orchestrator.yaml
+# Updated with proper resource specs and Oracle backend configuration
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-orchestrator
   namespace: june-services
+  labels:
+    app: june-orchestrator
+    component: orchestrator
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: june-orchestrator
@@ -12,30 +18,147 @@ spec:
     metadata:
       labels:
         app: june-orchestrator
+        component: orchestrator
     spec:
+      serviceAccountName: june-orchestrator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
       containers:
       - name: june-orchestrator
-        image: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/june/june-orchestrator:latest
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
         ports:
-        - containerPort: 8080
-        readinessProbe:
-          httpGet: { path: /healthz, port: 8080 }
-          initialDelaySeconds: 10
-          periodSeconds: 5
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        env:
+        # Basic configuration
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        
+        # Service URLs (internal cluster communication)
+        - name: STT_SERVICE_URL
+          value: "http://june-stt:8080"
+        - name: TTS_SERVICE_URL
+          value: "http://june-tts:8080"
+        - name: KC_BASE_URL
+          value: "http://june-idp:8080"
+        - name: KC_REALM
+          value: "june"
+        
+        # External APIs
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: GEMINI_API_KEY
+        - name: CHATTERBOX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: CHATTERBOX_API_KEY
+        
+        # Service authentication
+        - name: ORCHESTRATOR_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_ID
+        - name: ORCHESTRATOR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_SECRET
+        
+        # REQUIRED: Resource specifications for Autopilot
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        
+        # Health checks
         livenessProbe:
-          httpGet: { path: /healthz, port: 8080 }
+          httpGet:
+            path: /healthz
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # Startup probe for initial boot
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: june-orchestrator
   namespace: june-services
+  labels:
+    app: june-orchestrator
 spec:
   type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
   selector:
     app: june-orchestrator
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+  annotations:
+    iam.gke.io/gcp-service-account: june-orchestrator-gke@main-buffer-469817-v7.iam.gserviceaccount.com
+
+---
+# External LoadBalancer for testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator-lb
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    purpose: external-access
+spec:
+  type: LoadBalancer
   ports:
-  - port: 8080
+  - name: http
+    port: 80
     targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-orchestrator

@@ -1,4 +1,5 @@
-# Minimal working Terraform configuration (Option 2: custom VPC + subnet + secondary ranges)
+# infra/gke/main.tf - SIMPLIFIED for Oracle Backend
+# Removed all PostgreSQL/Redis complexity
 
 terraform {
   required_providers {
@@ -9,10 +10,6 @@ terraform {
     kubernetes = {
       source  = "hashicorp/kubernetes"
       version = "~> 2.23"
-    }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.4"
     }
   }
 }
@@ -34,13 +31,11 @@ variable "cluster_name" {
   default     = "june-unified-cluster"
 }
 
-# Enable required APIs
+# Enable required APIs (minimal set)
 resource "google_project_service" "apis" {
   for_each = toset([
     "container.googleapis.com",
     "compute.googleapis.com",
-    "sqladmin.googleapis.com",      # Cloud SQL Admin API (correct name)
-    "redis.googleapis.com",
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com"
   ])
@@ -49,9 +44,7 @@ resource "google_project_service" "apis" {
   disable_on_destroy = false
 }
 
-# -----------------------------
-# Network: VPC + Subnetwork with secondary ranges (for GKE)
-# -----------------------------
+# VPC and Subnet for GKE
 resource "google_compute_network" "main" {
   name                    = "${var.cluster_name}-vpc"
   project                 = var.project_id
@@ -59,29 +52,26 @@ resource "google_compute_network" "main" {
 }
 
 resource "google_compute_subnetwork" "main" {
-  name                     = "${var.cluster_name}-${var.region}-subnet"
+  name                     = "${var.cluster_name}-subnet"
   project                  = var.project_id
   region                   = var.region
   network                  = google_compute_network.main.id
-  ip_cidr_range            = "10.0.0.0/16"   # primary subnet
+  ip_cidr_range            = "10.0.0.0/16"
   private_ip_google_access = true
 
-  # Secondary ranges for GKE IP aliasing (non-overlapping + aligned)
+  # Secondary ranges for GKE pods and services
   secondary_ip_range {
     range_name    = "${var.cluster_name}-pods"
-    ip_cidr_range = "10.4.0.0/14"           # /14 => 2nd octet multiple of 4
+    ip_cidr_range = "10.4.0.0/14"
   }
 
   secondary_ip_range {
     range_name    = "${var.cluster_name}-services"
-    ip_cidr_range = "10.8.0.0/20"           # /20 => 3rd octet multiple of 16
+    ip_cidr_range = "10.8.0.0/20"
   }
 }
 
-
-# -----------------------------
-# GKE Autopilot cluster on custom VPC/Subnet
-# -----------------------------
+# GKE Autopilot Cluster - Clean and Simple
 resource "google_container_cluster" "cluster" {
   name     = var.cluster_name
   location = var.region
@@ -97,90 +87,131 @@ resource "google_container_cluster" "cluster" {
     services_secondary_range_name = google_compute_subnetwork.main.secondary_ip_range[1].range_name
   }
 
+  # Workload Identity for secure service account access
+  workload_identity_config {
+    workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
   depends_on = [google_project_service.apis]
 }
 
-# -----------------------------
-# Cloud SQL (public for quick start; tighten later)
-# -----------------------------
-resource "google_sql_database_instance" "postgres" {
-  name             = "${var.cluster_name}-db"
-  database_version = "POSTGRES_15"
-  region           = var.region
-  project          = var.project_id
+# Artifact Registry for container images
+resource "google_artifact_registry_repository" "june_repo" {
+  location      = var.region
+  project       = var.project_id
+  repository_id = "june"
+  description   = "June AI Platform container registry"
+  format        = "DOCKER"
 
-  settings {
-    tier = "db-f1-micro"
+  labels = {
+    purpose = "june-platform"
+  }
+}
 
-    ip_configuration {
-      ipv4_enabled = true
+# Service accounts for workload identity
+resource "google_service_account" "workload_identity" {
+  for_each = toset([
+    "harbor",
+    "june-orchestrator",
+    "june-stt", 
+    "june-tts",
+    "june-idp"
+  ])
+  
+  account_id   = "${each.key}-gke"
+  display_name = "${each.key} GKE Service Account"
+  project      = var.project_id
+}
 
-      # NOTE: This is open to the world for quick tests.
-      # Replace with your IP/CIDR or switch to Private IP + SQL Proxy later.
-      authorized_networks {
-        name  = "allow-all"
-        value = "0.0.0.0/0"
-      }
+# Basic IAM permissions
+resource "google_project_iam_member" "workload_permissions" {
+  for_each = {
+    "harbor-storage" = {
+      sa   = "harbor"
+      role = "roles/storage.admin"
+    }
+    "orchestrator-monitoring" = {
+      sa   = "june-orchestrator"
+      role = "roles/monitoring.metricWriter"
+    }
+    "stt-monitoring" = {
+      sa   = "june-stt"
+      role = "roles/monitoring.metricWriter"
+    }
+    "tts-monitoring" = {
+      sa   = "june-tts"
+      role = "roles/monitoring.metricWriter"
+    }
+    "idp-monitoring" = {
+      sa   = "june-idp"
+      role = "roles/monitoring.metricWriter"
     }
   }
-
-  deletion_protection = false
+  
+  project = var.project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.workload_identity[each.value.sa].email}"
 }
 
-resource "google_sql_database" "june_db" {
-  name     = "june_idp"
-  instance = google_sql_database_instance.postgres.name
+# Global static IP for ingress
+resource "google_compute_global_address" "june_ip" {
+  name    = "june-services-ip"
+  project = var.project_id
+}
+
+# Storage bucket for Harbor registry storage
+resource "google_storage_bucket" "harbor_registry" {
+  name     = "${var.project_id}-harbor-registry"
+  location = var.region
   project  = var.project_id
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  
+  versioning {
+    enabled = true
+  }
+  
+  lifecycle_rule {
+    condition {
+      age = 90
+    }
+    action {
+      type = "Delete"
+    }
+  }
 }
 
-resource "random_password" "db_password" {
-  length  = 16
-  special = false
-}
-
-resource "google_sql_user" "june_user" {
-  name     = "june_idp"
-  instance = google_sql_database_instance.postgres.name
-  password = random_password.db_password.result
-  project  = var.project_id
-}
-
-# -----------------------------
-# Memorystore for Redis on the same VPC
-# -----------------------------
-resource "google_redis_instance" "redis" {
-  name               = "${var.cluster_name}-redis"
-  tier               = "BASIC"
-  memory_size_gb     = 1
-  project            = var.project_id
-  region             = var.region
-  authorized_network = google_compute_network.main.id  # attach to custom VPC
-}
-
-# -----------------------------
 # Outputs
-# -----------------------------
 output "cluster_name" {
   value = google_container_cluster.cluster.name
+}
+
+output "cluster_endpoint" {
+  value     = google_container_cluster.cluster.endpoint
+  sensitive = true
 }
 
 output "get_credentials_command" {
   value = "gcloud container clusters get-credentials ${google_container_cluster.cluster.name} --region=${var.region} --project=${var.project_id}"
 }
 
-output "postgres_ip" {
-  value = google_sql_database_instance.postgres.public_ip_address
+output "artifact_registry_url" {
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/june"
 }
 
-output "postgres_connection" {
-  value = google_sql_database_instance.postgres.connection_name
+output "static_ip" {
+  value = google_compute_global_address.june_ip.address
 }
 
-output "db_password" {
-  value     = random_password.db_password.result
-  sensitive = true
+output "harbor_bucket" {
+  value = google_storage_bucket.harbor_registry.name
 }
 
-output "redis_host" {
-  value = google_redis_instance.redis.host
+output "project_id" {
+  value = var.project_id
+}
+
+output "region" {
+  value = var.region
 }
