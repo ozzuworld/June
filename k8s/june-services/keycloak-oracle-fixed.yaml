@@ -1,0 +1,223 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+data:
+  # FIXED: Simplified Oracle configuration
+  KC_DB: "oracle"
+  KC_DB_URL: "jdbc:oracle:thin:@keycloakdb_high?TNS_ADMIN=/opt/oracle/wallet"
+  KC_DB_USERNAME: "keycloak_user"
+  KC_HOSTNAME_STRICT: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  KC_TRANSACTION_XA_ENABLED: "false"
+  KC_CACHE: "local"
+  KC_LOG_LEVEL: "INFO"
+  KC_PROXY: "edge"
+  # Oracle environment
+  TNS_ADMIN: "/opt/oracle/wallet"
+  ORACLE_HOME: "/opt/oracle"
+  # FIXED: Disable clustering completely
+  JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0 -XX:+UseContainerSupport -Dkeycloak.connectionsInfinispan.default.clustered=false -Djgroups.tcp.address=127.0.0.1"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  # FIXED: Single replica only
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      securityContext:
+        runAsNonRoot: false
+        fsGroup: 1000
+      
+      initContainers:
+      # FIXED: Better wallet setup
+      - name: setup-wallet
+        image: oraclelinux:8-slim
+        command: ['sh', '-c']
+        args:
+          - |
+            echo "=== Oracle Wallet Setup ==="
+            echo "Setting up file permissions..."
+            chmod 644 /opt/oracle/wallet/*
+            echo "Wallet files:"
+            ls -la /opt/oracle/wallet/
+            echo ""
+            echo "Checking tnsnames.ora content:"
+            echo "Looking for keycloakdb_high entry..."
+            grep -A 3 "keycloakdb_high" /opt/oracle/wallet/tnsnames.ora || echo "ERROR: keycloakdb_high not found!"
+            echo ""
+            echo "Checking sqlnet.ora:"
+            cat /opt/oracle/wallet/sqlnet.ora
+            echo ""
+            echo "Wallet setup complete!"
+        volumeMounts:
+        - name: oracle-wallet
+          mountPath: /opt/oracle/wallet
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      
+      # Test Oracle connectivity
+      - name: test-oracle
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+          - |
+            echo "=== Testing Oracle Connectivity ==="
+            echo "Testing TCP connection to Oracle..."
+            timeout 10 nc -zv adb.us-ashburn-1.oraclecloud.com 1522 && echo "✅ Oracle port 1522 reachable" || echo "❌ Cannot reach Oracle port 1522"
+            echo "Oracle connectivity test complete"
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+      
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:23.0.0
+        args:
+          - "start"
+          - "--db=oracle"
+          - "--http-enabled=true"
+          - "--hostname-strict=false"
+          - "--proxy=edge"
+          - "--transaction-xa-enabled=false"
+          - "--cache=local"
+          - "--health-enabled=true"
+          - "--metrics-enabled=true"
+          - "--log-level=INFO"
+        
+        ports:
+        - name: http
+          containerPort: 8080
+        
+        # Environment from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: keycloak-config
+        
+        # Environment from Secrets
+        env:
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: oracle-credentials
+              key: DB_PASSWORD
+        - name: KEYCLOAK_ADMIN
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin
+              key: KEYCLOAK_ADMIN
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin
+              key: KEYCLOAK_ADMIN_PASSWORD
+        
+        # Mount Oracle wallet
+        volumeMounts:
+        - name: oracle-wallet
+          mountPath: /opt/oracle/wallet
+          readOnly: true
+        
+        # FIXED: Minimal resources like other services
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "400m"
+        
+        # FIXED: Longer timeouts for Oracle connection
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 10
+        
+        # Extended startup probe for Oracle
+        startupProbe:
+          httpGet:
+            path: /health/started
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 60  # Up to 20 minutes
+      
+      volumes:
+      - name: oracle-wallet
+        secret:
+          secretName: oracle-wallet
+          defaultMode: 0644
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  selector:
+    app: june-idp
+
+---
+# Temporary LoadBalancer for testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp-lb
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  type: LoadBalancer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  selector:
+    app: june-idp

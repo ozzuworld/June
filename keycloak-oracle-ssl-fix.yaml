@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+data:
+  # FIXED: Use direct connection string instead of TNS alias
+  KC_DB: "oracle"
+  # Using full connection string with SSL settings
+  KC_DB_URL: "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=adb.us-ashburn-1.oraclecloud.com)(PORT=1522))(CONNECT_DATA=(SERVICE_NAME=ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com))(SECURITY=(SSL_SERVER_DN_MATCH=YES)))?oracle.net.wallet_location=/opt/oracle/wallet"
+  KC_DB_USERNAME: "keycloak_user"
+  KC_HOSTNAME_STRICT: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true" 
+  KC_METRICS_ENABLED: "true"
+  KC_TRANSACTION_XA_ENABLED: "false"
+  KC_CACHE: "local"
+  KC_LOG_LEVEL: "INFO"
+  KC_PROXY: "edge"
+  # Oracle SSL environment variables
+  TNS_ADMIN: "/opt/oracle/wallet"
+  ORACLE_HOME: "/opt/oracle"
+  # Disable clustering
+  JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0 -XX:+UseContainerSupport -Dkeycloak.connectionsInfinispan.default.clustered=false -Djgroups.tcp.address=127.0.0.1 -Doracle.net.ssl_server_dn_match=true"
+
+---
+# Alternative: Use simplified connection (if wallet approach keeps failing)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config-simple
+  namespace: june-services
+data:
+  KC_DB: "oracle"
+  # Simplified connection without wallet (less secure but should work)
+  KC_DB_URL: "jdbc:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=adb.us-ashburn-1.oraclecloud.com)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com)))"
+  KC_DB_USERNAME: "keycloak_user"
+  KC_HOSTNAME_STRICT: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  KC_TRANSACTION_XA_ENABLED: "false"
+  KC_CACHE: "local"
+  KC_LOG_LEVEL: "INFO"
+  KC_PROXY: "edge"
+  JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0 -XX:+UseContainerSupport -Dkeycloak.connectionsInfinispan.default.clustered=false"

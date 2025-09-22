@@ -1,0 +1,20 @@
+June Platform Deployment Summary
+================================
+
+Deployment Date: Mon, Sep 22, 2025  1:14:56 PM
+Project: main-buffer-469817-v7
+Region: us-central1
+Cluster: june-unified-cluster
+Static IP: 34.149.245.135
+Registry: us-central1-docker.pkg.dev/main-buffer-469817-v7/june
+
+Commands for management:
+- Connect to cluster: gcloud container clusters get-credentials june-unified-cluster --region=us-central1 --project=main-buffer-469817-v7
+- View pods: kubectl get pods -n june-services
+- View logs: kubectl logs -f deployment/<service> -n june-services
+- Port forward: kubectl port-forward service/<service> 8080:8080 -n june-services
+
+DNS Configuration needed:
+- june-orchestrator.allsafe.world → 34.149.245.135
+- june-stt.allsafe.world → 34.149.245.135
+- june-tts.allsafe.world → 34.149.245.135
