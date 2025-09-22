@@ -1,0 +1,449 @@
+# k8s/june-services/keycloak-production.yaml
+# Production-ready Keycloak deployment
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+  namespace: june-services
+type: Opaque
+data:
+  # admin / admin123 (base64 encoded)
+  username: YWRtaW4=
+  password: YWRtaW4xMjM=
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-db-secret
+  namespace: june-services
+type: Opaque
+data:
+  # Database credentials (base64 encoded)
+  # keycloak_db / keycloak_pass_123 (base64 encoded)
+  username: a2V5Y2xvYWtfZGI=
+  password: a2V5Y2xvYWtfcGFzc18xMjM=
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-config
+  namespace: june-services
+data:
+  june-realm.json: |
+    {
+      "realm": "june",
+      "enabled": true,
+      "displayName": "June AI Platform",
+      "displayNameHtml": "<strong>June AI</strong> Platform",
+      "loginTheme": "keycloak",
+      "adminTheme": "keycloak",
+      "accountTheme": "keycloak",
+      "emailTheme": "keycloak",
+      "sslRequired": "external",
+      "roles": {
+        "realm": [
+          {"name": "user", "description": "Default user role"},
+          {"name": "admin", "description": "Administrator role"}
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "orchestrator-client",
+          "name": "June Orchestrator Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "orchestrator-secret-key-12345",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "3600"
+          }
+        },
+        {
+          "clientId": "stt-client",
+          "name": "June STT Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "stt-secret-key-12345",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "3600"
+          }
+        },
+        {
+          "clientId": "tts-client",
+          "name": "June TTS Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "tts-secret-key-12345",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "3600"
+          }
+        },
+        {
+          "clientId": "june-web-app",
+          "name": "June Web Application",
+          "enabled": true,
+          "publicClient": true,
+          "redirectUris": [
+            "https://june-orchestrator.allsafe.world/*",
+            "https://june-idp.allsafe.world/*",
+            "http://localhost:3000/*"
+          ],
+          "webOrigins": [
+            "https://june-orchestrator.allsafe.world",
+            "https://june-idp.allsafe.world",
+            "http://localhost:3000"
+          ],
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": true
+        }
+      ],
+      "users": [
+        {
+          "username": "testuser",
+          "enabled": true,
+          "firstName": "Test",
+          "lastName": "User",
+          "email": "test@june.ai",
+          "emailVerified": true,
+          "credentials": [
+            {
+              "type": "password",
+              "value": "testpass123",
+              "temporary": false
+            }
+          ],
+          "realmRoles": ["user"]
+        }
+      ]
+    }
+
+---
+# PostgreSQL Database for Keycloak
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-db
+  namespace: june-services
+  labels:
+    app: keycloak-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-db
+  template:
+    metadata:
+      labels:
+        app: keycloak-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: keycloak
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak_db
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak_db
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-data
+        emptyDir:
+          sizeLimit: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-db
+  namespace: june-services
+  labels:
+    app: keycloak-db
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: keycloak-db
+
+---
+# Production Keycloak Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: keycloak
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+        component: keycloak
+    spec:
+      serviceAccountName: june-idp
+      
+      initContainers:
+      # Wait for database to be ready
+      - name: wait-for-db
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h keycloak-db -p 5432 -U keycloak_db; do
+            echo "Waiting for database..."
+            sleep 2
+          done
+          echo "Database is ready!"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+      
+      # Prepare realm import
+      - name: realm-import-init
+        image: quay.io/keycloak/keycloak:23.0.3
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Preparing realm import..."
+          mkdir -p /opt/keycloak/data/import
+          cp /tmp/realm/june-realm.json /opt/keycloak/data/import/
+          ls -la /opt/keycloak/data/import/
+          echo "Realm import prepared"
+        volumeMounts:
+        - name: realm-config
+          mountPath: /tmp/realm
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:23.0.3
+        args:
+        - start
+        - --optimized
+        - --import-realm
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        env:
+        # Admin credentials
+        - name: KEYCLOAK_ADMIN
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: username
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: password
+        
+        # Database configuration
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://keycloak-db:5432/keycloak"
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        
+        # Production hostname configuration
+        - name: KC_HOSTNAME
+          value: "june-idp.allsafe.world"
+        - name: KC_HOSTNAME_URL
+          value: "https://june-idp.allsafe.world/auth"
+        - name: KC_HOSTNAME_ADMIN_URL
+          value: "https://june-idp.allsafe.world/auth"
+        - name: KC_HTTP_RELATIVE_PATH
+          value: "/auth"
+        
+        # Proxy and SSL configuration
+        - name: KC_PROXY
+          value: "edge"
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: PROXY_ADDRESS_FORWARDING
+          value: "true"
+        
+        # Production features
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        - name: KC_METRICS_ENABLED
+          value: "true"
+        
+        # Logging
+        - name: KC_LOG_LEVEL
+          value: "INFO"
+        - name: KC_LOG_CONSOLE_OUTPUT
+          value: "default"
+        
+        # Cache configuration for single instance
+        - name: KC_CACHE
+          value: "local"
+        - name: KC_CACHE_STACK
+          value: "local"
+        
+        # Production JVM settings
+        - name: JAVA_OPTS_APPEND
+          value: "-Xms512m -Xmx1024m -XX:MaxRAMPercentage=70.0 -Djava.awt.headless=true -Dfile.encoding=UTF-8"
+        
+        resources:
+          requests:
+            memory: "768Mi"
+            cpu: "200m"
+          limits:
+            memory: "1536Mi"
+            cpu: "500m"
+        
+        livenessProbe:
+          httpGet:
+            path: /auth/health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        
+        readinessProbe:
+          httpGet:
+            path: /auth/health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 10
+        
+        startupProbe:
+          httpGet:
+            path: /auth/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 20
+        
+        volumeMounts:
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      
+      volumes:
+      - name: realm-config
+        configMap:
+          name: keycloak-realm-config
+      - name: keycloak-data
+        emptyDir:
+          sizeLimit: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-idp
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp

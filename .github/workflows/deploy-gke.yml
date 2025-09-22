@@ -1,7 +1,7 @@
-# .github/workflows/deploy-gke-oracle.yml
-# CLEAN GitHub Actions workflow for Oracle enterprise deployment
+# .github/workflows/deploy-gke-fixed.yml
+# FIXED GitHub Actions workflow for June Platform deployment
 
-name: Deploy June Platform to GKE (Oracle Enterprise)
+name: Deploy June Platform to GKE (Fixed)
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
       - 'services/**'
       - 'k8s/**'
       - 'infra/gke/**'
-      - '.github/workflows/deploy-gke-oracle.yml'
+      - '.github/workflows/deploy-gke-fixed.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -36,7 +36,7 @@ env:
   ARTIFACT_REGISTRY: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID || 'main-buffer-469817-v7' }}/june
 
 jobs:
-  # Deploy Infrastructure (simplified)
+  # Deploy Infrastructure
   deploy-infrastructure:
     name: Deploy GKE Infrastructure
     runs-on: ubuntu-latest
@@ -97,9 +97,9 @@ jobs:
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }}
 
-  # Setup Oracle Secrets
-  setup-oracle-secrets:
-    name: Setup Oracle Database Secrets
+  # Setup Secrets and Configuration
+  setup-secrets:
+    name: Setup Kubernetes Secrets
     runs-on: ubuntu-latest
     needs: deploy-infrastructure
     permissions:
@@ -126,89 +126,45 @@ jobs:
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }}
 
-      - name: Create namespaces
+      - name: Create namespace
         run: |
-          kubectl create namespace harbor --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Setup Oracle wallet secret
-        run: |
-          # Create Oracle wallet secret from repository secrets
-          # Note: Wallet files should be base64 encoded in GitHub secrets
-          
-          # Decode wallet files from secrets
-          echo "${{ secrets.ORACLE_CWALLET_SSO }}" | base64 -d > cwallet.sso
-          echo "${{ secrets.ORACLE_EWALLET_P12 }}" | base64 -d > ewallet.p12
-          echo "${{ secrets.ORACLE_TNSNAMES_ORA }}" | base64 -d > tnsnames.ora
-          echo "${{ secrets.ORACLE_SQLNET_ORA }}" | base64 -d > sqlnet.ora
-          
-          # Create wallet secrets for both namespaces
-          kubectl create secret generic oracle-wallet \
-            --namespace=harbor \
-            --from-file=cwallet.sso=cwallet.sso \
-            --from-file=ewallet.p12=ewallet.p12 \
-            --from-file=tnsnames.ora=tnsnames.ora \
-            --from-file=sqlnet.ora=sqlnet.ora \
-            --dry-run=client -o yaml | kubectl apply -f -
-          
-          kubectl create secret generic oracle-wallet \
-            --namespace=june-services \
-            --from-file=cwallet.sso=cwallet.sso \
-            --from-file=ewallet.p12=ewallet.p12 \
-            --from-file=tnsnames.ora=tnsnames.ora \
-            --from-file=sqlnet.ora=sqlnet.ora \
-            --dry-run=client -o yaml | kubectl apply -f -
-          
-          # Clean up files
-          rm -f cwallet.sso ewallet.p12 tnsnames.ora sqlnet.ora
-
-      - name: Setup Oracle credentials
-        run: |
-          # Create Oracle database credentials
-          kubectl create secret generic oracle-credentials \
-            --namespace=harbor \
-            --from-literal=HARBOR_DB_HOST="adb.us-ashburn-1.oraclecloud.com" \
-            --from-literal=HARBOR_DB_PORT="1522" \
-            --from-literal=HARBOR_DB_SERVICE="ga342747dd21cdf_harbordb_high.adb.oraclecloud.com" \
-            --from-literal=HARBOR_DB_USER="harbor_user" \
-            --from-literal=HARBOR_DB_PASSWORD="${{ secrets.HARBOR_DB_PASSWORD }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl create secret generic oracle-credentials \
-            --namespace=june-services \
-            --from-literal=KEYCLOAK_DB_HOST="adb.us-ashburn-1.oraclecloud.com" \
-            --from-literal=KEYCLOAK_DB_PORT="1522" \
-            --from-literal=KEYCLOAK_DB_SERVICE="ga342747dd21cdf_keycloakdb_high.adb.oraclecloud.com" \
-            --from-literal=KEYCLOAK_DB_USER="keycloak_user" \
-            --from-literal=KEYCLOAK_DB_PASSWORD="${{ secrets.KEYCLOAK_DB_PASSWORD }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Setup application secrets
+      - name: Setup service secrets
         run: |
           kubectl create secret generic june-secrets \
             --namespace=june-services \
             --from-literal=ORCHESTRATOR_CLIENT_ID="orchestrator-client" \
-            --from-literal=ORCHESTRATOR_CLIENT_SECRET="${{ secrets.ORCHESTRATOR_CLIENT_SECRET }}" \
+            --from-literal=ORCHESTRATOR_CLIENT_SECRET="${{ secrets.ORCHESTRATOR_CLIENT_SECRET || 'orchestrator-secret-key-12345' }}" \
             --from-literal=STT_CLIENT_ID="stt-client" \
-            --from-literal=STT_CLIENT_SECRET="${{ secrets.STT_CLIENT_SECRET }}" \
+            --from-literal=STT_CLIENT_SECRET="${{ secrets.STT_CLIENT_SECRET || 'stt-secret-key-12345' }}" \
             --from-literal=TTS_CLIENT_ID="tts-client" \
-            --from-literal=TTS_CLIENT_SECRET="${{ secrets.TTS_CLIENT_SECRET }}" \
-            --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
-            --from-literal=CHATTERBOX_API_KEY="${{ secrets.CHATTERBOX_API_KEY }}" \
+            --from-literal=TTS_CLIENT_SECRET="${{ secrets.TTS_CLIENT_SECRET || 'tts-secret-key-12345' }}" \
+            --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY || '' }}" \
+            --from-literal=CHATTERBOX_API_KEY="${{ secrets.CHATTERBOX_API_KEY || '' }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Setup Firebase secrets (optional)
+        run: |
+          kubectl create secret generic firebase-secrets \
+            --namespace=june-services \
+            --from-literal=FIREBASE_PROJECT_ID="${{ secrets.FIREBASE_PROJECT_ID || '' }}" \
+            --from-literal=FIREBASE_WEB_API_KEY="${{ secrets.FIREBASE_WEB_API_KEY || '' }}" \
+            --from-literal=FIREBASE_SERVICE_ACCOUNT="${{ secrets.FIREBASE_SERVICE_ACCOUNT || '' }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
   # Build and Push Images
   build-images:
     name: Build and Push Images
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-oracle-secrets]
+    needs: [deploy-infrastructure, setup-secrets]
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
-        service: [june-orchestrator, june-stt, june-tts]
+        service: [june-orchestrator, june-stt, june-tts, june-idp]
         include:
           - service: june-orchestrator
             context: June/services/june-orchestrator
@@ -216,6 +172,8 @@ jobs:
             context: June/services/june-stt
           - service: june-tts
             context: June/services/june-tts
+          - service: june-idp
+            context: services/june-idp
     
     steps:
       - name: Checkout code
@@ -252,53 +210,11 @@ jobs:
           
           echo "✅ Successfully pushed ${{ matrix.service }}"
 
-  # Deploy Harbor
-  deploy-harbor:
-    name: Deploy Harbor Registry
-    runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-oracle-secrets]
-    permissions:
-      contents: read
-      id-token: write
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SA }}
-          project_id: ${{ env.PROJECT_ID }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure kubectl
-        run: |
-          gcloud container clusters get-credentials ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
-
-      - name: Install Harbor
-        run: |
-          # Add Harbor Helm repository
-          helm repo add harbor https://helm.goharbor.io
-          helm repo update
-          
-          # Install Harbor with Oracle configuration
-          helm upgrade --install harbor harbor/harbor \
-            --namespace harbor \
-            --values k8s/june-services/harbor-values.yaml \
-            --timeout 20m \
-            --wait
-
   # Deploy Keycloak
   deploy-keycloak:
     name: Deploy Keycloak IDP
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-oracle-secrets]
+    needs: [deploy-infrastructure, setup-secrets, build-images]
     permissions:
       contents: read
       id-token: write
@@ -325,18 +241,21 @@ jobs:
 
       - name: Deploy Keycloak
         run: |
-          kubectl apply -f k8s/june-services/keycloak-oracle.yaml
+          # Update image references
+          sed -i "s|quay.io/keycloak/keycloak:23.0.3|${{ env.ARTIFACT_REGISTRY }}/june-idp:${{ github.sha }}|g" k8s/june-services/keycloak-deployment.yaml
+          
+          kubectl apply -f k8s/june-services/keycloak-deployment.yaml
           
           # Wait for Keycloak to be ready
           kubectl wait --namespace june-services \
             --for=condition=available deployment/june-idp \
             --timeout=600s
 
-  # Deploy June Services
+  # Deploy Services
   deploy-services:
     name: Deploy June Services
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-oracle-secrets, build-images, deploy-harbor, deploy-keycloak]
+    needs: [deploy-infrastructure, setup-secrets, build-images, deploy-keycloak]
     permissions:
       contents: read
       id-token: write
@@ -364,17 +283,15 @@ jobs:
       - name: Update service manifests
         run: |
           # Update image references with commit SHA
-          sed -i "s|:latest|:${{ github.sha }}|g" k8s/june-services/june-*.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/june-services/june-services-with-auth.yaml
           
           # Update registry URL
-          sed -i "s|us-central1-docker.pkg.dev/YOUR_PROJECT_ID/june|${{ env.ARTIFACT_REGISTRY }}|g" k8s/june-services/june-*.yaml
+          sed -i "s|us-central1-docker.pkg.dev/main-buffer-469817-v7/june|${{ env.ARTIFACT_REGISTRY }}|g" k8s/june-services/june-services-with-auth.yaml
 
       - name: Deploy June services
         run: |
           # Deploy all June services
-          kubectl apply -f k8s/june-services/june-orchestrator.yaml
-          kubectl apply -f k8s/june-services/june-stt.yaml
-          kubectl apply -f k8s/june-services/june-tts.yaml
+          kubectl apply -f k8s/june-services/june-services-with-auth.yaml
           
           # Wait for deployments
           kubectl wait --namespace june-services \
@@ -392,7 +309,7 @@ jobs:
 
       - name: Deployment summary
         run: |
-          echo "🎉 Enterprise deployment completed successfully!"
+          echo "🎉 June Platform deployment completed successfully!"
           echo ""
           echo "📋 Deployment Details:"
           echo "  Project: ${{ env.PROJECT_ID }}"
@@ -402,14 +319,20 @@ jobs:
           echo "  Registry: ${{ needs.deploy-infrastructure.outputs.artifact_registry_url }}"
           echo "  Commit: ${{ github.sha }}"
           echo ""
-          echo "✅ Enterprise Benefits:"
-          echo "  • Oracle Autonomous Database backend"
-          echo "  • SSL/TLS encrypted connections"
-          echo "  • Separate databases for Harbor and Keycloak"
-          echo "  • GKE Autopilot managed infrastructure"
-          echo "  • Enterprise container registry"
+          echo "🔧 Services Deployed:"
+          echo "  • Keycloak IDP (Authentication)"
+          echo "  • June Orchestrator (AI Engine)"
+          echo "  • June STT (Speech-to-Text)"
+          echo "  • June TTS (Text-to-Speech)"
+          echo ""
+          echo "🌐 Access URLs (after DNS configuration):"
+          echo "  • Keycloak Admin: https://june-idp.allsafe.world/auth/admin"
+          echo "  • June Orchestrator: https://june-orchestrator.allsafe.world"
+          echo "  • STT Service: https://june-stt.allsafe.world"
+          echo "  • TTS Service: https://june-tts.allsafe.world"
           echo ""
           echo "🔧 Next Steps:"
           echo "  1. Configure DNS to point to ${{ needs.deploy-infrastructure.outputs.static_ip }}"
           echo "  2. SSL certificates will auto-provision"
-          echo "  3. Test services via LoadBalancer IPs"
+          echo "  3. Update API keys in secrets if needed"
+          echo "  4. Test services via the deployed URLs"

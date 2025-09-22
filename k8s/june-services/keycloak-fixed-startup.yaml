@@ -1,0 +1,188 @@
+# k8s/june-services/keycloak-fixed-startup.yaml
+# Quick fix: Remove invalid --auto-build flag
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: keycloak
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+        component: keycloak
+    spec:
+      serviceAccountName: june-idp
+      
+      initContainers:
+      # Wait for database to be ready
+      - name: wait-for-db
+        image: postgres:16-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h keycloak-db -p 5432 -U keycloak_db; do
+            echo "Waiting for database..."
+            sleep 2
+          done
+          echo "Database is ready!"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+      
+      # Prepare realm import
+      - name: realm-import-init
+        image: quay.io/keycloak/keycloak:26.3.2
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Preparing realm import..."
+          mkdir -p /opt/keycloak/data/import
+          cp /tmp/realm/june-realm.json /opt/keycloak/data/import/
+          ls -la /opt/keycloak/data/import/
+          echo "Realm import prepared"
+        volumeMounts:
+        - name: realm-config
+          mountPath: /tmp/realm
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.3.2
+        # FIXED: Correct startup arguments (no --auto-build)
+        args:
+        - start
+        - --optimized
+        - --import-realm
+        
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        env:
+        # New bootstrap admin credentials
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: username
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: password
+        
+        # Database configuration
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL_HOST
+          value: "keycloak-db"
+        - name: KC_DB_URL_DATABASE
+          value: "keycloak"
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        
+        # Fixed hostname configuration
+        - name: KC_HOSTNAME_URL
+          value: "https://june-idp.allsafe.world"
+        - name: KC_HOSTNAME_ADMIN_URL
+          value: "https://june-idp.allsafe.world"
+        
+        # Proxy and SSL configuration
+        - name: KC_PROXY
+          value: "edge"
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        
+        # Production features
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        - name: KC_METRICS_ENABLED
+          value: "true"
+        
+        # Logging
+        - name: KC_LOG_LEVEL
+          value: "INFO"
+        
+        # Official memory management
+        - name: JAVA_OPTS_APPEND
+          value: "-XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=50"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "400m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 10
+        
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 20
+        
+        volumeMounts:
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      
+      volumes:
+      - name: realm-config
+        configMap:
+          name: keycloak-realm-config
+      - name: keycloak-data
+        emptyDir:
+          sizeLimit: 1Gi
