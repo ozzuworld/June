@@ -6,3 +6,24 @@ crash.log
 *.tfvars
 !*.example.tfvars
 !.terraform.lock.hcl
+
+# Terraform backups (keep only current state)
+*.tfstate.backup.*
+main.tf.backup.*
+
+# Temporary deployment files
+deployment-status.txt
+terraform.tfvars
+
+# Docker build context exclusions
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Local environment files
+.env.local
+.env.*.local
+
