@@ -27,3 +27,13 @@ Thumbs.db
 .env.local
 .env.*.local
 
+
+# TTS large artifacts
+June/services/june-tts.zip
+June/services/june-tts/checkpoints_v2.zip
+June/services/june-tts/checkpoints_v2/
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.ckpt
