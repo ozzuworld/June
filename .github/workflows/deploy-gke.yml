@@ -153,6 +153,13 @@ jobs:
             --from-literal=FIREBASE_SERVICE_ACCOUNT="${{ secrets.FIREBASE_SERVICE_ACCOUNT || '' }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      # Add this to the workflow after line 150:
+      - name: Apply resource limits patch
+        run: |
+          # Patch all deployments with free tier resource limits
+          kubectl patch deployment june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"june-orchestrator","resources":{"requests":{"memory":"512Mi","cpu":"300m"},"limits":{"memory":"1Gi","cpu":"800m"}}}]}}}}'
+          kubectl patch deployment june-stt -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"june-stt","resources":{"requests":{"memory":"256Mi","cpu":"200m"},"limits":{"memory":"512Mi","cpu":"500m"}}}]}}}}'
+
   # Build and Push Images
   build-images:
     name: Build and Push Images
