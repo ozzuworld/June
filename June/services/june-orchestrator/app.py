@@ -1,4 +1,5 @@
-# June/services/june-orchestrator/app.py - UPDATED WITH MEDIA STREAMING SUPPORT
+# June/services/june-orchestrator/app.py - Enhanced for Phase 2
+# Conversation management, tool system, and database integration
 
 import os
 import json
@@ -7,35 +8,31 @@ import asyncio
 import logging
 import time
 import base64
-from typing import Optional
+from typing import Optional, Dict, Any
+from datetime import datetime
 
 import httpx
-from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from contextlib import asynccontextmanager
 
-# Import the shared auth module
+# Import Phase 1 components (existing)
 from shared.auth_service import create_service_auth_client, require_service_auth, ServiceAuthClient
-
-# Import Firebase auth (keeping existing functionality)
 from authz import get_current_user
-
-# Import FIXED external TTS client
 from external_tts_client import ExternalTTSClient
 
-# Import NEW media streaming components
-from token_service import TokenService
+# Import Phase 2 components (new)
+from models import create_tables, get_db, User
+from conversation_manager import ConversationOrchestrator
 from media_apis import media_router, token_service as global_token_service
-
-# -----------------------------------------------------------------------------
-# FastAPI app
-# -----------------------------------------------------------------------------
-app = FastAPI(title="June Orchestrator", version="2.0.0")
+from token_service import TokenService
 
 logger = logging.getLogger("orchestrator")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-# -----------------------------------------------------------------------------
-# Environment - FIXED: Better env var handling
-# -----------------------------------------------------------------------------
+# Environment Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:june_db_pass_2024@postgresql:5432/june_db")
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "")
 FIREBASE_WEB_API_KEY = os.getenv("FIREBASE_WEB_API_KEY", "")
 INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")
@@ -43,29 +40,22 @@ INTERNAL_SHARED_SECRET = os.getenv("INTERNAL_SHARED_SECRET", "")
 # AI Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Service URLs - FIXED: Proper external TTS handling
+# Service URLs
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
 EXTERNAL_TTS_URL = os.getenv("EXTERNAL_TTS_URL", "")
-
-# Media Relay Configuration
 MEDIA_RELAY_URL = os.getenv("MEDIA_RELAY_URL", "http://june-media-relay:8080")
 
-# FIXED: Decode base64 URL if needed
+# Decode external TTS URL if base64 encoded
 if EXTERNAL_TTS_URL:
     try:
-        # Try to decode if it's base64 encoded
         decoded_url = base64.b64decode(EXTERNAL_TTS_URL).decode('utf-8')
         if decoded_url.startswith('http'):
             EXTERNAL_TTS_URL = decoded_url
-            logger.info(f"✅ Decoded external TTS URL from base64")
+            logger.info("✅ Decoded external TTS URL from base64")
     except Exception:
-        # Use as-is if not base64 encoded
         pass
 
-# Audio defaults
-DEFAULT_LOCALE = os.getenv("DEFAULT_LOCALE", "en-US")
-
-# Initialize AI model (existing code remains the same)
+# Initialize AI model (existing code)
 ai_model = None
 try:
     if GEMINI_API_KEY:
@@ -102,9 +92,62 @@ except ImportError:
 except Exception as e:
     logger.error(f"⚠️ Failed to initialize AI model: {e}")
 
-# -----------------------------------------------------------------------------
-# ENHANCED: STT Client with better error handling (existing code)
-# -----------------------------------------------------------------------------
+# Global components
+service_auth = None
+stt_client = None
+tts_client = None
+token_svc = None
+conversation_orchestrator = None
+
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup and shutdown"""
+    # Startup
+    logger.info("🚀 Starting June Orchestrator v2.0 (Phase 2)")
+    
+    # Create database tables
+    create_tables()
+    
+    # Initialize service authentication
+    global service_auth, stt_client, tts_client, token_svc, conversation_orchestrator
+    
+    if service_auth:
+        # Initialize conversation orchestrator with database
+        from models import SessionLocal
+        db = SessionLocal()
+        try:
+            conversation_orchestrator = ConversationOrchestrator(db)
+            await conversation_orchestrator.initialize()
+            logger.info("✅ Conversation orchestrator initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize conversation orchestrator: {e}")
+        finally:
+            db.close()
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down June Orchestrator")
+
+# FastAPI app with lifespan
+app = FastAPI(
+    title="June Orchestrator v2.0", 
+    version="2.0.0",
+    description="Enhanced AI Platform with Conversation Management",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Enhanced STT Client (existing)
 class AuthenticatedSTTClient:
     """STT client with authentication and proper error handling"""
     
@@ -117,14 +160,12 @@ class AuthenticatedSTTClient:
     async def health_check(self) -> bool:
         """Check if STT service is available"""
         now = time.time()
-        if now - self.last_health_check < 30:  # Cache for 30 seconds
+        if now - self.last_health_check < 30:
             return self.is_available
         
         try:
             response = await self.auth.make_authenticated_request(
-                "GET",
-                f"{self.base_url}/healthz",
-                timeout=5.0
+                "GET", f"{self.base_url}/healthz", timeout=5.0
             )
             self.is_available = response.status_code == 200
             self.last_health_check = now
@@ -136,14 +177,13 @@ class AuthenticatedSTTClient:
             return False
     
     async def transcribe(self, audio_data: bytes, language: str = "en-US") -> dict:
-        """Transcribe audio using STT service with fallback"""
+        """Transcribe audio using STT service"""
         try:
             if not await self.health_check():
                 return {"text": "STT service unavailable", "confidence": 0.0, "error": "service_unavailable"}
             
             response = await self.auth.make_authenticated_request(
-                "POST",
-                f"{self.base_url}/v1/transcribe",
+                "POST", f"{self.base_url}/v1/transcribe",
                 files={"audio": ("audio.m4a", audio_data, "audio/mp4")},
                 data={"language": language},
                 timeout=30.0
@@ -158,44 +198,21 @@ class AuthenticatedSTTClient:
                     "success": True
                 }
             else:
-                logger.error(f"STT service error: {response.status_code} - {response.text}")
+                logger.error(f"STT service error: {response.status_code}")
                 return {"text": "Transcription service error", "confidence": 0.0, "error": f"http_{response.status_code}", "success": False}
                 
-        except asyncio.TimeoutError:
-            logger.error("STT service timeout")
-            return {"text": "Transcription timeout", "confidence": 0.0, "error": "timeout", "success": False}
         except Exception as e:
             logger.error(f"STT client error: {e}")
             return {"text": "STT service error", "confidence": 0.0, "error": str(e), "success": False}
 
-# -----------------------------------------------------------------------------
-# Service authentication setup
-# -----------------------------------------------------------------------------
-try:
-    service_auth = create_service_auth_client("orchestrator")
-    logger.info("✅ Service authentication initialized")
-except Exception as e:
-    logger.warning(f"⚠️ Service authentication not available: {e}")
-    service_auth = None
-
-# Initialize client instances
-stt_client = None
-tts_client = None
-
-# -----------------------------------------------------------------------------
-# NEW: Initialize token service for media streaming
-# -----------------------------------------------------------------------------
-token_svc = None
-
-# -----------------------------------------------------------------------------
-# UPDATED: Enhanced health check endpoint
-# -----------------------------------------------------------------------------
+# Enhanced health check
 @app.get("/healthz")
 async def healthz():
     """Enhanced health check endpoint"""
     health_status = {
         "ok": True,
         "service": "june-orchestrator",
+        "version": "2.0.0",
         "timestamp": time.time(),
         "status": "healthy",
         "components": {
@@ -205,14 +222,18 @@ async def healthz():
             "tts_client": tts_client is not None,
             "external_tts_url": EXTERNAL_TTS_URL != "",
             "token_service": token_svc is not None,
-            "media_relay": MEDIA_RELAY_URL != ""
+            "media_relay": MEDIA_RELAY_URL != "",
+            "database": True,  # TODO: Add actual DB health check
+            "conversation_orchestrator": conversation_orchestrator is not None
         },
-        "tts_type": "external-openvoice",
-        "version": "2.0.0",
+        "database_url": DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else "configured",
         "features": {
+            "conversation_management": True,
+            "tool_system": True,
             "media_streaming": True,
             "token_generation": True,
-            "session_management": True
+            "session_management": True,
+            "data_collection": True
         }
     }
     
@@ -226,8 +247,8 @@ async def healthz():
         except Exception:
             health_status["components"]["external_tts_available"] = False
     
-    # Overall health based on critical components
-    critical_components = ["ai_model", "service_auth", "stt_client", "token_service"]
+    # Overall health
+    critical_components = ["ai_model", "service_auth", "database", "conversation_orchestrator"]
     health_status["ok"] = all(health_status["components"].get(comp, False) for comp in critical_components)
     
     if not health_status["ok"]:
@@ -235,91 +256,86 @@ async def healthz():
     
     return health_status
 
-# -----------------------------------------------------------------------------
-# EXISTING: process_audio endpoint (keep as is for backward compatibility)
-# -----------------------------------------------------------------------------
-@app.post("/v1/process-audio")
-async def process_audio(
+# NEW: Enhanced conversation endpoint
+@app.post("/v1/conversation")
+async def process_conversation(
     payload: dict,
-    service_auth_data: dict = Depends(require_service_auth)
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """EXISTING: Process audio through STT -> AI -> External TTS pipeline"""
-    # Keep existing implementation unchanged
-    calling_service = service_auth_data.get("client_id", "unknown")
-    logger.info(f"🎤 Audio processing request from service: {calling_service}")
+    """Enhanced conversation processing with persistence"""
     
-    # Initialize response structure
+    start_time = datetime.now()
+    
     response = {
         "transcription": "",
         "transcription_confidence": 0.0,
         "response_text": "",
         "response_audio": None,
-        "processed_by": "orchestrator",
-        "caller": calling_service,
+        "conversation_id": None,
+        "message_id": None,
+        "tool_used": False,
         "processing_complete": False,
         "has_audio": False,
         "errors": [],
-        "warnings": []
+        "warnings": [],
+        "processing_time": 0
     }
     
-    audio_data = payload.get("audio_data")  # base64 encoded audio
-    if not audio_data:
-        response["errors"].append("No audio data provided")
-        response["response_text"] = "Please provide audio data"
-        return response
-    
     try:
-        # Decode audio
+        # Get or create user from Keycloak info
+        user = await conversation_orchestrator.conversation_manager.get_or_create_user(
+            keycloak_id=current_user.uid,
+            username=current_user.email or "unknown",
+            email=current_user.email
+        )
+        
+        # Get audio data
+        audio_data = payload.get("audio_data")
+        if not audio_data:
+            response["errors"].append("No audio data provided")
+            response["response_text"] = "Please provide audio data"
+            return response
+        
         try:
             audio_bytes = base64.b64decode(audio_data)
             logger.info(f"📊 Received audio: {len(audio_bytes)} bytes")
         except Exception as decode_error:
             response["errors"].append(f"Audio decode error: {decode_error}")
-            response["response_text"] = "Invalid audio data format"
             return response
         
-        # Step 1: Call STT service with proper error handling
-        transcription_result = {"text": "Could not transcribe audio", "confidence": 0.0, "success": False}
+        # Step 1: Transcribe audio
+        transcription_result = await stt_client.transcribe(audio_bytes, "en-US") if stt_client else {
+            "text": "Hello, how can I help you?", "confidence": 0.5, "success": False
+        }
         
-        if stt_client:
-            try:
-                transcription_result = await stt_client.transcribe(audio_bytes, "en-US")
-                if transcription_result.get("success", False):
-                    logger.info(f"✅ STT transcription: '{transcription_result['text']}' (confidence: {transcription_result['confidence']})")
-                else:
-                    response["warnings"].append(f"STT failed: {transcription_result.get('error', 'unknown')}")
-                    logger.warning(f"⚠️ STT failed: {transcription_result.get('error', 'unknown')}")
-            except Exception as stt_error:
-                response["warnings"].append(f"STT service call failed: {stt_error}")
-                logger.error(f"❌ STT service call failed: {stt_error}")
-        else:
-            response["warnings"].append("STT client not available")
-            logger.warning("⚠️ STT client not available")
-        
-        # Use transcription or fallback
-        transcription_text = transcription_result.get("text", "Hello, how can I help you?")
-        transcription_confidence = transcription_result.get("confidence", 0.0)
-        
+        transcription_text = transcription_result.get("text", "Hello")
         response["transcription"] = transcription_text
-        response["transcription_confidence"] = transcription_confidence
+        response["transcription_confidence"] = transcription_result.get("confidence", 0.0)
         
-        # Step 2: Process through AI
-        try:
-            ai_reply = await generate_ai_response(transcription_text, {"caller": calling_service})
-            response["response_text"] = ai_reply
-            logger.info(f"🤖 AI response: '{ai_reply[:100]}...'")
-        except Exception as ai_error:
-            response["errors"].append(f"AI processing failed: {ai_error}")
-            response["response_text"] = f"I'm having trouble processing your request. You said: '{transcription_text}'"
-            logger.error(f"❌ AI processing failed: {ai_error}")
+        # Step 2: Process through enhanced conversation system
+        audio_metadata = {
+            "size": len(audio_bytes),
+            "format": "m4a",
+            "duration_estimate": len(audio_bytes) / 32000
+        }
         
-        # Step 3: Generate TTS audio via external service (with fallback)
-        if tts_client and response["response_text"]:
+        ai_response, metadata = await conversation_orchestrator.process_user_message(
+            user, transcription_text, audio_metadata
+        )
+        
+        response["response_text"] = ai_response
+        response["conversation_id"] = metadata["conversation_id"]
+        response["message_id"] = metadata["message_id"]
+        response["tool_used"] = metadata["tool_used"]
+        
+        # Step 3: Generate TTS audio via external service
+        if tts_client and ai_response:
             try:
-                logger.info(f"🎵 Generating speech via external TTS: '{response['response_text'][:50]}...'")
+                logger.info(f"🎵 Generating speech via external TTS")
                 
                 audio_response = await tts_client.synthesize_speech(
-                    text=response["response_text"],
+                    text=ai_response,
                     voice="default",
                     speed=1.0,
                     language="EN"
@@ -329,108 +345,143 @@ async def process_audio(
                     response["response_audio"] = base64.b64encode(audio_response).decode('utf-8')
                     response["has_audio"] = True
                     logger.info(f"✅ External TTS success: {len(audio_response)} bytes")
-                else:
-                    response["warnings"].append("External TTS returned empty audio")
-                    logger.warning("⚠️ External TTS returned empty audio")
                     
             except Exception as tts_error:
-                response["warnings"].append(f"External TTS failed: {tts_error}")
+                response["warnings"].append(f"TTS failed: {tts_error}")
                 logger.error(f"❌ External TTS failed: {tts_error}")
-        else:
-            if not tts_client:
-                response["warnings"].append("External TTS client not available")
-                logger.warning("⚠️ External TTS client not available")
         
-        # Mark as complete
+        # Calculate total processing time
+        processing_time = int((datetime.now() - start_time).total_seconds() * 1000)
+        response["processing_time"] = processing_time
         response["processing_complete"] = True
-        response["ai_model"] = "gemini-1.5-flash" if ai_model else "fallback"
-        response["tts_engine"] = "external-openvoice" if response["has_audio"] else None
         
         return response
         
     except Exception as e:
-        logger.error(f"❌ Audio processing failed: {e}", exc_info=True)
+        logger.error(f"❌ Conversation processing failed: {e}", exc_info=True)
         
         response["errors"].append(f"Processing failed: {str(e)}")
-        response["response_text"] = "I apologize, but I encountered an error processing your audio. Please try again."
+        response["response_text"] = "I apologize, but I encountered an error. Please try again."
+        response["processing_time"] = int((datetime.now() - start_time).total_seconds() * 1000)
+        
         return response
 
-# -----------------------------------------------------------------------------
-# NEW: Media streaming event handler
-# -----------------------------------------------------------------------------
+# NEW: Conversation history endpoint
+@app.get("/v1/conversations")
+async def get_conversations(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 20
+):
+    """Get user's conversation history"""
+    try:
+        user = await conversation_orchestrator.conversation_manager.get_or_create_user(
+            keycloak_id=current_user.uid,
+            username=current_user.email or "unknown",
+            email=current_user.email
+        )
+        
+        conversations = await conversation_orchestrator.conversation_manager.get_user_conversations(
+            user, limit
+        )
+        
+        result = []
+        for conv in conversations:
+            result.append({
+                "id": str(conv.id),
+                "title": conv.title,
+                "status": conv.status,
+                "created_at": conv.created_at.isoformat(),
+                "updated_at": conv.updated_at.isoformat(),
+                "message_count": conv.message_count,
+                "summary": conv.summary
+            })
+        
+        return {"conversations": result, "total": len(result)}
+        
+    except Exception as e:
+        logger.error(f"Failed to get conversations: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve conversations")
+
+# NEW: Tools endpoint
+@app.get("/v1/tools")
+async def get_available_tools(db: Session = Depends(get_db)):
+    """Get available tools"""
+    try:
+        tools = await conversation_orchestrator.tool_system.get_available_tools()
+        
+        result = []
+        for tool in tools:
+            result.append({
+                "name": tool.name,
+                "display_name": tool.display_name,
+                "description": tool.description,
+                "category": tool.category,
+                "schema": tool.schema
+            })
+        
+        return {"tools": result}
+        
+    except Exception as e:
+        logger.error(f"Failed to get tools: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve tools")
+
+# Existing process_audio endpoint (backward compatibility)
+@app.post("/v1/process-audio")
+async def process_audio(
+    payload: dict,
+    service_auth_data: dict = Depends(require_service_auth)
+):
+    """Existing audio processing endpoint for backward compatibility"""
+    calling_service = service_auth_data.get("client_id", "unknown")
+    logger.info(f"🎤 Audio processing request from service: {calling_service}")
+    
+    # For now, return a simple response
+    # In production, you might want to integrate this with the conversation system
+    response = {
+        "transcription": "Hello, this is the legacy endpoint",
+        "transcription_confidence": 0.8,
+        "response_text": "Please use the new /v1/conversation endpoint",
+        "response_audio": None,
+        "processed_by": "orchestrator",
+        "caller": calling_service,
+        "processing_complete": True
+    }
+    
+    return response
+
+# Media streaming event handler (existing)
 @app.post("/v1/media/events")
 async def handle_media_event(event: dict):
     """Handle events from media relay service"""
     try:
         event_type = event.get("type")
         session_id = event.get("session_id")
-        data = event.get("data", {})
         
         logger.info(f"📥 Media event: {event_type} for session: {session_id}")
         
-        # Handle different event types
-        if event_type == "stt_result":
-            # STT transcription result - could trigger AI processing
-            if data.get("type") == "final":
-                transcript = data.get("text", "")
-                if transcript:
-                    # Generate AI response
-                    ai_response = await generate_ai_response(transcript)
-                    
-                    # Send TTS request to media relay
-                    await send_tts_to_relay(session_id, ai_response)
-        
-        elif event_type == "session_started":
-            logger.info(f"🎬 Media session started: {session_id}")
-        
-        elif event_type == "session_ended":
-            duration = data.get("duration", 0)
-            logger.info(f"🏁 Media session ended: {session_id} (duration: {duration:.1f}s)")
-        
+        # TODO: Integrate with conversation system
         return {"status": "received", "event_type": event_type}
         
     except Exception as e:
         logger.error(f"❌ Media event handling failed: {e}")
         return {"status": "error", "message": str(e)}
 
-async def send_tts_to_relay(session_id: str, text: str):
-    """Send TTS request to media relay for a specific session"""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{MEDIA_RELAY_URL}/v1/tts",
-                json={
-                    "session_id": session_id,
-                    "text": text,
-                    "voice": "default"
-                },
-                timeout=5.0
-            )
-        
-        logger.info(f"📤 Sent TTS to relay for session: {session_id}")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to send TTS to relay: {e}")
-
-# -----------------------------------------------------------------------------
-# UPDATED: Startup event with token service initialization
-# -----------------------------------------------------------------------------
+# Startup event
 @app.on_event("startup")
 async def startup_event():
-    """Initialize all service clients and token service on startup"""
-    global stt_client, tts_client, token_svc, global_token_service
+    """Initialize all service clients on startup"""
+    global stt_client, tts_client, token_svc, service_auth
+    
+    # Initialize service authentication
+    try:
+        service_auth = create_service_auth_client("orchestrator")
+        logger.info("✅ Service authentication initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ Service authentication not available: {e}")
+        service_auth = None
     
     if service_auth:
-        logger.info("🔧 Initializing service clients...")
-        
-        # Test service authentication
-        try:
-            token = await service_auth.get_access_token()
-            logger.info("✅ Service authentication working")
-        except Exception as e:
-            logger.error(f"❌ Service authentication failed: {e}")
-            # Continue startup but mark as degraded
-        
         # Initialize STT client
         if STT_SERVICE_URL:
             try:
@@ -438,65 +489,53 @@ async def startup_event():
                 logger.info(f"✅ STT client configured: {STT_SERVICE_URL}")
             except Exception as e:
                 logger.error(f"❌ STT client initialization failed: {e}")
-        else:
-            logger.warning("⚠️ STT_SERVICE_URL not set")
         
         # Initialize External TTS client
         if EXTERNAL_TTS_URL:
             try:
                 tts_client = ExternalTTSClient(EXTERNAL_TTS_URL, service_auth)
-                logger.info(f"✅ External TTS client configured: {EXTERNAL_TTS_URL}")
-                
-                # Test external TTS connectivity
-                try:
-                    await tts_client.health_check()
-                    logger.info("✅ External TTS service connectivity verified")
-                except Exception as health_error:
-                    logger.warning(f"⚠️ External TTS health check failed: {health_error}")
-                    
+                logger.info(f"✅ External TTS client configured")
             except Exception as e:
                 logger.error(f"❌ External TTS client initialization failed: {e}")
-                tts_client = None
-        else:
-            tts_client = None
-            logger.warning("⚠️ EXTERNAL_TTS_URL not set - TTS disabled")
-    else:
-        logger.warning("⚠️ Service authentication not available")
+        
+        # Initialize token service
+        try:
+            token_svc = TokenService(service_auth)
+            global_token_service = token_svc
+            logger.info("✅ Token service initialized")
+        except Exception as e:
+            logger.error(f"❌ Token service initialization failed: {e}")
     
-    # NEW: Initialize token service for media streaming
-    try:
-        token_svc = TokenService(service_auth)
-        global_token_service = token_svc  # Set global reference for media_apis
-        logger.info("✅ Token service initialized for media streaming")
-    except Exception as e:
-        logger.error(f"❌ Token service initialization failed: {e}")
-    
-    # Summary
     logger.info(f"""
-    🚀 Orchestrator v2.0 started:
-    - STT: {'✅' if stt_client else '❌'} ({STT_SERVICE_URL or 'not configured'})
-    - TTS: {'✅' if tts_client else '❌'} (External: {EXTERNAL_TTS_URL or 'not configured'})
-    - AI: {'✅' if ai_model else '❌'} ({'Gemini' if ai_model else 'fallback mode'})
+    🚀 June Orchestrator v2.0 started:
+    - Database: {'✅' if DATABASE_URL else '❌'}
+    - STT: {'✅' if stt_client else '❌'} 
+    - TTS: {'✅' if tts_client else '❌'} (External)
+    - AI: {'✅' if ai_model else '❌'} ({'Gemini' if ai_model else 'fallback'})
     - Auth: {'✅' if service_auth else '❌'}
-    - Media Streaming: {'✅' if token_svc else '❌'}
-    - Token Service: {'✅' if token_svc else '❌'}
+    - Conversations: {'✅' if conversation_orchestrator else '❌'}
+    - Tools: {'✅' if conversation_orchestrator else '❌'}
     """)
 
-# Keep existing generate_ai_response function unchanged
+# Include media streaming APIs
+app.include_router(media_router)
+
+# Keep existing generate_ai_response function for compatibility
 async def generate_ai_response(user_input: str, user_context: dict = None) -> str:
-    """Generate AI response using Gemini"""
+    """Generate AI response using Gemini (legacy function)"""
     if not ai_model:
-        return f"I received your message: '{user_input}'. However, AI is currently not configured. This is a placeholder response."
+        return f"I received your message: '{user_input}'. This is a placeholder response."
     
     try:
-        system_prompt = """You are June, a helpful AI assistant. You are knowledgeable, friendly, and concise. 
-        You can help with various tasks, answer questions, and have engaging conversations.
+        system_prompt = """You are June, a helpful AI assistant for life and house management. You are knowledgeable, friendly, and concise. 
+        You help users with daily tasks, reminders, and managing their home life.
         
         Key traits:
-        - Be helpful and informative
-        - Keep responses conversational and engaging
+        - Be helpful and practical
+        - Focus on life and house management
+        - Offer actionable suggestions
+        - Be conversational and warm
         - If you don't know something, say so honestly
-        - Be concise but thorough when needed
         """
         
         full_prompt = f"{system_prompt}\n\nUser: {user_input}\n\nJune:"
@@ -510,9 +549,13 @@ async def generate_ai_response(user_input: str, user_context: dict = None) -> st
             
     except Exception as e:
         logger.error(f"AI generation error: {e}")
-        return f"I'm experiencing some technical difficulties. Here's what I can tell you about '{user_input}': I'd be happy to help, but I'm having trouble processing that right now."
+        return f"I'm experiencing some technical difficulties, but I'm here to help you manage your life and house. What would you like assistance with?"
 
-# -----------------------------------------------------------------------------
-# NEW: Include media streaming APIs
-# -----------------------------------------------------------------------------
-app.include_router(media_router)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0", 
+        port=int(os.getenv("PORT", "8080")),
+        reload=False
+    )

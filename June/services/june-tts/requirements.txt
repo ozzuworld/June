@@ -1,11 +1,47 @@
+# June/services/june-tts/requirements.txt - Updated for Docker deployment
+
+# Core FastAPI and server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
+
+# Pydantic and validation
 pydantic==2.5.0
 pydantic-settings==2.1.0
+
+# Authentication and security
 python-keycloak==3.7.0
 PyJWT==2.8.0
 httpx==0.25.2
-python-magic==0.4.27
+cryptography>=41.0.0
+
+# Audio processing and ML
+torch>=2.0.0
+torchaudio>=2.0.0
+torchvision>=0.15.0
 librosa==0.10.1
 soundfile==0.12.1
+numpy>=1.24.0
+scipy>=1.11.0
+
+# File handling and utilities
+python-magic==0.4.27
+Pillow>=10.0.0
+requests>=2.31.0
+
+# OpenVoice dependencies (install these if not available)
+# Note: These might need to be installed from source depending on your OpenVoice setup
+# melo-tts  # Uncomment if using MeloTTS
+# openvoice  # Uncomment if OpenVoice is pip-installable
+
+# Development and testing (optional - remove for smaller image)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Logging and monitoring
+structlog>=23.1.0
+prometheus-client>=0.17.0
+
+# Performance and optimization
+aiocache>=0.12.2
+aiofiles>=23.1.0

@@ -1,0 +1,923 @@
+# k8s/june-services/phase2-complete.yaml
+# Phase 2: Complete deployment with enhanced orchestrator and database
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: june-services
+  labels:
+    managed-by: terraform
+
+---
+# Updated secrets with database connection
+apiVersion: v1
+kind: Secret
+metadata:
+  name: june-secrets
+  namespace: june-services
+type: Opaque
+data:
+  # External TTS URL (base64 encode your OpenVoice service URL)
+  EXTERNAL_TTS_URL: ""  # echo -n "https://your-openvoice-service.com" | base64
+  
+  # Database URL
+  DATABASE_URL: cG9zdGdyZXNxbDovL3Bvc3RncmVzOmp1bmVfZGJfcGFzc18yMDI0QHBvc3RncmVzcWw6NTQzMi9qdW5lX2Ri
+  
+  # API Keys
+  GEMINI_API_KEY: ""
+  
+  # JWT signing key for media tokens
+  JWT_SIGNING_KEY: ""
+  
+  # Service authentication (existing IDP clients)
+  ORCHESTRATOR_CLIENT_ID: b3JjaGVzdHJhdG9yLWNsaWVudA==
+  ORCHESTRATOR_CLIENT_SECRET: b3JjaGVzdHJhdG9yLXNlY3JldC1rZXktMTIzNDU=
+  STT_CLIENT_ID: c3R0LWNsaWVudA==
+  STT_CLIENT_SECRET: c3R0LXNlY3JldC1rZXktMTIzNDU=
+
+---
+# PostgreSQL Database
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  namespace: june-services
+type: Opaque
+data:
+  # postgres / june_db_pass_2024 (base64 encoded)
+  username: cG9zdGdyZXM=
+  password: anVuZV9kYl9wYXNzXzIwMjQ=
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: june-services
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard-rwo
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: june-services
+  labels:
+    app: postgresql
+    component: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        component: database
+    spec:
+      containers:
+      - name: postgresql
+        image: postgres:16-alpine
+        ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+        env:
+        - name: POSTGRES_DB
+          value: june_db
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "400m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - june_db
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - june_db
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: june-services
+  labels:
+    app: postgresql
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    app: postgresql
+
+---
+# Enhanced Orchestrator with Phase 2 capabilities
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+        version: v2
+    spec:
+      serviceAccountName: june-orchestrator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+      - name: wait-for-db
+        image: postgres:16-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgresql -p 5432 -U postgres -d june_db; do
+            echo "Waiting for database..."
+            sleep 3
+          done
+          echo "Database is ready!"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: password
+      containers:
+      - name: june-orchestrator
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: STT_SERVICE_URL
+          value: "http://june-stt:8080"
+        - name: MEDIA_RELAY_URL
+          value: "http://june-media-relay:8080"
+        
+        # Database configuration
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: DATABASE_URL
+        
+        # External TTS configuration
+        - name: EXTERNAL_TTS_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: EXTERNAL_TTS_URL
+        
+        # JWT configuration for token generation
+        - name: JWT_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: JWT_SIGNING_KEY
+        - name: JWT_ISSUER
+          value: "https://june-idp.allsafe.world/auth/realms/june"
+        
+        # IDP configuration
+        - name: KC_BASE_URL
+          value: "http://june-idp:8080/auth"
+        - name: KC_REALM
+          value: "june"
+        - name: KC_HOSTNAME_URL
+          value: "https://june-idp.allsafe.world"
+        - name: ORCHESTRATOR_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_ID
+        - name: ORCHESTRATOR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: ORCHESTRATOR_CLIENT_SECRET
+        
+        # AI
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: GEMINI_API_KEY
+              optional: true
+        
+        # Firebase (optional)
+        - name: FIREBASE_PROJECT_ID
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: FIREBASE_PROJECT_ID
+              optional: true
+        - name: FIREBASE_WEB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: FIREBASE_WEB_API_KEY
+              optional: true
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "400m"
+          limits:
+            memory: "2Gi"
+            cpu: "800m"
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 20
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-orchestrator
+
+---
+# Media Relay Service (Phase 1 + Phase 2 integration)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-media-relay
+  namespace: june-services
+  labels:
+    app: june-media-relay
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-media-relay
+  template:
+    metadata:
+      labels:
+        app: june-media-relay
+        version: v1
+    spec:
+      serviceAccountName: june-media-relay
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: june-media-relay
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-media-relay:latest
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: JWT_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: JWT_SIGNING_KEY
+        - name: JWT_ISSUER
+          value: "https://june-idp.allsafe.world/auth/realms/june"
+        - name: STT_SERVICE_URL
+          value: "ws://june-stt:8080"
+        - name: TTS_SERVICE_URL
+          value: "http://june-orchestrator:8080"
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator:8080"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-media-relay
+  namespace: june-services
+  labels:
+    app: june-media-relay
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-media-relay
+
+---
+# Updated STT Service (existing, no changes needed)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-stt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-stt
+  template:
+    metadata:
+      labels:
+        app: june-stt
+    spec:
+      serviceAccountName: june-stt
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: june-stt
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-stt:latest
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: KC_BASE_URL
+          value: "http://june-idp:8080/auth"
+        - name: KC_REALM
+          value: "june"
+        - name: STT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: STT_CLIENT_ID
+        - name: STT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: STT_CLIENT_SECRET
+        - name: FIREBASE_PROJECT_ID
+          valueFrom:
+            secretKeyRef:
+              name: firebase-secrets
+              key: FIREBASE_PROJECT_ID
+              optional: true
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-stt
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-stt
+
+---
+# Keep existing Keycloak IDP deployment (unchanged)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+  namespace: june-services
+type: Opaque
+data:
+  # admin / admin123 (base64 encoded)
+  username: YWRtaW4=
+  password: YWRtaW4xMjM=
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-db-secret
+  namespace: june-services
+type: Opaque
+data:
+  # keycloak_db / keycloak_pass_123 (base64 encoded)
+  username: a2V5Y2xvYWtfZGI=
+  password: a2V5Y2xvYWtfcGFzc18xMjM=
+
+---
+# Updated Keycloak realm config with mobile client
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-config
+  namespace: june-services
+data:
+  june-realm.json: |
+    {
+      "realm": "june",
+      "enabled": true,
+      "displayName": "June AI Platform",
+      "sslRequired": "external",
+      "roles": {
+        "realm": [
+          {"name": "user", "description": "Default user role"},
+          {"name": "admin", "description": "Administrator role"}
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "orchestrator-client",
+          "name": "June Orchestrator Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "orchestrator-secret-key-12345",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "3600"
+          }
+        },
+        {
+          "clientId": "stt-client",
+          "name": "June STT Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "stt-secret-key-12345",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "3600"
+          }
+        },
+        {
+          "clientId": "june-mobile-app",
+          "name": "June Mobile App",
+          "enabled": true,
+          "publicClient": true,
+          "redirectUris": [
+            "com.june.ai://callback",
+            "http://localhost:3000/*"
+          ],
+          "webOrigins": ["*"],
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "attributes": {
+            "access.token.lifespan": "1800",
+            "pkce.code.challenge.method": "S256"
+          }
+        }
+      ]
+    }
+
+---
+# PostgreSQL Database for Keycloak (existing, unchanged)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-db
+  namespace: june-services
+  labels:
+    app: keycloak-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-db
+  template:
+    metadata:
+      labels:
+        app: keycloak-db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: keycloak
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak_db
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak_db
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-data
+        emptyDir:
+          sizeLimit: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-db
+  namespace: june-services
+  labels:
+    app: keycloak-db
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: keycloak-db
+
+---
+# Keycloak IDP Deployment (existing, unchanged)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      serviceAccountName: june-idp
+      initContainers:
+      - name: wait-for-db
+        image: postgres:16-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h keycloak-db -p 5432 -U keycloak_db; do
+            echo "Waiting for database..."
+            sleep 2
+          done
+          echo "Database is ready!"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+      - name: realm-import-init
+        image: quay.io/keycloak/keycloak:26.3.2
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Preparing realm import..."
+          mkdir -p /opt/keycloak/data/import
+          cp /tmp/realm/june-realm.json /opt/keycloak/data/import/
+          ls -la /opt/keycloak/data/import/
+        volumeMounts:
+        - name: realm-config
+          mountPath: /tmp/realm
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.3.2
+        args:
+        - start
+        - --optimized
+        - --import-realm
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: username
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: password
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL_HOST
+          value: "keycloak-db"
+        - name: KC_DB_URL_DATABASE
+          value: "keycloak"
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        - name: KC_HOSTNAME_URL
+          value: "https://june-idp.allsafe.world"
+        - name: KC_HOSTNAME_ADMIN_URL
+          value: "https://june-idp.allsafe.world"
+        - name: KC_PROXY
+          value: "edge"
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        - name: KC_METRICS_ENABLED
+          value: "true"
+        - name: KC_LOG_LEVEL
+          value: "INFO"
+        - name: JAVA_OPTS_APPEND
+          value: "-XX:MaxRAMPercentage=70 -XX:InitialRAMPercentage=50"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "400m"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 10
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 20
+        volumeMounts:
+        - name: keycloak-data
+          mountPath: /opt/keycloak/data
+      volumes:
+      - name: realm-config
+        configMap:
+          name: keycloak-realm-config
+      - name: keycloak-data
+        emptyDir:
+          sizeLimit: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-idp
+
+---
+# Service Accounts
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  annotations:
+    iam.gke.io/gcp-service-account: june-orchestrator-gke@main-buffer-469817-v7.iam.gserviceaccount.com
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-stt
+  namespace: june-services
+  annotations:
+    iam.gke.io/gcp-service-account: june-stt-gke@main-buffer-469817-v7.iam.gserviceaccount.com
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-media-relay
+  namespace: june-services
+  annotations:
+    iam.gke.io/gcp-service-account: june-media-relay-gke@main-buffer-469817-v7.iam.gserviceaccount.com
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-idp
+  namespace: june-services
