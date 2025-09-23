@@ -1,4 +1,4 @@
-# June/services/june-stt/shared/auth_service.py
+# June/services/june-tts-proxy/shared/auth_service.py
 # Shared authentication module for service-to-service communication
 
 import os

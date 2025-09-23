@@ -1,4 +1,4 @@
-# June/services/june-orchestrator/app.py - FIXED EXTERNAL TTS INTEGRATION
+# June/services/june-orchestrator/app.py - UPDATED WITH MEDIA STREAMING SUPPORT
 
 import os
 import json
@@ -21,13 +21,16 @@ from authz import get_current_user
 # Import FIXED external TTS client
 from external_tts_client import ExternalTTSClient
 
+# Import NEW media streaming components
+from token_service import TokenService
+from media_apis import media_router, token_service as global_token_service
+
 # -----------------------------------------------------------------------------
 # FastAPI app
 # -----------------------------------------------------------------------------
-app = FastAPI(title="June Orchestrator", version="1.0.0")
-voice_router = APIRouter()
+app = FastAPI(title="June Orchestrator", version="2.0.0")
 
-logger = logging.getLogger("orchestrator.voice")
+logger = logging.getLogger("orchestrator")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 # -----------------------------------------------------------------------------
@@ -43,6 +46,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Service URLs - FIXED: Proper external TTS handling
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
 EXTERNAL_TTS_URL = os.getenv("EXTERNAL_TTS_URL", "")
+
+# Media Relay Configuration
+MEDIA_RELAY_URL = os.getenv("MEDIA_RELAY_URL", "http://june-media-relay:8080")
 
 # FIXED: Decode base64 URL if needed
 if EXTERNAL_TTS_URL:
@@ -97,7 +103,7 @@ except Exception as e:
     logger.error(f"⚠️ Failed to initialize AI model: {e}")
 
 # -----------------------------------------------------------------------------
-# FIXED: Enhanced STT Client with better error handling
+# ENHANCED: STT Client with better error handling (existing code)
 # -----------------------------------------------------------------------------
 class AuthenticatedSTTClient:
     """STT client with authentication and proper error handling"""
@@ -177,7 +183,12 @@ stt_client = None
 tts_client = None
 
 # -----------------------------------------------------------------------------
-# FIXED: Enhanced health check endpoint
+# NEW: Initialize token service for media streaming
+# -----------------------------------------------------------------------------
+token_svc = None
+
+# -----------------------------------------------------------------------------
+# UPDATED: Enhanced health check endpoint
 # -----------------------------------------------------------------------------
 @app.get("/healthz")
 async def healthz():
@@ -192,9 +203,17 @@ async def healthz():
             "service_auth": service_auth is not None,
             "stt_client": stt_client is not None,
             "tts_client": tts_client is not None,
-            "external_tts_url": EXTERNAL_TTS_URL != ""
+            "external_tts_url": EXTERNAL_TTS_URL != "",
+            "token_service": token_svc is not None,
+            "media_relay": MEDIA_RELAY_URL != ""
         },
-        "tts_type": "external-openvoice"
+        "tts_type": "external-openvoice",
+        "version": "2.0.0",
+        "features": {
+            "media_streaming": True,
+            "token_generation": True,
+            "session_management": True
+        }
     }
     
     # Check external dependencies
@@ -208,7 +227,7 @@ async def healthz():
             health_status["components"]["external_tts_available"] = False
     
     # Overall health based on critical components
-    critical_components = ["ai_model", "service_auth", "stt_client"]
+    critical_components = ["ai_model", "service_auth", "stt_client", "token_service"]
     health_status["ok"] = all(health_status["components"].get(comp, False) for comp in critical_components)
     
     if not health_status["ok"]:
@@ -217,14 +236,15 @@ async def healthz():
     return health_status
 
 # -----------------------------------------------------------------------------
-# FIXED: Enhanced process_audio endpoint with proper error handling
+# EXISTING: process_audio endpoint (keep as is for backward compatibility)
 # -----------------------------------------------------------------------------
 @app.post("/v1/process-audio")
 async def process_audio(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """FIXED: Process audio through STT -> AI -> External TTS pipeline with proper error handling"""
+    """EXISTING: Process audio through STT -> AI -> External TTS pipeline"""
+    # Keep existing implementation unchanged
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"🎤 Audio processing request from service: {calling_service}")
     
@@ -336,12 +356,69 @@ async def process_audio(
         return response
 
 # -----------------------------------------------------------------------------
-# FIXED: Startup event with better dependency management
+# NEW: Media streaming event handler
+# -----------------------------------------------------------------------------
+@app.post("/v1/media/events")
+async def handle_media_event(event: dict):
+    """Handle events from media relay service"""
+    try:
+        event_type = event.get("type")
+        session_id = event.get("session_id")
+        data = event.get("data", {})
+        
+        logger.info(f"📥 Media event: {event_type} for session: {session_id}")
+        
+        # Handle different event types
+        if event_type == "stt_result":
+            # STT transcription result - could trigger AI processing
+            if data.get("type") == "final":
+                transcript = data.get("text", "")
+                if transcript:
+                    # Generate AI response
+                    ai_response = await generate_ai_response(transcript)
+                    
+                    # Send TTS request to media relay
+                    await send_tts_to_relay(session_id, ai_response)
+        
+        elif event_type == "session_started":
+            logger.info(f"🎬 Media session started: {session_id}")
+        
+        elif event_type == "session_ended":
+            duration = data.get("duration", 0)
+            logger.info(f"🏁 Media session ended: {session_id} (duration: {duration:.1f}s)")
+        
+        return {"status": "received", "event_type": event_type}
+        
+    except Exception as e:
+        logger.error(f"❌ Media event handling failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+async def send_tts_to_relay(session_id: str, text: str):
+    """Send TTS request to media relay for a specific session"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{MEDIA_RELAY_URL}/v1/tts",
+                json={
+                    "session_id": session_id,
+                    "text": text,
+                    "voice": "default"
+                },
+                timeout=5.0
+            )
+        
+        logger.info(f"📤 Sent TTS to relay for session: {session_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to send TTS to relay: {e}")
+
+# -----------------------------------------------------------------------------
+# UPDATED: Startup event with token service initialization
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    """Initialize all service clients on startup with proper error handling"""
-    global stt_client, tts_client
+    """Initialize all service clients and token service on startup"""
+    global stt_client, tts_client, token_svc, global_token_service
     
     if service_auth:
         logger.info("🔧 Initializing service clients...")
@@ -386,16 +463,26 @@ async def startup_event():
     else:
         logger.warning("⚠️ Service authentication not available")
     
+    # NEW: Initialize token service for media streaming
+    try:
+        token_svc = TokenService(service_auth)
+        global_token_service = token_svc  # Set global reference for media_apis
+        logger.info("✅ Token service initialized for media streaming")
+    except Exception as e:
+        logger.error(f"❌ Token service initialization failed: {e}")
+    
     # Summary
     logger.info(f"""
-    🚀 Orchestrator started:
+    🚀 Orchestrator v2.0 started:
     - STT: {'✅' if stt_client else '❌'} ({STT_SERVICE_URL or 'not configured'})
     - TTS: {'✅' if tts_client else '❌'} (External: {EXTERNAL_TTS_URL or 'not configured'})
     - AI: {'✅' if ai_model else '❌'} ({'Gemini' if ai_model else 'fallback mode'})
     - Auth: {'✅' if service_auth else '❌'}
+    - Media Streaming: {'✅' if token_svc else '❌'}
+    - Token Service: {'✅' if token_svc else '❌'}
     """)
 
-# Keep existing generate_ai_response function and other endpoints unchanged
+# Keep existing generate_ai_response function unchanged
 async def generate_ai_response(user_input: str, user_context: dict = None) -> str:
     """Generate AI response using Gemini"""
     if not ai_model:
@@ -424,3 +511,8 @@ async def generate_ai_response(user_input: str, user_context: dict = None) -> st
     except Exception as e:
         logger.error(f"AI generation error: {e}")
         return f"I'm experiencing some technical difficulties. Here's what I can tell you about '{user_input}': I'd be happy to help, but I'm having trouble processing that right now."
+
+# -----------------------------------------------------------------------------
+# NEW: Include media streaming APIs
+# -----------------------------------------------------------------------------
+app.include_router(media_router)
