@@ -164,14 +164,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [june-orchestrator, june-stt, june-tts, june-idp]
+        service: [june-orchestrator, june-stt, june-idp]
         include:
           - service: june-orchestrator
             context: June/services/june-orchestrator
           - service: june-stt
             context: June/services/june-stt
-          - service: june-tts
-            context: June/services/june-tts
           - service: june-idp
             context: services/june-idp
     
@@ -329,7 +327,6 @@ jobs:
           echo "  • Keycloak Admin: https://june-idp.allsafe.world/auth/admin"
           echo "  • June Orchestrator: https://june-orchestrator.allsafe.world"
           echo "  • STT Service: https://june-stt.allsafe.world"
-          echo "  • TTS Service: https://june-tts.allsafe.world"
           echo ""
           echo "🔧 Next Steps:"
           echo "  1. Configure DNS to point to ${{ needs.deploy-infrastructure.outputs.static_ip }}"

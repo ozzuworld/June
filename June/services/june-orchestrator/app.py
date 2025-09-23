@@ -1,4 +1,4 @@
-# June/services/june-orchestrator/app.py - FIXED MISSING CLASSES
+# June/services/june-orchestrator/app.py - UPDATED FOR EXTERNAL TTS
 import os
 import json
 import uuid
@@ -15,6 +15,9 @@ from shared.auth_service import create_service_auth_client, require_service_auth
 
 # Import Firebase auth (keeping existing functionality)
 from authz import get_current_user
+
+# Import external TTS client
+from external_tts_client import ExternalTTSClient
 
 # -----------------------------------------------------------------------------
 # FastAPI app
@@ -75,13 +78,13 @@ except Exception as e:
 
 # Service URLs
 STT_SERVICE_URL = os.getenv("STT_SERVICE_URL", "")
-TTS_SERVICE_URL = os.getenv("TTS_SERVICE_URL", "")
+EXTERNAL_TTS_URL = os.getenv("EXTERNAL_TTS_URL", "")
 
 # Audio defaults
 DEFAULT_LOCALE = os.getenv("DEFAULT_LOCALE", "en-US")
 
 # -----------------------------------------------------------------------------
-# FIXED: Add missing client classes
+# Service client classes
 # -----------------------------------------------------------------------------
 
 class AuthenticatedSTTClient:
@@ -111,94 +114,6 @@ class AuthenticatedSTTClient:
         except Exception as e:
             logger.error(f"STT client error: {e}")
             return {"text": "STT service unavailable", "confidence": 0.0}
-
-class ChatterboxTTSClient:
-    """Chatterbox TTS client with authentication"""
-    
-    def __init__(self, base_url: str, auth_client: ServiceAuthClient):
-        self.base_url = base_url.rstrip('/')
-        self.auth = auth_client
-        self.available_voices = {}
-        self.initialized = False
-        
-    async def initialize(self):
-        """Initialize and get available voices from TTS service"""
-        try:
-            response = await self.auth.make_authenticated_request(
-                "GET",
-                f"{self.base_url}/v1/voices",
-                timeout=10.0
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.available_voices = data.get("voices", {})
-                self.initialized = True
-                logger.info(f"✅ TTS initialized with voices: {list(self.available_voices.keys())}")
-            else:
-                logger.error(f"Failed to get voices: {response.status_code}")
-                # Set default voices as fallback
-                self.available_voices = {
-                    "af_bella": "Default female voice",
-                    "am_adam": "Default male voice"
-                }
-                
-        except Exception as e:
-            logger.error(f"⚠️ Failed to initialize TTS: {e}")
-            # Set default voices as fallback
-            self.available_voices = {
-                "af_bella": "Default female voice",
-                "am_adam": "Default male voice"
-            }
-    
-    async def synthesize_speech(
-        self, 
-        text: str, 
-        voice: str = "af_bella",
-        speed: float = 1.0,
-        temperature: float = 0.3,
-        exaggeration: float = 0.5,
-        audio_encoding: str = "MP3"
-    ) -> bytes:
-        """Call TTS service to synthesize speech"""
-        if not self.auth:
-            raise Exception("Service authentication not configured")
-        
-        # Validate and fallback for voice
-        if voice not in self.available_voices and voice != "default":
-            logger.warning(f"Voice '{voice}' not available, using af_bella")
-            voice = "af_bella"
-        
-        try:
-            # Use Chatterbox API format
-            payload = {
-                "model": "chatterbox",
-                "input": text,
-                "voice": voice,
-                "speed": speed,
-                "temperature": temperature,
-                "exaggeration": exaggeration
-            }
-            
-            logger.info(f"🎵 Calling TTS with voice={voice}, temp={temperature}, exag={exaggeration}")
-            
-            response = await self.auth.make_authenticated_request(
-                "POST",
-                f"{self.base_url}/v1/audio/speech",
-                json=payload,
-                timeout=30.0
-            )
-            
-            response.raise_for_status()
-            
-            audio_content = response.content
-            logger.info(f"✅ TTS synthesis successful: {len(audio_content)} bytes")
-            
-            return audio_content
-            
-        except Exception as e:
-            logger.error(f"❌ TTS synthesis failed: {e}")
-            raise
 
 # -----------------------------------------------------------------------------
 # AI Helper Functions
@@ -261,7 +176,7 @@ async def healthz():
         "timestamp": time.time(),
         "status": "healthy",
         "ai_enabled": ai_model is not None,
-        "tts_engine": "chatterbox"
+        "tts_type": "external-openvoice"
     }
 
 @app.get("/")
@@ -272,7 +187,7 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "ai_enabled": ai_model is not None,
-        "tts_engine": "chatterbox"
+        "tts_type": "external-openvoice"
     }
 
 @app.get("/configz")
@@ -281,15 +196,14 @@ async def configz():
     return {
         "FIREBASE_PROJECT_ID": FIREBASE_PROJECT_ID,
         "STT_SERVICE_URL": STT_SERVICE_URL,
-        "TTS_SERVICE_URL": TTS_SERVICE_URL,
+        "EXTERNAL_TTS_URL": EXTERNAL_TTS_URL,
         "DEFAULT_LOCALE": DEFAULT_LOCALE,
         "service_auth_enabled": service_auth is not None,
         "stt_client_ready": stt_client is not None,
         "tts_client_ready": tts_client is not None,
+        "tts_type": "external-openvoice",
         "ai_model_enabled": ai_model is not None,
         "gemini_api_key_present": bool(GEMINI_API_KEY),
-        "tts_engine": "chatterbox",
-        "available_voices": getattr(tts_client, 'available_voices', {}) if tts_client else {}
     }
 
 # -----------------------------------------------------------------------------
@@ -322,7 +236,7 @@ async def chat(
             "processed_by": "orchestrator", 
             "caller": calling_service,
             "ai_model": "gemini-1.5-flash" if ai_model else "fallback",
-            "tts_engine": "chatterbox"
+            "tts_type": "external-openvoice"
         }
         
     except Exception as e:
@@ -339,7 +253,7 @@ async def process_audio(
     payload: dict,
     service_auth_data: dict = Depends(require_service_auth)
 ):
-    """Process audio through STT -> AI -> TTS pipeline"""
+    """Process audio through STT -> AI -> External TTS pipeline"""
     calling_service = service_auth_data.get("client_id", "unknown")
     logger.info(f"🎤 Audio processing request from service: {calling_service}")
     
@@ -382,58 +296,42 @@ async def process_audio(
         reply = await generate_ai_response(transcription_text, {"caller": calling_service})
         logger.info(f"🤖 AI response: '{reply[:100]}...'")
         
-        # Step 3: Generate TTS audio
+        # Step 3: Generate TTS audio via external service
         audio_b64 = None
         tts_metadata = {}
         
         if tts_client and reply:
             try:
-                logger.info(f"🎵 Generating speech for: '{reply[:50]}...'")
+                logger.info(f"🎵 Generating speech via external TTS: '{reply[:50]}...'")
                 
-                # Simple emotion detection for parameters
-                temperature = 0.3
-                exaggeration = 0.5
-                voice = "af_bella"
-                
-                text_lower = reply.lower()
-                if any(word in text_lower for word in ["excited", "amazing", "wonderful", "fantastic", "great"]):
-                    temperature = 0.7
-                    exaggeration = 0.8
-                elif any(word in text_lower for word in ["sorry", "unfortunately", "apologize", "sad"]):
-                    temperature = 0.2
-                    exaggeration = 0.3
-                elif "?" in reply:
-                    temperature = 0.4
-                    exaggeration = 0.6
-                
-                # Call TTS service
+                # Call external TTS service
                 audio_response = await tts_client.synthesize_speech(
                     text=reply,
-                    voice=voice,
+                    voice="default",  # Use your OpenVoice voice names
                     speed=1.0,
-                    temperature=temperature,
-                    exaggeration=exaggeration,
-                    audio_encoding="MP3"
+                    language="EN"
                 )
                 
                 if audio_response:
                     # Encode audio to base64 for response
                     audio_b64 = base64.b64encode(audio_response).decode('utf-8')
-                    logger.info(f"✅ TTS audio generated: {len(audio_response)} bytes")
+                    logger.info(f"✅ External TTS success: {len(audio_response)} bytes")
                     
                     tts_metadata = {
-                        "voice": voice,
-                        "engine": "chatterbox",
-                        "temperature": temperature,
-                        "exaggeration": exaggeration
+                        "voice": "openvoice",
+                        "engine": "external-openvoice",
+                        "service": "external"
                     }
                 else:
-                    logger.error("❌ TTS returned empty audio")
+                    logger.error("❌ External TTS returned empty audio")
                     
             except Exception as tts_error:
-                logger.error(f"❌ TTS service call failed: {tts_error}")
+                logger.error(f"❌ External TTS failed: {tts_error}")
         else:
-            logger.warning("⚠️ TTS client not available or no reply to synthesize")
+            if not tts_client:
+                logger.warning("⚠️ External TTS client not available")
+            if not reply:
+                logger.warning("⚠️ No reply text to synthesize")
         
         # Step 4: Return complete response
         return {
@@ -444,7 +342,7 @@ async def process_audio(
             "processed_by": "orchestrator",
             "caller": calling_service,
             "ai_model": "gemini-1.5-flash" if ai_model else "fallback",
-            "tts_engine": "chatterbox" if audio_b64 else None,
+            "tts_engine": "external-openvoice" if audio_b64 else None,
             "tts_metadata": tts_metadata,
             "processing_complete": True,
             "has_audio": audio_b64 is not None
@@ -465,7 +363,7 @@ async def process_audio(
         }
 
 # -----------------------------------------------------------------------------
-# Startup event - FIXED
+# Startup event - UPDATED FOR EXTERNAL TTS
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
@@ -489,19 +387,13 @@ async def startup_event():
         else:
             logger.warning("⚠️ STT_SERVICE_URL not set")
         
-        # Initialize TTS client
-        if TTS_SERVICE_URL:
-            tts_client = ChatterboxTTSClient(TTS_SERVICE_URL, service_auth)
-            logger.info(f"✅ TTS client configured: {TTS_SERVICE_URL}")
-            
-            # Initialize TTS to get available voices
-            try:
-                await tts_client.initialize()
-                logger.info(f"🎤 Available TTS voices: {list(tts_client.available_voices.keys())}")
-            except Exception as e:
-                logger.error(f"Failed to initialize TTS: {e}")
+        # Initialize External TTS client
+        if EXTERNAL_TTS_URL:
+            tts_client = ExternalTTSClient(EXTERNAL_TTS_URL, service_auth)
+            logger.info(f"✅ External TTS client configured: {EXTERNAL_TTS_URL}")
         else:
-            logger.warning("⚠️ TTS_SERVICE_URL not set")
+            tts_client = None
+            logger.warning("⚠️ EXTERNAL_TTS_URL not set - TTS disabled")
     else:
         logger.warning("⚠️ Service authentication not available")
     
@@ -514,7 +406,7 @@ async def startup_event():
     logger.info(f"""
     🚀 Orchestrator started:
     - STT: {stt_client is not None}
-    - TTS: {tts_client is not None}
+    - TTS: {tts_client is not None} (External OpenVoice)
     - AI: {ai_model is not None}
     - Auth: {service_auth is not None}
     """)
