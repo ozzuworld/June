@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    phase: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+    spec:
+      serviceAccountName: june-orchestrator
+      initContainers:
+      - name: wait-for-db
+        image: postgres:16-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgresql -p 5432 -U postgres -d june_db; do
+            sleep 3
+          done
+      containers:
+      - name: june-orchestrator
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: STT_SERVICE_URL
+          value: "http://june-stt:8080"
+        - name: MEDIA_RELAY_URL
+          value: "http://june-media-relay:8080"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: DATABASE_URL
+        - name: EXTERNAL_TTS_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: EXTERNAL_TTS_URL
+        - name: JWT_SIGNING_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: JWT_SIGNING_KEY
+        - name: JWT_ISSUER
+          value: "https://june-idp.allsafe.world/auth/realms/june"
+        - name: KC_BASE_URL
+          value: "http://june-idp:8080/auth"
+        - name: KC_REALM
+          value: "june"
+        - name: KC_HOSTNAME_URL
+          value: "https://june-idp.allsafe.world"
+        - name: ORCHESTRATOR_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: ORCHESTRATOR_CLIENT_ID
+        - name: ORCHESTRATOR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: ORCHESTRATOR_CLIENT_SECRET
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15

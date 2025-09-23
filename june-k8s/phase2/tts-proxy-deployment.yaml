@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts-proxy
+  namespace: june-services
+  labels:
+    app: june-tts-proxy
+    phase: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-tts-proxy
+  template:
+    metadata:
+      labels:
+        app: june-tts-proxy
+    spec:
+      serviceAccountName: june-tts-proxy
+      containers:
+      - name: june-tts-proxy
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts-proxy:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: JWT_ISSUER
+          value: "https://june-idp.allsafe.world/auth/realms/june"
+        - name: TTS_BACKEND_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: EXTERNAL_TTS_URL
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10

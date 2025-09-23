@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-stt
+    phase: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-stt
+  template:
+    metadata:
+      labels:
+        app: june-stt
+    spec:
+      serviceAccountName: june-stt
+      containers:
+      - name: june-stt
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-stt:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: KC_BASE_URL
+          value: "http://june-idp:8080/auth"
+        - name: KC_REALM
+          value: "june"
+        - name: STT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: STT_CLIENT_ID
+        - name: STT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: STT_CLIENT_SECRET
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10

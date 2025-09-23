@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-media-relay
+  namespace: june-services
+spec:
+  selector:
+    app: june-media-relay
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june-services
+spec:
+  selector:
+    app: june-stt
+  ports:
+  - port: 8080
+    targetPort: 8080

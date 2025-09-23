@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong-controller
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong-controller
+  template:
+    metadata:
+      labels:
+        app: kong-controller
+    spec:
+      serviceAccountName: kong-sa
+      containers:
+      - name: controller
+        image: kong/kubernetes-ingress-controller:3.5
+        args:
+        - "/usr/local/bin/kong-ingress-controller"
+        - "--ingress-class=kong"
+        - "--admin-api-url=http://kong-gateway.june-services.svc.cluster.local:8444"
+        - "--kubeconfig="              # use inClusterConfig
+        env:
+        - name: KONG_DATABASE
+          value: "off"

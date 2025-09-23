@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+    spec:
+      serviceAccountName: kong-sa         # 1. Reference a dedicated ServiceAccount
+      containers:
+      - name: controller
+        image: kong/kubernetes-ingress-controller:3.5
+        args:
+        - "/usr/local/bin/kong-ingress-controller"
+        - "--ingress-class=kong"
+        - "--admin-api-url=http://kong-admin.kong-system.svc.cluster.local:8444"  # 2. Point to Kong Admin API
+        - "--kubeconfig="  # empty to force inClusterConfig
+        env:
+        - name: KONG_ADMIN_LISTEN
+          value: "0.0.0.0:8444 ssl"
+        - name: KONG_DATABASE
+          value: "off"
+        - name: KONG_PROXY_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_ADMIN_ACCESS_LOG
+          value: "/dev/stdout"
+        - name: KONG_PROXY_ERROR_LOG
+          value: "/dev/stderr"
+        - name: KONG_ADMIN_ERROR_LOG
+          value: "/dev/stderr"
+        ports:
+        - name: proxy
+          containerPort: 8000
+        - name: admin
+          containerPort: 8444
