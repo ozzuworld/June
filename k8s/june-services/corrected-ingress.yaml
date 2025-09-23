@@ -1,0 +1,68 @@
+# k8s/june-services/corrected-ingress.yaml
+# Fixed to match your actual DNS records: api.allsafe.world, stt.allsafe.world, etc.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: allsafe-ingress
+  namespace: june-services
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
+    networking.gke.io/managed-certificates: "allsafe-certs"
+spec:
+  rules:
+  - host: api.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+  - host: stt.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+  - host: idp.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+  # Note: TTS service removed (using external), but keeping domain for future
+  - host: tts.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator  # Redirect TTS to orchestrator for now
+            port:
+              number: 8080
+
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: allsafe-certs
+  namespace: june-services
+spec:
+  domains:
+    - api.allsafe.world
+    - stt.allsafe.world
+    - idp.allsafe.world
+    - tts.allsafe.world
