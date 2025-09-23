@@ -1,75 +1,56 @@
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import Response
-from app.core.openvoice_engine import engine
-from app.models.schemas import TTSRequest, ErrorResponse
-import asyncio
+from typing import AsyncIterator, Optional
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, ConfigDict, HttpUrl
 
-router = APIRouter(prefix="/tts", tags=["Text-to-Speech"])
+from app.core.openvoice_engine import synthesize_v2_to_wav_path
 
-@router.post(
-    "/generate",
-    response_class=Response,
-    responses={
-        200: {"content": {"audio/wav": {}}},
-        400: {"model": ErrorResponse},
-        500: {"model": ErrorResponse}
-    }
-)
-async def generate_speech(request: TTSRequest):
-    """Generate speech from text using OpenVoice TTS"""
-    try:
-        audio_data = await engine.text_to_speech(
-            text=request.text,
-            language=request.language,
-            speaker_key=request.speaker_key,
-            speed=request.speed
-        )
-        
-        return Response(
-            content=audio_data,
-            media_type="audio/wav",
-            headers={
-                "Content-Disposition": "attachment; filename=generated_speech.wav",
-                "X-Generated-By": "OpenVoice-API"
-            }
-        )
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid request parameters: {str(e)}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Speech generation failed: {str(e)}"
-        )
+router = APIRouter(prefix="/tts", tags=["tts"])
 
-@router.get("/voices/{language}")
-async def list_voices(language: str):
-    """List available voices for a language"""
-    try:
-        model = await engine.get_tts_model(language.upper())
-        speaker_ids = model.hps.data.spk2id
-        
-        return {
-            "language": language.upper(),
-            "voices": list(speaker_ids.keys()) if speaker_ids else [],
-            "total": len(speaker_ids) if speaker_ids else 0
-        }
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to list voices for {language}: {str(e)}"
-        )
 
-@router.get("/status")
-async def engine_status():
-    """Get engine status"""
-    return {
-        "status": "ready" if engine.converter else "initializing",
-        "device": engine.device,
-        "loaded_models": list(engine.tts_models.keys()),
-        "max_concurrent_requests": engine._semaphore._value
-    }
+class TTSRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    text: str
+    reference_b64: Optional[str] = None       # WAV/MP3/FLAC/OGG/etc (base64-encoded bytes)
+    reference_url: Optional[HttpUrl] = None   # will be downloaded server-side
+    voice_id: str = "base"                    # kept for API consistency; Melo pack selects actual voice
+    language: str = "en"                      # en, es, fr, zh, ja, ko
+    format: str = "wav"                       # output container (fixed to wav for now)
+    speed: float = 1.0
+    volume: float = 1.0
+    pitch: float = 0.0
+    metadata: dict = Field(default_factory=dict)
+
+
+async def _file_stream(path: str) -> AsyncIterator[bytes]:
+    chunk = 64 * 1024
+    with open(path, "rb") as f:
+        while True:
+            data = f.read(chunk)
+            if not data:
+                break
+            yield data
+
+
+@router.post("/generate")
+async def generate(req: TTSRequest):
+    # Guard clauses
+    if not req.text or len(req.text.strip()) == 0:
+        raise HTTPException(status_code=400, detail="text is required")
+    if req.format.lower() != "wav":
+        raise HTTPException(status_code=415, detail="Only wav output is supported")
+    if not (req.reference_b64 or req.reference_url):
+        raise HTTPException(status_code=400, detail="Provide reference_b64 or reference_url for cloning")
+
+    wav_path = await synthesize_v2_to_wav_path(
+        text=req.text.strip(),
+        language=req.language.strip().lower(),
+        reference_b64=req.reference_b64,
+        reference_url=str(req.reference_url) if req.reference_url else None,
+        speed=req.speed,
+        volume=req.volume,
+        pitch=req.pitch,
+        metadata=req.metadata,
+    )
+
+    return StreamingResponse(_file_stream(wav_path), media_type="audio/wav")

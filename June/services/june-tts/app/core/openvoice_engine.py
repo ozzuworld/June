@@ -1,253 +1,191 @@
-import torch
 import asyncio
-import tempfile
+import base64
 import os
-from pathlib import Path
-from typing import Optional, List
-from contextlib import asynccontextmanager
-import warnings
-import gc
-import time
+import tempfile
+from typing import Optional, Tuple
 
-warnings.filterwarnings("ignore")
+import httpx
+import soundfile as sf
+import numpy as np
 
-try:
-    from openvoice import se_extractor
-    from openvoice.api import ToneColorConverter
-    OPENVOICE_AVAILABLE = True
-except ImportError:
-    OPENVOICE_AVAILABLE = False
+# ---------- Limits / supported ----------
+_SUPPORTED_LANGUAGES = {"en", "es", "fr", "zh", "ja", "ko"}
+_MAX_TEXT_LEN = 2000
+_MAX_REF_BYTES = 20 * 1024 * 1024  # 20 MB
 
-try:
-    from melo.api import TTS
-    MELO_AVAILABLE = True
-except ImportError:
-    MELO_AVAILABLE = False
+# ---------- Globals (memoized models) ----------
+_MELO = None                   # type: ignore
+_CONVERTER = None              # type: ignore
+_SAMPLE_SPEAKER_ID = None      # type: ignore
 
-from app.core.config import settings
 
-class OpenVoiceEngine:
-    def __init__(self):
-        self.device = self._smart_device_init()
-        self.converter: Optional[ToneColorConverter] = None
-        self.tts_models: dict[str, TTS] = {}
-        self._semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
-        
-    def _smart_device_init(self):
-        """Smart device initialization that handles CUDA context issues"""
-        if not torch.cuda.is_available():
-            print("⚠️  CUDA not available, using CPU")
-            return "cpu"
-            
+def _env(name: str, default: Optional[str] = None) -> str:
+    val = os.getenv(name, default or "")
+    if not val:
+        raise RuntimeError(f"{name} is required")
+    return val
+
+
+def _melo_language(language: str) -> str:
+    lang_map = {"en": "EN", "es": "ES", "fr": "FR", "zh": "ZH", "ja": "JA", "ko": "KO"}
+    return lang_map.get(language, os.getenv("MELO_LANGUAGE", "EN"))
+
+
+def _ensure_checkpoints() -> Tuple[str, str]:
+    root = _env("OPENVOICE_CHECKPOINTS_V2")
+    base_root = os.path.join(root, "base_speakers")
+    conv_root = os.path.join(root, "tone_color_converter")
+    if not os.path.isdir(base_root):
+        raise RuntimeError(f"Missing MeloTTS base_speakers at {base_root}")
+    if not os.path.isdir(conv_root):
+        raise RuntimeError(f"Missing tone_color_converter at {conv_root}")
+    return base_root, conv_root
+
+
+async def _download_reference(url: str) -> str:
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+    timeout = httpx.Timeout(20.0)
+    async with httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        if len(r.content) > _MAX_REF_BYTES:
+            raise ValueError("reference_url file too large")
+        fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".bin")
+        os.close(fd)
+        with open(path, "wb") as f:
+            f.write(r.content)
+        return path
+
+
+async def _write_reference_b64(b64: str) -> str:
+    raw = base64.b64decode(b64)
+    if len(raw) > _MAX_REF_BYTES:
+        raise ValueError("reference_b64 too large")
+    fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".bin")
+    os.close(fd)
+    with open(path, "wb") as f:
+        f.write(raw)
+    return path
+
+
+def _load_models_once() -> None:
+    """
+    Memoize MeloTTS + ToneColorConverter in module globals.
+    Called from app lifespan so we avoid per-request cold starts.
+    """
+    global _MELO, _CONVERTER, _SAMPLE_SPEAKER_ID
+
+    if _MELO is not None and _CONVERTER is not None:
+        return
+
+    # Import here to fail fast with a clear message if deps are missing.
+    try:
+        from melo.api import TTS as MeloTTS          # type: ignore
+        from openvoice import se_extractor           # noqa: F401  # only for runtime availability check
+        from openvoice.api import ToneColorConverter # type: ignore
+    except Exception as e:
+        raise RuntimeError(
+            "OpenVoice V2 runtime not installed. "
+            "Install MeloTTS/OpenVoice and ensure checkpoints_v2 are present. "
+            f"Import error: {e}"
+        )
+
+    _, conv_root = _ensure_checkpoints()
+
+    # Language pack is chosen at synthesis time; MeloTTS can be initialized once.
+    # Many Melo builds accept a language parameter; if so, we can default to EN.
+    # We keep a single instance to avoid duplicating GPU RAM.
+    _MELO = MeloTTS(language=os.getenv("MELO_LANGUAGE", "EN"))
+
+    # Tone color converter (V2)
+    _CONVERTER = ToneColorConverter(checkpoint=conv_root)
+
+    # Optional: default speaker id (pack dependent)
+    _SAMPLE_SPEAKER_ID = os.getenv("MELO_SPEAKER_ID", "EN-US")
+
+
+def warmup_models() -> None:
+    """
+    Public: call during FastAPI lifespan to preload weights onto GPU.
+    """
+    _load_models_once()
+    # Optional no-op forward pass can be added if desired; often not necessary.
+
+
+async def synthesize_v2_to_wav_path(
+    *,
+    text: str,
+    language: str,
+    reference_b64: Optional[str],
+    reference_url: Optional[str],
+    speed: float,
+    volume: float,
+    pitch: float,
+    metadata: dict,
+) -> str:
+    # ---- Guard clauses ----
+    if not text:
+        raise ValueError("text is required")
+    if len(text) > _MAX_TEXT_LEN:
+        raise ValueError("text too long")
+    lang = language.lower()
+    if lang not in _SUPPORTED_LANGUAGES:
+        raise ValueError(f"language must be one of {_SUPPORTED_LANGUAGES}")
+    if speed <= 0:
+        raise ValueError("speed must be > 0")
+
+    # Ensure models are resident
+    _load_models_once()
+    assert _MELO is not None and _CONVERTER is not None
+
+    # Resolve reference
+    ref_path: Optional[str] = None
+    if reference_b64:
+        ref_path = await _write_reference_b64(reference_b64)
+    elif reference_url:
+        ref_path = await _download_reference(reference_url)
+    if not ref_path:
+        raise ValueError("reference audio not provided")
+
+    # ---- Base TTS (Melo) ----
+    melo_lang = _melo_language(lang)
+    # Some Melo builds allow switching language dynamically:
+    # If yours requires re-instantiation per language, you can extend memoization
+    # to a dict keyed by language. For now we set speaker id pack-wise.
+    spk = _SAMPLE_SPEAKER_ID or "EN-US"
+
+    base_audio, sr = _MELO.tts_to_audio(  # type: ignore[attr-defined]
+        text=text,
+        speaker_id=spk,
+        speed=speed,
+        volume=volume,
+        pitch=pitch,
+        language=melo_lang if "language" in _MELO.tts_to_audio.__code__.co_varnames else None,  # type: ignore
+    )
+
+    # ---- Extract speaker embedding ----
+    from openvoice import se_extractor  # late import to keep top clean
+    src_se = se_extractor.get_se(ref_path)
+
+    # ---- Tone color conversion ----
+    converted_audio = _CONVERTER.convert(  # type: ignore[attr-defined]
+        audio=base_audio.astype(np.float32),
+        sample_rate=sr,
+        src_se=src_se,
+    )
+
+    # ---- Write final WAV (16-bit PCM) ----
+    fd, out_path = tempfile.mkstemp(prefix="june-tts-v2-", suffix=".wav")
+    os.close(fd)
+    sf.write(out_path, converted_audio, sr, subtype="PCM_16")
+
+    # Cleanup reference file asynchronously
+    async def _cleanup():
         try:
-            # Set environment for stability
-            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
-            
-            # Try multiple times to establish context
-            for attempt in range(3):
-                try:
-                    # Force context creation without memory query
-                    torch.cuda.set_device(0)
-                    
-                    # Create a small tensor to establish context
-                    test_tensor = torch.tensor([1.0], device='cuda')
-                    result = test_tensor + 1
-                    
-                    # If we get here, CUDA works
-                    del test_tensor, result
-                    torch.cuda.empty_cache()
-                    
-                    print(f"✅ GPU initialized: {torch.cuda.get_device_name(0)}")
-                    # Skip memory query that causes issues
-                    print("🔥 GPU ready (memory check skipped to avoid context issues)")
-                    return "cuda"
-                    
-                except RuntimeError as e:
-                    if "busy or unavailable" in str(e):
-                        print(f"⚠️  CUDA context attempt {attempt + 1} failed, retrying...")
-                        time.sleep(1)
-                        torch.cuda.empty_cache()
-                        gc.collect()
-                    else:
-                        raise e
-                        
-            # If all attempts failed, use CPU
-            print("⚠️  CUDA context creation failed, falling back to CPU")
-            return "cpu"
-            
-        except Exception as e:
-            print(f"⚠️  GPU initialization failed: {e}")
-            return "cpu"
-        
-    async def initialize(self):
-        """Initialize OpenVoice models"""
-        try:
-            print(f"🔧 Initializing OpenVoice engine on {self.device}")
-            
-            if self.device == "cuda":
-                # Set optimizations for RTX 3060 Ti
-                torch.backends.cudnn.benchmark = True
-                torch.backends.cuda.matmul.allow_tf32 = True
-            
-            checkpoints_path = Path(settings.checkpoints_path)
-            if not checkpoints_path.exists():
-                raise FileNotFoundError(f"Checkpoints directory not found: {checkpoints_path}")
-            
-            # Initialize converter
-            if OPENVOICE_AVAILABLE:
-                await self._initialize_converter()
-            
-            # Load initial TTS model
-            if MELO_AVAILABLE:
-                await self._load_initial_tts()
-            
-            print(f"✅ OpenVoice engine initialized successfully on {self.device}")
-            
-        except Exception as e:
-            print(f"❌ Engine error: {e}")
-    
-    async def _initialize_converter(self):
-        """Initialize converter with context-aware error handling"""
-        try:
-            converter_path = Path(settings.checkpoints_path) / "converter"
-            config_file = converter_path / "config.json"
-            checkpoint_file = converter_path / "checkpoint.pth"
-            
-            if config_file.exists() and checkpoint_file.exists():
-                print(f"🔄 Loading converter on {self.device}...")
-                
-                # Clear memory before loading
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
-                
-                self.converter = ToneColorConverter(str(config_file), device=self.device)
-                self.converter.load_ckpt(str(checkpoint_file))
-                print(f"✅ Converter loaded successfully on {self.device}")
-            
-        except Exception as e:
-            print(f"⚠️  Converter failed: {e}")
-            self.converter = None
-    
-    async def _load_initial_tts(self):
-        """Load initial TTS model"""
-        try:
-            print(f"🔄 Loading initial English TTS on {self.device}...")
-            
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
-                
-            model = TTS(language="EN", device=self.device)
-            self.tts_models["EN"] = model
-            print(f"✅ English TTS loaded successfully on {self.device}")
-            
-        except Exception as e:
-            print(f"⚠️  Initial TTS load failed: {e}")
-    
-    async def get_tts_model(self, language: str):
-        """Load TTS model on demand"""
-        if not MELO_AVAILABLE:
-            raise RuntimeError("MeloTTS not available")
-            
-        if language not in self.tts_models:
-            print(f"🔄 Loading TTS for {language} on {self.device}...")
-            
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
-                
-            model = TTS(language=language, device=self.device)
-            self.tts_models[language] = model
-            print(f"✅ TTS loaded for {language}")
-            
-        return self.tts_models[language]
-    
-    @asynccontextmanager
-    async def _request_context(self):
-        async with self._semaphore:
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
-            yield
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
-    
-    async def text_to_speech(self, text: str, language: str = "EN", speaker_key: Optional[str] = None, speed: float = 1.0) -> bytes:
-        if not MELO_AVAILABLE:
-            raise RuntimeError("MeloTTS not available")
-            
-        async with self._request_context():
-            try:
-                model = await self.get_tts_model(language)
-                
-                if not speaker_key:
-                    speaker_ids = model.hps.data.spk2id
-                    speaker_key = list(speaker_ids.keys())[0] if speaker_ids else "default"
-                
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-                
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, model.tts_to_file, text, speaker_key, tmp_path, speed)
-                
-                with open(tmp_path, "rb") as f:
-                    audio_data = f.read()
-                
-                os.unlink(tmp_path)
-                return audio_data
-                
-            except Exception as e:
-                raise RuntimeError(f"TTS failed: {str(e)}")
-    
-    async def clone_voice(self, text: str, reference_audio_bytes: bytes, language: str = "EN", speed: float = 1.0) -> bytes:
-        if not self.converter:
-            raise RuntimeError("Voice cloning not available")
-            
-        async with self._request_context():
-            try:
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
-                    ref_file.write(reference_audio_bytes)
-                    ref_path = ref_file.name
-                
-                loop = asyncio.get_event_loop()
-                target_se, _ = await loop.run_in_executor(None, se_extractor.get_se, ref_path, self.converter, True)
-                
-                model = await self.get_tts_model(language)
-                speaker_ids = model.hps.data.spk2id
-                speaker_key = list(speaker_ids.keys())[0] if speaker_ids else "default"
-                
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as src_file:
-                    src_path = src_file.name
-                
-                await loop.run_in_executor(None, model.tts_to_file, text, speaker_key, src_path, speed)
-                
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_file:
-                    out_path = out_file.name
-                
-                base_speakers_path = Path(settings.checkpoints_path) / "base_speakers" / "ses"
-                source_se_path = base_speakers_path / f"{language.lower()}-default.pth"
-                
-                if not source_se_path.exists():
-                    available = list(base_speakers_path.glob("*.pth"))
-                    if available:
-                        source_se_path = available[0]
-                    else:
-                        raise FileNotFoundError("No base speaker embeddings found")
-                
-                source_se = torch.load(str(source_se_path), map_location=self.device)
-                
-                await loop.run_in_executor(None, self.converter.convert, src_path, source_se, target_se, out_path)
-                
-                with open(out_path, "rb") as f:
-                    result_audio = f.read()
-                
-                for path in [ref_path, src_path, out_path]:
-                    try:
-                        os.unlink(path)
-                    except:
-                        pass
-                
-                return result_audio
-                
-            except Exception as e:
-                raise RuntimeError(f"Voice cloning failed: {str(e)}")
+            if os.path.exists(ref_path):
+                os.remove(ref_path)
+        except Exception:
+            pass
 
-engine = OpenVoiceEngine()
+    asyncio.create_task(_cleanup())
+    return out_path
