@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-secure-realm-config
+  namespace: june-services
+data:
+  june-realm.json: |
+    {
+      "realm": "june",
+      "enabled": true,
+      "displayName": "June AI Platform",
+      "sslRequired": "external",
+      "loginTheme": "keycloak",
+      "adminTheme": "keycloak",
+      "accessTokenLifespan": 1800,
+      "accessTokenLifespanForImplicitFlow": 900,
+      "ssoSessionMaxLifespan": 36000,
+      "roles": {
+        "realm": [
+          {"name": "user", "description": "Default user role"},
+          {"name": "admin", "description": "Administrator role"},
+          {"name": "service", "description": "Service account role"}
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "orchestrator-client",
+          "name": "June Orchestrator Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "1800"
+          },
+          "protocolMappers": [
+            {
+              "name": "service-role-mapper",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-realm-role-mapper",
+              "config": {
+                "claim.name": "realm_access.roles",
+                "jsonType.label": "String",
+                "user.attribute": "foo",
+                "access.token.claim": "true"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "stt-client", 
+          "name": "June STT Service",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": false,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "1800"
+          }
+        },
+        {
+          "clientId": "external-tts-client",
+          "name": "External TTS Service",
+          "enabled": true,
+          "bearerOnly": true,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "1800"
+          }
+        }
+      ],
+      "users": []
+    }
