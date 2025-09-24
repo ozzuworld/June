@@ -9,6 +9,7 @@ router = APIRouter(prefix="/tts", tags=["tts"])
 
 
 class TTSRequest(BaseModel):
+    speaker_id: int | None = None
     model_config = ConfigDict(extra="ignore")
     text: str
     reference_b64: Optional[str] = None       # WAV/MP3/FLAC/OGG/etc (base64-encoded bytes)
