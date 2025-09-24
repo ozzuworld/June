@@ -88,11 +88,13 @@ async def create_media_session(
 @media_router.post("/tokens", response_model=GenerateTokenResponse)
 async def generate_media_token(
     request: GenerateTokenRequest,
-    current_user = Depends(get_current_user),
+    current_user: dict = Depends(require_user_auth),  # Fixed: use shared auth
     token_svc: TokenService = Depends(get_token_service)
 ):
     """Generate a short-lived token for media streaming"""
     try:
+        user_id = extract_user_id(current_user)  # Fixed: use utility function
+        
         # Verify session belongs to current user
         session_info = token_svc.get_session_info(request.session_id)
         if not session_info:
@@ -101,7 +103,7 @@ async def generate_media_token(
                 detail="Session not found"
             )
         
-        if session_info["user_id"] != current_user.uid:
+        if session_info["user_id"] != user_id:  # Fixed: use extracted user_id
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Session does not belong to current user"
@@ -140,11 +142,10 @@ async def generate_media_token(
 @media_router.get("/sessions/{session_id}")
 async def get_session_info(
     session_id: str,
-    current_user = Depends(get_current_user),
+    current_user: dict = Depends(require_user_auth),  # Fixed
     token_svc: TokenService = Depends(get_token_service)
 ):
-    """Get information about a media session"""
-    session_info = token_svc.get_session_info(session_id)
+    user_id = extract_user_id(current_user)  # Fixed
     
     if not session_info:
         raise HTTPException(

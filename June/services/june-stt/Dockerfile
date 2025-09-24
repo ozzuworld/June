@@ -6,6 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 
 WORKDIR /app
 
+# Add this before COPY . . in each Dockerfile
+COPY ../shared /shared
+RUN pip install -e /shared
+
 # Install Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

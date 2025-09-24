@@ -7,6 +7,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
+    
+# Add this before COPY . . in each Dockerfile
+COPY ../shared /shared
+RUN pip install -e /shared
 
 # Copy requirements first for better caching
 COPY requirements.txt .

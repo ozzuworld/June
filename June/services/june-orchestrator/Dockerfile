@@ -1,6 +1,9 @@
 # Dockerfile
 FROM python:3.11-slim
 WORKDIR /app
+# Add this before COPY . . in each Dockerfile
+COPY ../shared /shared
+RUN pip install -e /shared
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
