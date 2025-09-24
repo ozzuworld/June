@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import get_db
 from schemas.conversation import ConversationInput, ConversationOutput, MessageArtifact
-from dependencies.auth import get_current_user
+from shared import require_user_auth
 from clients.http import get_http_client
 from clients.tts_client import tts_generate
 
@@ -14,10 +14,12 @@ router = APIRouter(prefix="/v1", tags=["conversation"])
 @router.post("/conversation", response_model=ConversationOutput)
 async def process_conversation(
     payload: ConversationInput,
-    current_user: Annotated[dict, Depends(get_current_user)],
+    current_user: dict = Depends(require_user_auth),  # Changed annotation
     db: Annotated[AsyncSession, Depends(get_db)],
     http = Depends(get_http_client),
 ) -> ConversationOutput:
+    # Use current_user["user_id"] instead of current_user.uid
+    user_id = current_user["user_id"]
     # Guard clauses
     if not (payload.text or payload.audio_b64):
         raise HTTPException(status_code=400, detail="Provide text or audio_b64.")

@@ -6,7 +6,7 @@ from db.session import engine
 from db.models import Base
 from middleware.error import unhandled_errors
 from routers.conversation_routes import router as conversation_router
-
+from shared import require_user_auth
 
 def _get_allowed_origins() -> list[str]:
     import os

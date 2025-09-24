@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import logging
 
-from authz import get_current_user
+from shared import require_user_auth, extract_user_id
 from token_service import TokenService
 
 logger = logging.getLogger(__name__)
@@ -55,9 +55,11 @@ def get_token_service() -> TokenService:
 @media_router.post("/sessions", response_model=CreateSessionResponse)
 async def create_media_session(
     request: CreateSessionRequest,
-    current_user = Depends(get_current_user),
+    current_user: dict = Depends(require_user_auth),  # Changed
     token_svc: TokenService = Depends(get_token_service)
 ):
+    user_id = extract_user_id(current_user)  # Use utility function
+
     """Create a new media streaming session"""
     try:
         user_id = current_user.uid

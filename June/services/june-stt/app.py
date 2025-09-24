@@ -10,8 +10,8 @@ import tempfile
 import os
 from typing import Optional
 
-from authz import verify_token_query
-from shared.auth_service import require_service_auth
+
+from shared import validate_websocket_token, require_service_auth
 
 app = FastAPI(title="June STT Service", version="1.0.0")
 logger = logging.getLogger("uvicorn.error")
@@ -125,7 +125,7 @@ def convert_audio_format(input_path: str, output_path: str) -> bool:
 async def transcribe_audio(
     audio: UploadFile = File(...),
     language: str = Form("en-US"),
-    service_auth_data: dict = Depends(require_service_auth)
+    service_auth_data: dict = Depends(require_service_auth)  # This stays the same
 ):
     """
     FIXED: Real speech-to-text transcription
@@ -253,18 +253,18 @@ async def transcribe_audio(
 # -----------------------------------------------------------------------------
 @app.websocket("/ws")
 async def ws_handler(ws: WebSocket):
-    # Keep your existing WebSocket implementation
     token = ws.query_params.get("token")
     try:
-        claims = verify_token_query(token)
+        # OLD: claims = verify_token_query(token)
+        # NEW:
+        auth_data = await validate_websocket_token(token)
     except Exception:
         await ws.close(code=4401)
-        logger.info("[ws] close 4401 (unauthorized)")
         return
 
     await ws.accept()
-    uid = claims.get("uid")
-    logger.info(f"[ws] accepted uid={uid}")
+    user_id = auth_data["user_id"]  # Changed from claims.get('uid')
+    logger.info(f"[ws] accepted user_id={user_id}")
 
     try:
         first = await ws.receive_text()

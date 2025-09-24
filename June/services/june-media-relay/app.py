@@ -14,6 +14,9 @@ import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import websockets
+import sys
+sys.path.append('../shared')  # Adjust path as needed
+from shared import validate_websocket_token, extract_user_id
 
 logger = logging.getLogger("media-relay")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -239,20 +242,16 @@ async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(..., description="Media streaming token")
 ):
-    """Main WebSocket endpoint for media streaming"""
-    
-    # Validate token
+    # Validate token - keep existing JWT validation for media tokens
     try:
         token_claims = TokenValidator.validate_token(token)
     except HTTPException:
         await websocket.close(code=4401, reason="Invalid token")
         return
     
-    # Extract session info from token
+    # Extract session info - this part stays the same since it's media-specific
     session_id = token_claims["sid"]
-    user_id = token_claims["sub"]
-    utterance_id = token_claims["utterance_id"]
-    scopes = token_claims["scope"].split()
+    user_id = token_claims["sub"] 
     
     # Check required scopes
     if "asr:stream:write" not in scopes:

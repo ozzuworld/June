@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict, HttpUrl
 
+from shared import require_service_auth
+
 from app.core.openvoice_engine import synthesize_v2_to_wav_path
 
 router = APIRouter(prefix="/tts", tags=["tts"])
@@ -34,7 +36,10 @@ async def _file_stream(path: str) -> AsyncIterator[bytes]:
 
 
 @router.post("/generate")
-async def generate(req: TTSRequest):
+async def generate(
+    req: TTSRequest,
+    service_auth: dict = Depends(require_service_auth)  # Add if needed
+):
     # Guard clauses
     if not req.text or len(req.text.strip()) == 0:
         raise HTTPException(status_code=400, detail="text is required")
