@@ -1,0 +1,52 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: allsafe-ingress
+  namespace: june-services
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
+    networking.gke.io/managed-certificates: "allsafe-ssl-cert"
+    cloud.google.com/backend-config: '{"default":"june-backend-config"}'
+spec:
+  rules:
+    - host: allsafe.world
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: june-orchestrator
+                port:
+                  number: 8080
+    - host: api.allsafe.world
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: june-orchestrator
+                port:
+                  number: 8080
+    - host: stt.allsafe.world
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: june-stt
+                port:
+                  number: 8080
+    - host: idp.allsafe.world
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: june-idp
+                port:
+                  number: 8080

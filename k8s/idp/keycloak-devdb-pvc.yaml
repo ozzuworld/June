@@ -1,0 +1,11 @@
+# k8s/idp/keycloak-devdb-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keycloak-devdb
+  namespace: june-services
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
