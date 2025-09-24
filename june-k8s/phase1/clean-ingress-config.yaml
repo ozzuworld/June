@@ -1,0 +1,139 @@
+# clean-ingress-config.yaml - Single, clean ingress configuration
+# This replaces all the conflicting ingress configurations
+
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: allsafe-ssl-cert
+  namespace: june-services
+spec:
+  domains:
+  - allsafe.world
+  - api.allsafe.world
+  - june-idp.allsafe.world
+  - june-orchestrator.allsafe.world
+  - june-stt.allsafe.world
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: june-main-ingress
+  namespace: june-services
+  annotations:
+    # Use GCE ingress controller (native to GKE)
+    kubernetes.io/ingress.class: "gce"
+    # Associate with static IP
+    kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
+    # Associate with managed certificate
+    networking.gke.io/managed-certificates: "allsafe-ssl-cert"
+    # Enable HTTPS redirect
+    networking.gke.io/redirect-to-https: "true"
+    # Backend configuration for health checks
+    cloud.google.com/backend-config: '{"default": "june-backend-config"}'
+spec:
+  rules:
+  # Main domain
+  - host: allsafe.world
+    http:
+      paths:
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+      - path: /v1/stt
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+      - path: /v1/orchestrator
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+      - path: /v1
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+  
+  # Service-specific subdomains
+  - host: june-idp.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+
+  - host: june-orchestrator.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+
+  - host: june-stt.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+
+  - host: api.allsafe.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+
+---
+# Backend configuration for health checks
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: june-backend-config
+  namespace: june-services
+spec:
+  healthCheck:
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /healthz
+    port: 8080
+  timeoutSec: 60
+  connectionDraining:
+    drainingTimeoutSec: 300

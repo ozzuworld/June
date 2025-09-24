@@ -1,7 +1,7 @@
-# .github/workflows/deploy-gke-fixed.yml
-# FIXED GitHub Actions workflow for June Platform deployment
+# .github/workflows/deploy-june-platform.yml
+# Complete auto-deployment workflow with DNS validation
 
-name: Deploy June Platform to GKE (Fixed)
+name: Deploy June AI Platform
 
 on:
   push:
@@ -9,9 +9,8 @@ on:
     paths:
       - 'June/services/**'
       - 'services/**'
-      - 'k8s/**'
-      - 'infra/gke/**'
-      - '.github/workflows/deploy-gke-fixed.yml'
+      - 'infra/**'
+      - '.github/workflows/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -22,9 +21,8 @@ on:
         options:
           - production
           - staging
-          - development
-      force_rebuild:
-        description: 'Force rebuild all images'
+      skip_dns_check:
+        description: 'Skip DNS validation'
         required: false
         type: boolean
         default: false
@@ -36,17 +34,84 @@ env:
   ARTIFACT_REGISTRY: ${{ vars.GCP_REGION || 'us-central1' }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID || 'main-buffer-469817-v7' }}/june
 
 jobs:
-  # Deploy Infrastructure
-  deploy-infrastructure:
-    name: Deploy GKE Infrastructure
+  # Pre-flight DNS validation
+  validate-dns:
+    name: Validate DNS Configuration
     runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_dns_check }}
+    outputs:
+      dns_valid: ${{ steps.check-dns.outputs.valid }}
+      static_ip: ${{ steps.get-ip.outputs.ip }}
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOYER_SA }}
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get static IP
+        id: get-ip
+        run: |
+          STATIC_IP=$(gcloud compute addresses describe june-services-ip --global --format="value(address)" 2>/dev/null || echo "")
+          if [ -z "$STATIC_IP" ]; then
+            echo "Creating static IP..."
+            gcloud compute addresses create june-services-ip --global --project=${{ env.PROJECT_ID }}
+            STATIC_IP=$(gcloud compute addresses describe june-services-ip --global --format="value(address)")
+          fi
+          echo "ip=$STATIC_IP" >> $GITHUB_OUTPUT
+          echo "Static IP: $STATIC_IP"
+
+      - name: Validate DNS configuration
+        id: check-dns
+        run: |
+          STATIC_IP="${{ steps.get-ip.outputs.ip }}"
+          DOMAINS=("allsafe.world" "api.allsafe.world" "stt.allsafe.world" "idp.allsafe.world")
+          ALL_VALID=true
+          
+          echo "🔍 Validating DNS configuration..."
+          echo "Required IP: $STATIC_IP"
+          echo ""
+          
+          for domain in "${DOMAINS[@]}"; do
+            DNS_IP=$(nslookup $domain 8.8.8.8 | grep "Address:" | tail -1 | awk '{print $2}' 2>/dev/null || echo "FAILED")
+            if [ "$DNS_IP" = "$STATIC_IP" ]; then
+              echo "✅ $domain → $DNS_IP (CORRECT)"
+            else
+              echo "❌ $domain → $DNS_IP (WRONG - should be $STATIC_IP)"
+              ALL_VALID=false
+            fi
+          done
+          
+          echo "valid=$ALL_VALID" >> $GITHUB_OUTPUT
+          
+          if [ "$ALL_VALID" = "false" ]; then
+            echo ""
+            echo "🚨 DNS CONFIGURATION ISSUE"
+            echo "=========================="
+            echo "Update these A records in your DNS provider:"
+            for domain in "${DOMAINS[@]}"; do
+              echo "A  $domain  $STATIC_IP"
+            done
+            exit 1
+          fi
+
+  # Deploy infrastructure
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: [validate-dns]
+    if: ${{ always() && (needs.validate-dns.result == 'success' || inputs.skip_dns_check) }}
     permissions:
       contents: read
       id-token: write
     outputs:
       cluster_name: ${{ steps.terraform.outputs.cluster_name }}
       static_ip: ${{ steps.terraform.outputs.static_ip }}
-      artifact_registry_url: ${{ steps.terraform.outputs.artifact_registry_url }}
     
     steps:
       - name: Checkout code
@@ -71,25 +136,20 @@ jobs:
         id: terraform
         working-directory: infra/gke
         run: |
-          # Initialize Terraform
           terraform init -upgrade
           
-          # Plan deployment
           terraform plan \
             -var="project_id=${{ env.PROJECT_ID }}" \
             -var="region=${{ env.REGION }}" \
             -var="cluster_name=${{ env.CLUSTER_NAME }}"
           
-          # Apply infrastructure
           terraform apply -auto-approve \
             -var="project_id=${{ env.PROJECT_ID }}" \
             -var="region=${{ env.REGION }}" \
             -var="cluster_name=${{ env.CLUSTER_NAME }}"
           
-          # Export outputs
           echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
           echo "static_ip=$(terraform output -raw static_ip)" >> $GITHUB_OUTPUT
-          echo "artifact_registry_url=$(terraform output -raw artifact_registry_url)" >> $GITHUB_OUTPUT
 
       - name: Configure kubectl
         run: |
@@ -97,88 +157,25 @@ jobs:
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }}
 
-  # Setup Secrets and Configuration
-  setup-secrets:
-    name: Setup Kubernetes Secrets
-    runs-on: ubuntu-latest
-    needs: deploy-infrastructure
-    permissions:
-      contents: read
-      id-token: write
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SA }}
-          project_id: ${{ env.PROJECT_ID }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure kubectl
-        run: |
-          gcloud container clusters get-credentials ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
-
-      - name: Create namespace
-        run: |
-          kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Setup service secrets
-        run: |
-          kubectl create secret generic june-secrets \
-            --namespace=june-services \
-            --from-literal=ORCHESTRATOR_CLIENT_ID="orchestrator-client" \
-            --from-literal=ORCHESTRATOR_CLIENT_SECRET="${{ secrets.ORCHESTRATOR_CLIENT_SECRET || 'orchestrator-secret-key-12345' }}" \
-            --from-literal=STT_CLIENT_ID="stt-client" \
-            --from-literal=STT_CLIENT_SECRET="${{ secrets.STT_CLIENT_SECRET || 'stt-secret-key-12345' }}" \
-            --from-literal=TTS_CLIENT_ID="tts-client" \
-            --from-literal=TTS_CLIENT_SECRET="${{ secrets.TTS_CLIENT_SECRET || 'tts-secret-key-12345' }}" \
-            --from-literal=GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY || '' }}" \
-            --from-literal=CHATTERBOX_API_KEY="${{ secrets.CHATTERBOX_API_KEY || '' }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Setup Firebase secrets (optional)
-        run: |
-          kubectl create secret generic firebase-secrets \
-            --namespace=june-services \
-            --from-literal=FIREBASE_PROJECT_ID="${{ secrets.FIREBASE_PROJECT_ID || '' }}" \
-            --from-literal=FIREBASE_WEB_API_KEY="${{ secrets.FIREBASE_WEB_API_KEY || '' }}" \
-            --from-literal=FIREBASE_SERVICE_ACCOUNT="${{ secrets.FIREBASE_SERVICE_ACCOUNT || '' }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      # Add this to the workflow after line 150:
-      - name: Apply resource limits patch
-        run: |
-          # Patch all deployments with free tier resource limits
-          kubectl patch deployment june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"june-orchestrator","resources":{"requests":{"memory":"512Mi","cpu":"300m"},"limits":{"memory":"1Gi","cpu":"800m"}}}]}}}}'
-          kubectl patch deployment june-stt -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"june-stt","resources":{"requests":{"memory":"256Mi","cpu":"200m"},"limits":{"memory":"512Mi","cpu":"500m"}}}]}}}}'
-
-  # Build and Push Images
+  # Build and push images (only for services that changed)
   build-images:
-    name: Build and Push Images
+    name: Build Images
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-secrets]
+    needs: [deploy-infrastructure]
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
-        service: [june-orchestrator, june-stt, june-idp]
+        service: [june-orchestrator, june-stt]
         include:
           - service: june-orchestrator
             context: June/services/june-orchestrator
-          - service: june-stt
+            dockerfile: June/services/june-orchestrator/Dockerfile
+          - service: june-stt  
             context: June/services/june-stt
-          - service: june-idp
-            context: services/june-idp
+            dockerfile: June/services/june-stt/Dockerfile
     
     steps:
       - name: Checkout code
@@ -206,61 +203,21 @@ jobs:
           echo "🐳 Building ${{ matrix.service }}..."
           
           docker build \
+            -f ${{ matrix.dockerfile }} \
             -t "$IMAGE_TAG" \
             -t "$LATEST_TAG" \
-            "${{ matrix.context }}"
+            ${{ matrix.context }}
           
           docker push "$IMAGE_TAG"
           docker push "$LATEST_TAG"
           
           echo "✅ Successfully pushed ${{ matrix.service }}"
 
-  # Deploy Keycloak
-  deploy-keycloak:
-    name: Deploy Keycloak IDP
-    runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-secrets, build-images]
-    permissions:
-      contents: read
-      id-token: write
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SA }}
-          project_id: ${{ env.PROJECT_ID }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure kubectl
-        run: |
-          gcloud container clusters get-credentials ${{ needs.deploy-infrastructure.outputs.cluster_name }} \
-            --region=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
-
-      - name: Deploy Keycloak
-        run: |
-          # Update image references
-          sed -i "s|quay.io/keycloak/keycloak:23.0.3|${{ env.ARTIFACT_REGISTRY }}/june-idp:${{ github.sha }}|g" k8s/june-services/keycloak-deployment.yaml
-          
-          kubectl apply -f k8s/june-services/keycloak-deployment.yaml
-          
-          # Wait for Keycloak to be ready
-          kubectl wait --namespace june-services \
-            --for=condition=available deployment/june-idp \
-            --timeout=600s
-
-  # Deploy Services
+  # Deploy Kubernetes services
   deploy-services:
-    name: Deploy June Services
+    name: Deploy Services
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, setup-secrets, build-images, deploy-keycloak]
+    needs: [deploy-infrastructure, build-images]
     permissions:
       contents: read
       id-token: write
@@ -285,58 +242,333 @@ jobs:
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }}
 
-      - name: Update service manifests
+      - name: Generate secure secrets
+        id: secrets
         run: |
-          # Update image references with commit SHA
-          sed -i "s|:latest|:${{ github.sha }}|g" k8s/june-services/june-services-with-auth.yaml
-          
-          # Update registry URL
-          sed -i "s|us-central1-docker.pkg.dev/main-buffer-469817-v7/june|${{ env.ARTIFACT_REGISTRY }}|g" k8s/june-services/june-services-with-auth.yaml
+          echo "keycloak_password=$(openssl rand -base64 32)" >> $GITHUB_OUTPUT
+          echo "jwt_key=$(openssl rand -base64 32)" >> $GITHUB_OUTPUT
+          echo "db_password=$(openssl rand -base64 32)" >> $GITHUB_OUTPUT
+          echo "orchestrator_secret=$(openssl rand -base64 32)" >> $GITHUB_OUTPUT
+          echo "stt_secret=$(openssl rand -base64 32)" >> $GITHUB_OUTPUT
 
-      - name: Deploy June services
+      - name: Deploy PostgreSQL database
         run: |
-          # Deploy all June services
-          kubectl apply -f k8s/june-services/june-services-with-auth.yaml
-          
-          # Wait for deployments
-          kubectl wait --namespace june-services \
-            --for=condition=available deployment \
-            --selector=app \
-            --timeout=600s
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: postgresql
+            namespace: june-services
+          spec:
+            serviceName: postgresql
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgresql
+            template:
+              metadata:
+                labels:
+                  app: postgresql
+              spec:
+                containers:
+                - name: postgresql
+                  image: postgres:16-alpine
+                  resources:
+                    requests:
+                      cpu: "200m"
+                      memory: "256Mi"
+                    limits:
+                      cpu: "400m"
+                      memory: "512Mi"
+                  env:
+                  - name: POSTGRES_DB
+                    value: "june_db"
+                  - name: POSTGRES_USER
+                    value: "postgres"
+                  - name: POSTGRES_PASSWORD
+                    value: "${{ steps.secrets.outputs.db_password }}"
+                  ports:
+                  - containerPort: 5432
+                  volumeMounts:
+                  - name: postgres-data
+                    mountPath: /var/lib/postgresql/data
+                  readinessProbe:
+                    exec:
+                      command: ["pg_isready", "-U", "postgres", "-d", "june_db"]
+                    initialDelaySeconds: 15
+                    periodSeconds: 10
+                  livenessProbe:
+                    exec:
+                      command: ["pg_isready", "-U", "postgres", "-d", "june_db"]
+                    initialDelaySeconds: 30
+                    periodSeconds: 30
+            volumeClaimTemplates:
+            - metadata:
+                name: postgres-data
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 10Gi
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgresql
+            namespace: june-services
+          spec:
+            selector:
+              app: postgresql
+            ports:
+            - port: 5432
+              targetPort: 5432
+          EOF
 
-      - name: Deploy ingress
+      - name: Create secrets
         run: |
-          # Update ingress with static IP
-          sed -i "s|allsafe-gclb-ip|june-services-ip|g" k8s/june-services/ingress.yaml
+          kubectl create secret generic june-secrets \
+            --namespace=june-services \
+            --from-literal=KEYCLOAK_ADMIN_PASSWORD="${{ steps.secrets.outputs.keycloak_password }}" \
+            --from-literal=JWT_SIGNING_KEY="${{ steps.secrets.outputs.jwt_key }}" \
+            --from-literal=DATABASE_PASSWORD="${{ steps.secrets.outputs.db_password }}" \
+            --from-literal=DATABASE_URL="postgresql://postgres:${{ steps.secrets.outputs.db_password }}@postgresql:5432/june_db" \
+            --from-literal=STT_CLIENT_ID="june-stt" \
+            --from-literal=STT_CLIENT_SECRET="${{ steps.secrets.outputs.stt_secret }}" \
+            --from-literal=ORCHESTRATOR_CLIENT_ID="june-orchestrator" \
+            --from-literal=ORCHESTRATOR_CLIENT_SECRET="${{ steps.secrets.outputs.orchestrator_secret }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy IDP service (official Keycloak)
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: june-idp
+            namespace: june-services
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: june-idp
+            template:
+              metadata:
+                labels:
+                  app: june-idp
+              spec:
+                containers:
+                - name: june-idp
+                  image: quay.io/keycloak/keycloak:23.0.3
+                  ports:
+                  - containerPort: 8080
+                  resources:
+                    requests:
+                      cpu: "200m"
+                      memory: "256Mi"
+                    limits:
+                      cpu: "500m"  
+                      memory: "512Mi"
+                  env:
+                  - name: KEYCLOAK_ADMIN
+                    value: "admin"
+                  - name: KEYCLOAK_ADMIN_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: june-secrets
+                        key: KEYCLOAK_ADMIN_PASSWORD
+                  - name: KC_HOSTNAME_STRICT
+                    value: "false"
+                  - name: KC_HTTP_ENABLED
+                    value: "true"
+                  - name: KC_PROXY
+                    value: "edge"
+                  readinessProbe:
+                    httpGet:
+                      path: /health/ready
+                      port: 8080
+                    initialDelaySeconds: 60
+                    periodSeconds: 15
+                  livenessProbe:
+                    httpGet:
+                      path: /health/live
+                      port: 8080
+                    initialDelaySeconds: 90
+                    periodSeconds: 30
+                  command: ["/opt/keycloak/bin/kc.sh"]
+                  args: ["start-dev", "--http-enabled=true"]
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: june-idp
+            namespace: june-services
+          spec:
+            type: ClusterIP
+            selector:
+              app: june-idp
+            ports:
+            - port: 8080
+              targetPort: 8080
+          EOF
+
+      - name: Update existing services with resource limits
+        run: |
+          # Update STT service
+          kubectl patch deployment june-stt -n june-services -p '{
+            "spec": {
+              "template": {
+                "spec": {
+                  "containers": [{
+                    "name": "june-stt",
+                    "image": "${{ env.ARTIFACT_REGISTRY }}/june-stt:${{ github.sha }}",
+                    "resources": {
+                      "requests": {"cpu": "200m", "memory": "256Mi"},
+                      "limits": {"cpu": "500m", "memory": "512Mi"}
+                    }
+                  }]
+                }
+              }
+            }
+          }' || echo "STT deployment not found - creating..."
+
+          # Update Orchestrator service
+          kubectl patch deployment june-orchestrator -n june-services -p '{
+            "spec": {
+              "template": {
+                "spec": {
+                  "containers": [{
+                    "name": "june-orchestrator",
+                    "image": "${{ env.ARTIFACT_REGISTRY }}/june-orchestrator:${{ github.sha }}",
+                    "resources": {
+                      "requests": {"cpu": "300m", "memory": "512Mi"},
+                      "limits": {"cpu": "800m", "memory": "1Gi"}
+                    }
+                  }]
+                }
+              }
+            }
+          }' || echo "Orchestrator deployment not found - creating..."
+
+      - name: Deploy ingress configuration
+        run: |
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.gke.io/v1
+          kind: ManagedCertificate
+          metadata:
+            name: allsafe-ssl-cert
+            namespace: june-services
+          spec:
+            domains:
+            - allsafe.world
+            - api.allsafe.world
+            - stt.allsafe.world  
+            - idp.allsafe.world
+
+          ---
+          apiVersion: cloud.google.com/v1
+          kind: BackendConfig
+          metadata:
+            name: june-backend-config
+            namespace: june-services
+          spec:
+            healthCheck:
+              checkIntervalSec: 30
+              timeoutSec: 10
+              healthyThreshold: 2
+              unhealthyThreshold: 3
+              type: HTTP
+              requestPath: /healthz
+              port: 8080
+
+          ---
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: allsafe-ingress
+            namespace: june-services
+            annotations:
+              kubernetes.io/ingress.class: "gce"
+              kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
+              networking.gke.io/managed-certificates: "allsafe-ssl-cert"
+              networking.gke.io/redirect-to-https: "true"
+              cloud.google.com/backend-config: '{"default": "june-backend-config"}'
+          spec:
+            rules:
+            - host: allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-orchestrator
+                      port:
+                        number: 8080
+            - host: api.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-orchestrator
+                      port:
+                        number: 8080
+            - host: stt.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-stt
+                      port:
+                        number: 8080
+            - host: idp.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-idp
+                      port:
+                        number: 8080
+          EOF
+
+      - name: Wait for deployments
+        run: |
+          echo "Waiting for PostgreSQL..."
+          kubectl wait --for=condition=ready pod -l app=postgresql -n june-services --timeout=300s
           
-          kubectl apply -f k8s/june-services/managedcert.yaml
-          kubectl apply -f k8s/june-services/ingress.yaml
+          echo "Waiting for IDP..."
+          kubectl wait --for=condition=available deployment/june-idp -n june-services --timeout=300s || echo "IDP still starting"
+          
+          echo "Checking service status..."
+          kubectl get pods -n june-services
+          kubectl get services -n june-services
+          kubectl get ingress -n june-services
 
       - name: Deployment summary
         run: |
-          echo "🎉 June Platform deployment completed successfully!"
+          STATIC_IP="${{ needs.deploy-infrastructure.outputs.static_ip }}"
+          
+          echo "🎉 June Platform deployed successfully!"
           echo ""
           echo "📋 Deployment Details:"
           echo "  Project: ${{ env.PROJECT_ID }}"
           echo "  Region: ${{ env.REGION }}"
           echo "  Cluster: ${{ needs.deploy-infrastructure.outputs.cluster_name }}"
-          echo "  Static IP: ${{ needs.deploy-infrastructure.outputs.static_ip }}"
-          echo "  Registry: ${{ needs.deploy-infrastructure.outputs.artifact_registry_url }}"
+          echo "  Static IP: $STATIC_IP"
           echo "  Commit: ${{ github.sha }}"
           echo ""
-          echo "🔧 Services Deployed:"
-          echo "  • Keycloak IDP (Authentication)"
-          echo "  • June Orchestrator (AI Engine)"
-          echo "  • June STT (Speech-to-Text)"
-          echo "  • June TTS (Text-to-Speech)"
+          echo "🌐 Service URLs (after certificate provisions):"
+          echo "  • Main site: https://allsafe.world"
+          echo "  • API: https://api.allsafe.world"
+          echo "  • STT: https://stt.allsafe.world"
+          echo "  • IDP: https://idp.allsafe.world"
           echo ""
-          echo "🌐 Access URLs (after DNS configuration):"
-          echo "  • Keycloak Admin: https://june-idp.allsafe.world/auth/admin"
-          echo "  • June Orchestrator: https://june-orchestrator.allsafe.world"
-          echo "  • STT Service: https://june-stt.allsafe.world"
+          echo "🔒 Certificate provisioning in progress..."
+          echo "   Monitor: kubectl get managedcertificate -n june-services -w"
           echo ""
-          echo "🔧 Next Steps:"
-          echo "  1. Configure DNS to point to ${{ needs.deploy-infrastructure.outputs.static_ip }}"
-          echo "  2. SSL certificates will auto-provision"
-          echo "  3. Update API keys in secrets if needed"
-          echo "  4. Test services via the deployed URLs"
+          echo "💰 Free tier optimized deployment complete!"

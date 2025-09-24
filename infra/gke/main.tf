@@ -1,6 +1,4 @@
-# infra/gke/main.tf - Simplified working version
-# Focus: Get GKE cluster running with basic services first
-
+# infra/gke/main.tf - Updated with auto-deployment
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -22,7 +20,7 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "GCP Region"
+  description = "GCP Region"  
   type        = string
   default     = "us-central1"
 }
@@ -48,34 +46,30 @@ provider "kubernetes" {
 }
 
 # Enable required APIs
-resource "google_project_service" "container" {
+resource "google_project_service" "required_apis" {
+  for_each = toset([
+    "container.googleapis.com",
+    "compute.googleapis.com", 
+    "artifactregistry.googleapis.com",
+    "secretmanager.googleapis.com",
+    "dns.googleapis.com"
+  ])
+  
   project = var.project_id
-  service = "container.googleapis.com"
+  service = each.value
   disable_on_destroy = false
 }
 
-resource "google_project_service" "compute" {
-  project = var.project_id
-  service = "compute.googleapis.com"
-  disable_on_destroy = false
-}
-
-resource "google_project_service" "artifactregistry" {
-  project = var.project_id
-  service = "artifactregistry.googleapis.com"
-  disable_on_destroy = false
-}
-
-# VPC Network
+# VPC Network  
 resource "google_compute_network" "vpc" {
   name                    = "${var.cluster_name}-vpc"
   auto_create_subnetworks = false
   project                 = var.project_id
   
-  depends_on = [google_project_service.compute]
+  depends_on = [google_project_service.required_apis]
 }
 
-# Subnet with secondary ranges for GKE
+# Subnet
 resource "google_compute_subnetwork" "subnet" {
   name          = "${var.cluster_name}-subnet"
   ip_cidr_range = "10.0.0.0/16"
@@ -91,7 +85,7 @@ resource "google_compute_subnetwork" "subnet" {
   }
 
   secondary_ip_range {
-    range_name    = "k8s-services"
+    range_name    = "k8s-services" 
     ip_cidr_range = "10.8.0.0/20"
   }
 }
@@ -102,7 +96,6 @@ resource "google_container_cluster" "primary" {
   location = var.region
   project  = var.project_id
 
-  # Enable Autopilot
   enable_autopilot = true
   
   network    = google_compute_network.vpc.id
@@ -113,26 +106,22 @@ resource "google_container_cluster" "primary" {
     services_secondary_range_name = google_compute_subnetwork.subnet.secondary_ip_range[1].range_name
   }
 
-  # Workload Identity
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
-  depends_on = [
-    google_project_service.container,
-    google_project_service.compute,
-  ]
+  depends_on = [google_project_service.required_apis]
 }
 
 # Artifact Registry
 resource "google_artifact_registry_repository" "june_repo" {
   location      = var.region
-  project       = var.project_id
+  project       = var.project_id  
   repository_id = "june"
   description   = "June AI Platform Docker repository"
   format        = "DOCKER"
   
-  depends_on = [google_project_service.artifactregistry]
+  depends_on = [google_project_service.required_apis]
 }
 
 # Static IP for Load Balancer
@@ -141,7 +130,41 @@ resource "google_compute_global_address" "june_ip" {
   project = var.project_id
 }
 
-# Create basic namespace
+# Secret Manager secrets
+resource "google_secret_manager_secret" "june_secrets" {
+  for_each = toset([
+    "keycloak-admin-password",
+    "jwt-signing-key",
+    "database-password", 
+    "orchestrator-client-secret",
+    "stt-client-secret"
+  ])
+
+  secret_id = each.key
+  project   = var.project_id
+
+  replication {
+    auto {}
+  }
+  
+  depends_on = [google_project_service.required_apis]
+}
+
+# Service Account for Secret Manager
+resource "google_service_account" "june_secret_manager" {
+  account_id   = "june-secret-manager"
+  display_name = "June Secret Manager Service Account"
+  project      = var.project_id
+}
+
+# IAM for Secret Manager access
+resource "google_project_iam_member" "june_secret_accessor" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.june_secret_manager.email}"
+}
+
+# Kubernetes namespace
 resource "kubernetes_namespace" "june_services" {
   metadata {
     name = "june-services"
@@ -153,19 +176,71 @@ resource "kubernetes_namespace" "june_services" {
   depends_on = [google_container_cluster.primary]
 }
 
-# Basic secret for API keys (populate manually after deployment)
-resource "kubernetes_secret" "june_secrets" {
+# Kubernetes service account with Workload Identity
+resource "kubernetes_service_account" "june_secret_manager" {
   metadata {
-    name      = "june-secrets"
+    name      = "june-secret-manager"
+    namespace = kubernetes_namespace.june_services.metadata[0].name
+    annotations = {
+      "iam.gke.io/gcp-service-account" = google_service_account.june_secret_manager.email
+    }
+  }
+}
+
+# Workload Identity binding
+resource "google_service_account_iam_member" "june_workload_identity" {
+  service_account_id = google_service_account.june_secret_manager.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[${kubernetes_namespace.june_services.metadata[0].name}/june-secret-manager]"
+}
+
+# Resource quota for free tier compliance
+resource "kubernetes_resource_quota" "june_quota" {
+  metadata {
+    name      = "june-resource-quota"
     namespace = kubernetes_namespace.june_services.metadata[0].name
   }
-
-  data = {
-    GEMINI_API_KEY     = ""  # Set after deployment
-    CHATTERBOX_API_KEY = ""  # Set after deployment
+  
+  spec {
+    hard = {
+      "requests.cpu"    = "6"
+      "requests.memory" = "24Gi"
+      "limits.cpu"      = "8" 
+      "limits.memory"   = "30Gi"
+      "persistentvolumeclaims" = "5"
+      "services.loadbalancers" = "0"
+    }
   }
+}
 
-  type = "Opaque"
+# Limit ranges
+resource "kubernetes_limit_range" "june_limits" {
+  metadata {
+    name      = "june-limit-range"
+    namespace = kubernetes_namespace.june_services.metadata[0].name
+  }
+  
+  spec {
+    limit {
+      type = "Container"
+      default = {
+        cpu    = "500m"
+        memory = "512Mi"
+      }
+      default_request = {
+        cpu    = "200m" 
+        memory = "256Mi"
+      }
+      max = {
+        cpu    = "1"
+        memory = "1Gi"  
+      }
+      min = {
+        cpu    = "100m"
+        memory = "128Mi"
+      }
+    }
+  }
 }
 
 # Outputs
@@ -191,17 +266,16 @@ output "artifact_registry_url" {
 }
 
 output "static_ip" {
-  description = "Static IP for ingress"
+  description = "Static IP for DNS configuration"  
   value       = google_compute_global_address.june_ip.address
 }
 
-output "next_steps" {
-  description = "Next steps to complete deployment"
-  value = <<-EOT
-    1. Configure kubectl: ${google_container_cluster.primary.name}
-    2. Build and push images to: ${var.region}-docker.pkg.dev/${var.project_id}/june
-    3. Update API keys: kubectl patch secret june-secrets -n june-services --patch='{"data":{"GEMINI_API_KEY":"<base64-key>"}}'
-    4. Deploy services: kubectl apply -f k8s/june-services/
-    5. Static IP for DNS: ${google_compute_global_address.june_ip.address}
-  EOT
+output "dns_configuration" {
+  description = "Required DNS A records"
+  value = {
+    "allsafe.world"     = google_compute_global_address.june_ip.address
+    "api.allsafe.world" = google_compute_global_address.june_ip.address  
+    "stt.allsafe.world" = google_compute_global_address.june_ip.address
+    "idp.allsafe.world" = google_compute_global_address.june_ip.address
+  }
 }
