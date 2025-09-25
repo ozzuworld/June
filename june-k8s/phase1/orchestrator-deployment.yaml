@@ -32,6 +32,13 @@ spec:
         image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
         ports:
         - containerPort: 8080
+        resources:
+          requests:
+            cpu: "300m"
+            memory: "512Mi"
+          limits:
+            cpu: "800m"
+            memory: "1Gi"
         env:
         - name: PORT
           value: "8080"
@@ -74,6 +81,23 @@ spec:
             secretKeyRef:
               name: june-idp-secret
               key: ORCHESTRATOR_CLIENT_SECRET
+        # AI Configuration
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: GEMINI_API_KEY
+        - name: CORS_ALLOW_ORIGINS
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: CORS_ALLOW_ORIGINS
+        # TTS Configuration
+        - name: TTS_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: june-idp-secret
+              key: EXTERNAL_TTS_URL
         readinessProbe:
           httpGet:
             path: /healthz
