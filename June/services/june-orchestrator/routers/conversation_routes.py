@@ -1,4 +1,4 @@
-# June/services/june-orchestrator/routers/conversation_routes.py
+# June/services/june-orchestrator/routers/conversation_routes.py - FIXED VERSION
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,9 +6,6 @@ import logging
 import time
 import uuid
 import os
-import os
-import logging
-
 
 from db.session import get_db
 from schemas.conversation import ConversationInput, ConversationOutput, MessageArtifact
@@ -38,6 +35,25 @@ except ImportError as e:
 
 router = APIRouter(prefix="/v1", tags=["conversation"])
 logger = logging.getLogger(__name__)
+
+# ✅ ADD DEBUG ROUTE for testing
+@router.get("/debug")
+async def debug_routes():
+    """Debug endpoint to verify routing is working"""
+    return {
+        "service": "june-orchestrator",
+        "available_routes": [
+            "/v1/conversation (POST) - Main chat endpoint",
+            "/v1/debug (GET) - This debug endpoint", 
+            "/healthz (GET) - Health check"
+        ],
+        "ai_status": {
+            "gemini_available": AI_AVAILABLE,
+            "api_key_configured": bool(GEMINI_API_KEY)
+        },
+        "current_time": time.time(),
+        "status": "OK"
+    }
 
 async def generate_ai_response(user_text: str, user_id: str) -> str:
     """Generate AI response using Gemini or intelligent fallbacks"""
@@ -106,15 +122,16 @@ Provide a helpful, accurate response."""
         logger.error(f"❌ AI generation failed: {e}")
         return "I apologize, but I'm having trouble processing your request right now. Please try rephrasing your question or try again in a moment."
 
+# ✅ FIXED: Add proper authentication dependency
 @router.post("/conversation", response_model=ConversationOutput)
 async def process_conversation(
     payload: ConversationInput,
-    current_user: dict = Depends(require_user_auth),
+    current_user: dict = Depends(require_user_auth),  # ✅ ADD: Authentication required
     db: Annotated[AsyncSession, Depends(get_db)],
     http = Depends(get_http_client),
 ) -> ConversationOutput:
     try:
-        # Extract user info
+        # ✅ ADD: Extract user info
         user_id = extract_user_id(current_user)
         logger.info(f"💬 Processing conversation for user {user_id}: {payload.text}")
         
@@ -194,78 +211,3 @@ async def process_conversation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error during conversation processing"
         )
-    
-
-logger = logging.getLogger(__name__)
-
-# Debug the AI configuration
-def debug_ai_setup():
-    """Debug function to check AI configuration"""
-    logger.info("=== AI Configuration Debug ===")
-    
-    # Check environment variable
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    logger.info(f"GEMINI_API_KEY present: {bool(gemini_key)}")
-    if gemini_key:
-        logger.info(f"GEMINI_API_KEY length: {len(gemini_key)}")
-        logger.info(f"GEMINI_API_KEY starts with: {gemini_key[:10]}...")
-    
-    # Check library import
-    try:
-        import google.generativeai as genai
-        logger.info("✅ google.generativeai imported successfully")
-        
-        if gemini_key:
-            try:
-                genai.configure(api_key=gemini_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                logger.info("✅ Gemini model created successfully")
-                
-                # Test a simple generation
-                test_response = model.generate_content("Say 'Hello World' to test the API")
-                logger.info(f"✅ Test response: {test_response.text[:50]}...")
-                return True, model
-                
-            except Exception as e:
-                logger.error(f"❌ Gemini API test failed: {e}")
-                return False, None
-        else:
-            logger.error("❌ No GEMINI_API_KEY found")
-            return False, None
-            
-    except ImportError as e:
-        logger.error(f"❌ Failed to import google.generativeai: {e}")
-        return False, None
-
-# Call this at startup
-AI_AVAILABLE, model = debug_ai_setup()
-
-async def generate_ai_response(user_text: str, user_id: str) -> str:
-    """Generate AI response using Gemini or intelligent fallbacks"""
-    logger.info(f"🤖 Generating AI response. AI_AVAILABLE: {AI_AVAILABLE}")
-    
-    try:
-        if AI_AVAILABLE and model:
-            logger.info(f"🤖 Using Gemini AI for: {user_text[:50]}...")
-            
-            # Create a context-aware prompt
-            prompt = f"""You are OZZU, a helpful AI assistant. Respond naturally and helpfully to the user's question. Keep responses concise but informative.
-
-User question: {user_text}
-
-Provide a helpful, accurate response."""
-
-            response = model.generate_content(prompt)
-            ai_text = response.text.strip()
-            
-            logger.info(f"✅ AI response generated: {ai_text[:100]}...")
-            return ai_text
-            
-        else:
-            logger.warning(f"⚠️ AI not available, using fallback for: {user_text[:50]}...")
-            # Your existing fallback logic here...
-            return f"I understand you said: '{user_text}'. I'm here to help! (AI temporarily unavailable)"
-            
-    except Exception as e:
-        logger.error(f"❌ AI generation failed: {e}")
-        return f"I apologize, but I'm having trouble processing your request right now. Please try again in a moment."

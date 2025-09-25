@@ -1,4 +1,3 @@
-# June/services/june-orchestrator/Dockerfile - Fixed version
 FROM python:3.11-slim
 WORKDIR /app
 
