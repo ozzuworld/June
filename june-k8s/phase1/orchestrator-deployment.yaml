@@ -5,9 +5,10 @@ metadata:
   namespace: june-services
   labels:
     app: june-orchestrator
-    phase: "1"
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: june-orchestrator
@@ -16,97 +17,123 @@ spec:
       labels:
         app: june-orchestrator
     spec:
-      serviceAccountName: june-orchestrator
-      initContainers:
-      - name: wait-for-db
-        image: postgres:16-alpine
-        command:
-        - sh
-        - -c
-        - |
-          until pg_isready -h postgresql -p 5432 -U postgres -d june_db; do
-            sleep 3
-          done
       containers:
-      - name: june-orchestrator
-        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
-        ports:
-        - containerPort: 8080
-        resources:
-          requests:
-            cpu: "300m"
-            memory: "512Mi"
-          limits:
-            cpu: "800m"
-            memory: "1Gi"
-        env:
-        - name: PORT
-          value: "8080"
-        - name: LOG_LEVEL
-          value: "INFO"
-        - name: STT_SERVICE_URL
-          value: "http://june-stt:8080"
-        - name: MEDIA_RELAY_URL
-          value: "http://june-media-relay:8080"
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: DATABASE_URL
-        - name: EXTERNAL_TTS_URL
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: EXTERNAL_TTS_URL
-        - name: JWT_SIGNING_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: JWT_SIGNING_KEY
-        - name: JWT_ISSUER
-          value: "https://june-idp.allsafe.world/auth/realms/june"
-        - name: KC_BASE_URL
-          value: "http://june-idp:8080/auth"
-        - name: KC_REALM
-          value: "june"
-        - name: KC_HOSTNAME_URL
-          value: "https://june-idp.allsafe.world"
-        - name: ORCHESTRATOR_CLIENT_ID
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: ORCHESTRATOR_CLIENT_ID
-        - name: ORCHESTRATOR_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: ORCHESTRATOR_CLIENT_SECRET
-        # AI Configuration
-        - name: GEMINI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: GEMINI_API_KEY
-        - name: CORS_ALLOW_ORIGINS
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: CORS_ALLOW_ORIGINS
-        # TTS Configuration
-        - name: TTS_BASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: june-idp-secret
-              key: EXTERNAL_TTS_URL
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 60
-          periodSeconds: 15
+        - name: app
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "1Gi"
+          env:
+            # ---------- OIDC / Keycloak: use the real issuer ----------
+            - name: OIDC_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            - name: OIDC_AUDIENCE
+              value: "june-orchestrator"
+            # Optional but explicit; if provided, code can skip discovery:
+            - name: OIDC_JWKS_URL
+              value: "https://idp.allsafe.world/realms/allsafe/protocol/openid-connect/certs"
+            - name: OIDC_CACHE_TTL_SECONDS
+              value: "3600"
+
+            # Legacy vars (safe to keep if other code paths still read them)
+            - name: KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: KEYCLOAK_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            - name: KEYCLOAK_BASE_URL
+              value: "https://idp.allsafe.world"
+            - name: REALM
+              value: "allsafe"
+            - name: ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            - name: JWKS_URL
+              value: "https://idp.allsafe.world/realms/allsafe/protocol/openid-connect/certs"
+
+            # --------- Client creds for service-to-service, if used ----------
+            - name: ORCHESTRATOR_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_ID
+            - name: ORCHESTRATOR_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_SECRET
+
+            # (duplicate mapping for any code paths using KEYCLOAK_CLIENT_ID/SECRET)
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_ID
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_SECRET
+
+            # -------------------- App secrets --------------------
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: DATABASE_URL
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: DB_PASSWORD
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: GEMINI_API_KEY
+            - name: JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: JWT_SIGNING_KEY
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default":"june-backend-config"}'
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

@@ -8,12 +8,14 @@ import logging, os
 from db.session import engine
 from db.models import Base
 from middleware.error import unhandled_errors
+from shared import test_keycloak_connection
 
 # ⬇️ import your routers
 from routers.conversation_routes import router as conversation_router
 from media_apis import media_router
 from voice_ws import voice_router
 from routers.conversation_routes import router as conversation_router
+
 app.include_router(conversation_router) 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
+    # Debug Keycloak connection
+    @app.get("/debug/auth")
+    async def debug_auth():
+        """Debug endpoint to test Keycloak connection"""
+        return await test_keycloak_connection()
 
     # Health
     @app.get("/")
