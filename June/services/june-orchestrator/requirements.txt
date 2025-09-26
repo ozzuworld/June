@@ -1,21 +1,9 @@
-# June/services/june-orchestrator/requirements.txt - Add this line
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-langchain==0.2.10
-langchain-google-vertexai>=1.0.1
-google-cloud-aiplatform==1.66.0
-firebase-admin==6.5.0
-httpx==0.27.0
-websockets==12.0
-pydantic==2.8.2
-PyJWT[crypto]==2.8.0
-cryptography==41.0.7
+# Minimal requirements for clean June Orchestrator
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-jose[cryptography]==3.3.0
 requests==2.31.0
+pydantic==2.5.2
 
-# ADD THIS LINE for Gemini AI:
-google-generativeai>=0.3.0
-
-alembic==1.12.1
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-asyncpg==0.29.0
+# Optional: Google Generative AI (for Gemini integration)
+google-generativeai==0.3.2

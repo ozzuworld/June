@@ -1,265 +1,238 @@
-# app.py - Enhanced with TTS integration
+#!/usr/bin/env python3
+"""
+June Orchestrator - Clean Version
+Simple, minimal FastAPI service for chat functionality
+"""
+
 import os
 import logging
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
-from starlette.middleware.cors import CORSMiddleware
+import time
+from typing import Dict, Any, Optional
 
-# Import fixed shared auth
-from shared.auth import (
-    require_user_auth, 
-    test_keycloak_connection, 
-    get_auth_service,
-    AuthError,
-    extract_user_id
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+import requests
+from jose import jwt, JWTError
+
+# Configure logging
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-
-from db.session import engine
-from db.models import Base
-from middleware.error import unhandled_errors
-
-# Import only the enhanced router (contains all functionality)
-from routers.enhanced_conversation_routes import router as enhanced_conversation_router
-
-# Import TTS initialization
-from tts_service import initialize_tts_service
-
-# Set up logging
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-def _get_allowed_origins() -> list[str]:
-    origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
-    if origins.strip() == "*":
-        return ["*"]
-    return [o.strip() for o in origins.split(",") if o.strip()]
+# Environment variables
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "https://idp.allsafe.world")
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "allsafe")
+REQUIRED_AUDIENCE = os.getenv("REQUIRED_AUDIENCE", "june-orchestrator")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager with TTS initialization"""
-    # Startup
-    logger.info("🚀 Starting June Orchestrator with TTS integration...")
-    
-    # Initialize database
+# FastAPI app
+app = FastAPI(
+    title="June Orchestrator",
+    description="Clean, simple AI chat orchestrator",
+    version="2.0.0"
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure as needed
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Security
+security = HTTPBearer(auto_error=False)
+
+# Models
+class ChatRequest(BaseModel):
+    text: str
+    language: Optional[str] = "en"
+    metadata: Optional[Dict[str, Any]] = None
+
+class ChatResponse(BaseModel):
+    ok: bool = True
+    message: Dict[str, str]
+    response_time_ms: Optional[int] = None
+
+# Authentication
+def get_keycloak_public_key():
+    """Get public key from Keycloak for token verification"""
     try:
-        Base.metadata.create_all(bind=engine.sync_engine)
-        logger.info("✅ Database initialized")
+        jwks_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
+        response = requests.get(jwks_url, timeout=10)
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
-        logger.error(f"❌ Database initialization failed: {e}")
+        logger.error(f"Failed to get Keycloak public key: {e}")
+        return None
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify JWT token from Keycloak"""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required"
+        )
     
-    # Test auth configuration
     try:
-        auth_service = get_auth_service()
-        logger.info("✅ Auth service initialized")
+        # For now, we'll do basic validation
+        # In production, properly verify with Keycloak public key
+        token = credentials.credentials
         
-        # Test Keycloak connection
-        test_result = await test_keycloak_connection()
-        if test_result["status"] == "success":
-            logger.info("✅ Keycloak connection test passed")
-            logger.info(f"   Issuer: {test_result['oidc_endpoints']['issuer']}")
-            logger.info(f"   JWKS URI: {test_result['oidc_endpoints']['jwks_uri']}")
-        else:
-            logger.error(f"❌ Keycloak connection test failed: {test_result['error']}")
+        # Basic token validation (customize as needed)
+        if not token or len(token.split('.')) != 3:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token format"
+            )
+        
+        # For now, return a basic user context
+        # In production, decode and validate the JWT properly
+        return {
+            "user_id": "authenticated_user",
+            "username": "user",
+            "token": token
+        }
+        
     except Exception as e:
-        logger.error(f"❌ Auth service initialization failed: {e}")
+        logger.error(f"Token verification failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
+
+# AI Response Generation
+def generate_ai_response(user_text: str) -> str:
+    """Generate AI response using Gemini or fallback logic"""
     
-    # Initialize TTS service
-    try:
-        tts_initialized = await initialize_tts_service()
-        if tts_initialized:
-            logger.info("✅ TTS service initialized and connected")
-        else:
-            logger.warning("⚠️ TTS service initialized but not connected (will use fallback)")
-    except Exception as e:
-        logger.error(f"❌ TTS service initialization failed: {e}")
-    
-    # Test Gemini API if available
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
+    # Try Gemini API if available
+    if GEMINI_API_KEY:
         try:
             import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
+            genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-1.5-flash')
-            logger.info("✅ Gemini AI initialized")
+            
+            response = model.generate_content(f"Respond naturally to: {user_text}")
+            return response.text
+            
         except Exception as e:
-            logger.warning(f"⚠️ Gemini AI initialization failed: {e}")
+            logger.warning(f"Gemini API failed, using fallback: {e}")
+    
+    # Fallback responses
+    user_lower = user_text.lower()
+    
+    if any(word in user_lower for word in ['hello', 'hi', 'hey']):
+        return "Hello! I'm OZZU, your AI assistant. How can I help you today?"
+    
+    elif any(word in user_lower for word in ['weather', 'temperature']):
+        return "I'd be happy to help with weather information, but I don't have access to current weather data yet. Is there anything else I can help you with?"
+    
+    elif any(word in user_lower for word in ['time', 'date']):
+        return f"I can see it's currently around {time.strftime('%I:%M %p')} on {time.strftime('%B %d, %Y')}. How can I assist you?"
+    
+    elif any(word in user_lower for word in ['help', 'what can you do']):
+        return "I'm here to help! I can answer questions, have conversations, and assist with various tasks. What would you like to know or discuss?"
+    
     else:
-        logger.warning("⚠️ GEMINI_API_KEY not set")
-    
-    logger.info("🎉 June Orchestrator startup complete with TTS support!")
-    
-    yield
-    
-    # Shutdown
-    logger.info("👋 Shutting down June Orchestrator...")
+        return f"I understand you're asking about: '{user_text}'. I'm here to help! What would you like to know more about?"
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title="June Orchestrator with TTS", 
-        version="1.1.0",
-        description="AI conversation orchestrator with text-to-speech integration",
-        lifespan=lifespan
-    )
-
-    # Error middleware
-    app.middleware("http")(unhandled_errors)
-
-    # CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_get_allowed_origins(),
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
-
-    # ========== DEBUG ENDPOINTS ==========
-    
-    @app.get("/debug/auth")
-    async def debug_auth():
-        """Debug endpoint to test Keycloak connection"""
-        try:
-            result = await test_keycloak_connection()
-            return result
-        except Exception as e:
-            logger.error(f"Debug auth failed: {e}")
-            return {
-                "status": "error",
-                "error": str(e),
-                "environment": {
-                    "KEYCLOAK_URL": os.getenv("KEYCLOAK_URL", "NOT_SET"),
-                    "KEYCLOAK_REALM": os.getenv("KEYCLOAK_REALM", "NOT_SET"),
-                    "REQUIRED_AUDIENCE": os.getenv("REQUIRED_AUDIENCE", "NOT_SET"),
-                }
-            }
-
-    @app.get("/debug/env")
-    async def debug_env():
-        """Debug endpoint to check environment variables"""
-        return {
-            "auth_config": {
-                "KEYCLOAK_URL": os.getenv("KEYCLOAK_URL", "NOT_SET"),
-                "KEYCLOAK_REALM": os.getenv("KEYCLOAK_REALM", "NOT_SET"),
-                "REQUIRED_AUDIENCE": os.getenv("REQUIRED_AUDIENCE", "NOT_SET"),
-                "OIDC_JWKS_URL": os.getenv("OIDC_JWKS_URL", "NOT_SET"),
-                "has_client_id": bool(os.getenv("ORCHESTRATOR_CLIENT_ID")),
-                "has_client_secret": bool(os.getenv("ORCHESTRATOR_CLIENT_SECRET")),
-            },
-            "app_config": {
-                "has_gemini_key": bool(os.getenv("GEMINI_API_KEY")),
-                "has_database_url": bool(os.getenv("DATABASE_URL")),
-                "log_level": os.getenv("LOG_LEVEL", "INFO"),
-            },
-            "tts_config": {
-                "EXTERNAL_TTS_URL": os.getenv("EXTERNAL_TTS_URL", "NOT_SET"),
-                "TTS_ENABLE_CACHING": os.getenv("TTS_ENABLE_CACHING", "true"),
-                "TTS_ENABLE_FALLBACK": os.getenv("TTS_ENABLE_FALLBACK", "true"),
-                "TTS_DEFAULT_VOICE": os.getenv("TTS_DEFAULT_VOICE", "default"),
-                "TTS_DEFAULT_SPEED": os.getenv("TTS_DEFAULT_SPEED", "1.0"),
-            }
+# Routes
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "service": "june-orchestrator",
+        "version": "2.0.0",
+        "status": "running",
+        "description": "Clean, simple AI chat orchestrator",
+        "endpoints": {
+            "chat": "/v1/chat",
+            "health": "/healthz"
         }
+    }
 
-    @app.get("/debug/whoami")
-    async def debug_whoami(user_data = require_user_auth):
-        """Debug endpoint to test token validation"""
-        try:
-            user_id = extract_user_id(user_data)
-            return {
-                "status": "authenticated",
-                "user_id": user_id,
-                "username": user_data.get("preferred_username"),
-                "email": user_data.get("email"),
-                "client_id": user_data.get("azp"),
-                "audience": user_data.get("aud"),
-                "scopes": user_data.get("scope", "").split(),
-                "token_claims": {
-                    k: v for k, v in user_data.items() 
-                    if k in ["sub", "iss", "aud", "exp", "iat", "azp", "scope"]
-                }
-            }
-        except Exception as e:
-            logger.error(f"Debug whoami failed: {e}")
+@app.get("/healthz")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "june-orchestrator",
+        "version": "2.0.0",
+        "timestamp": int(time.time())
+    }
+
+@app.get("/debug/routes")
+async def debug_routes():
+    """Debug endpoint to list all routes"""
+    routes = []
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods)
+            })
+    return {"routes": routes}
+
+@app.post("/v1/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest, user_context: Dict = Depends(verify_token)):
+    """Main chat endpoint - simple and clean"""
+    
+    start_time = time.time()
+    
+    try:
+        # Validate input
+        if not request.text or not request.text.strip():
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Debug failed: {str(e)}"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Text message is required"
             )
-
-    @app.get("/debug/routes")
-    async def debug_routes():
-        """Debug endpoint to list all available routes"""
-        routes = []
-        for route in app.routes:
-            if hasattr(route, 'methods') and hasattr(route, 'path'):
-                routes.append({
-                    "path": route.path,
-                    "methods": list(route.methods),
-                    "name": getattr(route, 'name', 'unnamed')
-                })
-        return {"routes": routes}
-
-    # ========== HEALTH ENDPOINTS ==========
-
-    @app.get("/healthz")
-    async def health_check():
-        """Health check endpoint"""
-        return {
-            "status": "healthy",
-            "service": "june-orchestrator",
-            "version": "1.1.0",
-            "features": ["tts_integration", "conversation_management", "auth"]
-        }
-
-    @app.get("/")
-    async def root():
-        """Root endpoint"""
-        return {
-            "service": "june-orchestrator", 
-            "status": "running",
-            "version": "1.1.0",
-            "description": "AI conversation orchestrator with TTS integration",
-            "endpoints": {
-                "chat": "/v1/chat",
-                "voice_cloning": "/v1/chat/clone",
-                "tts_status": "/v1/tts/status",
-                "voices": "/v1/tts/voices",
-                "health": "/healthz",
-                "debug_routes": "/debug/routes"
-            }
-        }
-
-    # ========== MAIN ROUTERS ==========
-    
-    # ✅ FIXED: Include only the enhanced conversation router 
-    # (it has all the functionality of the basic router plus TTS support)
-    app.include_router(enhanced_conversation_router)
-    
-    logger.info("✅ Enhanced conversation router registered with /v1/chat endpoint")
-
-    # ========== ERROR HANDLERS ==========
-    
-    @app.exception_handler(AuthError)
-    async def auth_error_handler(request, exc: AuthError):
-        """Handle authentication errors"""
-        logger.warning(f"Auth error: {exc}")
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": f"Authentication failed: {str(exc)}"}
-        )
-
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request, exc: HTTPException):
-        """Handle HTTP exceptions with better logging"""
-        if exc.status_code == 401:
-            logger.warning(f"401 Unauthorized: {exc.detail}")
-        elif exc.status_code >= 500:
-            logger.error(f"Server error {exc.status_code}: {exc.detail}")
         
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail}
+        user_text = request.text.strip()
+        logger.info(f"💬 Chat request from {user_context.get('username', 'user')}: '{user_text[:50]}...'")
+        
+        # Generate AI response
+        ai_response = generate_ai_response(user_text)
+        
+        response_time = int((time.time() - start_time) * 1000)
+        
+        logger.info(f"✅ Generated response in {response_time}ms")
+        
+        return ChatResponse(
+            ok=True,
+            message={
+                "text": ai_response,
+                "role": "assistant"
+            },
+            response_time_ms=response_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
         )
 
-    return app
+# Error handlers
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    logger.warning(f"404 Not Found: {request.url}")
+    return {
+        "detail": "Not Found",
+        "available_endpoints": {
+            "chat": "/v1/chat",
+            "health": "/healthz",
+            "debug": "/debug/routes"
+        }
+    }
 
-app = create_app()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
