@@ -19,8 +19,7 @@ from db.session import engine
 from db.models import Base
 from middleware.error import unhandled_errors
 
-# Import routers
-from routers.conversation_routes import router as conversation_router
+# Import only the enhanced router (contains all functionality)
 from routers.enhanced_conversation_routes import router as enhanced_conversation_router
 
 # Import TTS initialization
@@ -186,6 +185,19 @@ def create_app() -> FastAPI:
                 detail=f"Debug failed: {str(e)}"
             )
 
+    @app.get("/debug/routes")
+    async def debug_routes():
+        """Debug endpoint to list all available routes"""
+        routes = []
+        for route in app.routes:
+            if hasattr(route, 'methods') and hasattr(route, 'path'):
+                routes.append({
+                    "path": route.path,
+                    "methods": list(route.methods),
+                    "name": getattr(route, 'name', 'unnamed')
+                })
+        return {"routes": routes}
+
     # ========== HEALTH ENDPOINTS ==========
 
     @app.get("/healthz")
@@ -208,21 +220,21 @@ def create_app() -> FastAPI:
             "description": "AI conversation orchestrator with TTS integration",
             "endpoints": {
                 "chat": "/v1/chat",
-                "enhanced_chat": "/v1/chat (with audio support)",
                 "voice_cloning": "/v1/chat/clone",
                 "tts_status": "/v1/tts/status",
                 "voices": "/v1/tts/voices",
-                "health": "/healthz"
+                "health": "/healthz",
+                "debug_routes": "/debug/routes"
             }
         }
 
     # ========== MAIN ROUTERS ==========
     
-    # Include original conversation router (backward compatibility)
-    app.include_router(conversation_router)
-    
-    # Include enhanced conversation router with TTS
+    # ✅ FIXED: Include only the enhanced conversation router 
+    # (it has all the functionality of the basic router plus TTS support)
     app.include_router(enhanced_conversation_router)
+    
+    logger.info("✅ Enhanced conversation router registered with /v1/chat endpoint")
 
     # ========== ERROR HANDLERS ==========
     
