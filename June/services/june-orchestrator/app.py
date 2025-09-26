@@ -1,4 +1,4 @@
-# app.py - FIXED with proper auth integration
+# app.py - Enhanced with TTS integration
 import os
 import logging
 from contextlib import asynccontextmanager
@@ -19,8 +19,12 @@ from db.session import engine
 from db.models import Base
 from middleware.error import unhandled_errors
 
-# Import your routers
+# Import routers
 from routers.conversation_routes import router as conversation_router
+from routers.enhanced_conversation_routes import router as enhanced_conversation_router
+
+# Import TTS initialization
+from tts_service import initialize_tts_service
 
 # Set up logging
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -34,9 +38,9 @@ def _get_allowed_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
+    """Application lifespan manager with TTS initialization"""
     # Startup
-    logger.info("🚀 Starting June Orchestrator...")
+    logger.info("🚀 Starting June Orchestrator with TTS integration...")
     
     # Initialize database
     try:
@@ -61,6 +65,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Auth service initialization failed: {e}")
     
+    # Initialize TTS service
+    try:
+        tts_initialized = await initialize_tts_service()
+        if tts_initialized:
+            logger.info("✅ TTS service initialized and connected")
+        else:
+            logger.warning("⚠️ TTS service initialized but not connected (will use fallback)")
+    except Exception as e:
+        logger.error(f"❌ TTS service initialization failed: {e}")
+    
     # Test Gemini API if available
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key:
@@ -74,7 +88,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ GEMINI_API_KEY not set")
     
-    logger.info("🎉 June Orchestrator startup complete!")
+    logger.info("🎉 June Orchestrator startup complete with TTS support!")
     
     yield
     
@@ -83,8 +97,9 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="June Orchestrator", 
-        version="1.0.0",
+        title="June Orchestrator with TTS", 
+        version="1.1.0",
+        description="AI conversation orchestrator with text-to-speech integration",
         lifespan=lifespan
     )
 
@@ -136,6 +151,13 @@ def create_app() -> FastAPI:
                 "has_gemini_key": bool(os.getenv("GEMINI_API_KEY")),
                 "has_database_url": bool(os.getenv("DATABASE_URL")),
                 "log_level": os.getenv("LOG_LEVEL", "INFO"),
+            },
+            "tts_config": {
+                "EXTERNAL_TTS_URL": os.getenv("EXTERNAL_TTS_URL", "NOT_SET"),
+                "TTS_ENABLE_CACHING": os.getenv("TTS_ENABLE_CACHING", "true"),
+                "TTS_ENABLE_FALLBACK": os.getenv("TTS_ENABLE_FALLBACK", "true"),
+                "TTS_DEFAULT_VOICE": os.getenv("TTS_DEFAULT_VOICE", "default"),
+                "TTS_DEFAULT_SPEED": os.getenv("TTS_DEFAULT_SPEED", "1.0"),
             }
         }
 
@@ -172,7 +194,8 @@ def create_app() -> FastAPI:
         return {
             "status": "healthy",
             "service": "june-orchestrator",
-            "version": "1.0.0"
+            "version": "1.1.0",
+            "features": ["tts_integration", "conversation_management", "auth"]
         }
 
     @app.get("/")
@@ -181,13 +204,25 @@ def create_app() -> FastAPI:
         return {
             "service": "june-orchestrator", 
             "status": "running",
-            "version": "1.0.0"
+            "version": "1.1.0",
+            "description": "AI conversation orchestrator with TTS integration",
+            "endpoints": {
+                "chat": "/v1/chat",
+                "enhanced_chat": "/v1/chat (with audio support)",
+                "voice_cloning": "/v1/chat/clone",
+                "tts_status": "/v1/tts/status",
+                "voices": "/v1/tts/voices",
+                "health": "/healthz"
+            }
         }
 
     # ========== MAIN ROUTERS ==========
     
-    # Include conversation router (this handles /v1/chat)
+    # Include original conversation router (backward compatibility)
     app.include_router(conversation_router)
+    
+    # Include enhanced conversation router with TTS
+    app.include_router(enhanced_conversation_router)
 
     # ========== ERROR HANDLERS ==========
     
