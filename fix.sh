@@ -1,5 +1,5 @@
 #!/bin/bash
-# fix-orchestrator-build.sh - Fix the broken shared module import
+# deploy-tts-fix.sh - Fix TTS wiring for low-latency architecture
 
 set -euo pipefail
 
@@ -16,138 +16,266 @@ warning() { echo -e "${YELLOW}⚠️ $1${NC}"; }
 error() { echo -e "${RED}❌ $1${NC}"; exit 1; }
 
 # Configuration
-PROJECT_ID="main-buffer-469817-v7"
-REGION="us-central1"
+PROJECT_ID="${PROJECT_ID:-main-buffer-469817-v7}"
+REGION="${REGION:-us-central1}"
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/june"
-IMAGE_TAG=$(date +%s)
 NAMESPACE="june-services"
 
-log "🔧 Fixing orchestrator container build"
+log "🔧 Fixing TTS wiring for low-latency architecture"
 
-# Step 1: Navigate to orchestrator directory
-cd June/services/june-orchestrator || error "Cannot find June/services/june-orchestrator directory"
+# Step 1: Update secrets with TTS configuration
+log "Step 1: Updating secrets with TTS client credentials"
 
-# Step 2: Backup current Dockerfile
-if [[ -f "Dockerfile" ]]; then
-    cp Dockerfile "Dockerfile.backup.$(date +%s)"
-    success "Backed up current Dockerfile"
-fi
+kubectl patch secret june-idp-secret -n $NAMESPACE --type='merge' -p='{
+  "stringData": {
+    "TTS_CLIENT_ID": "june-tts",
+    "TTS_CLIENT_SECRET": "Kj8Pn2Xm9Qr4Yt6Wb3Zc7Vf5Hg1Jk8L",
+    "TTS_BASE_URL": "http://june-tts:80",
+    "EXTERNAL_TTS_URL": "https://tts.allsafe.world"
+  }
+}'
 
-# Step 3: Create fixed Dockerfile
-log "Creating fixed Dockerfile..."
-cat > Dockerfile << 'EOF'
-FROM python:3.11-slim
-WORKDIR /app
+success "Secrets updated"
 
-# Copy shared module first (CRITICAL FIX)
-COPY ../shared ./shared/
+# Step 2: Build and deploy TTS service
+log "Step 2: Building and deploying TTS service"
 
-# Copy requirements and install
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+cd June/services/june-tts || error "Cannot find TTS service directory"
 
-# Copy app code
-COPY . .
+# Build TTS image
+log "Building TTS container..."
+docker build -t "${REGISTRY}/june-tts:latest" .
+docker push "${REGISTRY}/june-tts:latest"
+success "TTS image built and pushed"
 
-# Set Python path to include shared module
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+cd ../../..
 
-EXPOSE 8080
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+# Step 3: Deploy TTS service
+log "Step 3: Deploying TTS service to Kubernetes"
+
+# Create TTS deployment
+cat > /tmp/tts-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: june-services
+  labels:
+    app: june-tts
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+    spec:
+      containers:
+        - name: app
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+              ephemeral-storage: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+              ephemeral-storage: "2Gi"
+          env:
+            - name: OPENVOICE_CHECKPOINTS_V2
+              value: "/models/openvoice/checkpoints_v2"
+            - name: OPENVOICE_DEVICE
+              value: "cpu"
+            - name: CORS_ALLOW_ORIGINS
+              value: "*"
+            - name: MAX_FILE_SIZE
+              value: "52428800"
+            - name: MAX_TEXT_LEN
+              value: "2000"
+            - name: KEYCLOAK_URL
+              value: "http://june-idp:8080"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: KEYCLOAK_CLIENT_ID
+              value: "june-tts"
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: TTS_CLIENT_SECRET
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+      restartPolicy: Always
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: june-services
+  labels:
+    app: june-tts
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default":"june-backend-config"}'
+spec:
+  selector:
+    app: june-tts
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
 EOF
 
-success "Fixed Dockerfile created"
+kubectl apply -f /tmp/tts-deployment.yaml
+success "TTS service deployed"
 
-# Step 4: Configure Docker for GCP
-log "Configuring Docker authentication..."
-gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+# Step 4: Update orchestrator to remove TTS proxy reference
+log "Step 4: Updating orchestrator configuration"
 
-# Step 5: Build new image
-log "Building new container image..."
-IMAGE_NAME="${REGISTRY}/june-orchestrator:${IMAGE_TAG}"
-LATEST_IMAGE="${REGISTRY}/june-orchestrator:latest"
+kubectl patch deployment june-orchestrator -n $NAMESPACE -p '{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [{
+          "name": "app",
+          "env": [
+            {"name": "TTS_BASE_URL", "valueFrom": {"secretKeyRef": {"name": "june-idp-secret", "key": "TTS_BASE_URL"}}},
+            {"name": "EXTERNAL_TTS_URL", "valueFrom": {"secretKeyRef": {"name": "june-idp-secret", "key": "EXTERNAL_TTS_URL"}}},
+            {"name": "OIDC_AUDIENCE", "value": "june-mobile-app"}
+          ]
+        }]
+      }
+    }
+  }
+}'
 
-docker build -t "$IMAGE_NAME" -t "$LATEST_IMAGE" .
-success "Container built successfully"
-
-# Step 6: Push to registry
-log "Pushing to container registry..."
-docker push "$IMAGE_NAME"
-docker push "$LATEST_IMAGE"
-success "Image pushed to registry"
-
-# Step 7: Update deployment to use new image
-log "Updating Kubernetes deployment..."
-kubectl set image deployment/june-orchestrator app="$IMAGE_NAME" -n $NAMESPACE
+# Restart orchestrator to pick up changes
 kubectl rollout restart deployment/june-orchestrator -n $NAMESPACE
+success "Orchestrator updated"
 
-# Step 8: Wait for rollout
-log "Waiting for deployment to complete..."
+# Step 5: Update ingress to include TTS subdomain
+log "Step 5: Updating ingress for TTS access"
+
+# Get current ingress and add TTS rule
+kubectl patch ingress allsafe-ingress -n $NAMESPACE --type='merge' -p='{
+  "spec": {
+    "rules": [
+      {
+        "host": "tts.allsafe.world",
+        "http": {
+          "paths": [
+            {
+              "path": "/",
+              "pathType": "Prefix",
+              "backend": {
+                "service": {
+                  "name": "june-tts",
+                  "port": {
+                    "number": 80
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}'
+
+# Update managed certificate to include TTS domain
+kubectl patch managedcertificate allsafe-ssl-cert -n $NAMESPACE --type='merge' -p='{
+  "spec": {
+    "domains": [
+      "allsafe.world",
+      "api.allsafe.world", 
+      "stt.allsafe.world",
+      "idp.allsafe.world",
+      "tts.allsafe.world"
+    ]
+  }
+}'
+
+success "Ingress updated with TTS domain"
+
+# Step 6: Wait for deployments
+log "Step 6: Waiting for deployments to be ready"
+
+kubectl rollout status deployment/june-tts -n $NAMESPACE --timeout=300s
 kubectl rollout status deployment/june-orchestrator -n $NAMESPACE --timeout=300s
-success "Deployment updated successfully"
 
-# Step 9: Test the fix
-log "Testing the shared module import..."
-sleep 10  # Wait for pod to be ready
+# Step 7: Test TTS service
+log "Step 7: Testing TTS service"
 
-ORCHESTRATOR_POD=$(kubectl get pods -n $NAMESPACE -l app=june-orchestrator -o jsonpath='{.items[0].metadata.name}')
-log "Testing on pod: $ORCHESTRATOR_POD"
+# Wait for TTS pod to be ready
+sleep 30
 
-# Test shared module import
-TEST_RESULT=$(kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- python3 -c "
-try:
-    from shared.auth import AuthConfig
-    config = AuthConfig.from_env()
-    print('SUCCESS: Keycloak URL:', config.keycloak_url)
-except Exception as e:
-    print('FAILED:', e)
-" 2>/dev/null || echo "FAILED: Pod not ready")
-
-if [[ "$TEST_RESULT" == *"SUCCESS"* ]]; then
-    success "Shared module import working!"
-    echo "$TEST_RESULT"
+TTS_POD=$(kubectl get pods -n $NAMESPACE -l app=june-tts -o jsonpath='{.items[0].metadata.name}')
+if [ -z "$TTS_POD" ]; then
+    warning "No TTS pod found"
 else
-    warning "Shared module import still failing: $TEST_RESULT"
+    log "Testing TTS pod: $TTS_POD"
+    
+    # Test health endpoint
+    kubectl exec $TTS_POD -n $NAMESPACE -- curl -s http://localhost:8000/healthz || warning "TTS health check failed"
 fi
 
-# Step 10: Check logs for localhost calls
-log "Checking for localhost calls in recent logs..."
-sleep 5
-kubectl logs deployment/june-orchestrator -n $NAMESPACE --tail=20 | grep -E "(localhost|127.0.0.1)" || success "No localhost calls found in recent logs"
+# Step 8: Cleanup
+rm -f /tmp/tts-deployment.yaml
 
-# Step 11: Summary
+# Step 9: Summary
 echo ""
 echo "=============================="
-echo "FIX SUMMARY"
+echo "TTS LOW-LATENCY SETUP COMPLETE"
 echo "=============================="
 echo ""
-echo "✅ Actions completed:"
-echo "  - Fixed Dockerfile to properly copy shared module"
-echo "  - Built new container image: $IMAGE_NAME"
-echo "  - Updated Kubernetes deployment"
-echo "  - Deployment rolled out successfully"
+echo "✅ Architecture Summary:"
+echo "  📱 Frontend → TTS Service (Direct, Low Latency)"
+echo "  🤖 Frontend → Orchestrator (Text + TTS URL)"
+echo "  🔗 TTS URL: https://tts.allsafe.world/tts/generate"
 echo ""
-echo "🔍 Next steps:"
-echo "  1. Test authentication:"
+echo "🔍 Next Steps:"
+echo "  1. Update your frontend to use the new low-latency flow"
+echo "  2. Test the integration:"
 echo "     curl -X POST https://api.allsafe.world/v1/chat \\"
 echo "          -H 'Authorization: Bearer YOUR_TOKEN' \\"
 echo "          -H 'Content-Type: application/json' \\"
-echo "          -d '{\"text\":\"test message\"}'"
+echo "          -d '{\"text\":\"Hello TTS test\"}'"
 echo ""
-echo "  2. Monitor logs:"
-echo "     kubectl logs deployment/june-orchestrator -n $NAMESPACE -f"
+echo "  3. The response will include 'tts' field with direct URL"
+echo "  4. Frontend calls TTS directly for audio generation"
 echo ""
-echo "  3. Check if localhost calls are gone:"
-echo "     kubectl logs deployment/june-orchestrator -n $NAMESPACE | grep localhost"
+echo "📊 Monitor with:"
+echo "  kubectl logs deployment/june-tts -n $NAMESPACE -f"
+echo "  kubectl logs deployment/june-orchestrator -n $NAMESPACE -f"
 echo ""
 
-if [[ "$TEST_RESULT" == *"SUCCESS"* ]]; then
-    success "🎉 Container build fix completed successfully!"
-else
-    warning "⚠️ Fix applied but shared module import may still need debugging"
-    echo ""
-    echo "If import still fails, check:"
-    echo "  - kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- ls -la /app/shared/"
-    echo "  - kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- python3 -c 'import sys; print(sys.path)'"
-fi
+success "🎉 TTS low-latency setup completed successfully!"
+
+# Step 10: DNS reminder
+echo ""
+echo "🌐 DNS Configuration Required:"
+echo "  Add A record: tts.allsafe.world → $(kubectl get ingress allsafe-ingress -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+echo ""

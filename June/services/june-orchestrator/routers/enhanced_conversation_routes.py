@@ -25,7 +25,8 @@ class ConversationInput(BaseModel):
     voice_id: Optional[str] = Field(default=None, description="Preferred voice ID")
     include_audio: bool = Field(default=True, description="Generate TTS audio response")
     speed: Optional[float] = Field(default=None, ge=0.5, le=2.0, description="Speech speed")
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    extra_extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+
 
 class ConversationOutput(BaseModel):
     ok: bool = True
@@ -133,7 +134,7 @@ async def chat_with_audio(
         ai_response, response_metadata, audio_bytes = await manager.process_user_message_with_audio(
             user=user,
             user_message=payload.text,
-            audio_metadata=payload.metadata,
+            audio_metadata=payload.extra_metadata,
             generate_tts_response=payload.include_audio,
             user_preferences=user_preferences
         )
