@@ -1,0 +1,101 @@
+# June/k8s/orchestrator-deployment-fixed.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+    spec:
+      containers:
+        - name: app
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "1Gi"
+          env:
+            # ======== FIXED: Accept mobile app tokens ========
+            - name: OIDC_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            - name: OIDC_AUDIENCE
+              value: "june-mobile-app"  # Changed from june-orchestrator
+            - name: OIDC_JWKS_URL
+              value: "https://idp.allsafe.world/realms/allsafe/protocol/openid-connect/certs"
+            - name: OIDC_CACHE_TTL_SECONDS
+              value: "3600"
+
+            # ======== Alternative: Accept multiple audiences ========
+            # If you want to accept both mobile and service tokens:
+            # - name: OIDC_ACCEPTED_AUDIENCES
+            #   value: "june-mobile-app,june-orchestrator,account"
+            
+            # Legacy vars (keep for compatibility)
+            - name: KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: KEYCLOAK_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            
+            # Service credentials (for service-to-service calls)
+            - name: ORCHESTRATOR_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_ID
+            - name: ORCHESTRATOR_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: ORCHESTRATOR_CLIENT_SECRET
+            
+            # App secrets
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: DATABASE_URL
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: GEMINI_API_KEY
+            - name: JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: june-idp-secret
+                  key: JWT_SIGNING_KEY
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      restartPolicy: Always
