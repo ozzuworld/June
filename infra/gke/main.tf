@@ -279,3 +279,34 @@ output "dns_configuration" {
     "idp.allsafe.world" = google_compute_global_address.june_ip.address
   }
 }
+
+# Add to infra/gke/main.tf
+resource "kubernetes_manifest" "orchestrator_service" {
+  manifest = {
+    apiVersion = "v1"
+    kind       = "Service"
+    metadata = {
+      name      = "june-orchestrator"
+      namespace = kubernetes_namespace.june_services.metadata[0].name
+      annotations = {
+        "cloud.google.com/neg"             = "{\"ingress\": true}"
+        "cloud.google.com/backend-config"  = "{\"default\":\"june-backend-config\"}"
+      }
+    }
+    spec = {
+      selector = {
+        app = "june-orchestrator"
+      }
+      ports = [
+        {
+          name       = "http"
+          port       = 80        # Standard HTTP port
+          targetPort = 8080      # Your app's actual port
+          protocol   = "TCP"
+        }
+      ]
+    }
+  }
+  
+  depends_on = [kubernetes_namespace.june_services]
+}

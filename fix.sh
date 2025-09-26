@@ -1,94 +1,153 @@
 #!/bin/bash
-# setup-keycloak-mobile-client.sh - Configure Keycloak for mobile app
+# fix-orchestrator-build.sh - Fix the broken shared module import
 
 set -euo pipefail
 
-echo "🔧 Setting up Keycloak mobile app client..."
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# Port forward to Keycloak
-echo "📡 Setting up port forward to Keycloak..."
-kubectl port-forward -n june-services service/june-idp 8080:8080 &
-PORT_FORWARD_PID=$!
+log() { echo -e "${BLUE}[$(date +'%H:%M:%S')]${NC} $1"; }
+success() { echo -e "${GREEN}✅ $1${NC}"; }
+warning() { echo -e "${YELLOW}⚠️ $1${NC}"; }
+error() { echo -e "${RED}❌ $1${NC}"; exit 1; }
 
-# Wait for port forward
-sleep 5
+# Configuration
+PROJECT_ID="main-buffer-469817-v7"
+REGION="us-central1"
+REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/june"
+IMAGE_TAG=$(date +%s)
+NAMESPACE="june-services"
 
-# Cleanup function
-cleanup() {
-    echo "🧹 Cleaning up..."
-    kill $PORT_FORWARD_PID 2>/dev/null || true
-}
-trap cleanup EXIT
+log "🔧 Fixing orchestrator container build"
 
-echo "🌐 Keycloak Admin Console: http://localhost:8080"
-echo "📋 Realm: allsafe"
-echo ""
-echo "🔧 Manual Configuration Steps:"
-echo ""
-echo "1. Go to http://localhost:8080 → Administration Console"
-echo "2. Login with admin credentials"
-echo "3. Select 'allsafe' realm"
-echo ""
-echo "4. CREATE MOBILE APP CLIENT:"
-echo "   - Clients → Create client"
-echo "   - Client ID: june-mobile-app" 
-echo "   - Client type: OpenID Connect"
-echo "   - Next"
-echo ""
-echo "5. CONFIGURE CLIENT SETTINGS:"
-echo "   - Client authentication: OFF (public client)"
-echo "   - Authorization: OFF" 
-echo "   - Authentication flow:"
-echo "     ☑ Standard flow (Authorization Code Flow)"
-echo "     ☑ Direct access grants (Resource Owner Password Flow)"
-echo "   - Save"
-echo ""
-echo "6. SET REDIRECT URIs:"
-echo "   - Valid redirect URIs:"
-echo "     • june://auth/callback"
-echo "     • exp://192.168.0.4:8081"
-echo "     • http://localhost:8081"
-echo "   - Valid post logout redirect URIs:"
-echo "     • june://auth/logout"
-echo "   - Web origins: +"
-echo "   - Save"
-echo ""
-echo "7. CREATE TEST USER:"
-echo "   - Users → Add user"
-echo "   - Username: testuser"
-echo "   - Email: test@example.com"
-echo "   - Email verified: ON"
-echo "   - Save"
-echo ""
-echo "8. SET USER PASSWORD:"
-echo "   - Credentials tab → Set password"
-echo "   - Password: test123"
-echo "   - Temporary: OFF"
-echo "   - Save"
-echo ""
-echo "9. ASSIGN USER ROLES:"
-echo "   - Role mapping tab"
-echo "   - Assign role → Filter by clients"
-echo "   - Select appropriate roles for june-mobile-app"
-echo ""
-echo "🔧 After manual setup, run this to test:"
+# Step 1: Navigate to orchestrator directory
+cd June/services/june-orchestrator || error "Cannot find June/services/june-orchestrator directory"
 
-cat << 'EOF'
+# Step 2: Backup current Dockerfile
+if [[ -f "Dockerfile" ]]; then
+    cp Dockerfile "Dockerfile.backup.$(date +%s)"
+    success "Backed up current Dockerfile"
+fi
 
-# Test the configuration
-curl -X POST "http://localhost:8080/realms/allsafe/protocol/openid-connect/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=password" \
-  -d "client_id=june-mobile-app" \
-  -d "username=testuser" \
-  -d "password=test123"
+# Step 3: Create fixed Dockerfile
+log "Creating fixed Dockerfile..."
+cat > Dockerfile << 'EOF'
+FROM python:3.11-slim
+WORKDIR /app
 
+# Copy shared module first (CRITICAL FIX)
+COPY ../shared ./shared/
+
+# Copy requirements and install
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app code
+COPY . .
+
+# Set Python path to include shared module
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
 EOF
 
-echo ""
-echo "✅ If this returns a token, your mobile client is configured correctly!"
-echo ""
-echo "Press Ctrl+C when done configuring..."
+success "Fixed Dockerfile created"
 
-# Keep the port forward alive
-wait $PORT_FORWARD_PID
+# Step 4: Configure Docker for GCP
+log "Configuring Docker authentication..."
+gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+# Step 5: Build new image
+log "Building new container image..."
+IMAGE_NAME="${REGISTRY}/june-orchestrator:${IMAGE_TAG}"
+LATEST_IMAGE="${REGISTRY}/june-orchestrator:latest"
+
+docker build -t "$IMAGE_NAME" -t "$LATEST_IMAGE" .
+success "Container built successfully"
+
+# Step 6: Push to registry
+log "Pushing to container registry..."
+docker push "$IMAGE_NAME"
+docker push "$LATEST_IMAGE"
+success "Image pushed to registry"
+
+# Step 7: Update deployment to use new image
+log "Updating Kubernetes deployment..."
+kubectl set image deployment/june-orchestrator app="$IMAGE_NAME" -n $NAMESPACE
+kubectl rollout restart deployment/june-orchestrator -n $NAMESPACE
+
+# Step 8: Wait for rollout
+log "Waiting for deployment to complete..."
+kubectl rollout status deployment/june-orchestrator -n $NAMESPACE --timeout=300s
+success "Deployment updated successfully"
+
+# Step 9: Test the fix
+log "Testing the shared module import..."
+sleep 10  # Wait for pod to be ready
+
+ORCHESTRATOR_POD=$(kubectl get pods -n $NAMESPACE -l app=june-orchestrator -o jsonpath='{.items[0].metadata.name}')
+log "Testing on pod: $ORCHESTRATOR_POD"
+
+# Test shared module import
+TEST_RESULT=$(kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- python3 -c "
+try:
+    from shared.auth import AuthConfig
+    config = AuthConfig.from_env()
+    print('SUCCESS: Keycloak URL:', config.keycloak_url)
+except Exception as e:
+    print('FAILED:', e)
+" 2>/dev/null || echo "FAILED: Pod not ready")
+
+if [[ "$TEST_RESULT" == *"SUCCESS"* ]]; then
+    success "Shared module import working!"
+    echo "$TEST_RESULT"
+else
+    warning "Shared module import still failing: $TEST_RESULT"
+fi
+
+# Step 10: Check logs for localhost calls
+log "Checking for localhost calls in recent logs..."
+sleep 5
+kubectl logs deployment/june-orchestrator -n $NAMESPACE --tail=20 | grep -E "(localhost|127.0.0.1)" || success "No localhost calls found in recent logs"
+
+# Step 11: Summary
+echo ""
+echo "=============================="
+echo "FIX SUMMARY"
+echo "=============================="
+echo ""
+echo "✅ Actions completed:"
+echo "  - Fixed Dockerfile to properly copy shared module"
+echo "  - Built new container image: $IMAGE_NAME"
+echo "  - Updated Kubernetes deployment"
+echo "  - Deployment rolled out successfully"
+echo ""
+echo "🔍 Next steps:"
+echo "  1. Test authentication:"
+echo "     curl -X POST https://api.allsafe.world/v1/chat \\"
+echo "          -H 'Authorization: Bearer YOUR_TOKEN' \\"
+echo "          -H 'Content-Type: application/json' \\"
+echo "          -d '{\"text\":\"test message\"}'"
+echo ""
+echo "  2. Monitor logs:"
+echo "     kubectl logs deployment/june-orchestrator -n $NAMESPACE -f"
+echo ""
+echo "  3. Check if localhost calls are gone:"
+echo "     kubectl logs deployment/june-orchestrator -n $NAMESPACE | grep localhost"
+echo ""
+
+if [[ "$TEST_RESULT" == *"SUCCESS"* ]]; then
+    success "🎉 Container build fix completed successfully!"
+else
+    warning "⚠️ Fix applied but shared module import may still need debugging"
+    echo ""
+    echo "If import still fails, check:"
+    echo "  - kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- ls -la /app/shared/"
+    echo "  - kubectl exec $ORCHESTRATOR_POD -n $NAMESPACE -- python3 -c 'import sys; print(sys.path)'"
+fi

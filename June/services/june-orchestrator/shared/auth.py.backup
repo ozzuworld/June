@@ -1,0 +1,263 @@
+# June/services/shared/auth.py - FIXED VERSION
+import os
+import time
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import httpx
+import jwt
+from jwt import PyJWKClient, InvalidTokenError, InvalidSignatureError, InvalidAudienceError
+from fastapi import HTTPException, Depends, status
+from fastapi.security import HTTPBearer
+
+class AuthError(Exception):
+    pass
+
+@dataclass
+class AuthConfig:
+    keycloak_url: str
+    realm: str
+    jwks_cache_ttl: int = 300
+    required_audience: Optional[str] = None
+    jwt_signing_key: Optional[str] = None
+
+    @classmethod
+    def from_env(cls) -> "AuthConfig":
+        # Try multiple environment variable names for compatibility
+        url = (
+            os.getenv("OIDC_ISSUER") or  # New style
+            os.getenv("KEYCLOAK_URL") or 
+            os.getenv("KC_BASE_URL") or
+            os.getenv("KEYCLOAK_BASE_URL")
+        )
+        
+        realm = (
+            os.getenv("KEYCLOAK_REALM") or 
+            os.getenv("KC_REALM") or
+            os.getenv("REALM")
+        )
+        
+        audience = (
+            os.getenv("OIDC_AUDIENCE") or
+            os.getenv("REQUIRED_AUDIENCE")
+        )
+        
+        if not url:
+            raise AuthError("No Keycloak URL found in environment variables")
+        if not realm:
+            raise AuthError("No Keycloak realm found in environment variables")
+        
+        # Clean the URL - remove /realms/realm if present
+        if f"/realms/{realm}" in url:
+            url = url.replace(f"/realms/{realm}", "")
+        
+        return cls(
+            keycloak_url=url.rstrip("/"),
+            realm=realm,
+            jwks_cache_ttl=int(os.getenv("JWKS_CACHE_TTL", "300")),
+            required_audience=audience,
+            jwt_signing_key=os.getenv("JWT_SIGNING_KEY"),
+        )
+
+class _JWKSCache:
+    def __init__(self):
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get(self, url: str, ttl: int) -> Dict[str, Any]:
+        now = time.time()
+        async with self._lock:
+            entry = self._cache.get(url)
+            if entry and (now - entry["ts"] < ttl):
+                return entry["data"]
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+
+        async with self._lock:
+            self._cache[url] = {"data": data, "ts": now}
+
+        return data
+
+_JWKS = _JWKSCache()
+
+class AuthService:
+    def __init__(self, config: Optional[AuthConfig] = None):
+        self.config = config or AuthConfig.from_env()
+        print(f"🔧 AuthService initialized with:")
+        print(f"   Keycloak URL: {self.config.keycloak_url}")
+        print(f"   Realm: {self.config.realm}")
+        print(f"   Audience: {self.config.required_audience}")
+
+    async def _fetch_oidc_config(self) -> Dict[str, Any]:
+        discovery = f"{self.config.keycloak_url}/realms/{self.config.realm}/.well-known/openid-configuration"
+        print(f"🔍 Fetching OIDC config from: {discovery}")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(discovery)
+            r.raise_for_status()
+            config = r.json()
+            print(f"✅ OIDC config fetched successfully")
+            return config
+
+    async def _fetch_jwks(self, jwks_uri: str) -> Dict[str, Any]:
+        print(f"🔍 Fetching JWKS from: {jwks_uri}")
+        jwks = await _JWKS.get(jwks_uri, self.config.jwks_cache_ttl)
+        print(f"✅ JWKS fetched successfully")
+        return jwks
+
+    async def verify_bearer(self, token: str) -> Dict[str, Any]:
+        if not token:
+            raise AuthError("Missing bearer token")
+
+        try:
+            oidc = await self._fetch_oidc_config()
+            issuer = oidc["issuer"]
+            jwks_uri = oidc["jwks_uri"]
+            
+            print(f"🔐 Validating token with issuer: {issuer}")
+            print(f"🔐 Using JWKS URI: {jwks_uri}")
+        except Exception as e:
+            print(f"❌ OIDC discovery failed: {e}")
+            raise AuthError(f"OIDC discovery failed: {e}") from e
+
+        try:
+            # Use JWKS to pick the signing key
+            jwk_client = PyJWKClient(jwks_uri)
+            signing_key = jwk_client.get_signing_key_from_jwt(token).key
+
+            options = {"verify_aud": bool(self.config.required_audience)}
+            decoded = jwt.decode(
+                token,
+                signing_key,
+                algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+                audience=self.config.required_audience if self.config.required_audience else None,
+                issuer=issuer,
+                options=options,
+            )
+            
+            print(f"✅ Token validated successfully for user: {decoded.get('preferred_username', decoded.get('sub'))}")
+            return decoded
+
+        except InvalidAudienceError as e:
+            print(f"❌ Token audience invalid: {e}")
+            raise AuthError(f"Token audience invalid: {e}") from e
+        except InvalidSignatureError as e:
+            print(f"❌ Token signature invalid: {e}")
+            raise AuthError(f"Token signature invalid: {e}") from e
+        except InvalidTokenError as e:
+            print(f"❌ Token invalid: {e}")
+            raise AuthError(f"Token invalid: {e}") from e
+        except Exception as e:
+            print(f"❌ Token verification error: {e}")
+            raise AuthError(f"Token verification error: {e}") from e
+
+# Global auth service instance
+_auth_service: Optional[AuthService] = None
+
+def get_auth_service() -> AuthService:
+    global _auth_service
+    if _auth_service is None:
+        _auth_service = AuthService()
+    return _auth_service
+
+# FastAPI dependencies
+security = HTTPBearer()
+
+async def require_user_auth(credentials = Depends(security)) -> Dict[str, Any]:
+    """Validate user authentication token"""
+    try:
+        auth_service = get_auth_service()
+        return await auth_service.verify_bearer(credentials.credentials)
+    except AuthError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Token validation failed: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        print(f"❌ Unexpected auth error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token validation failed",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+async def require_service_auth(credentials = Depends(security)) -> Dict[str, Any]:
+    """Validate service-to-service authentication token"""
+    return await require_user_auth(credentials)
+
+async def optional_user_auth(credentials = Depends(security)) -> Optional[Dict[str, Any]]:
+    """Optional user authentication - returns None if no valid token"""
+    try:
+        return await require_user_auth(credentials)
+    except HTTPException:
+        return None
+
+async def validate_websocket_token(token: str) -> Dict[str, Any]:
+    """Validate WebSocket token"""
+    if not token:
+        raise AuthError("Missing WebSocket token")
+    
+    auth_service = get_auth_service()
+    return await auth_service.verify_bearer(token)
+
+def extract_user_id(user_data: Dict[str, Any]) -> str:
+    """Extract user ID from token payload"""
+    return user_data.get("sub") or user_data.get("user_id") or "unknown"
+
+def extract_client_id(user_data: Dict[str, Any]) -> str:
+    """Extract client ID from token payload"""
+    return user_data.get("azp") or user_data.get("client_id") or user_data.get("aud") or "unknown"
+
+def has_role(user_data: Dict[str, Any], role: str) -> bool:
+    """Check if user has a specific role"""
+    realm_access = user_data.get("realm_access", {})
+    roles = realm_access.get("roles", [])
+    return role in roles
+
+def has_scope(user_data: Dict[str, Any], scope: str) -> bool:
+    """Check if user has a specific scope"""
+    scopes = user_data.get("scope", "").split()
+    return scope in scopes
+
+# Test function for debugging
+async def test_keycloak_connection() -> Dict[str, Any]:
+    """Test Keycloak connection and configuration"""
+    try:
+        auth_service = get_auth_service()
+        config = auth_service.config
+        
+        # Test OIDC discovery
+        oidc_config = await auth_service._fetch_oidc_config()
+        
+        # Test JWKS fetch
+        jwks = await auth_service._fetch_jwks(oidc_config["jwks_uri"])
+        
+        return {
+            "status": "success",
+            "config": {
+                "keycloak_url": config.keycloak_url,
+                "realm": config.realm,
+                "audience": config.required_audience,
+            },
+            "oidc_endpoints": {
+                "issuer": oidc_config["issuer"],
+                "authorization_endpoint": oidc_config["authorization_endpoint"],
+                "token_endpoint": oidc_config["token_endpoint"],
+                "jwks_uri": oidc_config["jwks_uri"],
+            },
+            "jwks_keys_count": len(jwks.get("keys", [])),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "config": {
+                "keycloak_url": getattr(auth_service, 'config', {}).keycloak_url if 'auth_service' in locals() else "not_loaded",
+                "realm": getattr(auth_service, 'config', {}).realm if 'auth_service' in locals() else "not_loaded",
+            }
+        }
