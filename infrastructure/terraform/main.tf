@@ -1,198 +1,110 @@
-# Unified June AI Platform Infrastructure
-# This file replaces all scattered infrastructure configurations
+# June AI Platform - Cloud Build Infrastructure
+# Author: Infrastructure Team
+# Purpose: Automated Docker builds for microservices
 
 terraform {
-  required_version = ">= 1.0"
-  
-  backend "gcs" {
-    bucket = "june-terraform-state"
-    prefix = "infrastructure"
-  }
-  
+  required_version = ">= 1.5"
+
   required_providers {
     google = {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 5.0"
     }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.12"
-    }
+  }
+
+  # Backend configuration - use GCS for production
+  backend "gcs" {
+    bucket = "june-terraform-state"
+    prefix = "cloud-build"
   }
 }
 
-# ============================================================================
-# VARIABLES
-# ============================================================================
-
-variable "project_id" {
-  description = "GCP Project ID"
-  type        = string
-}
-
-variable "region" {
-  description = "GCP Region"
-  type        = string
-  default     = "us-central1"
-}
-
-variable "environment" {
-  description = "Environment (dev, staging, prod)"
-  type        = string
-  default     = "prod"
-}
-
-variable "domain" {
-  description = "Base domain for June services"
-  type        = string
-  default     = "allsafe.world"
-}
-
-locals {
-  cluster_name = "june-${var.environment}"
-  
-  common_labels = {
-    project     = "june-ai-platform"
-    environment = var.environment
-    managed_by  = "terraform"
-  }
-  
-  services = {
-    orchestrator = {
-      name = "june-orchestrator"
-      port = 8080
-      path = "/v1/*"
-    }
-    idp = {
-      name = "june-idp"
-      port = 8080
-      path = "/auth/*"
-    }
-    stt = {
-      name = "june-stt"
-      port = 8080
-      path = "/v1/transcribe"
-    }
-    tts = {
-      name = "june-tts"
-      port = 8080
-      path = "/tts/*"
-    }
-  }
-}
-
-# ============================================================================
-# PROVIDERS
-# ============================================================================
-
+# Provider configuration
 provider "google" {
+  project = var.project_id
+  region  = var.region
+
+  default_labels = local.common_labels
+}
+
+provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
 
-data "google_client_config" "default" {}
+# Local values for computed configurations
+locals {
+  environment = var.environment
 
-provider "kubernetes" {
-  host                   = "https://${module.gke.cluster_endpoint}"
-  token                  = data.google_client_config.default.access_token
-  cluster_ca_certificate = base64decode(module.gke.cluster_ca_certificate)
-}
+  # Common resource labeling
+  common_labels = {
+    project     = "june-ai-platform"
+    environment = var.environment
+    managed_by  = "terraform"
+    team        = "platform"
+    cost_center = "engineering"
+  }
 
-provider "helm" {
-  kubernetes {
-    host                   = "https://${module.gke.cluster_endpoint}"
-    token                  = data.google_client_config.default.access_token
-    cluster_ca_certificate = base64decode(module.gke.cluster_ca_certificate)
+  # Service definitions with proper naming
+  services = {
+    june-tts = {
+      name          = "june-tts"
+      port          = 8000
+      path          = "/tts/*"
+      build_timeout = "4800s" # 80 minutes for ML models
+      machine_type  = "E2_HIGHCPU_8"
+      disk_size     = 100
+    }
+    june-orchestrator = {
+      name          = "june-orchestrator"
+      port          = 8080
+      path          = "/v1/*"
+      build_timeout = "1800s" # 30 minutes
+      machine_type  = "E2_HIGHCPU_8"
+      disk_size     = 50
+    }
   }
 }
 
-# ============================================================================
-# MODULES
-# ============================================================================
+# Artifact Registry Module
+module "artifact_registry" {
+  source = "./modules/artifact-registry"
 
-module "gke" {
-  source = "./modules/gke"
-  
-  project_id     = var.project_id
-  region         = var.region
-  cluster_name   = local.cluster_name
-  environment    = var.environment
-  common_labels  = local.common_labels
-}
-
-module "networking" {
-  source = "./modules/networking"
-  
   project_id    = var.project_id
   region        = var.region
-  cluster_name  = local.cluster_name
-  domain        = var.domain
-  services      = local.services
-  common_labels = local.common_labels
+  repository_id = "june"
+  description   = "June AI Platform Docker Images"
+
+  labels = local.common_labels
+
+  tags = ["docker", "microservices", var.environment]
 }
 
-module "security" {
-  source = "./modules/security"
-  
-  project_id    = var.project_id
-  cluster_name  = local.cluster_name
-  common_labels = local.common_labels
-}
+# Cloud Build Module  
+module "cloud_build" {
+  source = "./modules/cloud-build"
 
-module "kubernetes_resources" {
-  source = "./modules/kubernetes"
-  
-  cluster_name     = local.cluster_name
-  environment      = var.environment
-  services         = local.services
-  common_labels    = local.common_labels
-  
-  depends_on = [module.gke]
-}
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
 
-# ============================================================================
-# OUTPUTS
-# ============================================================================
+  # Service configurations
+  services = local.services
 
-output "cluster_info" {
-  description = "GKE cluster information"
-  value = {
-    name               = module.gke.cluster_name
-    endpoint           = module.gke.cluster_endpoint
-    get_credentials    = module.gke.get_credentials_command
-  }
-  sensitive = true
-}
+  # Repository configuration
+  github_owner = var.github_owner
+  github_repo  = var.github_repo
+  branch       = var.build_branch
 
-output "service_urls" {
-  description = "External service URLs"
-  value = {
-    api = "https://api.${var.domain}"
-    idp = "https://idp.${var.domain}"
-    stt = "https://stt.${var.domain}"
-    tts = "https://tts.${var.domain}"
-  }
-}
+  # Artifact Registry dependency
+  artifact_registry_url = module.artifact_registry.repository_url
 
-output "static_ip" {
-  description = "Static IP address for load balancer"
-  value       = module.networking.static_ip
-}
+  # Labels and tags
+  labels = local.common_labels
 
-output "dns_records" {
-  description = "Required DNS A records"
-  value       = module.networking.dns_records
-}
-
-output "deployment_commands" {
-  description = "Commands to deploy services"
-  value = {
-    kubectl_config = module.gke.get_credentials_command
-    deploy_services = "kubectl apply -k infrastructure/kubernetes/overlays/${var.environment}"
-    check_status = "kubectl get pods -n june-services"
-  }
+  depends_on = [module.artifact_registry]
 }
