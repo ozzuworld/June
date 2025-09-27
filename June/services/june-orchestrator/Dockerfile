@@ -1,21 +1,9 @@
-# June/services/june-orchestrator/Dockerfile
-# Clean, optimized Dockerfile for June Orchestrator
-
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Build arguments for tracking
-ARG GIT_SHA=unknown
-ARG BUILD_TIME=unknown
-ENV GIT_SHA=${GIT_SHA}
-ENV BUILD_TIME=${BUILD_TIME}
-
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -26,6 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY app.py .
+COPY tts_client.py .
 
 # Create non-root user for security
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app

@@ -160,7 +160,7 @@ spec:
     kind: Deployment
     name: june-orchestrator
   minReplicas: 1
-  maxReplicas: 3
+  maxReplicas: 1s
   metrics:
   - type: Resource
     resource:
