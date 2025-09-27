@@ -1,28 +1,46 @@
 # June/services/june-orchestrator/app.py
-# FIXED: Enhanced Gemini integration with proper error handling and diagnostics
+# Clean, working orchestrator with proper Gemini integration
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+import os
+import time
+import logging
+from datetime import datetime
+from typing import Optional
+
+# Try to import Gemini libraries (new SDK first, then legacy)
+try:
+    # New Google GenAI SDK (recommended)
+    from google import genai
+    from google.genai import types
+    USING_NEW_SDK = True
+    logger.info("✅ Using new Google GenAI SDK")
+except ImportError:
+    try:
+        # Legacy Google Generative AI library
+        import google.generativeai as genai
+        USING_NEW_SDK = False
+        logger.info("✅ Using legacy google-generativeai library")
+    except ImportError:
+        logger.error("❌ No Gemini library found. Install either:")
+        logger.error("   pip install google-genai  # (new SDK)")
+        logger.error("   pip install google-generativeai  # (legacy)")
+        raise ImportError("Gemini library not found")
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
-import logging
-import time
-import os
-import json
-import asyncio
-from datetime import datetime
 
-# Configure detailed logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Initialize FastAPI
 app = FastAPI(
-    title="June Orchestrator", 
+    title="June Orchestrator",
     version="3.0.0",
-    description="June AI Platform Orchestrator with Enhanced Gemini Integration"
+    description="Clean June AI Platform Orchestrator with Gemini integration"
 )
 
 # CORS middleware
@@ -34,249 +52,246 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================================
+# MODELS
+# ============================================================================
+
 class ChatRequest(BaseModel):
     text: str
     language: Optional[str] = "en"
-    include_audio: Optional[bool] = False
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = 1000
-    metadata: Optional[Dict[str, Any]] = {}
 
 class ChatResponse(BaseModel):
     ok: bool
-    message: Dict[str, str]
+    message: dict
     response_time_ms: int
     conversation_id: Optional[str] = None
-    ai_provider: Optional[str] = "unknown"
-    debug_info: Optional[Dict[str, Any]] = None
+    ai_provider: str = "gemini"
+
+# ============================================================================
+# GEMINI SERVICE
+# ============================================================================
 
 class GeminiService:
-    """Enhanced Gemini API service with better error handling"""
-    
     def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.model = None
-        self.available_models = []
-        self.last_error = None
-        self.is_initialized = False
+        self.client = None
+        self.api_key = None
         self.initialize()
     
     def initialize(self):
-        """Initialize Gemini API with comprehensive error handling"""
-        if not self.api_key:
-            logger.warning("❌ GEMINI_API_KEY not set or empty")
-            self.last_error = "API key not configured"
-            return False
-        
-        if len(self.api_key) < 20:
-            logger.warning(f"❌ GEMINI_API_KEY appears invalid (too short): {self.api_key[:10]}...")
-            self.last_error = "API key appears invalid"
-            return False
-        
+        """Initialize Gemini with proper error handling for both SDKs"""
         try:
-            import google.generativeai as genai
+            # Get API key from environment
+            self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
             
-            # Configure the API
-            genai.configure(api_key=self.api_key)
-            logger.info(f"✅ Gemini API configured with key: {self.api_key[:10]}...{self.api_key[-4:]}")
+            if not self.api_key:
+                logger.error("❌ GEMINI_API_KEY not set")
+                return False
             
-            # List available models
-            try:
-                models_list = genai.list_models()
-                self.available_models = [m.name for m in models_list if 'generateContent' in m.supported_generation_methods]
-                logger.info(f"📋 Available Gemini models: {self.available_models}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not list models: {e}")
-                # Use known models as fallback
-                self.available_models = [
-                    "models/gemini-pro",
-                    "models/gemini-1.5-pro-latest", 
-                    "models/gemini-1.5-flash",
-                    "models/gemini-1.5-flash-latest"
-                ]
+            if len(self.api_key) < 30:  # Basic validation
+                logger.error("❌ GEMINI_API_KEY appears invalid")
+                return False
             
-            # Try to initialize with the best available model
-            models_to_try = [
-                "gemini-1.5-flash",      # Latest and fastest
-                "gemini-1.5-pro-latest", # Most capable
-                "gemini-pro",            # Stable fallback
-                "gemini-1.0-pro",        # Legacy
-            ]
-            
-            for model_name in models_to_try:
+            if USING_NEW_SDK:
+                # New Google GenAI SDK
+                self.client = genai.Client(api_key=self.api_key)
+                logger.info(f"✅ New GenAI SDK configured with key: {self.api_key[:10]}...")
+                
+                # Test with a simple generation
                 try:
-                    logger.info(f"🔧 Trying to initialize model: {model_name}")
-                    self.model = genai.GenerativeModel(model_name)
-                    
-                    # Test the model with a simple prompt
-                    test_response = self.model.generate_content("Say 'test'")
-                    if test_response and test_response.text:
-                        logger.info(f"✅ Successfully initialized with model: {model_name}")
-                        logger.info(f"🧪 Test response: {test_response.text[:50]}")
-                        self.is_initialized = True
+                    response = self.client.models.generate_content(
+                        model='gemini-2.0-flash-exp',
+                        contents='Say "Hello"'
+                    )
+                    if response and response.text:
+                        logger.info(f"✅ New SDK test successful: {response.text}")
                         return True
-                        
                 except Exception as e:
-                    logger.warning(f"⚠️ Model {model_name} failed: {str(e)[:100]}")
-                    self.last_error = str(e)
-                    continue
+                    logger.warning(f"gemini-2.0-flash-exp failed: {e}, trying gemini-1.5-flash...")
+                    try:
+                        response = self.client.models.generate_content(
+                            model='gemini-1.5-flash',
+                            contents='Say "Hello"'
+                        )
+                        if response and response.text:
+                            logger.info(f"✅ New SDK test successful: {response.text}")
+                            return True
+                    except Exception as e:
+                        logger.error(f"❌ New SDK test failed: {e}")
+                        return False
+            else:
+                # Legacy Google Generative AI library
+                genai.configure(api_key=self.api_key)
+                logger.info(f"✅ Legacy GenAI configured with key: {self.api_key[:10]}...")
+                
+                # Initialize model (use the most reliable model)
+                try:
+                    self.model = genai.GenerativeModel('gemini-1.5-flash')
+                    logger.info("✅ Using gemini-1.5-flash model")
+                except Exception as e:
+                    logger.warning(f"Failed to load gemini-1.5-flash: {e}")
+                    try:
+                        self.model = genai.GenerativeModel('gemini-pro')
+                        logger.info("✅ Using gemini-pro model")
+                    except Exception as e:
+                        logger.error(f"Failed to load any Gemini model: {e}")
+                        return False
+                
+                # Test the model with a simple prompt
+                try:
+                    test_response = self.model.generate_content("Say 'Hello'")
+                    if test_response and test_response.text:
+                        logger.info(f"✅ Legacy SDK test successful: {test_response.text}")
+                        return True
+                except Exception as e:
+                    logger.error(f"❌ Legacy SDK test failed: {e}")
+                    return False
             
-            logger.error("❌ All Gemini models failed to initialize")
-            return False
-            
-        except ImportError as e:
-            logger.error(f"❌ google-generativeai not installed: {e}")
-            self.last_error = "google-generativeai library not installed"
-            return False
         except Exception as e:
             logger.error(f"❌ Gemini initialization failed: {e}")
-            self.last_error = str(e)
             return False
     
-    async def generate_response(
-        self, 
-        text: str, 
-        language: str = "en",
-        temperature: float = 0.7,
-        max_tokens: int = 1000
-    ) -> tuple[str, str, Dict[str, Any]]:
-        """Generate response with comprehensive error handling"""
+    async def generate_response(self, text: str, language: str = "en", temperature: float = 0.7) -> tuple[str, str]:
+        """Generate response using either new or legacy Gemini SDK"""
         
-        debug_info = {
-            "api_key_set": bool(self.api_key),
-            "api_key_prefix": self.api_key[:10] + "..." if self.api_key else "none",
-            "is_initialized": self.is_initialized,
-            "last_error": self.last_error,
-            "available_models": self.available_models
-        }
-        
-        if not self.is_initialized:
-            logger.warning("⚠️ Gemini not initialized, attempting reinitialization...")
-            self.initialize()
-            
-        if not self.model:
-            logger.warning("⚠️ No Gemini model available, using fallback")
-            return self._get_fallback_response(text, language), "fallback", debug_info
+        if USING_NEW_SDK and not self.client:
+            logger.warning("⚠️ New Gemini SDK not available, using fallback")
+            return self._get_fallback_response(text, language), "fallback"
+        elif not USING_NEW_SDK and not self.model:
+            logger.warning("⚠️ Legacy Gemini not available, using fallback")
+            return self._get_fallback_response(text, language), "fallback"
         
         try:
-            # Build a proper prompt
-            system_prompt = self._get_system_prompt(language)
-            full_prompt = f"{system_prompt}\n\nUser: {text}\n\nAssistant:"
-            
-            # Configure generation settings
-            generation_config = {
-                "temperature": temperature,
-                "top_p": 1,
-                "top_k": 1,
-                "max_output_tokens": max_tokens,
+            # Create system prompt based on language
+            system_prompts = {
+                "en": "You are JUNE, a helpful AI assistant. Provide clear, accurate, and helpful responses.",
+                "es": "Eres JUNE, un asistente de IA útil. Proporciona respuestas claras, precisas y útiles en español.",
+                "fr": "Vous êtes JUNE, un assistant IA utile. Fournissez des réponses claires, précises et utiles en français."
             }
             
-            logger.info(f"🤖 Generating Gemini response for: '{text[:50]}...'")
+            system_prompt = system_prompts.get(language, system_prompts["en"])
+            full_prompt = f"{system_prompt}\n\nUser: {text}\n\nAssistant:"
             
-            # Generate response with timeout
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.model.generate_content,
+            logger.info(f"🤖 Generating response for: '{text[:50]}...'")
+            
+            if USING_NEW_SDK:
+                # New Google GenAI SDK
+                try:
+                    response = self.client.models.generate_content(
+                        model='gemini-1.5-flash',
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=temperature,
+                            max_output_tokens=1000,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"gemini-1.5-flash failed: {e}, trying gemini-2.0-flash-exp...")
+                    response = self.client.models.generate_content(
+                        model='gemini-2.0-flash-exp',
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=temperature,
+                            max_output_tokens=1000,
+                        )
+                    )
+                
+                if response and response.text:
+                    logger.info(f"✅ Generated response: '{response.text[:50]}...'")
+                    return response.text.strip(), "gemini-new-sdk"
+                else:
+                    logger.warning("⚠️ Empty response from new Gemini SDK")
+                    return self._get_fallback_response(text, language), "fallback"
+            else:
+                # Legacy Google Generative AI library
+                generation_config = genai.types.GenerationConfig(
+                    temperature=temperature,
+                    top_p=1,
+                    top_k=1,
+                    max_output_tokens=1000,
+                )
+                
+                response = self.model.generate_content(
                     full_prompt,
                     generation_config=generation_config
-                ),
-                timeout=30.0
-            )
-            
-            if response and response.text:
-                logger.info(f"✅ Gemini response generated: '{response.text[:50]}...'")
-                debug_info["success"] = True
-                return response.text, "gemini", debug_info
-            else:
-                logger.warning("⚠️ Empty response from Gemini")
-                debug_info["error"] = "Empty response"
-                return self._get_fallback_response(text, language), "fallback", debug_info
+                )
                 
-        except asyncio.TimeoutError:
-            logger.error("⏱️ Gemini request timed out")
-            debug_info["error"] = "Request timeout"
-            return self._get_fallback_response(text, language), "fallback-timeout", debug_info
+                if response and response.text:
+                    logger.info(f"✅ Generated response: '{response.text[:50]}...'")
+                    return response.text.strip(), "gemini-legacy"
+                else:
+                    logger.warning("⚠️ Empty response from legacy Gemini")
+                    return self._get_fallback_response(text, language), "fallback"
+                
         except Exception as e:
             logger.error(f"❌ Gemini generation failed: {e}")
-            debug_info["error"] = str(e)
-            self.last_error = str(e)
-            return self._get_fallback_response(text, language), "fallback-error", debug_info
-    
-    def _get_system_prompt(self, language: str) -> str:
-        """Get system prompt based on language"""
-        prompts = {
-            "en": "You are JUNE, an intelligent and helpful AI assistant. Provide clear, accurate, and helpful responses.",
-            "es": "Eres JUNE, un asistente de IA inteligente y útil. Proporciona respuestas claras, precisas y útiles en español.",
-            "fr": "Vous êtes JUNE, un assistant IA intelligent et utile. Fournissez des réponses claires, précises et utiles en français."
-        }
-        return prompts.get(language, prompts["en"])
+            return self._get_fallback_response(text, language), "fallback"
     
     def _get_fallback_response(self, text: str, language: str) -> str:
-        """Generate intelligent fallback response"""
-        text_lower = text.lower()
-        
-        # Language-specific responses
+        """Generate fallback response when Gemini is unavailable"""
         responses = {
             "en": {
                 "greeting": "Hello! I'm JUNE, your AI assistant. How can I help you today?",
-                "help": "I'm here to assist you with any questions or tasks. What would you like help with?",
-                "thanks": "You're welcome! Is there anything else I can help you with?",
-                "default": f"I understand you're asking about '{text}'. While I'm currently running in limited mode, I'll do my best to help you."
+                "default": f"I understand you're asking about '{text}'. I'm currently running in limited mode, but I'm here to help you."
             },
             "es": {
                 "greeting": "¡Hola! Soy JUNE, tu asistente de IA. ¿Cómo puedo ayudarte hoy?",
-                "help": "Estoy aquí para ayudarte con cualquier pregunta o tarea. ¿En qué te gustaría que te ayudara?",
-                "thanks": "¡De nada! ¿Hay algo más en lo que pueda ayudarte?",
-                "default": f"Entiendo que preguntas sobre '{text}'. Aunque actualmente estoy funcionando en modo limitado, haré mi mejor esfuerzo para ayudarte."
+                "default": f"Entiendo que preguntas sobre '{text}'. Estoy funcionando en modo limitado, pero estoy aquí para ayudarte."
             },
             "fr": {
                 "greeting": "Bonjour! Je suis JUNE, votre assistant IA. Comment puis-je vous aider aujourd'hui?",
-                "help": "Je suis là pour vous aider avec toutes vos questions ou tâches. En quoi puis-je vous aider?",
-                "thanks": "De rien! Y a-t-il autre chose que je puisse faire pour vous?",
-                "default": f"Je comprends que vous demandez à propos de '{text}'. Bien que je fonctionne actuellement en mode limité, je ferai de mon mieux pour vous aider."
+                "default": f"Je comprends que vous demandez à propos de '{text}'. Je fonctionne en mode limité, mais je suis là pour vous aider."
             }
         }
         
         lang_responses = responses.get(language, responses["en"])
         
-        # Determine response type
+        # Simple response logic
+        text_lower = text.lower()
         if any(word in text_lower for word in ["hello", "hi", "hey", "hola", "bonjour"]):
             return lang_responses["greeting"]
-        elif any(word in text_lower for word in ["help", "assist", "ayuda", "aide"]):
-            return lang_responses["help"]
-        elif any(word in text_lower for word in ["thanks", "thank", "gracias", "merci"]):
-            return lang_responses["thanks"]
         else:
             return lang_responses["default"]
     
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict:
         """Get current Gemini service status"""
-        return {
-            "initialized": self.is_initialized,
-            "api_key_configured": bool(self.api_key),
-            "api_key_prefix": self.api_key[:10] + "..." if self.api_key else "not_set",
-            "model_loaded": self.model is not None,
-            "available_models": self.available_models,
-            "last_error": self.last_error
-        }
+        if USING_NEW_SDK:
+            return {
+                "sdk_type": "new_google_genai_sdk",
+                "api_key_configured": bool(self.api_key),
+                "client_ready": self.client is not None,
+                "ready": bool(self.api_key and self.client)
+            }
+        else:
+            return {
+                "sdk_type": "legacy_google_generativeai",
+                "api_key_configured": bool(self.api_key),
+                "model_loaded": self.model is not None,
+                "ready": bool(self.api_key and self.model)
+            }
 
 # Initialize Gemini service
 gemini_service = GeminiService()
 
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
 @app.get("/")
 async def root():
-    """Root endpoint with service information"""
+    """Root endpoint"""
     return {
         "service": "June Orchestrator",
         "version": "3.0.0",
         "status": "healthy",
-        "ai_status": "gemini_enhanced",
+        "gemini_status": gemini_service.get_status(),
         "endpoints": {
             "health": "/healthz",
             "chat": "/v1/chat",
-            "debug": "/debug/routes",
-            "gemini_status": "/debug/gemini",
-            "test_chat": "/debug/test-chat"
+            "version": "/v1/version",
+            "debug": "/debug/status"
         }
     }
 
@@ -287,114 +302,61 @@ async def health_check():
         "status": "healthy",
         "service": "june-orchestrator",
         "version": "3.0.0",
-        "gemini_status": gemini_service.get_status()
+        "timestamp": time.time(),
+        "gemini_ready": gemini_service.get_status()["ready"]
     }
-
-@app.get("/debug/routes")
-async def debug_routes():
-    """List all available routes"""
-    routes = []
-    for route in app.routes:
-        if hasattr(route, 'methods') and hasattr(route, 'path'):
-            routes.append({
-                "path": route.path,
-                "methods": list(route.methods),
-                "name": getattr(route, 'name', 'unknown')
-            })
-    return {"routes": routes, "total": len(routes)}
-
-@app.get("/debug/gemini")
-async def debug_gemini():
-    """Detailed Gemini service status"""
-    status = gemini_service.get_status()
-    
-    # Try to list actual models from API
-    try:
-        import google.generativeai as genai
-        if gemini_service.api_key:
-            genai.configure(api_key=gemini_service.api_key)
-            models = genai.list_models()
-            status["live_models"] = [
-                {
-                    "name": m.name,
-                    "display_name": getattr(m, 'display_name', 'N/A'),
-                    "description": getattr(m, 'description', 'N/A')[:100]
-                }
-                for m in models
-            ]
-    except Exception as e:
-        status["live_models_error"] = str(e)
-    
-    return status
-
-@app.post("/debug/test-chat")
-async def test_chat():
-    """Test chat endpoint with predefined message"""
-    test_messages = [
-        "What is 2 + 2?",
-        "Tell me a joke",
-        "What's the capital of France?"
-    ]
-    
-    import random
-    test_text = random.choice(test_messages)
-    
-    response, provider, debug = await gemini_service.generate_response(test_text)
-    
-    return {
-        "test_input": test_text,
-        "response": response,
-        "provider": provider,
-        "debug_info": debug
-    }
-
-async def optional_auth(authorization: Optional[str] = Header(None)):
-    """Optional authentication"""
-    # For now, allow all requests
-    return True
 
 @app.post("/v1/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, auth: bool = Depends(optional_auth)):
-    """Main chat endpoint with enhanced Gemini integration"""
+async def chat(request: ChatRequest):
+    """Main chat endpoint with Gemini integration"""
     start_time = time.time()
     
     try:
         logger.info(f"📨 Chat request: '{request.text[:100]}...' (lang: {request.language})")
         
+        # Input validation
+        if not request.text or not request.text.strip():
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        
+        if len(request.text) > 10000:  # Reasonable limit
+            raise HTTPException(status_code=400, detail="Text too long (max 10000 characters)")
+        
         # Generate AI response
-        ai_response, ai_provider, debug_info = await gemini_service.generate_response(
-            request.text,
+        ai_response, provider = await gemini_service.generate_response(
+            request.text.strip(),
             request.language,
-            request.temperature,
-            request.max_tokens
+            request.temperature
         )
         
         response_time = int((time.time() - start_time) * 1000)
         
-        logger.info(f"✅ Chat response completed in {response_time}ms using {ai_provider}")
-        
-        # Include debug info if requested
-        include_debug = request.metadata.get("include_debug", False)
+        logger.info(f"✅ Chat response completed in {response_time}ms using {provider}")
         
         return ChatResponse(
             ok=True,
-            message={"text": ai_response, "role": "assistant"},
+            message={
+                "text": ai_response,
+                "role": "assistant"
+            },
             response_time_ms=response_time,
             conversation_id=f"conv-{int(time.time())}",
-            ai_provider=ai_provider,
-            debug_info=debug_info if include_debug else None
+            ai_provider=provider
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Chat error: {e}", exc_info=True)
+        logger.error(f"❌ Chat error: {e}")
         response_time = int((time.time() - start_time) * 1000)
         
         return ChatResponse(
             ok=False,
-            message={"text": f"I apologize, but I encountered an error: {str(e)}", "role": "error"},
+            message={
+                "text": f"I apologize, but I encountered an error: {str(e)}",
+                "role": "error"
+            },
             response_time_ms=response_time,
-            ai_provider="error",
-            debug_info={"error": str(e), "type": type(e).__name__}
+            ai_provider="error"
         )
 
 @app.get("/v1/version")
@@ -402,26 +364,63 @@ async def version():
     """Get version information"""
     return {
         "version": "3.0.0",
-        "git_sha": os.getenv("GIT_SHA", "unknown"),
-        "build_time": os.getenv("BUILD_TIME", datetime.now().isoformat()),
+        "service": "june-orchestrator",
+        "build_time": datetime.now().isoformat(),
         "environment": os.getenv("ENVIRONMENT", "production"),
         "gemini_status": gemini_service.get_status()
     }
+
+@app.get("/debug/status")
+async def debug_status():
+    """Debug endpoint for service status"""
+    gemini_status = gemini_service.get_status()
+    
+    return {
+        "service": "june-orchestrator",
+        "version": "3.0.0",
+        "environment": {
+            "GEMINI_API_KEY": "set" if os.getenv("GEMINI_API_KEY") else "not_set",
+            "ENVIRONMENT": os.getenv("ENVIRONMENT", "not_set")
+        },
+        "gemini": gemini_status,
+        "timestamp": time.time()
+    }
+
+@app.post("/debug/test-chat")
+async def test_chat():
+    """Test chat endpoint with predefined message"""
+    test_messages = [
+        "Hello, how are you?",
+        "What's 2 + 2?",
+        "Tell me about artificial intelligence",
+        "What can you help me with?"
+    ]
+    
+    import random
+    test_text = random.choice(test_messages)
+    
+    # Use the same chat endpoint
+    request = ChatRequest(text=test_text)
+    return await chat(request)
+
+# ============================================================================
+# STARTUP
+# ============================================================================
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     logger.info("🚀 Starting June Orchestrator v3.0.0")
     
-    # Log environment
+    # Log configuration
     logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
-    logger.info(f"Log Level: {os.getenv('LOG_LEVEL', 'INFO')}")
+    logger.info(f"Gemini API Key: {'✅ Set' if os.getenv('GEMINI_API_KEY') else '❌ Not Set'}")
     
     # Initialize Gemini
-    if gemini_service.is_initialized:
-        logger.info("✅ Gemini service initialized successfully")
+    if gemini_service.get_status()["ready"]:
+        logger.info("✅ Gemini service ready")
     else:
-        logger.warning(f"⚠️ Gemini service not initialized: {gemini_service.last_error}")
+        logger.warning("⚠️ Gemini service not ready - will use fallback responses")
 
 if __name__ == "__main__":
     import uvicorn

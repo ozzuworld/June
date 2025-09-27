@@ -1,6 +1,24 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-google-genai==1.0.0
-python-multipart==0.0.6
-httpx==0.25.2
+# June/services/june-orchestrator/requirements.txt
+# Clean, minimal dependencies for June Orchestrator
+
+# Core FastAPI and server
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.8.2
+
+# HTTP client for external services
+httpx==0.27.0
+
+# Google Gemini AI - Choose ONE of these options:
+
+# OPTION 1: New Google GenAI SDK (recommended for new projects, Gemini 2.0 support)
+google-genai>=1.0.0
+
+# OPTION 2: Legacy Google Generative AI (more stable, works until Aug 2025)
+# google-generativeai>=0.7.2
+
+# ⚠️ IMPORTANT: Uncomment only ONE of the Gemini options above!
+# The code will automatically detect which library you have installed.
+
+# Optional: JSON Web Token support (if needed later)
+# PyJWT==2.8.0

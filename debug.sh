@@ -1,114 +1,90 @@
 #!/bin/bash
-# Check current auto-deployment readiness
+# cleanup-orchestrator.sh
+# Remove all redundant and confusing files from the June orchestrator
 
-echo "🔍 Checking Auto-Deployment Readiness"
-echo "====================================="
+set -euo pipefail
 
-# Check 1: GitHub Workflow exists
-echo -e "\n1. GitHub Workflow:"
-if [ -f ".github/workflows/deploy-gke.yml" ]; then
-    echo "✅ GitHub workflow exists"
-    echo "   Path: .github/workflows/deploy-gke.yml"
-else
-    echo "❌ No GitHub workflow found"
+echo "🧹 Cleaning up June Orchestrator directory"
+echo "=========================================="
+
+ORCHESTRATOR_DIR="June/services/june-orchestrator"
+
+if [ ! -d "$ORCHESTRATOR_DIR" ]; then
+    echo "❌ Directory $ORCHESTRATOR_DIR not found"
+    exit 1
 fi
 
-# Check 2: Orchestrator source location
-echo -e "\n2. Orchestrator Source:"
-if [ -f "June/services/june-orchestrator/app.py" ]; then
-    echo "✅ Orchestrator app.py in correct location"
-    if grep -q "/v1/chat" "June/services/june-orchestrator/app.py"; then
-        echo "✅ Contains /v1/chat endpoint"
-    else
-        echo "❌ Missing /v1/chat endpoint"
-    fi
-else
-    echo "❌ No app.py in June/services/june-orchestrator/"
-fi
+cd "$ORCHESTRATOR_DIR"
 
-# Check 3: Dockerfile
-echo -e "\n3. Dockerfile:"
-if [ -f "June/services/june-orchestrator/Dockerfile" ]; then
-    echo "✅ Dockerfile exists in service directory"
-else
-    echo "❌ No Dockerfile in service directory"
-fi
+echo "📂 Current directory: $(pwd)"
 
-# Check 4: Current deployment image
-echo -e "\n4. Current Deployment:"
-CURRENT_IMAGE=$(kubectl get deployment june-orchestrator -n june-services -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
-if [ ! -z "$CURRENT_IMAGE" ]; then
-    echo "✅ Current image: $CURRENT_IMAGE"
-    
-    # Check if using SHA-based or version-based tag
-    if [[ "$CURRENT_IMAGE" =~ :[a-f0-9]{40}$ ]]; then
-        echo "✅ Using SHA-based tag (auto-deploy ready)"
-    elif [[ "$CURRENT_IMAGE" =~ :v[0-9] ]]; then
-        echo "⚠️  Using version tag (needs workflow update)"
-    else
-        echo "❓ Unknown tag format"
-    fi
-else
-    echo "❌ Cannot access deployment"
-fi
+# Backup the clean files first
+echo "💾 Backing up clean files..."
+mkdir -p .cleanup-backup
+cp app.py .cleanup-backup/app_original.py 2>/dev/null || echo "No app.py to backup"
 
-# Check 5: Service status
-echo -e "\n5. Service Status:"
-POD_STATUS=$(kubectl get pods -n june-services -l app=june-orchestrator -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
-if [ "$POD_STATUS" = "Running" ]; then
-    echo "✅ Pod is running"
-else
-    echo "❌ Pod status: ${POD_STATUS:-unknown}"
-fi
+# Remove all backup and redundant files
+echo "🗑️  Removing backup and redundant files..."
 
-# Check 6: External connectivity
-echo -e "\n6. External Connectivity:"
-HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null https://api.allsafe.world/healthz 2>/dev/null || echo "000")
-if [ "$HTTP_CODE" = "200" ]; then
-    echo "✅ External endpoint responding (200 OK)"
-else
-    echo "❌ External endpoint not responding (HTTP $HTTP_CODE)"
-fi
+# Remove backup app files
+rm -f app_broken_backup.py
+rm -f app_simple_backup.py
+rm -f app_clean.py
+rm -f app_tts_patch.py
 
-# Summary
-echo -e "\n" 
-echo "=================================="
-echo "AUTO-DEPLOY READINESS SUMMARY"
-echo "=================================="
+# Remove backup requirements
+rm -f requirements_broken_backup.txt
+rm -f requirements_clean.txt
 
-# Count checks
-TOTAL_CHECKS=6
-PASSED=0
+# Remove backup Dockerfiles
+rm -f Dockerfile_clean
 
-[ -f ".github/workflows/deploy-gke.yml" ] && ((PASSED++))
-[ -f "June/services/june-orchestrator/app.py" ] && grep -q "/v1/chat" "June/services/june-orchestrator/app.py" && ((PASSED++))
-[ -f "June/services/june-orchestrator/Dockerfile" ] && ((PASSED++))
-[ ! -z "$CURRENT_IMAGE" ] && ((PASSED++))
-[ "$POD_STATUS" = "Running" ] && ((PASSED++))
-[ "$HTTP_CODE" = "200" ] && ((PASSED++))
+# Remove backup directories
+rm -rf backup-20250926-183229/
+rm -rf unitest/
 
-echo "Passed: $PASSED/$TOTAL_CHECKS checks"
+# Remove various other backup and temp files
+rm -f *.backup
+rm -f *.bak
+rm -f *.old
+rm -f *.tmp
 
-if [ $PASSED -eq $TOTAL_CHECKS ]; then
-    echo "🎉 AUTO-DEPLOYMENT IS READY!"
-    echo ""
-    echo "✅ Your repo is properly configured for automatic deployment."
-    echo "✅ Any push to main/master will trigger auto-deployment."
-    echo "✅ The workflow will build and deploy automatically."
-    echo ""
-    echo "🚀 To test auto-deployment:"
-    echo "   1. Make any change to June/services/june-orchestrator/"
-    echo "   2. git add . && git commit -m 'test auto-deploy'"  
-    echo "   3. git push origin main"
-    echo "   4. Watch GitHub Actions tab for deployment progress"
-elif [ $PASSED -ge 4 ]; then
-    echo "⚠️  MOSTLY READY - Minor issues to fix"
-    echo ""
-    echo "Run the setup script to fix remaining issues:"
-    echo "./setup-auto-deploy.sh"
-else
-    echo "❌ NEEDS SETUP - Major configuration required"
-    echo ""
-    echo "Run the setup script to configure auto-deployment:"
-    echo "./setup-auto-deploy.sh"
-fi
+# Remove Python cache
+find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+find . -name "*.pyc" -delete 2>/dev/null || true
+find . -name "*.pyo" -delete 2>/dev/null || true
+
+# Remove unnecessary modules and directories
+echo "📁 Removing unnecessary modules..."
+rm -rf conversation_manager.py
+rm -rf enhanced_conversation_manager.py
+rm -rf external_tts_client.py
+rm -rf media_apis.py
+rm -rf models.py
+rm -rf token_service.py
+rm -rf tts_service.py
+rm -rf tools.py
+rm -rf voice_ws.py
+rm -rf schemas/
+
+# List remaining files
+echo ""
+echo "📋 Remaining files:"
+ls -la
+
+echo ""
+echo "✅ Cleanup complete!"
+echo ""
+echo "📁 Remaining structure should be:"
+echo "   ├── app.py (clean implementation)"
+echo "   ├── requirements.txt (minimal dependencies)"
+echo "   ├── Dockerfile (optimized)"
+echo "   ├── .env (your environment variables)"
+echo "   └── .cleanup-backup/ (backup of original files)"
+echo ""
+echo "🚀 Next steps:"
+echo "   1. Replace app.py with the clean implementation"
+echo "   2. Replace requirements.txt with minimal dependencies"  
+echo "   3. Replace Dockerfile with optimized version"
+echo "   4. Test locally: python app.py"
+echo "   5. Build and deploy: docker build -t orchestrator ."
