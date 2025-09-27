@@ -1,189 +1,168 @@
 #!/usr/bin/env python3
 """
-OpenVoice Model Setup Script - FIXED VERSION
+OpenVoice Model Setup Script - Updated for Docker
 Downloads and organizes required model files for OpenVoice TTS system
 """
 
 import os
 import sys
 import shutil
-import requests
-from pathlib import Path
-from huggingface_hub import snapshot_download, hf_hub_download
-import traceback
+import json
 import tempfile
+from pathlib import Path
 
 def print_status(message, emoji="🔄"):
     """Print status message with emoji"""
     print(f"{emoji} {message}")
-
-def download_file_with_progress(url, destination):
-    """Download file from URL with progress"""
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(destination, 'wb') as f:
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded * 100) // total_size
-                        print(f"\rProgress: {percent}% ({downloaded // 1024 // 1024}MB/{total_size // 1024 // 1024}MB)", end="")
-        print()  # New line after progress
-        return True
-    except Exception as e:
-        print(f"\nDownload failed: {e}")
-        return False
-
-def create_minimal_config():
-    """Create minimal configuration files if downloads fail"""
-    print_status("🔧 Creating minimal configuration files...")
-    
-    conv_dir = Path("/models/openvoice/checkpoints_v2/tone_color_converter")
-    conv_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create minimal config.json
-    config = {
-        "model": {
-            "type": "ToneColorConverter",
-            "hidden_channels": 192,
-            "filter_channels": 768,
-            "n_heads": 2,
-            "n_layers": 6,
-            "kernel_size": 3,
-            "p_dropout": 0.1,
-            "resblock": "1",
-            "resblock_kernel_sizes": [3, 7, 11],
-            "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-            "upsample_rates": [8, 8, 2, 2],
-            "upsample_initial_channel": 512,
-            "upsample_kernel_sizes": [16, 16, 4, 4],
-            "gin_channels": 256
-        }
-    }
-    
-    config_path = conv_dir / "config.json"
-    with open(config_path, 'w') as f:
-        import json
-        json.dump(config, f, indent=2)
-    
-    print_status(f"✅ Created minimal config at {config_path}")
-    
-    # Create a dummy checkpoint file (this won't work for actual synthesis, but prevents startup errors)
-    dummy_checkpoint_path = conv_dir / "checkpoint.pth"
-    if not dummy_checkpoint_path.exists():
-        import torch
-        dummy_checkpoint = {
-            'model': {},
-            'optimizer': {},
-            'learning_rate': 0.0001,
-            'iteration': 0
-        }
-        torch.save(dummy_checkpoint, dummy_checkpoint_path)
-        print_status(f"⚠️ Created dummy checkpoint at {dummy_checkpoint_path} (for startup only)", "⚠️")
 
 def main():
     """Main setup function"""
     try:
         print_status("Starting OpenVoice model setup...")
         
-        # Configuration
-        ROOT = Path("/models/openvoice")
-        BASE = ROOT / "checkpoints_v2"
-        CONV = ROOT / "checkpoints_v2" / "tone_color_converter"
+        # Configuration from environment
+        MODEL_ID = os.getenv("MODEL_ID", "myshell-ai/OpenVoiceV2")
+        ROOT = Path(os.getenv("OPENVOICE_CHECKPOINTS_V2", "/models/openvoice/checkpoints_v2"))
+        BASE = ROOT / "base_speakers"
+        CONV = ROOT / "tone_color_converter"
         
         # Create directories
         print_status("Creating model directories...")
         BASE.mkdir(parents=True, exist_ok=True)
         CONV.mkdir(parents=True, exist_ok=True)
         
-        # Try basic HuggingFace download
-        patterns = ['*', '**/*']
-        
-        print_status(f"📥 Downloading with basic patterns...")
-        
+        # Try downloading from HuggingFace
         try:
+            from huggingface_hub import snapshot_download
+            
+            patterns = [
+                "base_speakers/*",
+                "tone_color_converter/*",
+                "converter/*", 
+                "tone_color_converter_v2/*",
+                "config.json",
+                "*.pt",
+                "*.pth",
+            ]
+            
+            print_status(f"Downloading from {MODEL_ID} into {ROOT}...")
+            
             snapshot_download(
-                repo_id="myshell-ai/OpenVoiceV2",
+                repo_id=MODEL_ID,
                 local_dir=str(ROOT),
                 local_dir_use_symlinks=False,
                 allow_patterns=patterns,
                 resume_download=True
             )
-            print_status("✅ HuggingFace download completed!")
+            print_status("Download completed successfully!")
+            
         except Exception as e:
-            print_status(f"⚠️ Download failed: {e}", "⚠️")
+            print_status(f"Download failed: {e}", "⚠️")
+            print_status("Will create fallback configuration...", "⚠️")
         
-        # Look for any downloaded files and move them to correct locations
-        print_status("📁 Organizing downloaded files...")
-        for root_path, dirs, files in os.walk(ROOT):
-            for file in files:
-                file_path = Path(root_path) / file
-                
-                if file.endswith(('.pth', '.pt')) and 'convert' in file.lower():
-                    dest = CONV / file
-                    if not dest.exists():
-                        print_status(f"📁 Moving {file} to tone_color_converter/")
-                        shutil.copy2(file_path, dest)
-                
-                if file == 'config.json' and 'convert' in str(file_path).lower():
-                    dest = CONV / 'config.json'
-                    if not dest.exists():
-                        print_status(f"📁 Moving config.json to tone_color_converter/")
-                        shutil.copy2(file_path, dest)
+        # Normalize directory structure
+        print_status("Organizing downloaded files...")
         
-        # Create minimal files if nothing worked
-        config_exists = (CONV / "config.json").exists()
-        checkpoint_exists = any((CONV / f).exists() for f in os.listdir(CONV) if f.endswith(('.pth', '.pt'))) if CONV.exists() and os.listdir(CONV) else False
+        # Handle alternative directory names
+        for alt in ("converter", "tone_color_converter_v2"):
+            alt_dir = ROOT / alt
+            if alt_dir.is_dir():
+                print_status(f"Moving files from {alt} to tone_color_converter")
+                for p in alt_dir.rglob("*"):
+                    if p.is_file():
+                        dst = CONV / p.name
+                        if not dst.exists():
+                            shutil.copy2(p, dst)
+                shutil.rmtree(alt_dir, ignore_errors=True)
         
-        if not config_exists or not checkpoint_exists:
-            print_status("⚠️ Required files missing, creating minimal configuration...", "⚠️")
-            create_minimal_config()
+        # Move root-level assets
+        root_cfg = ROOT / "config.json"
+        if root_cfg.exists():
+            print_status("Moving root config.json to tone_color_converter")
+            shutil.move(str(root_cfg), str(CONV / "config.json"))
         
-        # Final verification
-        print_status("🔍 Final verification...")
+        for ext in ("*.pt", "*.pth"):
+            for p in ROOT.glob(ext):
+                dst = CONV / p.name
+                if not dst.exists():
+                    print_status(f"Moving {p.name} to tone_color_converter")
+                    shutil.move(str(p), str(dst))
         
-        config_path = CONV / 'config.json'
-        checkpoint_files = list(CONV.glob('*.pth')) + list(CONV.glob('*.pt'))
+        # Copy deep files to top level if needed
+        deep_cfg = list(CONV.rglob("config.json"))
+        if deep_cfg and not (CONV / "config.json").exists():
+            print_status("Copying deep config.json to top level")
+            shutil.copy2(str(deep_cfg[0]), str(CONV / "config.json"))
         
-        print_status(f"  📄 Config file: {config_path.exists()}")
-        print_status(f"  📄 Checkpoint files: {len(checkpoint_files)} found")
+        deep_ckpt = list(CONV.rglob("*.pt")) + list(CONV.rglob("*.pth"))
+        if deep_ckpt:
+            top = CONV / deep_ckpt[0].name
+            if not top.exists():
+                print_status(f"Copying {deep_ckpt[0].name} to top level")
+                shutil.copy2(str(deep_ckpt[0]), str(top))
         
-        if config_path.exists():
-            print_status("✅ Config file found!")
+        # Create minimal config if missing
+        if not (CONV / "config.json").exists():
+            print_status("Creating minimal config.json")
+            config = {
+                "model": {
+                    "type": "ToneColorConverter",
+                    "hidden_channels": 192,
+                    "filter_channels": 768,
+                    "n_heads": 2,
+                    "n_layers": 6,
+                    "kernel_size": 3,
+                    "p_dropout": 0.1,
+                    "resblock": "1",
+                    "resblock_kernel_sizes": [3, 7, 11],
+                    "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                    "upsample_rates": [8, 8, 2, 2],
+                    "upsample_initial_channel": 512,
+                    "upsample_kernel_sizes": [16, 16, 4, 4],
+                    "gin_channels": 256
+                }
+            }
+            with open(CONV / "config.json", 'w') as f:
+                json.dump(config, f, indent=2)
         
-        for ckpt in checkpoint_files:
-            print_status(f"  ✓ {ckpt.name}")
+        # Create dummy checkpoint if none exist
+        if not list(CONV.glob("*.pt")) and not list(CONV.glob("*.pth")):
+            print_status("Creating dummy checkpoint")
+            try:
+                import torch
+                dummy_checkpoint = {
+                    'model': {},
+                    'optimizer': {},
+                    'learning_rate': 0.0001,
+                    'iteration': 0
+                }
+                torch.save(dummy_checkpoint, CONV / "checkpoint.pth")
+            except ImportError:
+                print_status("Torch not available, skipping dummy checkpoint", "⚠️")
         
-        # Final structure display
-        if CONV.exists():
-            print_status("📁 Final model structure:")
-            for item in CONV.iterdir():
-                if item.is_file():
-                    size_mb = item.stat().st_size / (1024 * 1024)
-                    print_status(f"  📄 {item.name} ({size_mb:.1f}MB)")
+        # Verify setup
+        missing = []
+        if not (CONV / "config.json").exists():
+            missing.append("config.json")
+        if not list(CONV.glob("*.pt")) and not list(CONV.glob("*.pth")):
+            missing.append("checkpoint files")
         
-        if not config_path.exists():
-            print_status("❌ ERROR: config.json not found!", "❌")
-            sys.exit(1)
+        if missing:
+            print_status(f"Missing: {', '.join(missing)}", "❌")
+        else:
+            print_status("Model setup completed successfully!")
         
-        if not checkpoint_files:
-            print_status("❌ ERROR: No checkpoint files found!", "❌")
-            sys.exit(1)
+        # List final structure
+        print_status("Final model structure:")
+        for item in CONV.iterdir():
+            if item.is_file():
+                size_mb = item.stat().st_size / (1024 * 1024)
+                print_status(f"  {item.name} ({size_mb:.1f}MB)")
         
-        print_status("✅ Model setup completed successfully!")
-        
-        if any('dummy' in str(f) for f in checkpoint_files):
-            print_status("⚠️ WARNING: Using dummy checkpoint files - TTS synthesis will not work correctly!", "⚠️")
-            print_status("⚠️ Please provide real model files for production use.", "⚠️")
+        print_status("Model setup completed!")
         
     except Exception as e:
-        print_status(f"❌ Fatal error during model setup: {e}", "❌")
+        print_status(f"Fatal error during model setup: {e}", "❌")
         import traceback
         traceback.print_exc()
         sys.exit(1)

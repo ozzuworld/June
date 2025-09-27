@@ -1,0 +1,7 @@
+docker tag june-tts-test:latest ozzuworld/june-tts:latest
+
+docker build -t june-tts:latest .
+
+
+
+docker push ozzuworld/june-tts:latest
