@@ -7,27 +7,15 @@ Provides common utilities and authentication functions
 import os
 import logging
 from typing import Dict, Any, Optional
+from fastapi import Depends, HTTPException, Header
 
 logger = logging.getLogger(__name__)
 
 def require_service_auth():
     """
-    Authentication decorator for Docker deployment
-    In production, this should implement proper JWT validation
+    Authentication function for service-to-service communication
+    Returns auth data directly for dependency injection
     """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            # For Docker deployment, we'll allow all requests
-            # In production, implement proper authentication here
-            auth_data = {
-                "client_id": "docker-service",
-                "scopes": ["tts:synthesize", "tts:read"],
-                "authenticated": True
-            }
-            return auth_data
-        return wrapper
-    
-    # Return the auth data directly for dependency injection
     return {
         "client_id": "docker-service", 
         "scopes": ["tts:synthesize", "tts:read"],

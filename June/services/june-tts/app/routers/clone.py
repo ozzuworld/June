@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form
 from fastapi.responses import Response
 from pydantic import BaseModel
 import logging
-import io
 
 logger = logging.getLogger(__name__)
 

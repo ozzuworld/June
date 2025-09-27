@@ -1,14 +1,19 @@
 from typing import AsyncIterator, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict, HttpUrl
 
-from shared import require_service_auth
+try:
+    from shared import require_service_auth
+    AUTH_AVAILABLE = True
+except ImportError:
+    AUTH_AVAILABLE = False
+    def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
 
 from app.core.openvoice_engine import synthesize_v2_to_wav_path
 
 router = APIRouter(prefix="/tts", tags=["tts"])
-
 
 class TTSRequest(BaseModel):
     speaker_id: int | None = None
@@ -24,7 +29,6 @@ class TTSRequest(BaseModel):
     pitch: float = 0.0
     metadata: dict = Field(default_factory=dict)
 
-
 async def _file_stream(path: str) -> AsyncIterator[bytes]:
     chunk = 64 * 1024
     with open(path, "rb") as f:
@@ -34,11 +38,10 @@ async def _file_stream(path: str) -> AsyncIterator[bytes]:
                 break
             yield data
 
-
 @router.post("/generate")
 async def generate(
     req: TTSRequest,
-    service_auth: dict = Depends(require_service_auth)  # Add if needed
+    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
 ):
     # Guard clauses
     if not req.text or len(req.text.strip()) == 0:

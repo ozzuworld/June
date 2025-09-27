@@ -7,7 +7,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import tempfile
 import os
-from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Import the auth if available
 try:
@@ -15,7 +17,8 @@ try:
     AUTH_AVAILABLE = True
 except ImportError:
     AUTH_AVAILABLE = False
-    require_service_auth = lambda: None
+    def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
 
 from app.core.openvoice_engine import synthesize_v2_to_wav_path
 
@@ -36,7 +39,7 @@ class VoicesResponse(BaseModel):
 @router.post("/tts")
 async def synthesize_speech(
     request: StandardTTSRequest,
-    # auth_data: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
+    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
 ):
     """Standard TTS endpoint compatible with orchestrator ExternalTTSClient"""
     
@@ -48,24 +51,12 @@ async def synthesize_speech(
         if request.format.lower() != "wav":
             raise HTTPException(status_code=415, detail="Only WAV format is currently supported")
         
-        # For standard TTS, we'll use a default reference voice
-        # This requires having a default reference audio file
-        default_reference_path = os.getenv("DEFAULT_REFERENCE_AUDIO", "")
-        
-        if not default_reference_path or not os.path.exists(default_reference_path):
-            # Create a simple default reference if none exists
-            default_reference_path = await _create_default_reference()
-        
-        # Read default reference as base64
-        import base64
-        with open(default_reference_path, "rb") as f:
-            reference_b64 = base64.b64encode(f.read()).decode('utf-8')
-        
+        # For standard TTS, we'll just use basic Melo without reference audio
         # Generate speech using the OpenVoice engine
         wav_path = await synthesize_v2_to_wav_path(
             text=request.text.strip(),
             language=request.language.lower(),
-            reference_b64=reference_b64,
+            reference_b64=None,
             reference_url=None,
             speed=request.speed,
             volume=1.0,
@@ -91,13 +82,14 @@ async def synthesize_speech(
                 "X-Voice-ID": request.voice,
                 "X-Language": request.language,
                 "X-Speed": str(request.speed),
-                "X-Generated-By": "June-TTS-OpenVoice"
+                "X-Generated-By": "June-TTS-MeloTTS"
             }
         )
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"TTS synthesis failed: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"TTS synthesis failed: {str(e)}"
@@ -137,47 +129,13 @@ async def get_status():
     return {
         "service": "June TTS Standard",
         "status": "operational",
-        "engine": "OpenVoice",
+        "engine": "MeloTTS",
         "supported_formats": ["wav"],
         "supported_languages": ["EN", "ES", "FR", "ZH", "JA", "KO"],
         "features": {
             "standard_tts": True,
-            "voice_cloning": True,
+            "voice_cloning": False,  # Disabled without full OpenVoice
             "speed_control": True,
             "multi_language": True
         }
     }
-
-async def _create_default_reference() -> str:
-    """Create a default reference audio file if none exists"""
-    
-    # Create a simple sine wave as default reference
-    # This is a fallback - ideally you'd have a proper reference voice
-    
-    import numpy as np
-    import soundfile as sf
-    
-    # Generate a 2-second 440Hz tone
-    sample_rate = 22050
-    duration = 2.0
-    t = np.linspace(0, duration, int(sample_rate * duration), False)
-    
-    # Create a more voice-like waveform (multiple harmonics)
-    fundamental = 220  # A3 note
-    waveform = (
-        0.5 * np.sin(2 * np.pi * fundamental * t) +
-        0.3 * np.sin(2 * np.pi * fundamental * 2 * t) +
-        0.2 * np.sin(2 * np.pi * fundamental * 3 * t)
-    )
-    
-    # Apply envelope to make it more natural
-    envelope = np.exp(-2 * t)  # Exponential decay
-    waveform = waveform * envelope * 0.3  # Scale to reasonable volume
-    
-    # Save to temporary file
-    fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix="default_ref_")
-    os.close(fd)
-    
-    sf.write(temp_path, waveform, sample_rate)
-    
-    return temp_path

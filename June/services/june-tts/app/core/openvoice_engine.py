@@ -32,8 +32,6 @@ def _load_models_once() -> None:
 
     try:
         from melo.api import TTS as MeloTTS
-        from openvoice.api import ToneColorConverter
-        from openvoice import se_extractor
         
         # Initialize Melo (always needed)
         _MELO = MeloTTS(language=os.getenv("MELO_LANGUAGE", "EN"))
@@ -42,6 +40,9 @@ def _load_models_once() -> None:
         
         # Try to initialize converter (optional)
         try:
+            from openvoice.api import ToneColorConverter
+            from openvoice import se_extractor
+            
             root = os.getenv("OPENVOICE_CHECKPOINTS_V2", "/models/openvoice/checkpoints_v2")
             conv_root = os.path.join(root, "tone_color_converter")
             
@@ -65,19 +66,25 @@ def _load_models_once() -> None:
             else:
                 logger.warning("⚠️ Converter directory not found - voice cloning disabled")
                 
+        except ImportError as e:
+            logger.warning(f"⚠️ OpenVoice not available: {e}")
+            _CONVERTER = None
         except Exception as e:
             logger.warning(f"⚠️ Could not load voice converter: {e}")
             _CONVERTER = None
         
+    except ImportError as e:
+        logger.error(f"❌ MeloTTS not available: {e}")
+        raise RuntimeError(f"MeloTTS is required but not installed: {e}")
     except Exception as e:
-        logger.error(f"❌ Failed to load OpenVoice models: {e}")
-        raise RuntimeError(f"OpenVoice initialization failed: {e}")
+        logger.error(f"❌ Failed to load TTS models: {e}")
+        raise RuntimeError(f"TTS initialization failed: {e}")
 
 def warmup_models() -> None:
     """Warmup models at startup"""
     try:
         _load_models_once()
-        logger.info("✅ OpenVoice models warmed up successfully")
+        logger.info("✅ TTS models warmed up successfully")
     except Exception as e:
         logger.error(f"❌ Model warmup failed: {e}")
 
@@ -115,7 +122,12 @@ async def synthesize_v2_to_wav_path(
     # This ensures the service works even without full OpenVoice setup
     
     melo_lang = {"en": "EN", "es": "ES", "fr": "FR", "zh": "ZH", "ja": "JA", "ko": "KO"}.get(lang, "EN")
-    spk = int(os.getenv("MELO_SPEAKER_ID", "0"))
+    
+    # Try to convert speaker ID to int
+    try:
+        spk = int(os.getenv("MELO_SPEAKER_ID", "0"))
+    except ValueError:
+        spk = 0
     
     # Generate basic TTS
     if hasattr(_MELO, "tts_to_file"):
@@ -162,7 +174,7 @@ async def synthesize_v2_to_wav_path(
         return out_path
     
     else:
-        raise RuntimeError("Unsupported MeloTTS build")
+        raise RuntimeError("Unsupported MeloTTS build - no tts_to_file or tts_to_audio method")
 
 # Engine class for compatibility
 class OpenVoiceEngine:

@@ -1,6 +1,6 @@
 #!/bin/bash
-# June TTS Service Fix Script
-# This script fixes the model download and import issues
+# June TTS Service Complete Fix Script
+# This script fixes all the import and dependency issues
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ fi
 
 cd June/services/june-tts
 
-# Step 1: Fix the shared module
+# Step 1: Fix the shared module completely
 echo "📦 Fixing shared module..."
 mkdir -p shared
 
@@ -29,27 +29,15 @@ Provides common utilities and authentication functions
 import os
 import logging
 from typing import Dict, Any, Optional
+from fastapi import Depends, HTTPException, Header
 
 logger = logging.getLogger(__name__)
 
 def require_service_auth():
     """
-    Authentication decorator for Docker deployment
-    In production, this should implement proper JWT validation
+    Authentication function for service-to-service communication
+    Returns auth data directly for dependency injection
     """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            # For Docker deployment, we'll allow all requests
-            # In production, implement proper authentication here
-            auth_data = {
-                "client_id": "docker-service",
-                "scopes": ["tts:synthesize", "tts:read"],
-                "authenticated": True
-            }
-            return auth_data
-        return wrapper
-    
-    # Return the auth data directly for dependency injection
     return {
         "client_id": "docker-service", 
         "scopes": ["tts:synthesize", "tts:read"],
@@ -99,221 +87,10 @@ __all__ = [
 ]
 EOF
 
-cat > shared/setup.py << 'EOF'
-from setuptools import setup, find_packages
-
-setup(
-    name="june-shared",
-    version="1.0.0",
-    packages=find_packages(),
-    install_requires=[
-        "fastapi>=0.100.0",
-        "httpx>=0.24.0", 
-        "PyJWT[crypto]>=2.8.0",
-        "cryptography>=41.0.0"
-    ]
-)
-EOF
-
-# Step 2: Fix the model setup script
-echo "🤖 Fixing model setup script..."
-cat > model_setup.py << 'EOF'
-#!/usr/bin/env python3
-"""
-OpenVoice Model Setup Script - FIXED VERSION
-Downloads and organizes required model files for OpenVoice TTS system
-"""
-
-import os
-import sys
-import shutil
-import requests
-from pathlib import Path
-from huggingface_hub import snapshot_download, hf_hub_download
-import traceback
-import tempfile
-
-def print_status(message, emoji="🔄"):
-    """Print status message with emoji"""
-    print(f"{emoji} {message}")
-
-def download_file_with_progress(url, destination):
-    """Download file from URL with progress"""
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(destination, 'wb') as f:
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded * 100) // total_size
-                        print(f"\rProgress: {percent}% ({downloaded // 1024 // 1024}MB/{total_size // 1024 // 1024}MB)", end="")
-        print()  # New line after progress
-        return True
-    except Exception as e:
-        print(f"\nDownload failed: {e}")
-        return False
-
-def create_minimal_config():
-    """Create minimal configuration files if downloads fail"""
-    print_status("🔧 Creating minimal configuration files...")
-    
-    conv_dir = Path("/models/openvoice/checkpoints_v2/tone_color_converter")
-    conv_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create minimal config.json
-    config = {
-        "model": {
-            "type": "ToneColorConverter",
-            "hidden_channels": 192,
-            "filter_channels": 768,
-            "n_heads": 2,
-            "n_layers": 6,
-            "kernel_size": 3,
-            "p_dropout": 0.1,
-            "resblock": "1",
-            "resblock_kernel_sizes": [3, 7, 11],
-            "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-            "upsample_rates": [8, 8, 2, 2],
-            "upsample_initial_channel": 512,
-            "upsample_kernel_sizes": [16, 16, 4, 4],
-            "gin_channels": 256
-        }
-    }
-    
-    config_path = conv_dir / "config.json"
-    with open(config_path, 'w') as f:
-        import json
-        json.dump(config, f, indent=2)
-    
-    print_status(f"✅ Created minimal config at {config_path}")
-    
-    # Create a dummy checkpoint file (this won't work for actual synthesis, but prevents startup errors)
-    dummy_checkpoint_path = conv_dir / "checkpoint.pth"
-    if not dummy_checkpoint_path.exists():
-        import torch
-        dummy_checkpoint = {
-            'model': {},
-            'optimizer': {},
-            'learning_rate': 0.0001,
-            'iteration': 0
-        }
-        torch.save(dummy_checkpoint, dummy_checkpoint_path)
-        print_status(f"⚠️ Created dummy checkpoint at {dummy_checkpoint_path} (for startup only)", "⚠️")
-
-def main():
-    """Main setup function"""
-    try:
-        print_status("Starting OpenVoice model setup...")
-        
-        # Configuration
-        ROOT = Path("/models/openvoice")
-        BASE = ROOT / "checkpoints_v2"
-        CONV = ROOT / "checkpoints_v2" / "tone_color_converter"
-        
-        # Create directories
-        print_status("Creating model directories...")
-        BASE.mkdir(parents=True, exist_ok=True)
-        CONV.mkdir(parents=True, exist_ok=True)
-        
-        # Try basic HuggingFace download
-        patterns = ['*', '**/*']
-        
-        print_status(f"📥 Downloading with basic patterns...")
-        
-        try:
-            snapshot_download(
-                repo_id="myshell-ai/OpenVoiceV2",
-                local_dir=str(ROOT),
-                local_dir_use_symlinks=False,
-                allow_patterns=patterns,
-                resume_download=True
-            )
-            print_status("✅ HuggingFace download completed!")
-        except Exception as e:
-            print_status(f"⚠️ Download failed: {e}", "⚠️")
-        
-        # Look for any downloaded files and move them to correct locations
-        print_status("📁 Organizing downloaded files...")
-        for root_path, dirs, files in os.walk(ROOT):
-            for file in files:
-                file_path = Path(root_path) / file
-                
-                if file.endswith(('.pth', '.pt')) and 'convert' in file.lower():
-                    dest = CONV / file
-                    if not dest.exists():
-                        print_status(f"📁 Moving {file} to tone_color_converter/")
-                        shutil.copy2(file_path, dest)
-                
-                if file == 'config.json' and 'convert' in str(file_path).lower():
-                    dest = CONV / 'config.json'
-                    if not dest.exists():
-                        print_status(f"📁 Moving config.json to tone_color_converter/")
-                        shutil.copy2(file_path, dest)
-        
-        # Create minimal files if nothing worked
-        config_exists = (CONV / "config.json").exists()
-        checkpoint_exists = any((CONV / f).exists() for f in os.listdir(CONV) if f.endswith(('.pth', '.pt'))) if CONV.exists() and os.listdir(CONV) else False
-        
-        if not config_exists or not checkpoint_exists:
-            print_status("⚠️ Required files missing, creating minimal configuration...", "⚠️")
-            create_minimal_config()
-        
-        # Final verification
-        print_status("🔍 Final verification...")
-        
-        config_path = CONV / 'config.json'
-        checkpoint_files = list(CONV.glob('*.pth')) + list(CONV.glob('*.pt'))
-        
-        print_status(f"  📄 Config file: {config_path.exists()}")
-        print_status(f"  📄 Checkpoint files: {len(checkpoint_files)} found")
-        
-        if config_path.exists():
-            print_status("✅ Config file found!")
-        
-        for ckpt in checkpoint_files:
-            print_status(f"  ✓ {ckpt.name}")
-        
-        # Final structure display
-        if CONV.exists():
-            print_status("📁 Final model structure:")
-            for item in CONV.iterdir():
-                if item.is_file():
-                    size_mb = item.stat().st_size / (1024 * 1024)
-                    print_status(f"  📄 {item.name} ({size_mb:.1f}MB)")
-        
-        if not config_path.exists():
-            print_status("❌ ERROR: config.json not found!", "❌")
-            sys.exit(1)
-        
-        if not checkpoint_files:
-            print_status("❌ ERROR: No checkpoint files found!", "❌")
-            sys.exit(1)
-        
-        print_status("✅ Model setup completed successfully!")
-        
-        if any('dummy' in str(f) for f in checkpoint_files):
-            print_status("⚠️ WARNING: Using dummy checkpoint files - TTS synthesis will not work correctly!", "⚠️")
-            print_status("⚠️ Please provide real model files for production use.", "⚠️")
-        
-    except Exception as e:
-        print_status(f"❌ Fatal error during model setup: {e}", "❌")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
-EOF
-
-# Step 3: Fix the openvoice engine
+# Step 2: Fix the OpenVoice engine with better error handling
 echo "🎛️ Fixing OpenVoice engine..."
+mkdir -p app/core
+
 cat > app/core/openvoice_engine.py << 'EOF'
 import asyncio
 import base64
@@ -349,8 +126,6 @@ def _load_models_once() -> None:
 
     try:
         from melo.api import TTS as MeloTTS
-        from openvoice.api import ToneColorConverter
-        from openvoice import se_extractor
         
         # Initialize Melo (always needed)
         _MELO = MeloTTS(language=os.getenv("MELO_LANGUAGE", "EN"))
@@ -359,6 +134,9 @@ def _load_models_once() -> None:
         
         # Try to initialize converter (optional)
         try:
+            from openvoice.api import ToneColorConverter
+            from openvoice import se_extractor
+            
             root = os.getenv("OPENVOICE_CHECKPOINTS_V2", "/models/openvoice/checkpoints_v2")
             conv_root = os.path.join(root, "tone_color_converter")
             
@@ -382,19 +160,25 @@ def _load_models_once() -> None:
             else:
                 logger.warning("⚠️ Converter directory not found - voice cloning disabled")
                 
+        except ImportError as e:
+            logger.warning(f"⚠️ OpenVoice not available: {e}")
+            _CONVERTER = None
         except Exception as e:
             logger.warning(f"⚠️ Could not load voice converter: {e}")
             _CONVERTER = None
         
+    except ImportError as e:
+        logger.error(f"❌ MeloTTS not available: {e}")
+        raise RuntimeError(f"MeloTTS is required but not installed: {e}")
     except Exception as e:
-        logger.error(f"❌ Failed to load OpenVoice models: {e}")
-        raise RuntimeError(f"OpenVoice initialization failed: {e}")
+        logger.error(f"❌ Failed to load TTS models: {e}")
+        raise RuntimeError(f"TTS initialization failed: {e}")
 
 def warmup_models() -> None:
     """Warmup models at startup"""
     try:
         _load_models_once()
-        logger.info("✅ OpenVoice models warmed up successfully")
+        logger.info("✅ TTS models warmed up successfully")
     except Exception as e:
         logger.error(f"❌ Model warmup failed: {e}")
 
@@ -432,7 +216,12 @@ async def synthesize_v2_to_wav_path(
     # This ensures the service works even without full OpenVoice setup
     
     melo_lang = {"en": "EN", "es": "ES", "fr": "FR", "zh": "ZH", "ja": "JA", "ko": "KO"}.get(lang, "EN")
-    spk = int(os.getenv("MELO_SPEAKER_ID", "0"))
+    
+    # Try to convert speaker ID to int
+    try:
+        spk = int(os.getenv("MELO_SPEAKER_ID", "0"))
+    except ValueError:
+        spk = 0
     
     # Generate basic TTS
     if hasattr(_MELO, "tts_to_file"):
@@ -479,7 +268,7 @@ async def synthesize_v2_to_wav_path(
         return out_path
     
     else:
-        raise RuntimeError("Unsupported MeloTTS build")
+        raise RuntimeError("Unsupported MeloTTS build - no tts_to_file or tts_to_audio method")
 
 # Engine class for compatibility
 class OpenVoiceEngine:
@@ -548,6 +337,76 @@ except Exception as e:
     logger.warning(f"⚠️ Engine initialization failed on import: {e}")
 EOF
 
+# Step 3: Fix the TTS router with proper imports
+echo "🎵 Fixing TTS router..."
+cat > app/routers/tts.py << 'EOF'
+from typing import AsyncIterator, Optional
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, ConfigDict, HttpUrl
+
+try:
+    from shared import require_service_auth
+    AUTH_AVAILABLE = True
+except ImportError:
+    AUTH_AVAILABLE = False
+    def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
+
+from app.core.openvoice_engine import synthesize_v2_to_wav_path
+
+router = APIRouter(prefix="/tts", tags=["tts"])
+
+class TTSRequest(BaseModel):
+    speaker_id: int | None = None
+    model_config = ConfigDict(extra="ignore")
+    text: str
+    reference_b64: Optional[str] = None       # WAV/MP3/FLAC/OGG/etc (base64-encoded bytes)
+    reference_url: Optional[HttpUrl] = None   # will be downloaded server-side
+    voice_id: str = "base"                    # kept for API consistency; Melo pack selects actual voice
+    language: str = "en"                      # en, es, fr, zh, ja, ko
+    format: str = "wav"                       # output container (fixed to wav for now)
+    speed: float = 1.0
+    volume: float = 1.0
+    pitch: float = 0.0
+    metadata: dict = Field(default_factory=dict)
+
+async def _file_stream(path: str) -> AsyncIterator[bytes]:
+    chunk = 64 * 1024
+    with open(path, "rb") as f:
+        while True:
+            data = f.read(chunk)
+            if not data:
+                break
+            yield data
+
+@router.post("/generate")
+async def generate(
+    req: TTSRequest,
+    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
+):
+    # Guard clauses
+    if not req.text or len(req.text.strip()) == 0:
+        raise HTTPException(status_code=400, detail="text is required")
+    if req.format.lower() != "wav":
+        raise HTTPException(status_code=415, detail="Only wav output is supported")
+    if not (req.reference_b64 or req.reference_url):
+        raise HTTPException(status_code=400, detail="Provide reference_b64 or reference_url for cloning")
+
+    wav_path = await synthesize_v2_to_wav_path(
+        text=req.text.strip(),
+        language=req.language.strip().lower(),
+        reference_b64=req.reference_b64,
+        reference_url=str(req.reference_url) if req.reference_url else None,
+        speed=req.speed,
+        volume=req.volume,
+        pitch=req.pitch,
+        metadata=req.metadata,
+    )
+
+    return StreamingResponse(_file_stream(wav_path), media_type="audio/wav")
+EOF
+
 # Step 4: Fix the clone router
 echo "🎭 Fixing clone router..."
 cat > app/routers/clone.py << 'EOF'
@@ -555,7 +414,6 @@ from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form
 from fastapi.responses import Response
 from pydantic import BaseModel
 import logging
-import io
 
 logger = logging.getLogger(__name__)
 
@@ -654,15 +512,337 @@ async def clone_status():
     }
 EOF
 
-# Step 5: Fix requirements to include requests
-echo "📋 Updating requirements..."
-if ! grep -q "requests" requirements.txt; then
-    echo "requests>=2.31.0" >> requirements.txt
-fi
+# Step 5: Fix the standard TTS router
+echo "🎤 Fixing standard TTS router..."
+cat > app/routers/standard_tts.py << 'EOF'
+# June/services/june-tts/app/routers/standard_tts.py
+# Standard TTS endpoint for orchestrator integration
 
-# Step 6: Update Dockerfile to use fixed files
-echo "🐳 Updating Dockerfile..."
-# The Dockerfile artifact above should be used to replace the existing one
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
+import tempfile
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Import the auth if available
+try:
+    from shared import require_service_auth
+    AUTH_AVAILABLE = True
+except ImportError:
+    AUTH_AVAILABLE = False
+    def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
+
+from app.core.openvoice_engine import synthesize_v2_to_wav_path
+
+router = APIRouter(prefix="/v1", tags=["Standard TTS"])
+
+class StandardTTSRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=5000)
+    voice: str = Field(default="default", description="Voice ID or name")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    language: str = Field(default="EN", description="Language code (EN, ES, FR, etc.)")
+    format: str = Field(default="wav", description="Output format")
+    quality: str = Field(default="high", description="Audio quality")
+
+class VoicesResponse(BaseModel):
+    voices: list[dict]
+    default: str = "default"
+
+@router.post("/tts")
+async def synthesize_speech(
+    request: StandardTTSRequest,
+    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
+):
+    """Standard TTS endpoint compatible with orchestrator ExternalTTSClient"""
+    
+    try:
+        # Validate input
+        if not request.text.strip():
+            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        
+        if request.format.lower() != "wav":
+            raise HTTPException(status_code=415, detail="Only WAV format is currently supported")
+        
+        # For standard TTS, we'll just use basic Melo without reference audio
+        # Generate speech using the OpenVoice engine
+        wav_path = await synthesize_v2_to_wav_path(
+            text=request.text.strip(),
+            language=request.language.lower(),
+            reference_b64=None,
+            reference_url=None,
+            speed=request.speed,
+            volume=1.0,
+            pitch=0.0,
+            metadata={"voice_id": request.voice, "quality": request.quality}
+        )
+        
+        # Read the generated audio file
+        with open(wav_path, "rb") as f:
+            audio_data = f.read()
+        
+        # Clean up temporary file
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+        
+        return Response(
+            content=audio_data,
+            media_type="audio/wav",
+            headers={
+                "Content-Length": str(len(audio_data)),
+                "X-Voice-ID": request.voice,
+                "X-Language": request.language,
+                "X-Speed": str(request.speed),
+                "X-Generated-By": "June-TTS-MeloTTS"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TTS synthesis failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"TTS synthesis failed: {str(e)}"
+        )
+
+@router.get("/voices")
+async def get_voices(language: str = "EN") -> VoicesResponse:
+    """Get available voices for the given language"""
+    
+    # This would typically query your voice database
+    # For now, return a basic set of available voices
+    voices = [
+        {
+            "id": "default",
+            "name": "Default Voice",
+            "language": language.upper(),
+            "gender": "neutral",
+            "quality": "high"
+        },
+        {
+            "id": "base",
+            "name": "Base Voice",
+            "language": language.upper(),
+            "gender": "neutral",
+            "quality": "high"
+        }
+    ]
+    
+    return VoicesResponse(
+        voices=voices,
+        default="default"
+    )
+
+@router.get("/status")
+async def get_status():
+    """Get TTS service status"""
+    return {
+        "service": "June TTS Standard",
+        "status": "operational",
+        "engine": "MeloTTS",
+        "supported_formats": ["wav"],
+        "supported_languages": ["EN", "ES", "FR", "ZH", "JA", "KO"],
+        "features": {
+            "standard_tts": True,
+            "voice_cloning": False,  # Disabled without full OpenVoice
+            "speed_control": True,
+            "multi_language": True
+        }
+    }
+EOF
+
+# Step 6: Fix the main app
+echo "📱 Fixing main app..."
+cat > app/main.py << 'EOF'
+import os
+import logging
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="June TTS API", version="1.0")
+
+# ----- CORS -----
+origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*")
+origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+allow_all = "*" in origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if allow_all else origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ----- Routers -----
+try:
+    from app.routers.standard_tts import router as standard_tts_router
+    app.include_router(standard_tts_router)
+    logger.info("✅ Standard TTS router loaded")
+except Exception as e:
+    logger.warning(f"⚠️ standard_tts router load warning: {e}")
+
+try:
+    from app.routers.tts import router as tts_router
+    app.include_router(tts_router)
+    logger.info("✅ TTS router loaded")
+except Exception as e:
+    logger.warning(f"⚠️ tts router load warning: {e}")
+
+try:
+    from app.routers.clone import router as clone_router
+    app.include_router(clone_router)
+    logger.info("✅ Clone router loaded")
+except Exception as e:
+    logger.warning(f"⚠️ clone router load warning: {e}")
+
+try:
+    from app.routers.admin import router as admin_router  # healthz, voices
+    app.include_router(admin_router)
+    logger.info("✅ Admin router loaded")
+except Exception as e:
+    logger.warning(f"⚠️ admin router load warning: {e}")
+
+# ----- Startup warmup (non-fatal if it fails) -----
+@app.on_event("startup")
+async def _startup() -> None:
+    try:
+        from app.core.openvoice_engine import warmup_models
+        warmup_models()
+        logger.info("✅ TTS models warmed up successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ warmup skipped: {e}")
+
+# ----- Root -----
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "June TTS API",
+        "version": "1.0",
+        "endpoints": {
+            "standard_tts": "/v1/tts",
+            "voice_cloning": "/tts/generate or /clone/voice",
+            "health_check": "/healthz",
+            "voices": "/v1/voices",
+            "status": "/v1/status"
+        }
+    }
+EOF
+
+# Step 7: Ensure admin router has basic health check
+echo "🏥 Ensuring admin router..."
+cat > app/routers/admin.py << 'EOF'
+from fastapi import APIRouter
+import time
+import os
+
+router = APIRouter(tags=["admin"])
+
+@router.get("/healthz")
+def healthz():
+    """Health check endpoint"""
+    return {
+        "status": "ok", 
+        "service": "june-tts",
+        "timestamp": time.time(),
+        "engine": "MeloTTS",
+        "voice_cloning": "basic"
+    }
+
+@router.get("/voices")
+def voices():
+    """Get available voices"""
+    return {
+        "env": {
+            "MELO_SPEAKER_ID": os.getenv("MELO_SPEAKER_ID", "0"),
+            "MELO_LANGUAGE": os.getenv("MELO_LANGUAGE", "EN"),
+        },
+        "voices": {
+            "0": "Default Voice",
+            "1": "Alternative Voice"
+        },
+        "note": "Basic MeloTTS voices available"
+    }
+EOF
+
+# Step 8: Update requirements to ensure all dependencies
+echo "📋 Updating requirements..."
+cat > requirements.txt << 'EOF'
+# June/services/june-tts/requirements.txt - Fixed requirements
+
+# Core FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Pydantic and validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Audio processing and ML
+torch>=2.3.0
+torchaudio>=2.3.0
+librosa==0.10.1
+soundfile==0.12.1
+numpy>=1.24.0
+scipy>=1.11.0
+
+# OpenVoice specific dependencies (optional)
+huggingface_hub>=0.17.0
+
+# MeloTTS and text processing
+jieba>=0.42.1
+pypinyin>=0.50.0
+cn2an>=0.5.17
+inflect>=7.0.0
+unidecode>=1.3.7
+eng_to_ipa>=0.0.2
+
+# Japanese text processing (optional)
+fugashi>=1.3.0
+unidic-lite>=1.0.8
+
+# Audio format support
+pydub>=0.25.1
+
+# HTTP client
+httpx>=0.25.2
+
+# Authentication and security
+PyJWT>=2.8.0
+cryptography>=41.0.0
+
+# Core utilities
+requests>=2.31.0
+EOF
+
+# Step 9: Create setup script for shared module
+cat > shared/setup.py << 'EOF'
+from setuptools import setup, find_packages
+
+setup(
+    name="june-shared",
+    version="1.0.0",
+    packages=find_packages(),
+    install_requires=[
+        "fastapi>=0.100.0",
+        "httpx>=0.24.0", 
+        "PyJWT[crypto]>=2.8.0",
+        "cryptography>=41.0.0"
+    ]
+)
+EOF
 
 echo ""
 echo "✅ TTS Service fixes applied!"
@@ -672,10 +852,34 @@ echo "1. Rebuild the Docker image:"
 echo "   cd June/services/june-tts"
 echo "   docker build -t us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:fixed ."
 echo ""
-echo "2. Push the image:"
+echo "2. Test locally first:"
+echo "   docker run -p 8000:8000 us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:fixed"
+echo ""
+echo "3. Test the health endpoint:"
+echo "   curl http://localhost:8000/healthz"
+echo ""
+echo "4. Test basic TTS:"
+echo "   curl -X POST http://localhost:8000/v1/tts \\"
+echo "     -H 'Content-Type: application/json' \\"
+echo "     -d '{\"text\":\"Hello world\",\"language\":\"EN\"}' \\"
+echo "     --output test.wav"
+echo ""
+echo "5. Push the image:"
 echo "   docker push us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:fixed"
 echo ""
-echo "3. Update your deployment to use the :fixed tag"
+echo "6. Update your deployment to use the :fixed tag"
 echo ""
-echo "⚠️  Note: The service will start in 'basic TTS mode' if OpenVoice models"
-echo "   cannot be downloaded. Voice cloning will be disabled but basic TTS will work."
+echo "⚠️  Note: The service will start in 'basic TTS mode' using MeloTTS only."
+echo "   Voice cloning features will be disabled but standard TTS will work."
+echo ""
+echo "🎯 What this fixes:"
+echo "   ✅ Import errors with shared module"
+echo "   ✅ Missing engine initialization"
+echo "   ✅ Router loading failures"
+echo "   ✅ Authentication dependency issues"
+echo "   ✅ Basic TTS functionality"
+echo ""
+echo "📝 Remaining limitations:"
+echo "   - Voice cloning disabled (requires full OpenVoice models)"
+echo "   - Limited to MeloTTS basic synthesis"
+echo "   - Mock authentication (replace for production)"
