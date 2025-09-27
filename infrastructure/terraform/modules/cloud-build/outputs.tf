@@ -18,11 +18,3 @@ output "build_commands" {
     service_key => "gcloud builds submit June/services/${service_key} --config=build-configs/${service_key}-cloudbuild.yaml"
   }
 }
-
-output "build_config_files" {
-  description = "Generated build configuration files"
-  value = {
-    for service_key, service in var.services :
-    service_key => "${path.root}/build-configs/${service_key}-cloudbuild.yaml"
-  }
-}

@@ -1,4 +1,4 @@
-# Cloud Build Module - Production Ready
+# Cloud Build for June AI Platform
 terraform {
   required_providers {
     google = {
@@ -8,56 +8,82 @@ terraform {
   }
 }
 
-# Enable Cloud Build API
+# Enable APIs
 resource "google_project_service" "cloudbuild" {
   service = "cloudbuild.googleapis.com"
   project = var.project_id
-
-  disable_on_destroy = false
 }
 
 resource "google_project_service" "secretmanager" {
   service = "secretmanager.googleapis.com"
   project = var.project_id
-
-  disable_on_destroy = false
 }
 
-# Get current project data
+# Service account permissions
 data "google_project" "current" {
   project_id = var.project_id
 }
 
-# Cloud Build service account permissions
 resource "google_project_iam_member" "cloudbuild_artifactregistry" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
   member  = "serviceAccount:${data.google_project.current.number}@cloudbuild.gserviceaccount.com"
-
-  depends_on = [google_project_service.cloudbuild]
 }
 
-resource "google_project_iam_member" "cloudbuild_storage" {
-  project = var.project_id
-  role    = "roles/storage.admin"
-  member  = "serviceAccount:${data.google_project.current.number}@cloudbuild.gserviceaccount.com"
-
-  depends_on = [google_project_service.cloudbuild]
-}
-
-# Create Cloud Build configuration files for manual builds
-resource "local_file" "build_configs" {
+# Build triggers for services
+resource "google_cloudbuild_trigger" "service_builds" {
   for_each = var.services
-
-  filename = "${path.root}/build-configs/${each.key}-cloudbuild.yaml"
-  content = templatefile("${path.module}/templates/cloudbuild.yaml.tpl", {
-    service_name  = each.value.name
-    service_key   = each.key
-    region        = var.region
-    project_id    = var.project_id
-    build_timeout = each.value.build_timeout
-    machine_type  = each.value.machine_type
-    disk_size     = each.value.disk_size
-    environment   = var.environment
-  })
+  
+  name        = "${each.value.name}-build"
+  description = "Build ${each.value.name} on changes"
+  
+  github {
+    owner = var.github_owner
+    name  = var.github_repo
+    push {
+      branch = "^master$"
+    }
+  }
+  
+  included_files = ["June/services/${each.key}/**"]
+  
+  build {
+    step {
+      name = "gcr.io/cloud-builders/docker"
+      args = [
+        "build",
+        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/june/${each.value.name}:$SHORT_SHA",
+        "-t", "${var.region}-docker.pkg.dev/${var.project_id}/june/${each.value.name}:latest",
+        "-f", "June/services/${each.key}/Dockerfile",
+        "June/services/${each.key}"
+      ]
+      timeout = each.key == "june-tts" ? "3600s" : "1800s"
+    }
+    
+    step {
+      name = "gcr.io/cloud-builders/docker"
+      args = [
+        "push",
+        "${var.region}-docker.pkg.dev/${var.project_id}/june/${each.value.name}:$SHORT_SHA"
+      ]
+    }
+    
+    step {
+      name = "gcr.io/cloud-builders/docker"
+      args = [
+        "push",
+        "${var.region}-docker.pkg.dev/${var.project_id}/june/${each.value.name}:latest"
+      ]
+    }
+    
+    options {
+      machine_type = each.key == "june-tts" ? "E2_HIGHCPU_8" : "E2_HIGHCPU_32"
+      disk_size_gb = each.key == "june-tts" ? 100 : 50
+      logging      = "CLOUD_LOGGING_ONLY"
+    }
+    
+    timeout = each.key == "june-tts" ? "4800s" : "2400s"
+    
+    tags = [each.value.name, "$SHORT_SHA", "$BRANCH_NAME", var.environment]
+  }
 }
