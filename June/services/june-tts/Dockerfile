@@ -115,123 +115,18 @@ RUN git clone https://github.com/myshell-ai/OpenVoice.git "$OPENVOICE_SRC_DIR" &
     pip install -e "$OPENVOICE_SRC_DIR"
 
 # ============================================================================
-# OPENVOICE V2 MODELS DOWNLOAD
+# CREATE MODEL DIRECTORIES
 # ============================================================================
 
 # Create models directory with proper structure
 ENV OPENVOICE_CHECKPOINTS_V2="/models/openvoice/checkpoints_v2"
 RUN mkdir -p "$OPENVOICE_CHECKPOINTS_V2"/{base_speakers,tone_color_converter}
 
-# Download OpenVoice V2 models with comprehensive error handling
-RUN python -c "
-import os
-import shutil
-import sys
-from pathlib import Path
-from huggingface_hub import snapshot_download
+# Copy model setup script
+COPY model_setup.py /workspace/
 
-print('🔄 Downloading OpenVoice V2 models...')
-
-MODEL_ID = 'myshell-ai/OpenVoiceV2'
-ROOT = Path('/models/openvoice/checkpoints_v2')
-BASE = ROOT / 'base_speakers'
-CONV = ROOT / 'tone_color_converter'
-
-# Ensure directories exist
-BASE.mkdir(parents=True, exist_ok=True)
-CONV.mkdir(parents=True, exist_ok=True)
-
-try:
-    # Download all relevant model files
-    patterns = [
-        'base_speakers/*',
-        'tone_color_converter/*',
-        'converter/*',
-        'tone_color_converter_v2/*',
-        'config.json',
-        '*.pt',
-        '*.pth',
-        '*.json'
-    ]
-    
-    print(f'📥 Downloading from {MODEL_ID}...')
-    snapshot_download(
-        repo_id=MODEL_ID,
-        local_dir=str(ROOT),
-        local_dir_use_symlinks=False,
-        allow_patterns=patterns,
-        resume_download=True
-    )
-    
-    print('✅ Download completed, organizing files...')
-    
-    # Normalize folder structure - handle different naming conventions
-    for alt_name in ['converter', 'tone_color_converter_v2']:
-        alt_dir = ROOT / alt_name
-        if alt_dir.exists() and alt_dir.is_dir():
-            print(f'📁 Moving files from {alt_name}/ to tone_color_converter/')
-            for file in alt_dir.rglob('*'):
-                if file.is_file():
-                    dest = CONV / file.name
-                    if not dest.exists():
-                        print(f'  Moving: {file.name}')
-                        shutil.copy2(file, dest)
-            shutil.rmtree(alt_dir)
-    
-    # Move any root-level model files to tone_color_converter
-    for pattern in ['*.pt', '*.pth', 'config.json']:
-        for file in ROOT.glob(pattern):
-            dest = CONV / file.name
-            if not dest.exists():
-                print(f'📁 Moving root file: {file.name}')
-                shutil.move(str(file), str(dest))
-    
-    # Handle nested config files
-    for config_file in CONV.rglob('config.json'):
-        if config_file.parent != CONV:
-            dest = CONV / 'config.json'
-            if not dest.exists():
-                print(f'📁 Moving nested config: {config_file}')
-                shutil.copy2(config_file, dest)
-                break
-    
-    # Handle nested checkpoint files
-    for ckpt_file in CONV.rglob('*.pth'):
-        if ckpt_file.parent != CONV:
-            dest = CONV / ckpt_file.name
-            if not dest.exists():
-                print(f'📁 Moving nested checkpoint: {ckpt_file.name}')
-                shutil.copy2(ckpt_file, dest)
-    
-    # Verify required files exist
-    config_path = CONV / 'config.json'
-    checkpoint_files = list(CONV.glob('*.pt')) + list(CONV.glob('*.pth'))
-    
-    print(f'🔍 Verification:')
-    print(f'  Config file: {config_path.exists()} - {config_path}')
-    print(f'  Checkpoint files: {len(checkpoint_files)} found')
-    
-    if checkpoint_files:
-        print('  Checkpoints:')
-        for ckpt in checkpoint_files:
-            print(f'    - {ckpt.name} ({ckpt.stat().st_size} bytes)')
-    
-    if not config_path.exists():
-        print('❌ ERROR: config.json not found!')
-        sys.exit(1)
-    
-    if not checkpoint_files:
-        print('❌ ERROR: No checkpoint files found!')
-        sys.exit(1)
-    
-    print('✅ OpenVoice V2 models downloaded and verified successfully!')
-    
-except Exception as e:
-    print(f'❌ ERROR downloading models: {e}')
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
-"
+# Run model setup script
+RUN python /workspace/model_setup.py
 
 # Verify final structure and file sizes
 RUN echo "📁 Final model structure:" && \
@@ -247,7 +142,7 @@ RUN echo "📁 Final model structure:" && \
 RUN mkdir -p /workspace/shared
 
 # Copy shared module first (create a minimal one if doesn't exist)
-COPY shared /workspace/shared/ 2>/dev/null || \
+COPY shared/ /workspace/shared/ 2>/dev/null || \
     (mkdir -p /workspace/shared && \
      echo "# Minimal shared module" > /workspace/shared/__init__.py && \
      echo "def require_service_auth(): return lambda: {'client_id': 'docker'}" > /workspace/shared/auth.py)
@@ -260,7 +155,8 @@ COPY requirements.txt /workspace/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . /workspace/
+COPY app/ /workspace/app/
+COPY *.py /workspace/ 2>/dev/null || echo "No Python files in root"
 
 # ============================================================================
 # ENVIRONMENT CONFIGURATION

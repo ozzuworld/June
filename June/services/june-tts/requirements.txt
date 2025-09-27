@@ -1,4 +1,4 @@
-# June/services/june-tts/requirements.txt - Updated for Docker deployment
+# June/services/june-tts/requirements.txt - Updated for OpenVoice TTS
 
 # Core FastAPI and server
 fastapi==0.104.1
@@ -15,24 +15,47 @@ PyJWT==2.8.0
 httpx==0.25.2
 cryptography>=41.0.0
 
-# Audio processing and ML
-torch>=2.0.0
-torchaudio>=2.0.0
+# Audio processing and ML (Updated versions for OpenVoice)
+torch>=2.3.0
+torchaudio>=2.3.0
 torchvision>=0.15.0
 librosa==0.10.1
 soundfile==0.12.1
 numpy>=1.24.0
 scipy>=1.11.0
 
+# OpenVoice specific dependencies
+huggingface_hub>=0.17.0
+transformers>=4.27.4
+tokenizers>=0.13.3
+
+# MeloTTS and text processing
+jieba>=0.42.1
+pypinyin>=0.50.0
+cn2an>=0.5.17
+inflect>=7.0.0
+unidecode>=1.3.7
+eng_to_ipa>=0.0.2
+langid>=1.1.6
+
+# Japanese text processing
+fugashi>=1.3.0
+unidic-lite>=1.0.8
+
+# Audio format support
+pydub>=0.25.1
+sox>=1.4.1
+
 # File handling and utilities
 python-magic==0.4.27
 Pillow>=10.0.0
 requests>=2.31.0
 
-# OpenVoice dependencies (install these if not available)
-# Note: These might need to be installed from source depending on your OpenVoice setup
-# melo-tts  # Uncomment if using MeloTTS
-# openvoice  # Uncomment if OpenVoice is pip-installable
+# Additional OpenVoice dependencies
+whisper-timestamped
+faster-whisper
+silero
+gradio>=3.50.2
 
 # Development and testing (optional - remove for smaller image)
 pytest>=7.0.0
@@ -45,3 +68,7 @@ prometheus-client>=0.17.0
 # Performance and optimization
 aiocache>=0.12.2
 aiofiles>=23.1.0
+
+# Additional utilities for model downloads
+tqdm>=4.64.0
+pathlib2>=2.3.7
