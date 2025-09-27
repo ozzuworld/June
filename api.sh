@@ -24,3 +24,6 @@ kubectl rollout status deployment/june-orchestrator -n june-services --timeout=3
 
 echo "✅ Rebuild complete! Check logs:"
 echo "kubectl logs deployment/june-orchestrator -n june-services -f"
+
+
+kubectl create deployment june-orchestrator --image=us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest -n june-services
