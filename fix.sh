@@ -1,63 +1,36 @@
 #!/bin/bash
-# Fix Gemini API configuration issues
+# Deploy REAL working Gemini integration - no more fake fixes
 
-set -euo pipefail
+echo "🔥 DEPLOYING REAL GEMINI INTEGRATION - NO MORE BULLSHIT"
+echo "=================================================="
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+cd June/services/june-orchestrator
 
-log() { echo -e "${BLUE}[$(date +'%H:%M:%S')]${NC} $1"; }
-success() { echo -e "${GREEN}✅ $1${NC}"; }
-warning() { echo -e "${YELLOW}⚠️ $1${NC}"; }
-error() { echo -e "${RED}❌ $1${NC}"; }
+# 1. Backup current broken version
+echo "📦 Backing up current broken version..."
+cp app.py app_broken_backup.py
+cp requirements.txt requirements_broken_backup.txt
 
-NAMESPACE="june-services"
-
-log "🔧 Fixing Gemini AI configuration"
-
-echo "🔍 Current Gemini API Issues:"
-echo "============================="
-echo "❌ Error 1: Model 'gemini-1.5-flash' not found"
-echo "❌ Error 2: Wrong API endpoint or missing access"
-echo ""
-
-# Check current API key configuration
-log "Step 1: Checking current API key configuration"
-
-API_KEY_SET=$(kubectl get secret june-secrets -n $NAMESPACE -o jsonpath='{.data.gemini-api-key}' 2>/dev/null | base64 -d 2>/dev/null | head -c 10 || echo "NOT_SET")
-
-if [ "$API_KEY_SET" = "NOT_SET" ] || [ "$API_KEY_SET" = "your_gemini" ]; then
-    warning "Gemini API key not properly set in Kubernetes secret"
-    echo "Current key starts with: $API_KEY_SET..."
-else
-    success "Gemini API key is set in Kubernetes secret"
-    echo "Key starts with: $API_KEY_SET..."
-fi
-
-# Fix 1: Update the app code to use correct Gemini model and better error handling
-log "Step 2: Creating fixed app.py with correct Gemini configuration"
-
-cat > /tmp/fixed-app.py << 'EOF'
-from fastapi import FastAPI, HTTPException, Depends, Header
+# 2. Create REAL working app.py
+echo "🛠️ Creating REAL Gemini integration..."
+cat > app.py << 'EOF'
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
 import time
 import os
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="June Orchestrator", 
-    version="2.1.1",
-    description="June AI Platform Orchestrator - Fixed Gemini API"
+    title="June Orchestrator",
+    version="2.3.0",
+    description="June AI Platform with REAL Gemini AI Integration - FIXED"
 )
 
 # CORS middleware
@@ -86,13 +59,15 @@ class ChatResponse(BaseModel):
 async def root():
     return {
         "service": "June Orchestrator",
-        "version": "2.1.1",
-        "status": "healthy",
-        "ai_status": "gemini_fixed",
+        "version": "2.3.0",
+        "status": "healthy", 
+        "ai_status": "REAL_GEMINI_INTEGRATED",
         "endpoints": {
             "health": "/healthz",
             "chat": "/v1/chat",
-            "debug": "/debug/routes"
+            "debug": "/debug/routes",
+            "gemini_debug": "/debug/gemini",
+            "test_ai": "/test/ai"
         }
     }
 
@@ -101,8 +76,8 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "june-orchestrator",
-        "version": "2.1.1",
-        "gemini_api": "configured"
+        "version": "2.3.0",
+        "gemini_api": "REAL_INTEGRATION"
     }
 
 @app.get("/debug/routes")
@@ -119,135 +94,138 @@ async def debug_routes():
 
 @app.get("/debug/gemini")
 async def debug_gemini():
-    """Debug endpoint to check Gemini API status"""
+    """Debug endpoint to test Gemini API connection"""
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     
-    return {
-        "has_api_key": bool(gemini_key and len(gemini_key) > 10),
-        "key_prefix": gemini_key[:10] + "..." if gemini_key else "not_set",
+    debug_info = {
+        "has_api_key": bool(gemini_key and len(gemini_key) > 20),
+        "key_prefix": gemini_key[:15] + "..." if gemini_key else "NOT_SET",
         "environment": os.getenv("ENVIRONMENT", "unknown"),
-        "recommended_models": [
-            "gemini-pro",
-            "gemini-1.5-pro", 
-            "gemini-1.5-flash"
-        ]
+        "library_status": "checking...",
+        "api_test": "pending"
     }
+    
+    # Test the Google GenAI library
+    try:
+        from google import genai
+        debug_info["library_status"] = "google-genai available"
+        
+        if gemini_key:
+            try:
+                # Test actual API call
+                client = genai.Client(api_key=gemini_key)
+                test_response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents="Say 'API test successful' in exactly those words."
+                )
+                debug_info["api_test"] = "SUCCESS"
+                debug_info["test_response"] = test_response.text[:100]
+            except Exception as e:
+                debug_info["api_test"] = "FAILED"
+                debug_info["api_error"] = str(e)[:200]
+        else:
+            debug_info["api_test"] = "NO_API_KEY"
+            
+    except ImportError as e:
+        debug_info["library_status"] = f"MISSING: {str(e)}"
+    
+    return debug_info
+
+@app.get("/test/ai")
+async def test_ai():
+    """Direct AI test endpoint"""
+    return await get_real_gemini_response("What is 2+2? Answer only with the number.", "en")
 
 async def optional_auth(authorization: Optional[str] = Header(None)):
     return True
 
-def get_gemini_response(text: str, language: str = "en") -> tuple[str, str]:
-    """Get response from Gemini AI with proper error handling"""
+async def get_real_gemini_response(text: str, language: str = "en") -> Dict[str, Any]:
+    """REAL Gemini AI integration using official Google library"""
+    start_time = time.time()
+    
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     
-    if not gemini_key or len(gemini_key) < 10:
-        logger.info("🤖 No valid Gemini API key - using fallback responses")
-        return get_fallback_response(text, language), "fallback"
+    if not gemini_key or len(gemini_key) < 20:
+        logger.error("❌ GEMINI API KEY NOT SET OR INVALID")
+        return {
+            "text": f"ERROR: Gemini API key not configured. You said: '{text}'",
+            "provider": "error",
+            "response_time_ms": int((time.time() - start_time) * 1000)
+        }
     
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=gemini_key)
+        # Import the NEW Google GenAI library (not google-generativeai)
+        from google import genai
         
-        # Try different model names in order of preference
-        models_to_try = [
-            "gemini-pro",           # Most stable
-            "gemini-1.5-pro",       # Latest pro
-            "gemini-1.5-flash",     # Latest flash
-            "gemini-pro-latest"     # Fallback
-        ]
+        logger.info(f"🤖 Making REAL Gemini API call for: '{text[:50]}...'")
         
-        for model_name in models_to_try:
-            try:
-                logger.info(f"🤖 Trying Gemini model: {model_name}")
-                model = genai.GenerativeModel(model_name)
-                
-                prompt = f"""You are OZZU, a helpful AI assistant for the June platform.
-                
-User message: {text}
-Language: {language}
-
-Respond helpfully and naturally in {language}. Keep responses concise but informative."""
-                
-                response = model.generate_content(prompt)
-                ai_response = response.text
-                
-                logger.info(f"✅ Gemini AI success with model: {model_name}")
-                return ai_response, f"gemini-{model_name}"
-                
-            except Exception as model_error:
-                logger.warning(f"⚠️ Model {model_name} failed: {str(model_error)[:100]}")
-                continue
+        # Create client with API key
+        client = genai.Client(api_key=gemini_key)
         
-        # If all models failed
-        logger.warning("⚠️ All Gemini models failed - using fallback")
-        return get_fallback_response(text, language), "fallback"
+        # Prepare prompt
+        if language == "es":
+            prompt = f"Responde en español: {text}"
+        elif language == "fr":
+            prompt = f"Répondez en français: {text}"
+        else:
+            prompt = text
         
-    except ImportError:
-        logger.warning("⚠️ google-generativeai library not available")
-        return get_fallback_response(text, language), "fallback"
+        # Make the REAL API call
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        
+        ai_text = response.text.strip()
+        response_time = int((time.time() - start_time) * 1000)
+        
+        logger.info(f"✅ REAL Gemini API success in {response_time}ms")
+        
+        return {
+            "text": ai_text,
+            "provider": "gemini-2.5-flash",
+            "response_time_ms": response_time
+        }
+        
+    except ImportError as e:
+        logger.error(f"❌ Google GenAI library not installed: {e}")
+        return {
+            "text": f"Library error: google-genai not installed. Install with: pip install google-genai",
+            "provider": "library_error",
+            "response_time_ms": int((time.time() - start_time) * 1000)
+        }
+        
     except Exception as e:
-        logger.warning(f"⚠️ Gemini API error: {str(e)[:100]}")
-        return get_fallback_response(text, language), "fallback"
-
-def get_fallback_response(text: str, language: str = "en") -> str:
-    """Generate intelligent fallback responses"""
-    
-    # Smart fallback responses based on input
-    text_lower = text.lower()
-    
-    if language == "es":
-        if any(word in text_lower for word in ["hola", "hello", "hi"]):
-            return f"¡Hola! Soy OZZU, tu asistente de IA. Dijiste: '{text}'. ¿Cómo puedo ayudarte hoy?"
-        elif any(word in text_lower for word in ["gracias", "thanks"]):
-            return "¡De nada! Estoy aquí para ayudarte. ¿Hay algo más en lo que pueda asistirte?"
-        elif "?" in text:
-            return f"Entiendo tu pregunta: '{text}'. Aunque estoy funcionando en modo básico, haré mi mejor esfuerzo para ayudarte."
-        else:
-            return f"Entiendo que dijiste: '{text}'. Soy OZZU y estoy aquí para ayudarte en todo lo que pueda."
-    
-    elif language == "fr":
-        if any(word in text_lower for word in ["bonjour", "hello", "salut"]):
-            return f"Bonjour! Je suis OZZU, votre assistant IA. Vous avez dit: '{text}'. Comment puis-je vous aider?"
-        elif any(word in text_lower for word in ["merci", "thanks"]):
-            return "De rien! Je suis là pour vous aider. Y a-t-il autre chose que je puisse faire pour vous?"
-        elif "?" in text:
-            return f"Je comprends votre question: '{text}'. Bien que je fonctionne en mode de base, je ferai de mon mieux pour vous aider."
-        else:
-            return f"Je comprends que vous avez dit: '{text}'. Je suis OZZU et je suis là pour vous aider."
-    
-    else:  # English
-        if any(word in text_lower for word in ["hello", "hi", "hey"]):
-            return f"Hello! I'm OZZU, your AI assistant. You said: '{text}'. How can I help you today?"
-        elif any(word in text_lower for word in ["thanks", "thank you"]):
-            return "You're welcome! I'm here to help. Is there anything else I can assist you with?"
-        elif "?" in text:
-            return f"I understand your question: '{text}'. While I'm running in basic mode, I'll do my best to help you."
-        elif any(word in text_lower for word in ["help", "assist"]):
-            return f"I'd be happy to help! You said: '{text}'. I'm OZZU, your AI assistant, and I'm here to assist you with whatever you need."
-        else:
-            return f"I understand you said: '{text}'. I'm OZZU, your AI assistant, and I'm here to help you however I can!"
+        logger.error(f"❌ Gemini API error: {str(e)}")
+        response_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            "text": f"Gemini API error: {str(e)[:100]}",
+            "provider": "api_error", 
+            "response_time_ms": response_time
+        }
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, auth: bool = Depends(optional_auth)):
-    """Main chat endpoint with fixed Gemini API"""
+    """Chat endpoint with REAL Gemini AI integration"""
     start_time = time.time()
     
     try:
-        logger.info(f"📨 Chat request: '{request.text[:100]}...'")
+        logger.info(f"📨 REAL Chat request: '{request.text[:100]}...'")
         
-        # Get AI response
-        ai_response, ai_provider = get_gemini_response(request.text, request.language)
+        # Get REAL AI response
+        ai_result = await get_real_gemini_response(request.text, request.language)
         
-        response_time = int((time.time() - start_time) * 1000)
+        total_time = int((time.time() - start_time) * 1000)
         
-        logger.info(f"✅ Chat response completed in {response_time}ms using {ai_provider}")
+        logger.info(f"✅ Chat completed in {total_time}ms using {ai_result['provider']}")
         
         return ChatResponse(
             ok=True,
-            message={"text": ai_response, "role": "assistant"},
-            response_time_ms=response_time,
+            message={"text": ai_result["text"], "role": "assistant"},
+            response_time_ms=total_time,
             conversation_id=f"conv-{int(time.time())}",
-            ai_provider=ai_provider
+            ai_provider=ai_result["provider"]
         )
         
     except Exception as e:
@@ -256,7 +234,7 @@ async def chat(request: ChatRequest, auth: bool = Depends(optional_auth)):
         
         return ChatResponse(
             ok=False,
-            message={"text": f"Sorry, I encountered an error: {str(e)}", "role": "error"},
+            message={"text": f"Chat error: {str(e)}", "role": "error"},
             response_time_ms=response_time,
             ai_provider="error"
         )
@@ -264,11 +242,12 @@ async def chat(request: ChatRequest, auth: bool = Depends(optional_auth)):
 @app.get("/v1/version")
 async def version():
     return {
-        "version": "2.1.1",
+        "version": "2.3.0",
         "git_sha": os.getenv("GIT_SHA", "unknown"),
         "build_time": os.getenv("BUILD_TIME", "unknown"),
         "environment": os.getenv("ENVIRONMENT", "production"),
-        "gemini_fixed": True
+        "gemini_real": True,
+        "status": "REAL_AI_INTEGRATION"
     }
 
 if __name__ == "__main__":
@@ -277,118 +256,110 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 EOF
 
-# Copy the fixed app to the correct location
-cp /tmp/fixed-app.py June/services/june-orchestrator/app.py
-success "Updated app.py with fixed Gemini configuration"
+# 3. Create CORRECT requirements.txt with the RIGHT library
+echo "📋 Creating correct requirements.txt..."
+cat > requirements.txt << 'EOF'
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+google-genai==1.0.0
+python-multipart==0.0.6
+httpx==0.25.2
+EOF
 
-# Fix 2: Build and deploy the fixed image
-log "Step 3: Building and deploying fixed image"
+echo "✅ Files created with REAL Gemini integration"
 
-cd June/services/june-orchestrator
-
-# Get current image tag
-CURRENT_IMAGE=$(kubectl get deployment june-orchestrator -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}')
-echo "Current image: $CURRENT_IMAGE"
-
-# Authenticate and build
-gcloud auth configure-docker us-central1-docker.pkg.dev
-
-# Build with timestamp to force update
+# 4. Build and deploy
+echo "🐳 Building Docker image with REAL Gemini..."
 TIMESTAMP=$(date +%s)
-FIXED_IMAGE="us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:gemini-fix-${TIMESTAMP}"
-STABLE_IMAGE="us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:v2.1.1"
+NEW_IMAGE="us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:real-gemini-${TIMESTAMP}"
 
 docker build \
-  --build-arg GIT_SHA="gemini-fix-${TIMESTAMP}" \
+  --build-arg GIT_SHA="real-gemini-${TIMESTAMP}" \
   --build-arg BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
-  -t "$FIXED_IMAGE" \
-  -t "$STABLE_IMAGE" \
+  -t "$NEW_IMAGE" \
   .
 
-docker push "$FIXED_IMAGE"
-docker push "$STABLE_IMAGE"
+echo "📤 Pushing REAL image..."
+docker push "$NEW_IMAGE"
 
-success "Built and pushed fixed image"
-
-cd ../../..
-
-# Fix 3: Update deployment to use fixed image
-log "Step 4: Updating deployment with fixed image"
-
-kubectl patch deployment june-orchestrator -n $NAMESPACE -p '{
+echo "🚀 Deploying REAL Gemini integration..."
+kubectl patch deployment june-orchestrator -n june-services -p '{
   "spec": {
     "template": {
       "spec": {
         "containers": [{
           "name": "orchestrator",
-          "image": "'$FIXED_IMAGE'"
+          "image": "'$NEW_IMAGE'",
+          "resources": {
+            "requests": {
+              "cpu": "100m",
+              "memory": "128Mi"
+            },
+            "limits": {
+              "cpu": "300m",
+              "memory": "512Mi"
+            }
+          }
         }]
       }
     }
   }
 }'
 
-# Wait for rollout
-kubectl rollout status deployment/june-orchestrator -n $NAMESPACE --timeout=300s
+# 5. Wait for deployment
+echo "⏳ Waiting for REAL deployment..."
+kubectl rollout status deployment/june-orchestrator -n june-services --timeout=300s
 
+echo "⏳ Waiting for startup..."
 sleep 30
 
-# Fix 4: Test the fixed version
-log "Step 5: Testing fixed Gemini configuration"
+# 6. Test the REAL integration
+echo ""
+echo "🧪 TESTING REAL GEMINI INTEGRATION"
+echo "=================================="
 
-POD_NAME=$(kubectl get pods -n $NAMESPACE -l app=june-orchestrator -o jsonpath='{.items[0].metadata.name}')
+echo "1. Testing debug endpoint:"
+kubectl run test-real-debug-$RANDOM --rm -i --tty --image=curlimages/curl --restart=Never -- \
+  curl -s http://june-orchestrator.june-services.svc.cluster.local/debug/gemini | head -20
 
-echo -e "\n🧪 Testing Gemini debug endpoint:"
-kubectl run test-gemini-$RANDOM --rm -i --tty --image=curlimages/curl --restart=Never -- \
-  curl -s http://june-orchestrator.june-services.svc.cluster.local/debug/gemini
+echo ""
+echo "2. Testing direct AI endpoint:"
+kubectl run test-real-ai-$RANDOM --rm -i --tty --image=curlimages/curl --restart=Never -- \
+  curl -s http://june-orchestrator.june-services.svc.cluster.local/test/ai
 
-echo -e "\n🧪 Testing chat with fixed Gemini:"
-kubectl run test-chat-$RANDOM --rm -i --tty --image=curlimages/curl --restart=Never -- \
+echo ""
+echo "3. Testing REAL chat (should take 1-3 seconds):"
+kubectl run test-real-chat-$RANDOM --rm -i --tty --image=curlimages/curl --restart=Never -- \
   curl -s -X POST http://june-orchestrator.june-services.svc.cluster.local/v1/chat \
   -H 'Content-Type: application/json' \
-  -d '{"text":"Hello, test the fixed Gemini API"}'
+  -d '{"text":"What is 2+2? Give me the answer as a mathematician would."}'
 
-# Check recent logs
-echo -e "\n📋 Recent logs from fixed deployment:"
-kubectl logs $POD_NAME -n $NAMESPACE --tail=10
-
-# Cleanup temp file
-rm -f /tmp/fixed-app.py
-
-echo -e "\n================================="
-echo "GEMINI API FIX COMPLETED"
-echo "================================="
 echo ""
-success "✅ Fixed Gemini API configuration"
-success "✅ Updated app with better error handling"
-success "✅ Deployed fixed version"
-echo ""
-echo "🎯 What was fixed:"
-echo "  • Uses correct Gemini model names (gemini-pro, gemini-1.5-pro)"
-echo "  • Tries multiple models if first one fails"
-echo "  • Better error handling and logging"
-echo "  • Intelligent fallback responses"
-echo "  • Debug endpoint to check API status"
-echo ""
-echo "🧪 Test the fix:"
-echo "  curl https://api.allsafe.world/debug/gemini"
-echo "  curl -X POST https://api.allsafe.world/v1/chat \\"
-echo "    -H 'Content-Type: application/json' \\"
-echo "    -d '{\"text\":\"Hello, test Gemini fix!\"}'"
-echo ""
+echo "4. Check recent logs:"
+kubectl logs deployment/june-orchestrator -n june-services --tail=10
 
-# Check if API key needs to be set
-if [ "$API_KEY_SET" = "NOT_SET" ] || [ "$API_KEY_SET" = "your_gemini" ]; then
-    echo "🔑 TO GET FULL GEMINI AI FUNCTIONALITY:"
-    echo "  1. Get a Gemini API key from: https://makersuite.google.com/app/apikey"
-    echo "  2. Set it in your Kubernetes secret:"
-    echo "     kubectl patch secret june-secrets -n $NAMESPACE \\"
-    echo "       --type='merge' -p='{\"data\":{\"gemini-api-key\":\"'$(echo -n 'YOUR_API_KEY' | base64)'\"}}'"
-    echo "  3. Restart the deployment:"
-    echo "     kubectl rollout restart deployment/june-orchestrator -n $NAMESPACE"
-    echo ""
-else
-    echo "🤖 Your API key is set - Gemini AI should work now!"
-fi
-
-success "Gemini API fix complete!"
+echo ""
+echo "============================================"
+echo "🎯 REAL GEMINI INTEGRATION DEPLOYED!"
+echo "============================================"
+echo ""
+echo "✅ What changed:"
+echo "  • Used NEW google-genai library (not old google-generativeai)"
+echo "  • REAL API calls to Gemini 2.5 Flash"
+echo "  • Proper error handling and debugging"
+echo "  • Test endpoints to verify integration"
+echo ""
+echo "🧪 Test externally:"
+echo "curl -X POST https://api.allsafe.world/v1/chat \\"
+echo "  -H 'Content-Type: application/json' \\"
+echo "  -d '{\"text\":\"What is 2+2?\"}'"
+echo ""
+echo "🔍 Debug endpoints:"
+echo "  https://api.allsafe.world/debug/gemini"
+echo "  https://api.allsafe.world/test/ai"
+echo ""
+echo "🎯 Expected: response_time_ms > 500ms (REAL AI calls)"
+echo "🎯 Expected: ai_provider = 'gemini-2.5-flash'"
+echo ""
+echo "NO MORE 0ms RESPONSES! 🎉"
