@@ -141,11 +141,12 @@ RUN echo "📁 Final model structure:" && \
 # Create shared directory structure (fix for import errors)
 RUN mkdir -p /workspace/shared
 
-# Copy shared module first (create a minimal one if doesn't exist)
-COPY shared/ /workspace/shared/ 2>/dev/null || \
-    (mkdir -p /workspace/shared && \
-     echo "# Minimal shared module" > /workspace/shared/__init__.py && \
-     echo "def require_service_auth(): return lambda: {'client_id': 'docker'}" > /workspace/shared/auth.py)
+# Create minimal shared module first
+RUN echo "# Minimal shared module" > /workspace/shared/__init__.py && \
+    echo "def require_service_auth(): return lambda: {'client_id': 'docker'}" > /workspace/shared/auth.py
+
+# Copy shared module if it exists (FIXED: added trailing slash)
+COPY shared/ /workspace/shared/
 
 # Install shared module
 RUN pip install -e /workspace/shared
@@ -156,7 +157,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ /workspace/app/
-COPY *.py /workspace/ 2>/dev/null || echo "No Python files in root"
+
+# Copy any Python files in root (FIXED: added trailing slash for multiple files)  
+COPY *.py /workspace/
 
 # ============================================================================
 # ENVIRONMENT CONFIGURATION
