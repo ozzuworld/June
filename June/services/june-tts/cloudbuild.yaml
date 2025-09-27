@@ -1,0 +1,29 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:${SHORT_SHA}',
+      '-t', 'us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:latest',
+      '-f', 'Dockerfile',
+      '.'
+    ]
+    dir: 'June/services/june-tts'
+    timeout: 3600s
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:${SHORT_SHA}']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-tts:latest']
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 4800s
+
+tags:
+  - june-tts
+  - ${SHORT_SHA}
+  - ${BRANCH_NAME}
