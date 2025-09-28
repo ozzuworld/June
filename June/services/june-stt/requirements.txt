@@ -1,28 +1,49 @@
-# June/services/june-stt/requirements.txt
-# STT microservice requirements with Keycloak authentication
+# June TTS Optimized Requirements - Fixed Dependencies
 
-# Core FastAPI
+# Core FastAPI and server
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
-python-multipart==0.0.9
+python-multipart>=0.0.7
 
-# Authentication (Keycloak - same as TTS service)
-PyJWT[crypto]==2.8.0
-cryptography==41.0.7
-python-jose[cryptography]==3.3.0
+# Pydantic and validation
+pydantic==2.5.0
+pydantic-settings==2.1.0
 
-# Speech Recognition
-openai-whisper==20231117
-torch>=2.0.0
-torchaudio>=2.0.0
-
-# Audio processing
-pydub==0.25.1
+# Audio processing and ML (optimized versions)
+torch>=2.3.0
+torchaudio>=2.3.0
+librosa==0.10.1
 soundfile==0.12.1
+numpy>=1.24.0
+scipy>=1.11.0
 
-# HTTP requests
-httpx==0.27.0
+# System monitoring
+psutil>=5.8.0
 
-# Additional utilities
-python-dotenv==1.0.0
-tenacity==8.2.3
+# OpenVoice specific dependencies
+huggingface_hub>=0.17.0
+
+# MeloTTS and text processing
+jieba>=0.42.1
+pypinyin>=0.50.0
+cn2an>=0.5.17
+inflect>=7.0.0
+unidecode>=1.3.7
+eng_to_ipa>=0.0.2
+
+# Japanese text processing
+fugashi>=1.3.0
+unidic-lite>=1.0.8
+
+# Audio format support
+pydub>=0.25.1
+
+# HTTP client
+httpx>=0.25.2
+
+# Authentication and security
+PyJWT>=2.8.0
+cryptography>=41.0.0
+
+# Core utilities
+requests>=2.31.0
