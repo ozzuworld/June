@@ -98,9 +98,18 @@ RUN python /workspace/model_setup.py
 RUN mkdir -p /home/appuser/nltk_data && \
     python /workspace/setup_nltk.py
 
-# Create non-root user and set minimal permissions
+# Create non-root user and set up all permissions (FIXED)
 RUN useradd -m -u 1001 appuser && \
-    chown -R appuser:appuser /workspace /home/appuser/nltk_data
+    mkdir -p /home/appuser/.cache/huggingface/hub && \
+    mkdir -p /home/appuser/.cache/torch && \
+    chown -R appuser:appuser /workspace /home/appuser/nltk_data /home/appuser/.cache
+
+# Set cache environment variables (FIXED)
+ENV HF_HOME=/home/appuser/.cache/huggingface
+ENV TRANSFORMERS_CACHE=/home/appuser/.cache/huggingface
+ENV TORCH_HOME=/home/appuser/.cache/torch
+
+# Switch to non-root user
 USER appuser
 
 # Set runtime environment
