@@ -1,5 +1,6 @@
-# Complete Single-Stage June TTS Dockerfile with OpenVoice V2
-FROM python:3.10-slim
+# Fixed OpenVoice V2 Dockerfile - Solution 4: Alternative Base Image
+# This approach uses an older/compatible base image that doesn't have the ctranslate2 issue
+FROM ubuntu:20.04
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -7,18 +8,28 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV TZ=UTC
 
-# Install ALL dependencies (runtime + build tools)
+# Install Python 3.10 and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Runtime dependencies
+    # Python 3.10 installation
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3.10-dev \
+    python3.10-venv \
+    python3.10-distutils \
+    # System dependencies
     curl \
+    wget \
     libsndfile1 \
     mecab \
     mecab-ipadic-utf8 \
     ffmpeg \
     git \
     git-lfs \
-    # Build dependencies (needed for OpenVoice)
+    # Build dependencies
     build-essential \
     pkg-config \
     libmecab-dev \
@@ -28,16 +39,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Initialize Git LFS
 RUN git lfs install
 
-# Create virtual environment
+# Install pip for Python 3.10
+RUN curl https://bootstrap.pypa.io/get-pip.py | python3.10
+
+# Create virtual environment with Python 3.10
 RUN python3.10 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Upgrade pip and install wheel
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
-# Install PyTorch with CUDA support
+# Install PyTorch with CUDA support (compatible with Ubuntu 20.04)
 RUN echo "🚀 Installing PyTorch with CUDA support..." && \
-    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    pip install --no-cache-dir torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
 
 # Install core dependencies
 RUN pip install --no-cache-dir \
@@ -56,7 +70,7 @@ RUN pip install --no-cache-dir \
 ENV MECAB_CONFIG=/usr/bin/mecab-config
 RUN pip install --no-cache-dir fugashi[unidic-lite]==1.3.0 unidic-lite
 
-# Install tokenizers and transformers (pinned versions to avoid build issues)
+# Install older compatible versions of tokenizers and transformers
 ENV PIP_ONLY_BINARY=tokenizers
 RUN pip install --no-cache-dir --no-build-isolation --only-binary=:all: tokenizers==0.13.3
 RUN pip install --no-cache-dir transformers==4.27.4
@@ -65,7 +79,7 @@ RUN pip install --no-cache-dir transformers==4.27.4
 RUN echo "📦 Installing MeloTTS..." && \
     pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# Install OpenVoice V2 dependencies first
+# Install OpenVoice V2 dependencies
 RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
     pip install --no-cache-dir \
         monotonic_align>=0.1.2 \
@@ -77,14 +91,18 @@ RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
         inflect>=7.0.0 \
         unidecode>=1.3.7
 
-# Install OpenVoice V2
+# Install compatible version of faster_whisper (older version that works with Ubuntu 20.04)
+RUN echo "📦 Installing compatible faster_whisper..." && \
+    pip install --no-cache-dir faster_whisper==0.9.0
+
+# Install OpenVoice V2 (should work with older glibc in Ubuntu 20.04)
 RUN echo "📦 Installing OpenVoice V2..." && \
     cd /tmp && \
     git clone --depth 1 https://github.com/myshell-ai/OpenVoice.git && \
     cd OpenVoice && \
-    # CRITICAL: Use regular install (not editable -e) for Docker
+    # Regular install should work with Ubuntu 20.04's older glibc
     pip install --no-cache-dir . && \
-    # Verify installation immediately
+    # Verify installation
     python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter installed')" && \
     python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor installed')" && \
     # Clean up
@@ -110,18 +128,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /models/openvoice/checkpoints_v2/base_speakers && \
     mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter
 
-# Run model setup (downloads OpenVoice V2 models)
+# Run model setup
 RUN echo "📥 Downloading OpenVoice V2 models..." && \
     python /workspace/model_setup.py
 
 # Run NLTK setup
 RUN echo "📥 Setting up NLTK data..." && \
     python /workspace/setup_nltk.py
-
-# Optional: Clean up build tools to reduce image size (comment out if you need them)
-RUN apt-get remove -y build-essential pkg-config && \
-    apt-get autoremove -y && \
-    apt-get clean
 
 # Create non-root user and set permissions
 RUN useradd -m -u 1001 appuser && \
@@ -154,7 +167,9 @@ RUN echo "🔍 Final verification:" && \
     python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
     python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter OK')" && \
     python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor OK')" && \
-    echo "🎉 All components verified successfully!"
+    python -c "import ctranslate2; print('✅ ctranslate2 OK')" && \
+    python -c "import faster_whisper; print('✅ faster_whisper OK')" && \
+    echo "🎉 Full OpenVoice V2 stack verified successfully on Ubuntu 20.04!"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
