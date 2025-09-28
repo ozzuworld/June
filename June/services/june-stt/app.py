@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import httpx
 import whisper
@@ -48,21 +49,11 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="June STT Service", version="2.0.0", description="Speech-to-Text microservice with Keycloak authentication")
-
-# CORS middleware for frontend communication
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure with your frontend domains in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Global variables
 whisper_model = None
 transcript_storage = {}  # In-memory storage for transcripts
 processing_queue = asyncio.Queue()
+cleanup_task = None
 
 # Configuration
 class Config:
@@ -76,6 +67,9 @@ class Config:
     
     # Storage
     TRANSCRIPT_RETENTION_HOURS = int(os.getenv("TRANSCRIPT_RETENTION_HOURS", "24"))
+    
+    # Service
+    PORT = int(os.getenv("PORT", "8080"))  # Fixed to match Dockerfile
 
 config = Config()
 
@@ -108,21 +102,36 @@ class WhisperService:
     def __init__(self):
         self.model = None
         self.device = config.WHISPER_DEVICE
+        self.is_loading = False
         
     async def initialize(self):
         """Initialize Whisper model"""
+        if self.model or self.is_loading:
+            return
+            
+        self.is_loading = True
         try:
             logger.info(f"🔄 Loading Whisper model {config.WHISPER_MODEL} on {self.device}")
-            self.model = whisper.load_model(config.WHISPER_MODEL, device=self.device)
+            # Run model loading in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            self.model = await loop.run_in_executor(
+                None, 
+                lambda: whisper.load_model(config.WHISPER_MODEL, device=self.device)
+            )
             logger.info("✅ Whisper model loaded successfully")
         except Exception as e:
             logger.error(f"❌ Failed to load Whisper model: {e}")
+            self.model = None
             raise
+        finally:
+            self.is_loading = False
     
     async def transcribe(self, audio_file_path: str, language: Optional[str] = None, 
                         task: str = "transcribe", temperature: float = 0.0) -> Dict[str, Any]:
         """Transcribe audio file"""
         if not self.model:
+            if self.is_loading:
+                raise HTTPException(status_code=503, detail="Whisper model is still loading, please try again")
             raise HTTPException(status_code=500, detail="Whisper model not initialized")
         
         try:
@@ -139,8 +148,12 @@ class WhisperService:
             # Remove None values
             options = {k: v for k, v in options.items() if v is not None}
             
-            # Run transcription
-            result = self.model.transcribe(audio_file_path, **options)
+            # Run transcription in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe(audio_file_path, **options)
+            )
             
             processing_time = int((time.time() - start_time) * 1000)
             
@@ -165,11 +178,11 @@ class OrchestratorClient:
     async def notify_transcript(self, notification: TranscriptNotification):
         """Send transcript notification to orchestrator"""
         try:
-            headers = {}
+            headers = {"Content-Type": "application/json"}
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
                 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{self.base_url}/v1/transcripts",
                     json=notification.dict(),
@@ -179,7 +192,7 @@ class OrchestratorClient:
                 if response.status_code == 200:
                     logger.info(f"✅ Notified orchestrator about transcript {notification.transcript_id}")
                 else:
-                    logger.warning(f"⚠️ Orchestrator notification failed: {response.status_code}")
+                    logger.warning(f"⚠️ Orchestrator notification failed: {response.status_code} - {response.text}")
                     
         except Exception as e:
             logger.error(f"❌ Failed to notify orchestrator: {e}")
@@ -189,46 +202,93 @@ orchestrator_client = OrchestratorClient()
 # Background Tasks
 async def cleanup_old_transcripts():
     """Clean up old transcripts from memory"""
-    cutoff_time = datetime.utcnow() - timedelta(hours=config.TRANSCRIPT_RETENTION_HOURS)
-    
-    to_remove = []
-    for transcript_id, transcript in transcript_storage.items():
-        if transcript.timestamp < cutoff_time:
-            to_remove.append(transcript_id)
-    
-    for transcript_id in to_remove:
-        del transcript_storage[transcript_id]
-        logger.info(f"🗑️ Cleaned up old transcript: {transcript_id}")
-
-# API Endpoints
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup"""
-    logger.info("🚀 Starting June STT Service v2.0.0")
-    
-    # Initialize Whisper model
-    await whisper_service.initialize()
-    
-    # Start background cleanup task
-    asyncio.create_task(periodic_cleanup())
-    
-    logger.info("✅ June STT Service started successfully")
+    try:
+        cutoff_time = datetime.utcnow() - timedelta(hours=config.TRANSCRIPT_RETENTION_HOURS)
+        
+        to_remove = []
+        for transcript_id, transcript in transcript_storage.items():
+            if transcript.timestamp < cutoff_time:
+                to_remove.append(transcript_id)
+        
+        for transcript_id in to_remove:
+            del transcript_storage[transcript_id]
+            logger.info(f"🗑️ Cleaned up old transcript: {transcript_id}")
+    except Exception as e:
+        logger.error(f"❌ Error during transcript cleanup: {e}")
 
 async def periodic_cleanup():
     """Periodically clean up old transcripts"""
     while True:
-        await asyncio.sleep(3600)  # Run every hour
-        await cleanup_old_transcripts()
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            await cleanup_old_transcripts()
+        except asyncio.CancelledError:
+            logger.info("🛑 Cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error in periodic cleanup: {e}")
 
+# Lifespan context manager for FastAPI
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle"""
+    global cleanup_task
+    
+    logger.info("🚀 Starting June STT Service v2.0.0")
+    
+    # Initialize Whisper model
+    try:
+        await whisper_service.initialize()
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Whisper service: {e}")
+        # Continue anyway - model will be loaded on first request
+    
+    # Start background cleanup task
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    
+    logger.info("✅ June STT Service started successfully")
+    
+    yield
+    
+    # Cleanup on shutdown
+    logger.info("🛑 Shutting down June STT Service")
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="June STT Service", 
+    version="2.0.0", 
+    description="Speech-to-Text microservice with Keycloak authentication",
+    lifespan=lifespan
+)
+
+# CORS middleware for frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure with your frontend domains in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API Endpoints
 @app.get("/")
 async def root():
     """Health check endpoint"""
+    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
+    
     return {
         "service": "June STT Service",
         "version": "2.0.0",
         "status": "healthy",
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
+        "model_status": model_status,
         "auth_available": AUTH_AVAILABLE,
         "endpoints": {
             "transcribe": "/v1/transcribe",
@@ -240,14 +300,16 @@ async def root():
 @app.get("/healthz")
 async def health_check():
     """Health check for Kubernetes/Docker"""
-    model_status = "ready" if whisper_service.model else "loading"
+    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
+    
     return {
         "status": "healthy",
         "service": "june-stt",
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat(),
         "whisper_model_status": model_status,
-        "auth_status": "keycloak" if AUTH_AVAILABLE else "fallback"
+        "auth_status": "keycloak" if AUTH_AVAILABLE else "fallback",
+        "transcripts_in_memory": len(transcript_storage)
     }
 
 @app.post("/v1/transcribe", response_model=TranscriptionResult)
@@ -272,13 +334,25 @@ async def transcribe_audio(
     start_time = time.time()
     user_id = extract_user_id(auth_data)
     
+    # Ensure Whisper model is loaded
+    if not whisper_service.model and not whisper_service.is_loading:
+        logger.info("🔄 Loading Whisper model on demand...")
+        await whisper_service.initialize()
+    
     try:
         # Validate file type
         if not audio_file.content_type or not audio_file.content_type.startswith(('audio/', 'video/')):
             raise HTTPException(status_code=400, detail="File must be audio or video format")
         
+        # Check file size (limit to 100MB)
+        if audio_file.size and audio_file.size > 100 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
+        
         # Generate unique transcript ID
         transcript_id = str(uuid.uuid4())
+        
+        # Create temp directory if it doesn't exist
+        os.makedirs("/tmp", exist_ok=True)
         
         # Save uploaded file temporarily
         file_path = f"/tmp/june_stt_{transcript_id}_{audio_file.filename}"
@@ -286,6 +360,8 @@ async def transcribe_audio(
             with open(file_path, "wb") as f:
                 content = await audio_file.read()
                 f.write(content)
+            
+            logger.info(f"🎵 Starting transcription for {audio_file.filename} ({len(content)} bytes)")
             
             # Transcribe audio
             result = await whisper_service.transcribe(
@@ -319,7 +395,8 @@ async def transcribe_audio(
                     metadata={
                         "language": result.get("language"),
                         "processing_time_ms": result["processing_time_ms"],
-                        "task": task
+                        "task": task,
+                        "filename": audio_file.filename
                     }
                 )
                 background_tasks.add_task(orchestrator_client.notify_transcript, notification)
@@ -331,9 +408,10 @@ async def transcribe_audio(
         finally:
             # Clean up temporary file
             try:
-                os.unlink(file_path)
-            except:
-                pass
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to cleanup temp file {file_path}: {e}")
                 
     except HTTPException:
         raise
@@ -410,7 +488,9 @@ async def get_stats(auth_data: dict = Depends(require_user_auth)):
         "total_transcripts": len(transcript_storage),
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
-        "auth_provider": "keycloak" if AUTH_AVAILABLE else "fallback"
+        "auth_provider": "keycloak" if AUTH_AVAILABLE else "fallback",
+        "model_loaded": whisper_service.model is not None,
+        "model_loading": whisper_service.is_loading
     }
 
 # Error handlers
@@ -418,8 +498,11 @@ async def get_stats(auth_data: dict = Depends(require_user_auth)):
 async def http_exception_handler(request, exc):
     return {"error": exc.detail, "status_code": exc.status_code}
 
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"❌ Unhandled exception: {exc}")
+    return {"error": "Internal server error", "status_code": 500}
+
 if __name__ == "__main__":
     import uvicorn
-    startup_time = time.time()
-    port = int(os.getenv("PORT", "8001"))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=config.PORT, log_level="info")
