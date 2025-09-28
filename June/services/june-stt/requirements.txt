@@ -1,6 +1,6 @@
 # June TTS Optimized Requirements
 
-# Core FastAPI and server
+# Core FastAPI and server  
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 python-multipart>=0.0.7
