@@ -21,3 +21,11 @@ docker login -u ozzuworld
 2. At the password prompt, enter the personal access token.
 
 dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
+
+
+
+# Update the tts-service-url in june-secrets
+kubectl patch secret june-secrets \
+  --type='merge' \
+  -p='{"data":{"tts-service-url":"'$(echo -n "http://142.127.68.223:4016" | base64 -w 0)'"}}' \
+  -n june-services

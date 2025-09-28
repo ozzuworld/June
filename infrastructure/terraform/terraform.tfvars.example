@@ -2,13 +2,13 @@
 # Copy this file to terraform.tfvars and customize the values
 
 # GCP Project Configuration
-project_id = "your-gcp-project-id"
+project_id = "main-buffer-469817-v7"
 region     = "us-central1"
 environment = "prod"
 
 # GKE Cluster Configuration
 cluster_name = "june-cluster"
-domain_name  = "your-domain.com"
+domain_name  = "allsafe.world"
 
 # GitHub Configuration
 github_owner = "ozzuworld"
@@ -17,10 +17,10 @@ build_branch = "^master$"
 
 # Harbor Registry Configuration
 # IMPORTANT: Use a strong password for Harbor admin
-harbor_admin_password = "YourSecurePassword123!"
+harbor_admin_password = "Pokemon123!"
 
 # Harbor Storage Configuration (adjust based on your needs)
-harbor_registry_storage_size = "100Gi"  # Storage for container images
+harbor_registry_storage_size = "60Gi"  # Storage for container images
 harbor_database_storage_size = "10Gi"   # Storage for Harbor database
 harbor_redis_storage_size    = "5Gi"    # Storage for Redis cache
 
