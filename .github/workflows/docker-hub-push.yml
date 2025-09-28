@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [june-tts, june-orchestrator, june-stt, june-media-relay]
+        service: [june-orchestrator, june-stt, june-tts]
     
     steps:
     - name: Checkout code
