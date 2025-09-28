@@ -1,35 +1,48 @@
-# Use official Python slim image
+# June/services/june-stt/Dockerfile - Fixed version
 FROM python:3.10-slim
 
-# Set locale
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PYTHONUNBUFFERED=1
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      ffmpeg \
-      git && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install PyTorch with CUDA support (adjust CUDA version if needed)
-RUN pip install --no-cache-dir \
-      torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
-
-# Install Hugging Face Transformers and Accelerate
-RUN pip install --no-cache-dir \
-      transformers accelerate
-
-# Install OpenAI Whisper
-RUN pip install --no-cache-dir openai-whisper
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create application directory
 WORKDIR /app
 
-# Copy your transcription script or application code
-# (Expect a script like transcribe.py that uses Whisper)
-COPY . /app
+# Install PyTorch (CPU version for smaller image, change if you need GPU)
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Default command (adjust as needed)
-CMD ["python", "transcribe.py"]
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy shared module first (for auth)
+COPY shared/ ./shared/
+RUN pip install -e ./shared/
+
+# Copy application code
+COPY app.py .
+COPY .env .
+
+# Create non-root user
+RUN useradd -m -u 1001 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1
+
+# Expose port (matching June service pattern)
+EXPOSE 8080
+
+# Start the application
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
