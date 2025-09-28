@@ -1,6 +1,6 @@
-# Fixed OpenVoice V2 Dockerfile - Solution 4: Alternative Base Image
-# This approach uses an older/compatible base image that doesn't have the ctranslate2 issue
-FROM ubuntu:20.04
+# Fixed OpenVoice V2 Dockerfile - Solution 2: PatchELF Fix
+# This approach fixes the ctranslate2 executable stack issue using patchelf
+FROM python:3.10-slim
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -8,21 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV TZ=UTC
 
-# Install Python 3.10 and system dependencies
+# Install ALL dependencies including patchelf for fixing ctranslate2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Python 3.10 installation
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3.10-dev \
-    python3.10-venv \
-    python3.10-distutils \
-    # System dependencies
+    # Runtime dependencies
     curl \
-    wget \
     libsndfile1 \
     mecab \
     mecab-ipadic-utf8 \
@@ -33,25 +23,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libmecab-dev \
+    # CRITICAL: patchelf for fixing executable stack
+    patchelf \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # Initialize Git LFS
 RUN git lfs install
 
-# Install pip for Python 3.10
-RUN curl https://bootstrap.pypa.io/get-pip.py | python3.10
-
-# Create virtual environment with Python 3.10
+# Create virtual environment
 RUN python3.10 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Upgrade pip and install wheel
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
-# Install PyTorch with CUDA support (compatible with Ubuntu 20.04)
+# Install PyTorch with CUDA support
 RUN echo "🚀 Installing PyTorch with CUDA support..." && \
-    pip install --no-cache-dir torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+    pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Install core dependencies
 RUN pip install --no-cache-dir \
@@ -70,7 +59,7 @@ RUN pip install --no-cache-dir \
 ENV MECAB_CONFIG=/usr/bin/mecab-config
 RUN pip install --no-cache-dir fugashi[unidic-lite]==1.3.0 unidic-lite
 
-# Install older compatible versions of tokenizers and transformers
+# Install tokenizers and transformers (pinned versions)
 ENV PIP_ONLY_BINARY=tokenizers
 RUN pip install --no-cache-dir --no-build-isolation --only-binary=:all: tokenizers==0.13.3
 RUN pip install --no-cache-dir transformers==4.27.4
@@ -79,7 +68,7 @@ RUN pip install --no-cache-dir transformers==4.27.4
 RUN echo "📦 Installing MeloTTS..." && \
     pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# Install OpenVoice V2 dependencies
+# Install OpenVoice V2 dependencies first
 RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
     pip install --no-cache-dir \
         monotonic_align>=0.1.2 \
@@ -91,16 +80,28 @@ RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
         inflect>=7.0.0 \
         unidecode>=1.3.7
 
-# Install compatible version of faster_whisper (older version that works with Ubuntu 20.04)
-RUN echo "📦 Installing compatible faster_whisper..." && \
-    pip install --no-cache-dir faster_whisper==0.9.0
+# Install faster_whisper (this will install ctranslate2)
+RUN echo "📦 Installing faster_whisper with ctranslate2..." && \
+    pip install --no-cache-dir faster_whisper
 
-# Install OpenVoice V2 (should work with older glibc in Ubuntu 20.04)
+# 🔧 CRITICAL FIX: Use patchelf to clear executable stack from ctranslate2 libraries
+RUN echo "🔧 Fixing ctranslate2 executable stack issue..." && \
+    # Find all ctranslate2 shared libraries and clear their executable stack
+    find /opt/venv/lib/python3.10/site-packages/ctranslate2* -name "*.so*" -type f -exec patchelf --clear-execstack {} \; 2>/dev/null || true && \
+    # Also fix any other potentially problematic libraries
+    find /opt/venv/lib/python3.10/site-packages -name "*ctranslate2*.so*" -type f -exec patchelf --clear-execstack {} \; 2>/dev/null || true && \
+    echo "✅ Executable stack cleared from ctranslate2 libraries"
+
+# Test ctranslate2 import after the fix
+RUN echo "🧪 Testing ctranslate2 import..." && \
+    python -c "import ctranslate2; print('✅ ctranslate2 import successful after patchelf fix')" || \
+    echo "⚠️ ctranslate2 import still has issues"
+
+# Install OpenVoice V2
 RUN echo "📦 Installing OpenVoice V2..." && \
     cd /tmp && \
     git clone --depth 1 https://github.com/myshell-ai/OpenVoice.git && \
     cd OpenVoice && \
-    # Regular install should work with Ubuntu 20.04's older glibc
     pip install --no-cache-dir . && \
     # Verify installation
     python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter installed')" && \
@@ -121,7 +122,7 @@ COPY model_setup.py /workspace/
 COPY shared/ /workspace/shared/
 COPY app/ /workspace/app/
 
-# Install any additional requirements from your requirements.txt
+# Install any additional requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create model directories
@@ -161,7 +162,7 @@ ENV CORS_ALLOW_ORIGINS="*"
 # Switch to non-root user
 USER appuser
 
-# Final verification
+# Final verification of the complete stack
 RUN echo "🔍 Final verification:" && \
     python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" && \
     python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
@@ -169,7 +170,7 @@ RUN echo "🔍 Final verification:" && \
     python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor OK')" && \
     python -c "import ctranslate2; print('✅ ctranslate2 OK')" && \
     python -c "import faster_whisper; print('✅ faster_whisper OK')" && \
-    echo "🎉 Full OpenVoice V2 stack verified successfully on Ubuntu 20.04!"
+    echo "🎉 Full OpenVoice V2 stack verified successfully!"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

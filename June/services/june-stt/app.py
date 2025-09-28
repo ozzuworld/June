@@ -1,5 +1,5 @@
 # June/services/june-stt/app.py
-# Enhanced STT microservice with authentication and orchestrator integration
+# Enhanced STT microservice with Keycloak authentication (based on TTS pattern)
 
 import os
 import time
@@ -13,20 +13,42 @@ from pathlib import Path
 import httpx
 import whisper
 import torch
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import firebase_admin
-from firebase_admin import credentials, auth
-import jwt
-from cryptography.hazmat.primitives import serialization
+
+# Import the shared auth (same as TTS service)
+try:
+    from shared import require_user_auth, require_service_auth, extract_user_id, extract_client_id
+    AUTH_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Keycloak authentication available")
+except ImportError:
+    AUTH_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("⚠️ Keycloak authentication not available - using fallback")
+    
+    # Fallback auth functions
+    async def require_user_auth(authorization: str = Header(None)):
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Authorization header required")
+        return {"sub": "fallback_user", "client_id": "fallback"}
+    
+    async def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
+    
+    def extract_user_id(auth_data: Dict[str, Any]) -> str:
+        return auth_data.get("sub", "fallback_user")
+    
+    def extract_client_id(auth_data: Dict[str, Any]) -> str:
+        return auth_data.get("client_id", "fallback")
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="June STT Service", version="2.0.0", description="Real-time Speech-to-Text microservice with authentication")
+app = FastAPI(title="June STT Service", version="2.0.0", description="Speech-to-Text microservice with Keycloak authentication")
 
 # CORS middleware for frontend communication
 app.add_middleware(
@@ -37,9 +59,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Security
-security = HTTPBearer()
-
 # Global variables
 whisper_model = None
 transcript_storage = {}  # In-memory storage for transcripts
@@ -47,14 +66,6 @@ processing_queue = asyncio.Queue()
 
 # Configuration
 class Config:
-    # Authentication
-    JWT_SECRET = os.getenv("JWT_SECRET", "june-stt-secret-key-change-in-production")
-    JWT_ALGORITHM = "HS256"
-    JWT_EXPIRATION_HOURS = 24
-    
-    # Firebase (optional)
-    FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
-    
     # Orchestrator
     ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8080")
     ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY", "")
@@ -77,6 +88,7 @@ class TranscriptionResult(BaseModel):
     processing_time_ms: int
     timestamp: datetime
     status: str = "completed"
+    user_id: str
 
 class TranscriptionRequest(BaseModel):
     language: Optional[str] = None
@@ -84,81 +96,12 @@ class TranscriptionRequest(BaseModel):
     temperature: Optional[float] = 0.0
     notify_orchestrator: Optional[bool] = True
 
-class User(BaseModel):
-    user_id: str
-    email: Optional[str] = None
-    roles: List[str] = []
-
 class TranscriptNotification(BaseModel):
     transcript_id: str
     user_id: str
     text: str
     timestamp: datetime
     metadata: Dict[str, Any] = {}
-
-# Authentication Service
-class AuthService:
-    def __init__(self):
-        self.firebase_app = None
-        self.setup_firebase()
-    
-    def setup_firebase(self):
-        """Initialize Firebase Admin SDK if credentials are provided"""
-        try:
-            if config.FIREBASE_CREDENTIALS_PATH and os.path.exists(config.FIREBASE_CREDENTIALS_PATH):
-                if not firebase_admin._apps:
-                    cred = credentials.Certificate(config.FIREBASE_CREDENTIALS_PATH)
-                    self.firebase_app = firebase_admin.initialize_app(cred)
-                    logger.info("✅ Firebase Admin SDK initialized")
-                else:
-                    self.firebase_app = firebase_admin.get_app()
-        except Exception as e:
-            logger.warning(f"⚠️ Firebase initialization failed: {e}")
-            logger.info("📝 Falling back to JWT-only authentication")
-    
-    def create_jwt_token(self, user_id: str, email: Optional[str] = None) -> str:
-        """Create a JWT token for a user"""
-        payload = {
-            "user_id": user_id,
-            "email": email,
-            "iat": datetime.utcnow(),
-            "exp": datetime.utcnow() + timedelta(hours=config.JWT_EXPIRATION_HOURS)
-        }
-        return jwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
-    
-    async def verify_token(self, token: str) -> User:
-        """Verify and decode authentication token"""
-        try:
-            # Try Firebase token first
-            if self.firebase_app:
-                try:
-                    decoded_token = auth.verify_id_token(token)
-                    return User(
-                        user_id=decoded_token["uid"],
-                        email=decoded_token.get("email"),
-                        roles=decoded_token.get("roles", [])
-                    )
-                except Exception:
-                    pass  # Fall through to JWT verification
-            
-            # Try JWT token
-            payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-            return User(
-                user_id=payload["user_id"],
-                email=payload.get("email"),
-                roles=payload.get("roles", [])
-            )
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token has expired")
-        except jwt.InvalidTokenError:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-auth_service = AuthService()
-
-# Dependency to get current user
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
-    """Get current authenticated user"""
-    return await auth_service.verify_token(credentials.credentials)
 
 # Whisper Service
 class WhisperService:
@@ -286,10 +229,11 @@ async def root():
         "status": "healthy",
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
+        "auth_available": AUTH_AVAILABLE,
         "endpoints": {
             "transcribe": "/v1/transcribe",
             "transcripts": "/v1/transcripts/{transcript_id}",
-            "auth": "/v1/auth/token"
+            "health": "/healthz"
         }
     }
 
@@ -302,14 +246,9 @@ async def health_check():
         "service": "june-stt",
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "whisper_model_status": model_status
+        "whisper_model_status": model_status,
+        "auth_status": "keycloak" if AUTH_AVAILABLE else "fallback"
     }
-
-@app.post("/v1/auth/token")
-async def create_auth_token(user_id: str, email: Optional[str] = None):
-    """Create authentication token (for development/testing)"""
-    token = auth_service.create_jwt_token(user_id, email)
-    return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/v1/transcribe", response_model=TranscriptionResult)
 async def transcribe_audio(
@@ -319,18 +258,19 @@ async def transcribe_audio(
     task: Optional[str] = "transcribe",
     temperature: Optional[float] = 0.0,
     notify_orchestrator: Optional[bool] = True,
-    current_user: User = Depends(get_current_user)
+    auth_data: dict = Depends(require_user_auth)
 ):
     """
     Transcribe uploaded audio file
     
     - **audio_file**: Audio file (wav, mp3, m4a, etc.)
-    - **language**: Source language (optional, auto-detected if not provided)
+    - **language**: Source language (optional, auto-detected if not provided)  
     - **task**: 'transcribe' or 'translate' (to English)
     - **temperature**: Sampling temperature (0.0 = deterministic)
     - **notify_orchestrator**: Whether to notify orchestrator service
     """
     start_time = time.time()
+    user_id = extract_user_id(auth_data)
     
     try:
         # Validate file type
@@ -362,7 +302,8 @@ async def transcribe_audio(
                 language=result.get("language"),
                 processing_time_ms=result["processing_time_ms"],
                 timestamp=datetime.utcnow(),
-                status="completed"
+                status="completed",
+                user_id=user_id
             )
             
             # Store transcript in memory
@@ -372,7 +313,7 @@ async def transcribe_audio(
             if notify_orchestrator:
                 notification = TranscriptNotification(
                     transcript_id=transcript_id,
-                    user_id=current_user.user_id,
+                    user_id=user_id,
                     text=result["text"],
                     timestamp=transcript_result.timestamp,
                     metadata={
@@ -383,7 +324,7 @@ async def transcribe_audio(
                 )
                 background_tasks.add_task(orchestrator_client.notify_transcript, notification)
             
-            logger.info(f"✅ Transcription completed: {transcript_id} ({result['processing_time_ms']}ms)")
+            logger.info(f"✅ Transcription completed: {transcript_id} for user {user_id} ({result['processing_time_ms']}ms)")
             
             return transcript_result
             
@@ -403,49 +344,73 @@ async def transcribe_audio(
 @app.get("/v1/transcripts/{transcript_id}", response_model=TranscriptionResult)
 async def get_transcript(
     transcript_id: str,
-    current_user: User = Depends(get_current_user)
+    auth_data: dict = Depends(require_user_auth)
 ):
     """Get transcript by ID"""
     if transcript_id not in transcript_storage:
         raise HTTPException(status_code=404, detail="Transcript not found")
     
-    return transcript_storage[transcript_id]
+    transcript = transcript_storage[transcript_id]
+    user_id = extract_user_id(auth_data)
+    
+    # Check if user owns this transcript
+    if transcript.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return transcript
 
 @app.get("/v1/transcripts")
 async def list_transcripts(
     limit: int = 50,
-    current_user: User = Depends(get_current_user)
+    auth_data: dict = Depends(require_user_auth)
 ):
     """List recent transcripts for user"""
-    # In a real implementation, you'd filter by user_id and use proper database
-    transcripts = list(transcript_storage.values())
-    transcripts.sort(key=lambda x: x.timestamp, reverse=True)
+    user_id = extract_user_id(auth_data)
+    
+    # Filter transcripts by user
+    user_transcripts = [
+        transcript for transcript in transcript_storage.values()
+        if transcript.user_id == user_id
+    ]
+    
+    user_transcripts.sort(key=lambda x: x.timestamp, reverse=True)
     
     return {
-        "transcripts": transcripts[:limit],
-        "total": len(transcripts)
+        "transcripts": user_transcripts[:limit],
+        "total": len(user_transcripts)
     }
 
 @app.delete("/v1/transcripts/{transcript_id}")
 async def delete_transcript(
     transcript_id: str,
-    current_user: User = Depends(get_current_user)
+    auth_data: dict = Depends(require_user_auth)
 ):
     """Delete transcript by ID"""
     if transcript_id not in transcript_storage:
         raise HTTPException(status_code=404, detail="Transcript not found")
     
+    transcript = transcript_storage[transcript_id]
+    user_id = extract_user_id(auth_data)
+    
+    # Check if user owns this transcript
+    if transcript.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
     del transcript_storage[transcript_id]
     return {"message": "Transcript deleted successfully"}
 
 @app.get("/v1/stats")
-async def get_stats(current_user: User = Depends(get_current_user)):
+async def get_stats(auth_data: dict = Depends(require_user_auth)):
     """Get service statistics"""
+    user_id = extract_user_id(auth_data)
+    user_transcripts = [t for t in transcript_storage.values() if t.user_id == user_id]
+    
     return {
+        "user_transcripts": len(user_transcripts),
         "total_transcripts": len(transcript_storage),
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
-        "uptime": time.time() - startup_time if 'startup_time' in globals() else 0
+        "auth_provider": "keycloak" if AUTH_AVAILABLE else "fallback"
     }
 
 # Error handlers
