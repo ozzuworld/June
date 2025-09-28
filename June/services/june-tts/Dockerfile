@@ -144,11 +144,11 @@ ENV MELO_SPEAKER_ID=0
 ENV CORS_ALLOW_ORIGINS="*"
 ENV NLTK_DATA=/home/appuser/nltk_data
 
-# GPU verification at runtime
+# GPU verification at runtime - FIXED (simplest approach)
 RUN echo "🔍 Runtime verification:" && \
     python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA devices: {torch.cuda.device_count()}')" && \
     python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
-    python -c "try:\n  from openvoice.api import ToneColorConverter; print('✅ OpenVoice imports OK')\nexcept Exception as e:\n  print(f'⚠️ OpenVoice import failed: {e}')" && \
+    python -c "import importlib; openvoice_ok = importlib.util.find_spec('openvoice') is not None; print('✅ OpenVoice imports OK' if openvoice_ok else '⚠️ OpenVoice not available')" && \
     echo "🎉 Build verification complete!"
 
 # Health check

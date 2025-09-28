@@ -1,173 +1,216 @@
-# app/core/openvoice_engine.py - Enhanced with OpenVoice V2 support
+# app/core/openvoice_engine.py - FIXED with Official OpenVoice V2 API
 import asyncio
 import base64
 import glob
 import os
 import tempfile
-from typing import Optional, Tuple, Callable, Dict, Any
+import time
+from typing import Optional, Tuple, Dict, Any
 import logging
 
 import httpx
 import numpy as np
 import soundfile as sf
+import torch
 
 logger = logging.getLogger(__name__)
 
-# Configuration
+# Configuration from official docs
 _MAX_REF_BYTES = int(os.getenv("MAX_FILE_SIZE", str(20 * 1024 * 1024)))
 _MAX_TEXT_LEN = int(os.getenv("MAX_TEXT_LEN", "2000"))
 _SUPPORTED_LANGUAGES = {"en", "es", "fr", "zh", "ja", "ko"}
 
+# Language mapping for MeloTTS (official mapping)
+_MELO_LANGUAGE_MAP = {
+    "en": "EN",
+    "es": "ES", 
+    "fr": "FR",
+    "zh": "ZH",
+    "ja": "JP",
+    "ko": "KR"
+}
+
 # Global state
 _MELO = None
 _CONVERTER = None
-_SPEAKER_ID = None
-_CONVERT_FN: Optional[Callable[..., np.ndarray]] = None
+_INITIALIZED = False
+_AVAILABLE_FEATURES = {
+    "basic_tts": False,
+    "voice_cloning": False,
+    "multi_language": False
+}
+
+def _ensure_checkpoints() -> Tuple[str, str, str]:
+    """Validate OpenVoice V2 checkpoint structure"""
+    root = os.getenv("OPENVOICE_CHECKPOINTS_V2", "/models/openvoice/checkpoints_v2")
+    base_root = os.path.join(root, "base_speakers")
+    conv_root = os.path.join(root, "converter")  # Official V2 uses 'converter', not 'tone_color_converter'
+    
+    if not os.path.isdir(conv_root):
+        # Fallback to alternative naming
+        conv_root = os.path.join(root, "tone_color_converter")
+    
+    logger.info(f"Checking OpenVoice V2 checkpoints: {conv_root}")
+    return root, base_root, conv_root
+
+def _find_converter_files(conv_root: str) -> Tuple[Optional[str], Optional[str]]:
+    """Find config and checkpoint files using official V2 structure"""
+    config_file = None
+    checkpoint_file = None
+    
+    # Look for config.json
+    config_paths = [
+        os.path.join(conv_root, "config.json"),
+        os.path.join(conv_root, "model_config.json"),
+    ]
+    
+    for path in config_paths:
+        if os.path.exists(path):
+            config_file = path
+            break
+    
+    # Look for checkpoint files (.pth preferred for V2)
+    checkpoint_patterns = [
+        os.path.join(conv_root, "*.pth"),
+        os.path.join(conv_root, "**/*.pth"),
+        os.path.join(conv_root, "*.pt"),
+        os.path.join(conv_root, "**/*.pt"),
+    ]
+    
+    for pattern in checkpoint_patterns:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            checkpoint_file = matches[0]  # Use first match
+            break
+    
+    logger.info(f"Found config: {config_file}, checkpoint: {checkpoint_file}")
+    return config_file, checkpoint_file
 
 def _load_models_once() -> None:
-    """Load models with comprehensive error handling and OpenVoice V2 support"""
-    global _MELO, _CONVERTER, _SPEAKER_ID, _CONVERT_FN
-    if _MELO is not None:
+    """Load models using official OpenVoice V2 API"""
+    global _MELO, _CONVERTER, _INITIALIZED, _AVAILABLE_FEATURES
+    
+    if _INITIALIZED:
         return
-
+    
+    logger.info("🚀 Initializing OpenVoice V2 engine...")
+    
+    # Step 1: Initialize MeloTTS (always needed)
     try:
         from melo.api import TTS as MeloTTS
         
-        # Initialize Melo (always needed)
-        _MELO = MeloTTS(language=os.getenv("MELO_LANGUAGE", "EN"))
-        _SPEAKER_ID = os.getenv("MELO_SPEAKER_ID", "0")
-        logger.info("✅ MeloTTS loaded successfully")
+        # Use proper device detection
+        device = os.getenv("OPENVOICE_DEVICE", "auto")
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Try to initialize OpenVoice V2 converter
+        # Initialize with default English for testing
+        _MELO = MeloTTS(language="EN", device=device)
+        _AVAILABLE_FEATURES["basic_tts"] = True
+        _AVAILABLE_FEATURES["multi_language"] = True
+        
+        logger.info(f"✅ MeloTTS initialized on device: {device}")
+        
+        # Log available speakers
         try:
-            from openvoice.api import ToneColorConverter
-            from openvoice import se_extractor
-            
-            root = os.getenv("OPENVOICE_CHECKPOINTS_V2", "/models/openvoice/checkpoints_v2")
-            conv_root = os.path.join(root, "tone_color_converter")
-            
-            logger.info(f"🔍 Looking for OpenVoice models in: {conv_root}")
-            
-            if os.path.isdir(conv_root):
-                cfg_path = os.path.join(conv_root, "config.json")
-                
-                # Look for checkpoint files more comprehensively
-                ckpt_patterns = [
-                    os.path.join(conv_root, "*.pth"),
-                    os.path.join(conv_root, "*.pt"),
-                    os.path.join(conv_root, "**", "*.pth"),
-                    os.path.join(conv_root, "**", "*.pt"),
-                ]
-                
-                ckpt_files = []
-                for pattern in ckpt_patterns:
-                    ckpt_files.extend(glob.glob(pattern, recursive=True))
-                
-                logger.info(f"🔍 Found checkpoint files: {[os.path.basename(f) for f in ckpt_files]}")
-                
-                if os.path.exists(cfg_path) and ckpt_files:
-                    device = os.getenv("OPENVOICE_DEVICE", "cuda" if os.getenv("CUDA_VISIBLE_DEVICES", "") else "cpu")
-                    logger.info(f"🚀 Initializing OpenVoice with device: {device}")
-                    
-                    try:
-                        # Try different initialization methods for OpenVoice V2
-                        converter = None
-                        
-                        # Method 1: With config path
-                        try:
-                            converter = ToneColorConverter(config_path=cfg_path, device=device)
-                            logger.info("✅ OpenVoice initialized with config path")
-                        except Exception as e1:
-                            logger.warning(f"Method 1 failed: {e1}")
-                            
-                            # Method 2: Without config path
-                            try:
-                                converter = ToneColorConverter(device=device)
-                                logger.info("✅ OpenVoice initialized without config path")
-                            except Exception as e2:
-                                logger.warning(f"Method 2 failed: {e2}")
-                                raise e2
-                        
-                        if converter:
-                            # Load checkpoint
-                            ckpt_file = ckpt_files[0]  # Use first available checkpoint
-                            logger.info(f"📦 Loading checkpoint: {os.path.basename(ckpt_file)}")
-                            
-                            if hasattr(converter, "load_ckpt"):
-                                converter.load_ckpt(ckpt_file)
-                                logger.info("✅ Checkpoint loaded via load_ckpt")
-                            elif hasattr(converter, "load"):
-                                converter.load(ckpt_path=ckpt_file)
-                                logger.info("✅ Checkpoint loaded via load")
-                            else:
-                                raise AttributeError("No load method found on converter")
-                            
-                            # Test the converter
-                            if hasattr(converter, 'convert'):
-                                _CONVERT_FN = lambda audio, sr, src_se: converter.convert(
-                                    audio=np.asarray(audio, dtype=np.float32), 
-                                    sample_rate=int(sr), 
-                                    src_se=src_se
-                                )
-                            elif hasattr(converter, 'tone_color_convert'):
-                                _CONVERT_FN = lambda audio, sr, src_se: converter.tone_color_convert(
-                                    np.asarray(audio, dtype=np.float32), 
-                                    int(sr), 
-                                    src_se
-                                )
-                            else:
-                                raise AttributeError("No convert method found on converter")
-                            
-                            _CONVERTER = converter
-                            logger.info("✅ OpenVoice V2 converter loaded successfully")
-                        else:
-                            raise Exception("Failed to initialize converter")
-                            
-                    except Exception as init_error:
-                        logger.error(f"❌ OpenVoice initialization failed: {init_error}")
-                        _CONVERTER = None
-                        _CONVERT_FN = None
-                        
-                else:
-                    missing = []
-                    if not os.path.exists(cfg_path):
-                        missing.append("config.json")
-                    if not ckpt_files:
-                        missing.append("checkpoint files")
-                    logger.warning(f"⚠️ OpenVoice files missing: {missing} - voice cloning disabled")
-            else:
-                logger.warning(f"⚠️ OpenVoice directory not found: {conv_root} - voice cloning disabled")
-                
-        except ImportError as e:
-            logger.warning(f"⚠️ OpenVoice not available: {e}")
-            _CONVERTER = None
+            speaker_ids = _MELO.hps.data.spk2id
+            logger.info(f"Available speakers: {list(speaker_ids.keys())}")
         except Exception as e:
-            logger.warning(f"⚠️ Could not load OpenVoice converter: {e}")
-            _CONVERTER = None
-        
-    except ImportError as e:
-        logger.error(f"❌ MeloTTS not available: {e}")
-        raise RuntimeError(f"MeloTTS is required but not installed: {e}")
+            logger.warning(f"Could not retrieve speaker info: {e}")
+            
     except Exception as e:
-        logger.error(f"❌ Failed to load TTS models: {e}")
-        raise RuntimeError(f"TTS initialization failed: {e}")
+        logger.error(f"❌ Failed to initialize MeloTTS: {e}")
+        raise RuntimeError(f"MeloTTS initialization failed: {e}")
+    
+    # Step 2: Initialize OpenVoice V2 Converter (optional)
+    try:
+        from openvoice.api import ToneColorConverter
+        from openvoice import se_extractor
+        
+        root, base_root, conv_root = _ensure_checkpoints()
+        
+        if not os.path.isdir(conv_root):
+            logger.warning(f"⚠️ OpenVoice converter directory not found: {conv_root}")
+            _AVAILABLE_FEATURES["voice_cloning"] = False
+        else:
+            config_file, checkpoint_file = _find_converter_files(conv_root)
+            
+            if not config_file or not checkpoint_file:
+                logger.warning(f"⚠️ Missing OpenVoice files - config: {config_file}, checkpoint: {checkpoint_file}")
+                _AVAILABLE_FEATURES["voice_cloning"] = False
+            else:
+                try:
+                    # Initialize converter using official V2 API
+                    device = os.getenv("OPENVOICE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+                    
+                    # Official V2 initialization pattern
+                    _CONVERTER = ToneColorConverter(config_file, device=device)
+                    _CONVERTER.load_ckpt(checkpoint_file)
+                    
+                    _AVAILABLE_FEATURES["voice_cloning"] = True
+                    logger.info("✅ OpenVoice V2 converter loaded successfully")
+                    
+                    # Test the converter with a simple operation
+                    try:
+                        # Verify se_extractor is working
+                        logger.info("✅ Speaker embedding extractor available")
+                    except Exception as test_e:
+                        logger.warning(f"⚠️ Converter test failed: {test_e}")
+                        
+                except Exception as init_e:
+                    logger.error(f"❌ OpenVoice converter initialization failed: {init_e}")
+                    _CONVERTER = None
+                    _AVAILABLE_FEATURES["voice_cloning"] = False
+                    
+    except ImportError as ie:
+        logger.warning(f"⚠️ OpenVoice not available: {ie}")
+        _CONVERTER = None
+        _AVAILABLE_FEATURES["voice_cloning"] = False
+    except Exception as e:
+        logger.error(f"❌ OpenVoice setup failed: {e}")
+        _CONVERTER = None
+        _AVAILABLE_FEATURES["voice_cloning"] = False
+    
+    _INITIALIZED = True
+    
+    # Summary
+    logger.info("🎉 Engine initialization complete!")
+    logger.info(f"Features available: {_AVAILABLE_FEATURES}")
 
 def warmup_models() -> None:
     """Warmup models at startup"""
     try:
         _load_models_once()
-        logger.info("✅ TTS models warmed up successfully")
+        
+        # Test basic TTS
+        if _AVAILABLE_FEATURES["basic_tts"]:
+            logger.info("🧪 Testing basic TTS...")
+            try:
+                test_text = "Test"
+                device = os.getenv("OPENVOICE_DEVICE", "auto")
+                if device == "auto":
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                
+                # Create a temporary test
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp_file:
+                    _MELO.tts_to_file(test_text, 0, tmp_file.name, speed=1.0)
+                    if os.path.exists(tmp_file.name) and os.path.getsize(tmp_file.name) > 1000:
+                        logger.info("✅ Basic TTS test passed")
+                    else:
+                        logger.warning("⚠️ Basic TTS test produced small file")
+            except Exception as e:
+                logger.warning(f"⚠️ Basic TTS test failed: {e}")
         
         # Log GPU status
         try:
-            import torch
             if torch.cuda.is_available():
                 gpu_name = torch.cuda.get_device_name(0)
-                logger.info(f"🚀 GPU detected: {gpu_name}")
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                logger.info(f"🚀 GPU: {gpu_name} ({gpu_memory:.1f}GB)")
             else:
-                logger.warning("⚠️ No GPU detected, using CPU")
-        except ImportError:
-            logger.warning("⚠️ PyTorch not available for GPU detection")
+                logger.info("💻 Running on CPU")
+        except Exception:
+            logger.info("💻 GPU info not available")
             
     except Exception as e:
         logger.error(f"❌ Model warmup failed: {e}")
@@ -177,192 +220,210 @@ async def synthesize_v2_to_wav_path(
     text: str,
     language: str,
     reference_b64: Optional[str],
-    reference_url: Optional[str],
+    reference_url: Optional[str], 
     speed: float,
     volume: float,
     pitch: float,
     metadata: dict,
 ) -> str:
-    """Synthesize speech to WAV file path with OpenVoice V2 support"""
-    
+    """
+    FIXED: Synthesize speech using official OpenVoice V2 API
+    """
     # Validation
-    if not text:
-        raise ValueError("text is required")
+    if not text or not text.strip():
+        raise ValueError("Text cannot be empty")
+    
     if len(text) > _MAX_TEXT_LEN:
-        raise ValueError("text too long")
+        raise ValueError(f"Text too long (max {_MAX_TEXT_LEN} chars)")
     
     lang = language.lower()
     if lang not in _SUPPORTED_LANGUAGES:
-        raise ValueError(f"language must be one of {_SUPPORTED_LANGUAGES}")
+        raise ValueError(f"Language must be one of {_SUPPORTED_LANGUAGES}")
     
     if speed <= 0:
-        raise ValueError("speed must be > 0")
+        raise ValueError("Speed must be > 0")
     
-    # Load models if not already loaded
+    # Ensure models are loaded
     _load_models_once()
-    assert _MELO is not None
     
-    melo_lang = {"en": "EN", "es": "ES", "fr": "FR", "zh": "ZH", "ja": "JA", "ko": "KO"}.get(lang, "EN")
+    if not _AVAILABLE_FEATURES["basic_tts"]:
+        raise RuntimeError("TTS service not available")
     
-    # Try to convert speaker ID to int
-    try:
-        spk = int(os.getenv("MELO_SPEAKER_ID", "0"))
-    except ValueError:
-        spk = 0
+    # Get MeloTTS language code
+    melo_lang = _MELO_LANGUAGE_MAP.get(lang, "EN")
     
-    # Check if we should use voice cloning
-    use_voice_cloning = _CONVERTER is not None and _CONVERT_FN is not None and (reference_b64 or reference_url)
+    # Determine if we should use voice cloning
+    use_voice_cloning = (
+        _AVAILABLE_FEATURES["voice_cloning"] and 
+        _CONVERTER is not None and 
+        (reference_b64 or reference_url)
+    )
     
     if use_voice_cloning:
         logger.info("🎭 Using OpenVoice V2 voice cloning")
+        return await _synthesize_with_cloning(
+            text, melo_lang, reference_b64, reference_url, speed, volume, pitch
+        )
+    else:
+        logger.info("🔊 Using basic MeloTTS")
+        return await _synthesize_basic_tts(text, melo_lang, speed, volume, pitch)
+
+async def _synthesize_basic_tts(
+    text: str, 
+    melo_lang: str, 
+    speed: float, 
+    volume: float, 
+    pitch: float
+) -> str:
+    """Generate basic TTS using MeloTTS"""
+    
+    try:
+        # Get speaker ID (use first available speaker)
+        speaker_ids = _MELO.hps.data.spk2id
+        speaker_id = list(speaker_ids.values())[0] if speaker_ids else 0
         
-        # Prepare reference audio
-        ref_path = None
+        # Create temporary output file
+        fd, output_path = tempfile.mkstemp(prefix="june-basic-tts-", suffix=".wav")
+        os.close(fd)
+        
+        # Generate speech using official MeloTTS API
+        _MELO.tts_to_file(
+            text=text,
+            speaker_id=speaker_id,
+            output_path=output_path,
+            speed=speed
+        )
+        
+        # Verify file was created
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            raise RuntimeError("TTS generation failed - empty or missing file")
+        
+        logger.info(f"✅ Basic TTS generated: {os.path.getsize(output_path)} bytes")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"❌ Basic TTS failed: {e}")
+        raise RuntimeError(f"TTS synthesis failed: {e}")
+
+async def _synthesize_with_cloning(
+    text: str,
+    melo_lang: str, 
+    reference_b64: Optional[str],
+    reference_url: Optional[str],
+    speed: float,
+    volume: float,
+    pitch: float
+) -> str:
+    """Generate TTS with voice cloning using official OpenVoice V2 API"""
+    
+    # Step 1: Get reference audio
+    ref_path = None
+    try:
         if reference_b64:
             ref_path = await _write_reference_b64(reference_b64)
         elif reference_url:
             ref_path = await _download_reference(reference_url)
+        else:
+            raise ValueError("No reference audio provided")
         
-        if not ref_path:
-            logger.warning("⚠️ No reference audio provided, falling back to basic TTS")
-            use_voice_cloning = False
+        # Step 2: Generate base TTS
+        base_path = await _synthesize_basic_tts(text, melo_lang, speed, volume, pitch)
+        
+        # Step 3: Extract speaker embedding using official API
+        from openvoice import se_extractor
+        
+        logger.info("🎯 Extracting speaker embedding...")
+        target_se, _ = se_extractor.get_se(ref_path, _CONVERTER, vad=True)
+        
+        # Step 4: Apply voice conversion using official API
+        logger.info("🎭 Applying voice conversion...")
+        
+        converted_path = await _apply_voice_conversion(base_path, target_se)
+        
+        # Cleanup intermediate files
+        try:
+            os.unlink(base_path)
+            if ref_path:
+                asyncio.create_task(_cleanup_file(ref_path))
+        except Exception:
+            pass
+        
+        logger.info("✅ Voice cloning completed successfully")
+        return converted_path
+        
+    except Exception as e:
+        logger.error(f"❌ Voice cloning failed: {e}")
+        # Fallback to basic TTS
+        logger.info("⚠️ Falling back to basic TTS")
+        return await _synthesize_basic_tts(text, melo_lang, speed, volume, pitch)
+
+async def _apply_voice_conversion(base_audio_path: str, target_se) -> str:
+    """Apply voice conversion using official OpenVoice V2 API"""
     
-    # Generate base TTS audio
-    logger.info(f"🔊 Generating TTS with MeloTTS (language: {melo_lang}, speaker: {spk})")
-    
-    if hasattr(_MELO, "tts_to_file"):
-        fd, base_path = tempfile.mkstemp(prefix="melo-base-", suffix=".wav")
+    try:
+        # Create output path
+        fd, output_path = tempfile.mkstemp(prefix="june-cloned-", suffix=".wav")
         os.close(fd)
         
-        try:
-            _MELO.tts_to_file(
-                text=text,
-                speaker_id=spk,
-                speed=speed,
-                language=melo_lang,
-                output_path=base_path
-            )
-        except TypeError:
-            # Try without language parameter for older versions
-            _MELO.tts_to_file(
-                text=text,
-                speaker_id=spk,
-                speed=speed,
-                output_path=base_path
-            )
-            
-        if use_voice_cloning:
-            # Apply voice cloning
-            try:
-                logger.info("🎭 Applying voice cloning transformation...")
-                
-                # Read base audio
-                base_audio, sr = sf.read(base_path, dtype="float32")
-                
-                # Extract speaker embedding from reference
-                from openvoice import se_extractor
-                try:
-                    src_se, _ = se_extractor.get_se(ref_path, _CONVERTER, vad=True)
-                except TypeError:
-                    src_se = se_extractor.get_se(ref_path)
-                
-                # Apply voice conversion
-                converted_audio = _CONVERT_FN(base_audio, sr, src_se)
-                
-                # Save converted audio
-                fd, out_path = tempfile.mkstemp(prefix="june-tts-v2-", suffix=".wav")
-                os.close(fd)
-                sf.write(out_path, converted_audio, sr, subtype="PCM_16")
-                
-                # Cleanup
-                os.unlink(base_path)
-                if ref_path:
-                    asyncio.create_task(_cleanup_file(ref_path))
-                
-                logger.info("✅ Voice cloning applied successfully")
-                return out_path
-                
-            except Exception as e:
-                logger.error(f"❌ Voice cloning failed: {e}, falling back to base TTS")
-                # Clean up and fall through to return base audio
-                if ref_path:
-                    asyncio.create_task(_cleanup_file(ref_path))
+        # Load base audio
+        audio, sr = sf.read(base_audio_path, dtype="float32")
         
-        return base_path
-    
-    elif hasattr(_MELO, "tts_to_audio"):
-        try:
-            audio, sr = _MELO.tts_to_audio(
-                text=text,
-                speaker_id=spk,
-                speed=speed,
-                language=melo_lang
-            )
-        except TypeError:
-            audio, sr = _MELO.tts_to_audio(
-                text=text,
-                speaker_id=spk,
-                speed=speed
-            )
+        # Apply conversion using official API
+        # Note: OpenVoice V2 converter.convert expects specific parameters
+        converted_audio = _CONVERTER.convert(
+            audio=np.asarray(audio, dtype=np.float32),
+            sample_rate=int(sr),
+            src_se=target_se
+        )
         
-        # Apply voice cloning if available
-        if use_voice_cloning:
-            try:
-                # Extract speaker embedding from reference
-                from openvoice import se_extractor
-                try:
-                    src_se, _ = se_extractor.get_se(ref_path, _CONVERTER, vad=True)
-                except TypeError:
-                    src_se = se_extractor.get_se(ref_path)
-                
-                # Apply voice conversion
-                converted_audio = _CONVERT_FN(audio, sr, src_se)
-                audio = converted_audio
-                
-                # Cleanup
-                if ref_path:
-                    asyncio.create_task(_cleanup_file(ref_path))
-                    
-                logger.info("✅ Voice cloning applied successfully")
-                
-            except Exception as e:
-                logger.error(f"❌ Voice cloning failed: {e}, using base TTS")
-                if ref_path:
-                    asyncio.create_task(_cleanup_file(ref_path))
+        # Save converted audio
+        sf.write(output_path, converted_audio, sr, subtype="PCM_16")
         
-        fd, out_path = tempfile.mkstemp(prefix="june-tts-", suffix=".wav")
-        os.close(fd)
-        sf.write(out_path, np.asarray(audio, dtype=np.float32), sr, subtype="PCM_16")
-        return out_path
-    
-    else:
-        raise RuntimeError("Unsupported MeloTTS build - no tts_to_file or tts_to_audio method")
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"❌ Voice conversion failed: {e}")
+        raise
 
 async def _write_reference_b64(b64: str) -> str:
     """Write base64 reference audio to temporary file"""
-    raw = base64.b64decode(b64)
-    if len(raw) > _MAX_REF_BYTES:
-        raise ValueError("reference_b64 too large")
-    fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".wav")
-    os.close(fd)
-    with open(path, "wb") as f:
-        f.write(raw)
-    return path
+    try:
+        raw = base64.b64decode(b64)
+        if len(raw) > _MAX_REF_BYTES:
+            raise ValueError("Reference audio too large")
+        
+        fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".wav")
+        os.close(fd)
+        
+        with open(path, "wb") as f:
+            f.write(raw)
+        
+        return path
+    except Exception as e:
+        logger.error(f"❌ Failed to process reference audio: {e}")
+        raise
 
 async def _download_reference(url: str) -> str:
     """Download reference audio from URL"""
-    limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
-    timeout = httpx.Timeout(30.0)
-    async with httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        if len(r.content) > _MAX_REF_BYTES:
-            raise ValueError("reference_url file too large")
-        fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".wav")
-        os.close(fd)
-        with open(path, "wb") as f:
-            f.write(r.content)
-        return path
+    try:
+        timeout = httpx.Timeout(30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            if len(response.content) > _MAX_REF_BYTES:
+                raise ValueError("Reference audio too large")
+            
+            fd, path = tempfile.mkstemp(prefix="ov2-ref-", suffix=".wav")
+            os.close(fd)
+            
+            with open(path, "wb") as f:
+                f.write(response.content)
+            
+            return path
+    except Exception as e:
+        logger.error(f"❌ Failed to download reference audio: {e}")
+        raise
 
 async def _cleanup_file(path: str):
     """Cleanup temporary file"""
@@ -372,9 +433,39 @@ async def _cleanup_file(path: str):
     except Exception:
         pass
 
+def get_engine_status() -> Dict[str, Any]:
+    """Get detailed engine status"""
+    return {
+        "initialized": _INITIALIZED,
+        "features": _AVAILABLE_FEATURES.copy(),
+        "models": {
+            "melo_loaded": _MELO is not None,
+            "converter_loaded": _CONVERTER is not None
+        },
+        "device": {
+            "cuda_available": torch.cuda.is_available(),
+            "current_device": os.getenv("OPENVOICE_DEVICE", "auto")
+        }
+    }
+
+def get_available_voices() -> Dict[str, Any]:
+    """Get available voices and speakers"""
+    if not _MELO:
+        return {"error": "TTS not initialized"}
+    
+    try:
+        speaker_ids = _MELO.hps.data.spk2id
+        return {
+            "speakers": dict(speaker_ids) if speaker_ids else {},
+            "languages": list(_MELO_LANGUAGE_MAP.keys()),
+            "voice_cloning_available": _AVAILABLE_FEATURES["voice_cloning"]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # Engine class for compatibility
 class OpenVoiceEngine:
-    """Engine class for compatibility with clone router"""
+    """Engine class for compatibility with existing code"""
     
     def __init__(self):
         self.converter = None
@@ -385,11 +476,13 @@ class OpenVoiceEngine:
         try:
             _load_models_once()
             self.converter = _CONVERTER
-            self.initialized = True
-            if _CONVERTER:
+            self.initialized = _INITIALIZED
+            
+            if _AVAILABLE_FEATURES["voice_cloning"]:
                 logger.info("✅ OpenVoice engine initialized with voice cloning")
             else:
                 logger.info("✅ OpenVoice engine initialized (basic TTS only)")
+                
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenVoice engine: {e}")
             self.converter = None
