@@ -1,4 +1,4 @@
-# June/services/june-stt/Dockerfile - Fixed version
+# June/services/june-stt/Dockerfile - Enhanced version
 FROM python:3.10-slim
 
 # Set environment variables
@@ -6,12 +6,14 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies for Whisper and audio processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     curl \
     build-essential \
+    pkg-config \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create application directory
@@ -24,24 +26,27 @@ RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy shared module first (for auth)
+# Copy shared module first (for auth) and install as package
 COPY shared/ ./shared/
 RUN pip install -e ./shared/
 
-# Copy application code
+# Copy application code and environment file
 COPY app.py .
-COPY .env .
+COPY .env* ./
 
-# Create non-root user
+# Create non-root user and necessary directories
 RUN useradd -m -u 1001 appuser && \
-    chown -R appuser:appuser /app
+    mkdir -p /tmp && \
+    chmod 755 /tmp && \
+    chown -R appuser:appuser /app /tmp
+
 USER appuser
 
-# Health check
+# Health check - fixed port to match service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8080/healthz || exit 1
 
-# Expose port (matching June service pattern)
+# Expose port
 EXPOSE 8080
 
 # Start the application
