@@ -1,106 +1,53 @@
 # Artifact Registry Outputs
 output "artifact_registry_url" {
   description = "URL of the Artifact Registry repository"
-  value       = module.artifact_registry.repository_url
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.june.repository_id}"
 }
 
 output "artifact_registry_id" {
   description = "ID of the Artifact Registry repository"
-  value       = module.artifact_registry.repository_id
+  value       = google_artifact_registry_repository.june.repository_id
 }
 
 # Cloud Build Outputs
 output "cloud_build_service_account_email" {
   description = "Cloud Build service account email"
-  value       = module.cloud_build.service_account_email
+  value       = "${data.google_project.current.number}@cloudbuild.gserviceaccount.com"
 }
 
-output "cloud_build_docker_images" {
-  description = "Docker image URLs for each service"
-  value       = module.cloud_build.docker_images
-}
-
-output "cloud_build_commands" {
-  description = "Manual build commands for each service"
-  value       = module.cloud_build.build_commands
-}
-
-# Harbor Registry Outputs
-output "harbor_namespace" {
-  description = "Kubernetes namespace where Harbor is deployed"
-  value       = module.harbor_registry.harbor_namespace
-}
-
-output "harbor_external_url" {
-  description = "External URL for Harbor registry"
-  value       = module.harbor_registry.harbor_external_url
-}
-
-output "harbor_registry_endpoint" {
-  description = "Harbor registry endpoint for Docker commands"
-  value       = module.harbor_registry.harbor_registry_endpoint
-}
-
-output "harbor_portal_url" {
-  description = "Harbor web portal URL"
-  value       = module.harbor_registry.harbor_portal_url
-}
-
-output "harbor_kubectl_commands" {
-  description = "Useful kubectl commands for Harbor management"
-  value       = module.harbor_registry.kubectl_commands
-}
-
-output "harbor_chart_version" {
-  description = "Version of the Harbor Helm chart deployed"
-  value       = module.harbor_registry.harbor_chart_version
-}
-
-output "harbor_services_status" {
-  description = "Status of Harbor optional services"
-  value       = module.harbor_registry.harbor_services_enabled
-}
-
-output "harbor_storage_info" {
-  description = "Harbor persistent volume information"
-  value       = module.harbor_registry.harbor_persistent_volumes
-}
-
-# Docker configuration for Harbor access
-output "harbor_docker_config_json" {
-  description = "Docker configuration JSON for authenticating with Harbor (base64 encoded)"
-  value       = module.harbor_registry.docker_config_json
-  sensitive   = true
-}
-
-# Deployment Instructions
-output "deployment_instructions" {
-  description = "Instructions for accessing and using the deployed services"
+output "docker_hub_images" {
+  description = "Docker Hub image URLs"
   value = {
-    harbor_access = {
-      description = "Harbor Registry Access Instructions"
-      web_portal = {
-        url      = module.harbor_registry.harbor_portal_url
-        username = "admin"
-        note     = "Use the harbor_admin_password variable value to log in"
-      }
-      docker_registry = {
-        endpoint = module.harbor_registry.harbor_registry_endpoint
-        login_command = "docker login ${module.harbor_registry.harbor_registry_endpoint}"
-        note     = "Use 'admin' as username and your harbor_admin_password as password"
-      }
-      kubectl_access = {
-        port_forward = "kubectl port-forward -n ${module.harbor_registry.harbor_namespace} svc/harbor 8080:80"
-        local_access = "http://localhost:8080"
-      }
-    }
+    june_tts          = "ozzuworld/june-tts:latest"
+    june_orchestrator = "ozzuworld/june-orchestrator:latest"
+  }
+}
+
+output "artifact_registry_images" {
+  description = "Artifact Registry image URLs"
+  value = {
+    june_tts          = "${var.region}-docker.pkg.dev/${var.project_id}/june/june-tts:latest"
+    june_orchestrator = "${var.region}-docker.pkg.dev/${var.project_id}/june/june-orchestrator:latest"
+  }
+}
+
+# Setup Instructions
+output "setup_instructions" {
+  description = "Next steps to complete the setup"
+  value = {
+    create_secrets = [
+      "echo -n 'ozzuworld' | gcloud secrets create dockerhub-username --data-file=- --project=${var.project_id}",
+      "echo -n 'YOUR_DOCKERHUB_TOKEN' | gcloud secrets create dockerhub-token --data-file=- --project=${var.project_id}"
+    ]
     
-    next_steps = [
-      "1. Access Harbor web portal to create projects",
-      "2. Configure Docker to use Harbor as registry",
-      "3. Push container images to Harbor projects",
-      "4. Configure Kubernetes to pull images from Harbor",
-      "5. Set up image vulnerability scanning with Trivy (if enabled)"
+    grant_permissions = [
+      "gcloud projects add-iam-policy-binding ${var.project_id} --member='serviceAccount:${data.google_project.current.number}@cloudbuild.gserviceaccount.com' --role='roles/secretmanager.secretAccessor'"
+    ]
+    
+    add_cloudbuild_files = [
+      "Add cloudbuild.yaml to June/services/june-tts/",
+      "Add cloudbuild.yaml to June/services/june-orchestrator/",
+      "Push changes to master branch to trigger builds"
     ]
   }
 }
