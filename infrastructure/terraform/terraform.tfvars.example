@@ -1,0 +1,53 @@
+# June AI Platform Terraform Configuration
+# Copy this file to terraform.tfvars and customize the values
+
+# GCP Project Configuration
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+environment = "prod"
+
+# GKE Cluster Configuration
+cluster_name = "june-cluster"
+domain_name  = "your-domain.com"
+
+# GitHub Configuration
+github_owner = "ozzuworld"
+github_repo  = "June"
+build_branch = "^master$"
+
+# Harbor Registry Configuration
+# IMPORTANT: Use a strong password for Harbor admin
+harbor_admin_password = "YourSecurePassword123!"
+
+# Harbor Storage Configuration (adjust based on your needs)
+harbor_registry_storage_size = "100Gi"  # Storage for container images
+harbor_database_storage_size = "10Gi"   # Storage for Harbor database
+harbor_redis_storage_size    = "5Gi"    # Storage for Redis cache
+
+# Harbor Feature Toggles
+enable_trivy_scanning  = true   # Enable vulnerability scanning
+enable_harbor_metrics  = false  # Enable metrics collection
+create_harbor_ingress  = false  # Create external ingress (set to true for external access)
+enable_harbor_tls      = false  # Enable TLS for ingress
+
+# Optional: Static IP for Harbor ingress (GCP)
+# harbor_static_ip_name = "harbor-static-ip"
+
+# Optional: Node placement for Harbor pods
+# harbor_node_selector = {
+#   "cloud.google.com/gke-nodepool" = "default-pool"
+# }
+
+# Optional: Tolerations for Harbor pods
+# harbor_tolerations = [
+#   {
+#     key      = "harbor"
+#     operator = "Equal"
+#     value    = "true"
+#     effect   = "NoSchedule"
+#   }
+# ]
+
+# Build Configuration
+enable_github_triggers = false
+build_timeout_default  = 3600
