@@ -60,7 +60,7 @@ resource "google_project_iam_member" "cloudbuild_artifactregistry" {
 
 # Cloud Build Trigger for June-TTS
 resource "google_cloudbuild_trigger" "june_tts_build" {
-  name        = "june-tts-build-and-push"
+  name        = "june-tts-build"
   description = "Build june-tts and push to Artifact Registry + Docker Hub"
 
   github {
@@ -71,28 +71,7 @@ resource "google_cloudbuild_trigger" "june_tts_build" {
     }
   }
 
-  included_files = ["June/services/june-tts/**"]
-
-  build {
-    timeout = "7200s"
-
-    options {
-      machine_type = "E2_HIGHCPU_32"
-      disk_size_gb = 200
-      logging      = "CLOUD_LOGGING_ONLY"
-    }
-
-    step {
-      name = "gcr.io/cloud-builders/gcloud"
-      args = [
-        "builds", "submit",
-        "--config=cloudbuild.yaml",
-        "."
-      ]
-      dir     = "June/services/june-tts"
-      timeout = "7200s"
-    }
-  }
+  filename = "June/services/june-tts/cloudbuild.yaml"
 
   depends_on = [
     google_project_service.cloudbuild,
@@ -103,7 +82,7 @@ resource "google_cloudbuild_trigger" "june_tts_build" {
 
 # Cloud Build Trigger for June-Orchestrator
 resource "google_cloudbuild_trigger" "june_orchestrator_build" {
-  name        = "june-orchestrator-build-and-push"
+  name        = "june-orchestrator-build"
   description = "Build june-orchestrator and push to Artifact Registry + Docker Hub"
 
   github {
@@ -114,28 +93,7 @@ resource "google_cloudbuild_trigger" "june_orchestrator_build" {
     }
   }
 
-  included_files = ["June/services/june-orchestrator/**"]
-
-  build {
-    timeout = "3600s"
-
-    options {
-      machine_type = "E2_HIGHCPU_8"
-      disk_size_gb = 100
-      logging      = "CLOUD_LOGGING_ONLY"
-    }
-
-    step {
-      name = "gcr.io/cloud-builders/gcloud"
-      args = [
-        "builds", "submit",
-        "--config=cloudbuild.yaml",
-        "."
-      ]
-      dir     = "June/services/june-orchestrator"
-      timeout = "3600s"
-    }
-  }
+  filename = "June/services/june-orchestrator/cloudbuild.yaml"
 
   depends_on = [
     google_project_service.cloudbuild,

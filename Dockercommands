@@ -27,5 +27,15 @@ dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
 # Update the tts-service-url in june-secrets
 kubectl patch secret june-secrets \
   --type='merge' \
-  -p='{"data":{"tts-service-url":"'$(echo -n "http://142.189.180.177:40265" | base64 -w 0)'"}}' \
+  -p='{"data":{"tts-service-url":"'$(echo -n "http://142.189.180.177:41948" | base64 -w 0)'"}}' \
   -n june-services
+
+
+# Restart deployment to pick up new secret
+kubectl rollout restart deployment june-orchestrator -n june-services
+
+# Check rollout status
+kubectl rollout status deployment june-orchestrator -n june-services
+
+# Verify pods are running with new secret
+kubectl get pods -n june-services
