@@ -1,12 +1,12 @@
-name: Build June TTS
+name: Docker TTS Cloud Build
 
 on:
   push:
     branches:
-      - "master"  # Your main branch
+      - "master"
     paths:
-      - "June/services/june-tts/**"  # Only trigger when june-tts changes
-  workflow_dispatch:  # Allow manual triggers
+      - "June/services/june-tts/**"
+  workflow_dispatch:
 
 jobs:
   docker:
@@ -21,19 +21,17 @@ jobs:
           username: ${{ vars.DOCKER_USER }}
           password: ${{ secrets.DOCKER_PAT }}
           
-      - name: Set up Docker Buildx
+      - name: Set up Docker Buildx Cloud
         uses: docker/setup-buildx-action@v3
         with:
           driver: cloud
-          endpoint: "ozzuworld/tts"  # Your cloud builder
+          endpoint: "ozzuworld/tts"
           
-      - name: Build and push June TTS
+      - name: Build and push to Docker Hub
         uses: docker/build-push-action@v6
         with:
-          context: ./June/services/june-tts  # Build context
-          file: ./June/services/june-tts/Dockerfile  # Dockerfile location
+          context: ./June/services/june-tts
+          file: ./June/services/june-tts/Dockerfile
           tags: "${{ vars.DOCKER_USER }}/june-tts:latest"
-          platforms: linux/amd64  # Specify platform
-          # For pull requests, export results to the build cache.
-          # Otherwise, push to a registry.
-          outputs: ${{ github.event_name == 'pull_request' && 'type=cacheonly' || 'type=registry' }}
+          platforms: linux/amd64
+          push: true
