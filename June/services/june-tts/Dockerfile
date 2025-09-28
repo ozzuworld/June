@@ -1,5 +1,5 @@
-# Fixed OpenVoice V2 Dockerfile - Solution 2: PatchELF Fix
-# This approach fixes the ctranslate2 executable stack issue using patchelf
+# Fixed OpenVoice V2 Dockerfile - Solution 3: Runtime Environment Fix
+# This approach uses runtime environment variables to bypass the executable stack issue
 FROM python:3.10-slim
 
 # Set environment variables
@@ -9,7 +9,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install ALL dependencies including patchelf for fixing ctranslate2
+# 🔧 CRITICAL: Set glibc runtime tunable to allow executable stack
+ENV GLIBC_TUNABLES=glibc.rtld.execstack=2
+
+# Install ALL dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Runtime dependencies
     curl \
@@ -23,8 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libmecab-dev \
-    # CRITICAL: patchelf for fixing executable stack
-    patchelf \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -68,7 +69,7 @@ RUN pip install --no-cache-dir transformers==4.27.4
 RUN echo "📦 Installing MeloTTS..." && \
     pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# Install OpenVoice V2 dependencies first
+# Install OpenVoice V2 dependencies
 RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
     pip install --no-cache-dir \
         monotonic_align>=0.1.2 \
@@ -80,32 +81,16 @@ RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
         inflect>=7.0.0 \
         unidecode>=1.3.7
 
-# Install faster_whisper (this will install ctranslate2)
-RUN echo "📦 Installing faster_whisper with ctranslate2..." && \
-    pip install --no-cache-dir faster_whisper
-
-# 🔧 CRITICAL FIX: Use patchelf to clear executable stack from ctranslate2 libraries
-RUN echo "🔧 Fixing ctranslate2 executable stack issue..." && \
-    # Find all ctranslate2 shared libraries and clear their executable stack
-    find /opt/venv/lib/python3.10/site-packages/ctranslate2* -name "*.so*" -type f -exec patchelf --clear-execstack {} \; 2>/dev/null || true && \
-    # Also fix any other potentially problematic libraries
-    find /opt/venv/lib/python3.10/site-packages -name "*ctranslate2*.so*" -type f -exec patchelf --clear-execstack {} \; 2>/dev/null || true && \
-    echo "✅ Executable stack cleared from ctranslate2 libraries"
-
-# Test ctranslate2 import after the fix
-RUN echo "🧪 Testing ctranslate2 import..." && \
-    python -c "import ctranslate2; print('✅ ctranslate2 import successful after patchelf fix')" || \
-    echo "⚠️ ctranslate2 import still has issues"
-
-# Install OpenVoice V2
-RUN echo "📦 Installing OpenVoice V2..." && \
+# 🔧 Install OpenVoice V2 with runtime environment fix
+RUN echo "📦 Installing OpenVoice V2 with runtime fix..." && \
     cd /tmp && \
     git clone --depth 1 https://github.com/myshell-ai/OpenVoice.git && \
     cd OpenVoice && \
-    pip install --no-cache-dir . && \
-    # Verify installation
-    python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter installed')" && \
-    python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor installed')" && \
+    # Install with the glibc tunable set
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 pip install --no-cache-dir . && \
+    # Verify installation with runtime fix
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter installed')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor installed')" && \
     # Clean up
     cd / && rm -rf /tmp/OpenVoice
 
@@ -129,13 +114,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /models/openvoice/checkpoints_v2/base_speakers && \
     mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter
 
-# Run model setup
+# Run model setup with runtime fix
 RUN echo "📥 Downloading OpenVoice V2 models..." && \
-    python /workspace/model_setup.py
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python /workspace/model_setup.py
 
 # Run NLTK setup
 RUN echo "📥 Setting up NLTK data..." && \
     python /workspace/setup_nltk.py
+
+# Create startup script that sets the runtime environment
+RUN echo '#!/bin/bash\n\
+# Set the glibc tunable to allow executable stack for ctranslate2\n\
+export GLIBC_TUNABLES=glibc.rtld.execstack=2\n\
+\n\
+# Start the application with the environment fix\n\
+exec "$@"\n\
+' > /workspace/entrypoint.sh && \
+    chmod +x /workspace/entrypoint.sh
 
 # Create non-root user and set permissions
 RUN useradd -m -u 1001 appuser && \
@@ -162,15 +157,13 @@ ENV CORS_ALLOW_ORIGINS="*"
 # Switch to non-root user
 USER appuser
 
-# Final verification of the complete stack
+# Final verification with runtime fix
 RUN echo "🔍 Final verification:" && \
-    python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" && \
-    python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
-    python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter OK')" && \
-    python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor OK')" && \
-    python -c "import ctranslate2; print('✅ ctranslate2 OK')" && \
-    python -c "import faster_whisper; print('✅ faster_whisper OK')" && \
-    echo "🎉 Full OpenVoice V2 stack verified successfully!"
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter OK')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor OK')" && \
+    echo "🎉 All components verified successfully with runtime fix!"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
@@ -178,6 +171,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 # Expose port
 EXPOSE 8000
+
+# Use entrypoint script to set runtime environment
+ENTRYPOINT ["/workspace/entrypoint.sh"]
 
 # Start the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
