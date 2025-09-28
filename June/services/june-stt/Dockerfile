@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_NO_CACHE_DIR=1
 
-# Install system dependencies
+# Install system dependencies for Whisper and audio processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
@@ -35,14 +35,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY shared/ ./shared/
 RUN pip install -e ./shared/
 
-# Copy application code
+# Copy application code and environment file
 COPY app.py .
 COPY orchestrator_client.py .
 COPY .env .
 
 # Create non-root user for security
 RUN useradd -m -u 1001 appuser && \
-    chown -R appuser:appuser /app
+    mkdir -p /tmp && \
+    chmod 755 /tmp && \
+    chown -R appuser:appuser /app /tmp
+
 USER appuser
 
 # Set environment variables for caching
@@ -54,6 +57,7 @@ ENV TORCH_HOME=/app/cache/torch
 HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=5 \
     CMD curl -f http://localhost:8080/healthz || exit 1
 
+# Expose port
 # Expose port
 EXPOSE 8080
 

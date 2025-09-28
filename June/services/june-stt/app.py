@@ -1,326 +1,508 @@
-# June/services/june-stt/app.py - Add these monitoring endpoints for external deployment
+# June/services/june-stt/app.py
+# Enhanced STT microservice with Keycloak authentication (based on TTS pattern)
 
-import platform
-import psutil
-import socket
-from datetime import datetime, timezone
-from typing import Dict, Any
+import os
+import time
+import uuid
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+from contextlib import asynccontextmanager
 
-from orchestrator_client import get_orchestrator_client
-from shared.auth import test_auth_connectivity
+import httpx
+import whisper
+import torch
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, BackgroundTasks, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-# Add these endpoints to your FastAPI app
+# Import the shared auth (same as TTS service)
+try:
+    from shared import require_user_auth, require_service_auth, extract_user_id, extract_client_id
+    AUTH_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Keycloak authentication available")
+except ImportError:
+    AUTH_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("⚠️ Keycloak authentication not available - using fallback")
+    
+    # Fallback auth functions
+    async def require_user_auth(authorization: str = Header(None)):
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Authorization header required")
+        return {"sub": "fallback_user", "client_id": "fallback"}
+    
+    async def require_service_auth():
+        return {"client_id": "fallback", "authenticated": True}
+    
+    def extract_user_id(auth_data: Dict[str, Any]) -> str:
+        return auth_data.get("sub", "fallback_user")
+    
+    def extract_client_id(auth_data: Dict[str, Any]) -> str:
+        return auth_data.get("client_id", "fallback")
+
+# Logging setup
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Global variables
+whisper_model = None
+transcript_storage = {}  # In-memory storage for transcripts
+processing_queue = asyncio.Queue()
+cleanup_task = None
+
+# Configuration
+class Config:
+    # Orchestrator
+    ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8080")
+    ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY", "")
+    
+    # Whisper
+    WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
+    WHISPER_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Storage
+    TRANSCRIPT_RETENTION_HOURS = int(os.getenv("TRANSCRIPT_RETENTION_HOURS", "24"))
+    
+    # Service
+    PORT = int(os.getenv("PORT", "8080"))  # Fixed to match Dockerfile
+
+config = Config()
+
+# Models
+class TranscriptionResult(BaseModel):
+    transcript_id: str
+    text: str
+    language: Optional[str] = None
+    confidence: Optional[float] = None
+    processing_time_ms: int
+    timestamp: datetime
+    status: str = "completed"
+    user_id: str
+
+class TranscriptionRequest(BaseModel):
+    language: Optional[str] = None
+    task: Optional[str] = "transcribe"  # transcribe or translate
+    temperature: Optional[float] = 0.0
+    notify_orchestrator: Optional[bool] = True
+
+class TranscriptNotification(BaseModel):
+    transcript_id: str
+    user_id: str
+    text: str
+    timestamp: datetime
+    metadata: Dict[str, Any] = {}
+
+# Whisper Service
+class WhisperService:
+    def __init__(self):
+        self.model = None
+        self.device = config.WHISPER_DEVICE
+        self.is_loading = False
+        
+    async def initialize(self):
+        """Initialize Whisper model"""
+        if self.model or self.is_loading:
+            return
+            
+        self.is_loading = True
+        try:
+            logger.info(f"🔄 Loading Whisper model {config.WHISPER_MODEL} on {self.device}")
+            # Run model loading in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            self.model = await loop.run_in_executor(
+                None, 
+                lambda: whisper.load_model(config.WHISPER_MODEL, device=self.device)
+            )
+            logger.info("✅ Whisper model loaded successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to load Whisper model: {e}")
+            self.model = None
+            raise
+        finally:
+            self.is_loading = False
+    
+    async def transcribe(self, audio_file_path: str, language: Optional[str] = None, 
+                        task: str = "transcribe", temperature: float = 0.0) -> Dict[str, Any]:
+        """Transcribe audio file"""
+        if not self.model:
+            if self.is_loading:
+                raise HTTPException(status_code=503, detail="Whisper model is still loading, please try again")
+            raise HTTPException(status_code=500, detail="Whisper model not initialized")
+        
+        try:
+            start_time = time.time()
+            
+            # Configure options
+            options = {
+                "fp16": self.device == "cuda",
+                "language": language,
+                "task": task,
+                "temperature": temperature
+            }
+            
+            # Remove None values
+            options = {k: v for k, v in options.items() if v is not None}
+            
+            # Run transcription in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe(audio_file_path, **options)
+            )
+            
+            processing_time = int((time.time() - start_time) * 1000)
+            
+            return {
+                "text": result["text"].strip(),
+                "language": result.get("language"),
+                "segments": result.get("segments", []),
+                "processing_time_ms": processing_time
+            }
+        except Exception as e:
+            logger.error(f"❌ Transcription failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+
+whisper_service = WhisperService()
+
+# Orchestrator Client
+class OrchestratorClient:
+    def __init__(self):
+        self.base_url = config.ORCHESTRATOR_URL
+        self.api_key = config.ORCHESTRATOR_API_KEY
+    
+    async def notify_transcript(self, notification: TranscriptNotification):
+        """Send transcript notification to orchestrator"""
+        try:
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+                
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/transcripts",
+                    json=notification.dict(),
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"✅ Notified orchestrator about transcript {notification.transcript_id}")
+                else:
+                    logger.warning(f"⚠️ Orchestrator notification failed: {response.status_code} - {response.text}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to notify orchestrator: {e}")
+
+orchestrator_client = OrchestratorClient()
+
+# Background Tasks
+async def cleanup_old_transcripts():
+    """Clean up old transcripts from memory"""
+    try:
+        cutoff_time = datetime.utcnow() - timedelta(hours=config.TRANSCRIPT_RETENTION_HOURS)
+        
+        to_remove = []
+        for transcript_id, transcript in transcript_storage.items():
+            if transcript.timestamp < cutoff_time:
+                to_remove.append(transcript_id)
+        
+        for transcript_id in to_remove:
+            del transcript_storage[transcript_id]
+            logger.info(f"🗑️ Cleaned up old transcript: {transcript_id}")
+    except Exception as e:
+        logger.error(f"❌ Error during transcript cleanup: {e}")
+
+async def periodic_cleanup():
+    """Periodically clean up old transcripts"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            await cleanup_old_transcripts()
+        except asyncio.CancelledError:
+            logger.info("🛑 Cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"❌ Error in periodic cleanup: {e}")
+
+# Lifespan context manager for FastAPI
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle"""
+    global cleanup_task
+    
+    logger.info("🚀 Starting June STT Service v2.0.0")
+    
+    # Initialize Whisper model
+    try:
+        await whisper_service.initialize()
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Whisper service: {e}")
+        # Continue anyway - model will be loaded on first request
+    
+    # Start background cleanup task
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    
+    logger.info("✅ June STT Service started successfully")
+    
+    yield
+    
+    # Cleanup on shutdown
+    logger.info("🛑 Shutting down June STT Service")
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="June STT Service", 
+    version="2.0.0", 
+    description="Speech-to-Text microservice with Keycloak authentication",
+    lifespan=lifespan
+)
+
+# CORS middleware for frontend communication
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure with your frontend domains in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API Endpoints
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
+    
+    return {
+        "service": "June STT Service",
+        "version": "2.0.0",
+        "status": "healthy",
+        "whisper_model": config.WHISPER_MODEL,
+        "device": config.WHISPER_DEVICE,
+        "model_status": model_status,
+        "auth_available": AUTH_AVAILABLE,
+        "endpoints": {
+            "transcribe": "/v1/transcribe",
+            "transcripts": "/v1/transcripts/{transcript_id}",
+            "health": "/healthz"
+        }
+    }
 
 @app.get("/healthz")
 async def health_check():
-    """Basic health check for load balancers"""
-    model_status = "ready" if whisper_service.model else "loading"
+    """Health check for Kubernetes/Docker"""
+    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
     
     return {
-        "status": "healthy" if whisper_service.model else "starting",
+        "status": "healthy",
         "service": "june-stt",
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "model_status": model_status
+        "whisper_model_status": model_status,
+        "auth_status": "keycloak" if AUTH_AVAILABLE else "fallback",
+        "transcripts_in_memory": len(transcript_storage)
     }
 
-@app.get("/v1/status")
-async def get_detailed_status():
-    """Detailed service status for orchestrator and monitoring"""
-    model_status = "ready" if whisper_service.model else "loading"
+@app.post("/v1/transcribe", response_model=TranscriptionResult)
+async def transcribe_audio(
+    background_tasks: BackgroundTasks,
+    audio_file: UploadFile = File(...),
+    language: Optional[str] = None,
+    task: Optional[str] = "transcribe",
+    temperature: Optional[float] = 0.0,
+    notify_orchestrator: Optional[bool] = True,
+    auth_data: dict = Depends(require_user_auth)
+):
+    """
+    Transcribe uploaded audio file
     
-    # Get system information
+    - **audio_file**: Audio file (wav, mp3, m4a, etc.)
+    - **language**: Source language (optional, auto-detected if not provided)  
+    - **task**: 'transcribe' or 'translate' (to English)
+    - **temperature**: Sampling temperature (0.0 = deterministic)
+    - **notify_orchestrator**: Whether to notify orchestrator service
+    """
+    start_time = time.time()
+    user_id = extract_user_id(auth_data)
+    
+    # Ensure Whisper model is loaded
+    if not whisper_service.model and not whisper_service.is_loading:
+        logger.info("🔄 Loading Whisper model on demand...")
+        await whisper_service.initialize()
+    
     try:
-        memory_info = psutil.virtual_memory()
-        disk_info = psutil.disk_usage('/')
-        cpu_percent = psutil.cpu_percent(interval=1)
-    except:
-        memory_info = disk_info = None
-        cpu_percent = 0
-    
-    status = {
-        "service": {
-            "name": "june-stt",
-            "version": "2.0.0",
-            "status": "healthy" if whisper_service.model else "starting",
-            "deployment": "external",
-            "started_at": startup_time.isoformat() if 'startup_time' in globals() else None,
-            "uptime_seconds": (datetime.utcnow() - startup_time).total_seconds() if 'startup_time' in globals() else 0
-        },
+        # Validate file type
+        if not audio_file.content_type or not audio_file.content_type.startswith(('audio/', 'video/')):
+            raise HTTPException(status_code=400, detail="File must be audio or video format")
         
-        "features": {
-            "transcription": whisper_service.model is not None,
-            "real_time_streaming": False,  # Add if you implement this
-            "multi_language": True,
-            "translation": True,
-            "speaker_diarization": False,  # Add if you implement this
-            "confidence_scores": True,
-            "timestamps": True
-        },
+        # Check file size (limit to 100MB)
+        if audio_file.size and audio_file.size > 100 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Maximum size is 100MB.")
         
-        "model": {
-            "name": config.WHISPER_MODEL,
-            "device": config.WHISPER_DEVICE,
-            "status": model_status,
-            "loaded_at": whisper_service.model_load_time.isoformat() if hasattr(whisper_service, 'model_load_time') else None
-        },
+        # Generate unique transcript ID
+        transcript_id = str(uuid.uuid4())
         
-        "endpoints": {
-            "transcribe": "/v1/transcribe",
-            "transcript": "/v1/transcripts/{id}",
-            "status": "/v1/status",
-            "health": "/healthz",
-            "capabilities": "/v1/capabilities",
-            "connectivity": "/v1/connectivity"
-        },
+        # Create temp directory if it doesn't exist
+        os.makedirs("/tmp", exist_ok=True)
         
-        "configuration": {
-            "max_file_size_mb": int(os.getenv("MAX_FILE_SIZE_MB", "25")),
-            "max_duration_minutes": int(os.getenv("MAX_DURATION_MINUTES", "30")),
-            "max_concurrent": config.MAX_CONCURRENT_TRANSCRIPTIONS if hasattr(config, 'MAX_CONCURRENT_TRANSCRIPTIONS') else 3,
-            "retention_hours": config.TRANSCRIPT_RETENTION_HOURS,
-            "external_url": os.getenv("EXTERNAL_STT_URL", "not_configured")
-        },
-        
-        "authentication": {
-            "provider": "keycloak",
-            "realm": os.getenv("KEYCLOAK_REALM", "allsafe"),
-            "client_id": os.getenv("KEYCLOAK_CLIENT_ID", "june-stt"),
-            "keycloak_url": os.getenv("KEYCLOAK_URL", "not_configured")
-        }
-    }
-    
-    # Add system resources if available
-    if memory_info and disk_info:
-        status["system"] = {
-            "platform": platform.platform(),
-            "python_version": platform.python_version(),
-            "cpu_percent": cpu_percent,
-            "memory": {
-                "total_gb": round(memory_info.total / (1024**3), 2),
-                "available_gb": round(memory_info.available / (1024**3), 2),
-                "used_percent": memory_info.percent
-            },
-            "disk": {
-                "total_gb": round(disk_info.total / (1024**3), 2),
-                "free_gb": round(disk_info.free / (1024**3), 2),
-                "used_percent": round((disk_info.used / disk_info.total) * 100, 1)
-            }
-        }
-    
-    return status
-
-@app.get("/v1/capabilities")
-async def get_capabilities():
-    """Get STT service capabilities for service discovery"""
-    return {
-        "service_type": "speech_to_text",
-        "api_version": "v1",
-        "supported_formats": ["wav", "mp3", "m4a", "flac", "ogg", "webm"],
-        "supported_languages": [
-            "en", "es", "fr", "de", "it", "pt", "ru", "zh", "ja", "ko", 
-            "ar", "hi", "tr", "pl", "nl", "sv", "da", "no", "fi"
-        ],
-        "max_file_size_mb": int(os.getenv("MAX_FILE_SIZE_MB", "25")),
-        "max_duration_minutes": int(os.getenv("MAX_DURATION_MINUTES", "30")),
-        "features": {
-            "language_detection": True,
-            "automatic_language_detection": True,
-            "translation_to_english": True,
-            "confidence_scores": True,
-            "word_timestamps": True,
-            "speaker_diarization": False,
-            "real_time_streaming": False,
-            "batch_processing": True,
-            "webhook_notifications": True
-        },
-        "authentication": {
-            "required": True,
-            "methods": ["bearer_token"],
-            "scopes": ["stt:transcribe", "stt:read"]
-        },
-        "rate_limits": {
-            "requests_per_minute": int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "100")),
-            "concurrent_requests": int(os.getenv("MAX_CONCURRENT_TRANSCRIPTIONS", "3"))
-        }
-    }
-
-@app.get("/v1/connectivity")
-async def test_connectivity():
-    """Test connectivity to external services"""
-    results = {}
-    
-    # Test Keycloak connectivity
-    auth_result = await test_auth_connectivity()
-    results["keycloak"] = auth_result
-    
-    # Test orchestrator connectivity
-    orchestrator_client = get_orchestrator_client()
-    orchestrator_result = await orchestrator_client.test_connectivity()
-    results["orchestrator"] = orchestrator_result
-    
-    # Test external URL accessibility (if configured)
-    external_url = os.getenv("EXTERNAL_STT_URL")
-    if external_url:
+        # Save uploaded file temporarily
+        file_path = f"/tmp/june_stt_{transcript_id}_{audio_file.filename}"
         try:
-            # Parse URL to get host and port for testing
-            from urllib.parse import urlparse
-            parsed = urlparse(external_url)
-            host = parsed.hostname
-            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            with open(file_path, "wb") as f:
+                content = await audio_file.read()
+                f.write(content)
             
-            # Test if our external URL is reachable (basic connectivity test)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            result = sock.connect_ex((host, port))
-            sock.close()
+            logger.info(f"🎵 Starting transcription for {audio_file.filename} ({len(content)} bytes)")
             
-            results["external_url"] = {
-                "url": external_url,
-                "reachable": result == 0,
-                "host": host,
-                "port": port
-            }
-        except Exception as e:
-            results["external_url"] = {
-                "url": external_url,
-                "reachable": False,
-                "error": str(e)
-            }
-    
-    # Overall connectivity status
-    overall_status = "healthy"
-    if not auth_result.get("auth_service") == "healthy":
-        overall_status = "degraded"
-    if not orchestrator_result.get("reachable", False):
-        overall_status = "degraded"
-    
-    return {
-        "overall_status": overall_status,
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": results
-    }
-
-# Add startup tracking
-startup_time = datetime.utcnow()
-
-@app.on_event("startup")
-async def startup_event():
-    """Enhanced startup event with external service verification"""
-    global startup_time
-    startup_time = datetime.utcnow()
-    
-    logger.info("🚀 Starting June STT Service v2.0.0 (External Deployment)")
-    
-    # Initialize Whisper model
-    await whisper_service.initialize()
-    
-    # Test external service connectivity
-    logger.info("🔗 Testing external service connectivity...")
-    
-    # Test Keycloak
-    try:
-        auth_result = await test_auth_connectivity()
-        if auth_result.get("auth_service") == "healthy":
-            logger.info("✅ Keycloak connectivity: OK")
-        else:
-            logger.warning(f"⚠️ Keycloak connectivity: {auth_result}")
+            # Transcribe audio
+            result = await whisper_service.transcribe(
+                file_path, 
+                language=language, 
+                task=task, 
+                temperature=temperature
+            )
+            
+            # Create transcript result
+            transcript_result = TranscriptionResult(
+                transcript_id=transcript_id,
+                text=result["text"],
+                language=result.get("language"),
+                processing_time_ms=result["processing_time_ms"],
+                timestamp=datetime.utcnow(),
+                status="completed",
+                user_id=user_id
+            )
+            
+            # Store transcript in memory
+            transcript_storage[transcript_id] = transcript_result
+            
+            # Notify orchestrator in background if requested
+            if notify_orchestrator:
+                notification = TranscriptNotification(
+                    transcript_id=transcript_id,
+                    user_id=user_id,
+                    text=result["text"],
+                    timestamp=transcript_result.timestamp,
+                    metadata={
+                        "language": result.get("language"),
+                        "processing_time_ms": result["processing_time_ms"],
+                        "task": task,
+                        "filename": audio_file.filename
+                    }
+                )
+                background_tasks.add_task(orchestrator_client.notify_transcript, notification)
+            
+            logger.info(f"✅ Transcription completed: {transcript_id} for user {user_id} ({result['processing_time_ms']}ms)")
+            
+            return transcript_result
+            
+        finally:
+            # Clean up temporary file
+            try:
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to cleanup temp file {file_path}: {e}")
+                
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Keycloak connectivity test failed: {e}")
-    
-    # Test Orchestrator
-    try:
-        orchestrator_client = get_orchestrator_client()
-        orch_result = await orchestrator_client.test_connectivity()
-        if orch_result.get("reachable", False):
-            logger.info("✅ Orchestrator connectivity: OK")
-        else:
-            logger.warning(f"⚠️ Orchestrator connectivity: {orch_result}")
-    except Exception as e:
-        logger.error(f"❌ Orchestrator connectivity test failed: {e}")
-    
-    # Start background cleanup task
-    asyncio.create_task(periodic_cleanup())
-    
-    # Log configuration
-    external_url = os.getenv("EXTERNAL_STT_URL", "not_configured")
-    logger.info(f"📡 External STT URL: {external_url}")
-    logger.info(f"🔐 Keycloak realm: {os.getenv('KEYCLOAK_REALM', 'not_configured')}")
-    logger.info(f"🎯 Orchestrator URL: {os.getenv('ORCHESTRATOR_URL', 'not_configured')}")
-    
-    logger.info("✅ June STT Service startup complete")
+        logger.error(f"❌ Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
 
-# Add metrics endpoint (optional, for monitoring)
-@app.get("/metrics")
-async def get_metrics():
-    """Prometheus-style metrics for monitoring"""
-    if not os.getenv("METRICS_ENABLED", "true").lower() == "true":
-        raise HTTPException(status_code=404, detail="Metrics disabled")
+@app.get("/v1/transcripts/{transcript_id}", response_model=TranscriptionResult)
+async def get_transcript(
+    transcript_id: str,
+    auth_data: dict = Depends(require_user_auth)
+):
+    """Get transcript by ID"""
+    if transcript_id not in transcript_storage:
+        raise HTTPException(status_code=404, detail="Transcript not found")
     
-    # Basic metrics
-    active_transcriptions = len([t for t in transcript_storage.values() 
-                                if t.status == "processing"])
-    total_transcriptions = len(transcript_storage)
+    transcript = transcript_storage[transcript_id]
+    user_id = extract_user_id(auth_data)
     
-    # System metrics
-    try:
-        memory_info = psutil.virtual_memory()
-        cpu_percent = psutil.cpu_percent()
-        disk_info = psutil.disk_usage('/')
-    except:
-        memory_info = disk_info = None
-        cpu_percent = 0
+    # Check if user owns this transcript
+    if transcript.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     
-    uptime = (datetime.utcnow() - startup_time).total_seconds()
+    return transcript
+
+@app.get("/v1/transcripts")
+async def list_transcripts(
+    limit: int = 50,
+    auth_data: dict = Depends(require_user_auth)
+):
+    """List recent transcripts for user"""
+    user_id = extract_user_id(auth_data)
     
-    metrics = [
-        f"# HELP stt_service_uptime_seconds Service uptime in seconds",
-        f"# TYPE stt_service_uptime_seconds counter",
-        f"stt_service_uptime_seconds {uptime}",
-        "",
-        f"# HELP stt_transcriptions_total Total number of transcriptions",
-        f"# TYPE stt_transcriptions_total counter", 
-        f"stt_transcriptions_total {total_transcriptions}",
-        "",
-        f"# HELP stt_transcriptions_active Currently active transcriptions",
-        f"# TYPE stt_transcriptions_active gauge",
-        f"stt_transcriptions_active {active_transcriptions}",
-        "",
-        f"# HELP stt_model_loaded Whether the Whisper model is loaded",
-        f"# TYPE stt_model_loaded gauge",
-        f"stt_model_loaded {1 if whisper_service.model else 0}",
+    # Filter transcripts by user
+    user_transcripts = [
+        transcript for transcript in transcript_storage.values()
+        if transcript.user_id == user_id
     ]
     
-    if memory_info:
-        metrics.extend([
-            "",
-            f"# HELP stt_memory_usage_percent Memory usage percentage",
-            f"# TYPE stt_memory_usage_percent gauge",
-            f"stt_memory_usage_percent {memory_info.percent}",
-            "",
-            f"# HELP stt_cpu_usage_percent CPU usage percentage",
-            f"# TYPE stt_cpu_usage_percent gauge", 
-            f"stt_cpu_usage_percent {cpu_percent}",
-        ])
+    user_transcripts.sort(key=lambda x: x.timestamp, reverse=True)
     
-    if disk_info:
-        disk_usage_percent = (disk_info.used / disk_info.total) * 100
-        metrics.extend([
-            "",
-            f"# HELP stt_disk_usage_percent Disk usage percentage",
-            f"# TYPE stt_disk_usage_percent gauge",
-            f"stt_disk_usage_percent {disk_usage_percent:.1f}",
-        ])
+    return {
+        "transcripts": user_transcripts[:limit],
+        "total": len(user_transcripts)
+    }
+
+@app.delete("/v1/transcripts/{transcript_id}")
+async def delete_transcript(
+    transcript_id: str,
+    auth_data: dict = Depends(require_user_auth)
+):
+    """Delete transcript by ID"""
+    if transcript_id not in transcript_storage:
+        raise HTTPException(status_code=404, detail="Transcript not found")
     
-    return "\n".join(metrics)
+    transcript = transcript_storage[transcript_id]
+    user_id = extract_user_id(auth_data)
+    
+    # Check if user owns this transcript
+    if transcript.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    del transcript_storage[transcript_id]
+    return {"message": "Transcript deleted successfully"}
 
-# Add CORS middleware for external access
-from fastapi.middleware.cors import CORSMiddleware
+@app.get("/v1/stats")
+async def get_stats(auth_data: dict = Depends(require_user_auth)):
+    """Get service statistics"""
+    user_id = extract_user_id(auth_data)
+    user_transcripts = [t for t in transcript_storage.values() if t.user_id == user_id]
+    
+    return {
+        "user_transcripts": len(user_transcripts),
+        "total_transcripts": len(transcript_storage),
+        "whisper_model": config.WHISPER_MODEL,
+        "device": config.WHISPER_DEVICE,
+        "auth_provider": "keycloak" if AUTH_AVAILABLE else "fallback",
+        "model_loaded": whisper_service.model is not None,
+        "model_loading": whisper_service.is_loading
+    }
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=os.getenv("CORS_ALLOW_METHODS", "GET,POST,PUT,DELETE,OPTIONS").split(","),
-    allow_headers=os.getenv("CORS_ALLOW_HEADERS", "*").split(",") if os.getenv("CORS_ALLOW_HEADERS") != "*" else ["*"],
-)
+# Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return {"error": exc.detail, "status_code": exc.status_code}
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"❌ Unhandled exception: {exc}")
+    return {"error": "Internal server error", "status_code": 500}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=config.PORT, log_level="info")
