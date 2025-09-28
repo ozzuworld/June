@@ -27,7 +27,7 @@ dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
 # Update the tts-service-url in june-secrets
 kubectl patch secret june-secrets \
   --type='merge' \
-  -p='{"data":{"tts-service-url":"'$(echo -n "http://142.189.180.177:41948" | base64 -w 0)'"}}' \
+  -p='{"data":{"tts-service-url":"'$(echo -n "http://142.189.180.177:42243" | base64 -w 0)'"}}' \
   -n june-services
 
 
