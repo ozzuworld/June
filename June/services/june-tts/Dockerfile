@@ -1,4 +1,4 @@
-# Complete June TTS Dockerfile with GPU + OpenVoice V2
+# Complete June TTS Dockerfile - FIXED
 FROM python:3.10-slim as builder
 
 # Set environment variables
@@ -31,7 +31,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install wheel
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
-# ✅ FIXED: Install GPU PyTorch for faster processing
+# Install GPU PyTorch for faster processing
 RUN echo "🚀 Installing PyTorch with CUDA support for GPU acceleration" && \
     pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
@@ -56,7 +56,7 @@ RUN pip install --no-cache-dir transformers==4.27.4
 # Install MeloTTS
 RUN pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# ✅ FIXED: Properly install OpenVoice V2 with all dependencies
+# Install OpenVoice V2 with all dependencies
 RUN echo "📦 Installing OpenVoice V2..." && \
     git clone --depth 1 https://github.com/myshell-ai/OpenVoice.git /tmp/OpenVoice && \
     cd /tmp/OpenVoice && \
@@ -103,130 +103,21 @@ WORKDIR /workspace
 # Copy application files
 COPY requirements.txt /workspace/
 COPY setup_nltk.py /workspace/
+COPY model_setup.py /workspace/
 COPY shared/ /workspace/shared/
 COPY app/ /workspace/app/
 
 # Install any additional requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ✅ ENHANCED: Download OpenVoice V2 models with better error handling
+# Create model directories
 RUN mkdir -p /models/openvoice/checkpoints_v2/base_speakers && \
-    mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter && \
-    echo "📥 Downloading OpenVoice V2 models..." && \
-    python -c "
-import os
-import shutil
-from pathlib import Path
-from huggingface_hub import snapshot_download
+    mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter
 
-try:
-    MODEL_ID = 'myshell-ai/OpenVoiceV2'
-    ROOT = Path('/models/openvoice/checkpoints_v2')
-    BASE = ROOT / 'base_speakers'
-    CONV = ROOT / 'tone_color_converter'
-    
-    print(f'📥 Downloading from {MODEL_ID}...')
-    
-    # Download with proper patterns for OpenVoice V2
-    patterns = [
-        'base_speakers/**',
-        'tone_color_converter/**',
-        'converter/**',
-        'checkpoints_v2/**',
-        'config.json',
-        '*.pt',
-        '*.pth',
-        '*.json',
-    ]
-    
-    snapshot_download(
-        repo_id=MODEL_ID,
-        local_dir=str(ROOT),
-        local_dir_use_symlinks=False,
-        allow_patterns=patterns,
-        resume_download=True,
-        timeout=300
-    )
-    print('✅ Download completed')
-    
-    # Organize downloaded files
-    for alt_dir in ['converter', 'checkpoints_v2']:
-        alt_path = ROOT / alt_dir
-        if alt_path.exists():
-            print(f'🔄 Moving files from {alt_dir}...')
-            for item in alt_path.rglob('*'):
-                if item.is_file():
-                    rel_path = item.relative_to(alt_path)
-                    if 'base_speakers' in str(rel_path):
-                        dest = BASE / rel_path.name
-                    else:
-                        dest = CONV / rel_path.name
-                    
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if not dest.exists():
-                        shutil.copy2(item, dest)
-                        print(f'✅ Copied {rel_path.name}')
-            
-            shutil.rmtree(alt_path, ignore_errors=True)
-    
-    # Move root level files
-    for pattern in ['*.pt', '*.pth', '*.json']:
-        for item in ROOT.glob(pattern):
-            if item.name == 'config.json':
-                dest = CONV / 'config.json'
-            else:
-                dest = CONV / item.name
-            
-            if not dest.exists():
-                shutil.move(str(item), str(dest))
-                print(f'✅ Moved {item.name}')
-    
-    # Verify critical files exist
-    config_file = CONV / 'config.json'
-    checkpoint_files = list(CONV.glob('*.pt')) + list(CONV.glob('*.pth'))
-    
-    if not config_file.exists():
-        print('⚠️ Creating minimal config.json')
-        import json
-        config = {
-            'model': {
-                'type': 'ToneColorConverter',
-                'hidden_channels': 192,
-                'filter_channels': 768,
-                'n_heads': 2,
-                'n_layers': 6,
-                'kernel_size': 3,
-                'p_dropout': 0.1,
-                'resblock': '1',
-                'resblock_kernel_sizes': [3, 7, 11],
-                'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-                'upsample_rates': [8, 8, 2, 2],
-                'upsample_initial_channel': 512,
-                'upsample_kernel_sizes': [16, 16, 4, 4],
-                'gin_channels': 256
-            }
-        }
-        with open(config_file, 'w') as f:
-            json.dump(config, f, indent=2)
-    
-    if not checkpoint_files:
-        print('⚠️ No checkpoint files found - voice cloning may not work')
-    
-    print(f'🎉 Setup complete! Found {len(checkpoint_files)} checkpoint files')
-    
-    # List final structure
-    print('📁 Final structure:')
-    for item in sorted(CONV.rglob('*')):
-        if item.is_file():
-            size_mb = item.stat().st_size / (1024 * 1024)
-            print(f'  {item.name} ({size_mb:.1f}MB)')
+# FIXED: Use the proper model_setup.py script instead of inline Python
+RUN python /workspace/model_setup.py
 
-except Exception as e:
-    print(f'❌ Model download failed: {e}')
-    print('⚠️ Continuing without OpenVoice models - basic TTS will still work')
-"
-
-# Run NLTK setup
+# FIXED: Run NLTK setup using the existing script
 RUN python /workspace/setup_nltk.py
 
 # Create non-root user and set up permissions with cache directories
@@ -253,7 +144,7 @@ ENV MELO_SPEAKER_ID=0
 ENV CORS_ALLOW_ORIGINS="*"
 ENV NLTK_DATA=/home/appuser/nltk_data
 
-# ✅ GPU verification at runtime
+# GPU verification at runtime
 RUN echo "🔍 Runtime verification:" && \
     python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA devices: {torch.cuda.device_count()}')" && \
     python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
