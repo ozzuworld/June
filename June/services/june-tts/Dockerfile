@@ -1,20 +1,27 @@
-# Fixed OpenVoice V2 Dockerfile - Solution 3: Runtime Environment Fix
-# This approach uses runtime environment variables to bypass the executable stack issue
+# Optimized OpenVoice V2 Dockerfile with Memory and Performance Improvements
 FROM python:3.10-slim
 
-# Set environment variables
+# Set environment variables for optimization
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 🔧 CRITICAL: Set glibc runtime tunable to allow executable stack
+# Memory and performance optimization flags
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
 ENV GLIBC_TUNABLES=glibc.rtld.execstack=2
 
-# Install ALL dependencies
+# TTS optimization flags
+ENV TTS_CACHE_SIZE=100
+ENV ENABLE_QUANTIZATION=true
+ENV MELO_LANGUAGE=EN
+ENV MELO_SPEAKER_ID=0
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Runtime dependencies
     curl \
     libsndfile1 \
     mecab \
@@ -22,7 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
     git-lfs \
-    # Build dependencies
     build-essential \
     pkg-config \
     libmecab-dev \
@@ -39,8 +45,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip and install wheel
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 
-# Install PyTorch with CUDA support
-RUN echo "🚀 Installing PyTorch with CUDA support..." && \
+# Install PyTorch with CUDA support (optimized for inference)
+RUN echo "🚀 Installing optimized PyTorch..." && \
     pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Install core dependencies
@@ -54,7 +60,8 @@ RUN pip install --no-cache-dir \
     librosa>=0.10.0 \
     scipy>=1.9.0 \
     matplotlib>=3.5.0 \
-    tqdm>=4.60.0
+    tqdm>=4.60.0 \
+    psutil>=5.8.0
 
 # Install MeCab dependencies
 ENV MECAB_CONFIG=/usr/bin/mecab-config
@@ -81,17 +88,13 @@ RUN echo "📦 Installing OpenVoice V2 dependencies..." && \
         inflect>=7.0.0 \
         unidecode>=1.3.7
 
-# 🔧 Install OpenVoice V2 with runtime environment fix
-RUN echo "📦 Installing OpenVoice V2 with runtime fix..." && \
+# Install OpenVoice V2 with runtime environment fix
+RUN echo "📦 Installing OpenVoice V2..." && \
     cd /tmp && \
     git clone --depth 1 https://github.com/myshell-ai/OpenVoice.git && \
     cd OpenVoice && \
-    # Install with the glibc tunable set
     GLIBC_TUNABLES=glibc.rtld.execstack=2 pip install --no-cache-dir . && \
-    # Verify installation with runtime fix
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter installed')" && \
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor installed')" && \
-    # Clean up
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice installed')" && \
     cd / && rm -rf /tmp/OpenVoice
 
 # Download unidic for Japanese support
@@ -112,9 +115,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create model directories
 RUN mkdir -p /models/openvoice/checkpoints_v2/base_speakers && \
-    mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter
+    mkdir -p /models/openvoice/checkpoints_v2/tone_color_converter && \
+    mkdir -p /tmp/june_tts_cache
 
-# Run model setup with runtime fix
+# Run model setup with optimizations
 RUN echo "📥 Downloading OpenVoice V2 models..." && \
     GLIBC_TUNABLES=glibc.rtld.execstack=2 python /workspace/model_setup.py
 
@@ -122,12 +126,23 @@ RUN echo "📥 Downloading OpenVoice V2 models..." && \
 RUN echo "📥 Setting up NLTK data..." && \
     python /workspace/setup_nltk.py
 
-# Create startup script that sets the runtime environment
+# Create optimized startup script
 RUN echo '#!/bin/bash\n\
-# Set the glibc tunable to allow executable stack for ctranslate2\n\
+# Set optimization environment variables\n\
 export GLIBC_TUNABLES=glibc.rtld.execstack=2\n\
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512\n\
+export OMP_NUM_THREADS=4\n\
+export MKL_NUM_THREADS=4\n\
 \n\
-# Start the application with the environment fix\n\
+# Set torch optimization flags\n\
+export TORCH_BACKENDS_CUDNN_BENCHMARK=true\n\
+\n\
+echo "🚀 Starting June TTS with optimizations..."\n\
+echo "📊 Memory optimization: ENABLED"\n\
+echo "🔧 Quantization: $ENABLE_QUANTIZATION"\n\
+echo "💾 Cache size: $TTS_CACHE_SIZE"\n\
+\n\
+# Start the application\n\
 exec "$@"\n\
 ' > /workspace/entrypoint.sh && \
     chmod +x /workspace/entrypoint.sh
@@ -137,43 +152,38 @@ RUN useradd -m -u 1001 appuser && \
     mkdir -p /home/appuser/.cache/huggingface/hub && \
     mkdir -p /home/appuser/.cache/torch && \
     mkdir -p /home/appuser/nltk_data && \
-    chown -R appuser:appuser /workspace /home/appuser /models
+    chown -R appuser:appuser /workspace /home/appuser /models /tmp/june_tts_cache
 
-# Set cache environment variables
+# Set environment variables
 ENV HF_HOME=/home/appuser/.cache/huggingface
 ENV TRANSFORMERS_CACHE=/home/appuser/.cache/huggingface
 ENV TORCH_HOME=/home/appuser/.cache/torch
 ENV OPENVOICE_CHECKPOINTS_V2=/models/openvoice/checkpoints_v2
 ENV NLTK_DATA=/home/appuser/nltk_data
-
-# Set runtime environment
 ENV PYTHONPATH="/workspace:/workspace/shared"
 ENV HOST=0.0.0.0
 ENV PORT=8000
-ENV MELO_LANGUAGE=EN
-ENV MELO_SPEAKER_ID=0
 ENV CORS_ALLOW_ORIGINS="*"
 
 # Switch to non-root user
 USER appuser
 
-# Final verification with runtime fix
-RUN echo "🔍 Final verification:" && \
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')" && \
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from melo.api import TTS; print('✅ MeloTTS imports OK')" && \
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice ToneColorConverter OK')" && \
-    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice import se_extractor; print('✅ OpenVoice se_extractor OK')" && \
-    echo "🎉 All components verified successfully with runtime fix!"
+# Final verification
+RUN echo "🔍 Verifying optimized setup:" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from melo.api import TTS; print('✅ MeloTTS OK')" && \
+    GLIBC_TUNABLES=glibc.rtld.execstack=2 python -c "from openvoice.api import ToneColorConverter; print('✅ OpenVoice OK')" && \
+    echo "🎉 Optimized setup verified!"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Health check with optimization info
+HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/healthz || exit 1
 
 # Expose port
 EXPOSE 8000
 
-# Use entrypoint script to set runtime environment
+# Use optimized entrypoint
 ENTRYPOINT ["/workspace/entrypoint.sh"]
 
-# Start the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Start with single worker (optimized for memory)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--access-log"]

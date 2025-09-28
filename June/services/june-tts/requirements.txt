@@ -1,15 +1,15 @@
-# June/services/june-tts/requirements.txt - Fixed requirements
+# June TTS Optimized Requirements
 
 # Core FastAPI and server
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
 python-multipart==0.0.6
 
 # Pydantic and validation
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Audio processing and ML
+# Audio processing and ML (optimized versions)
 torch>=2.3.0
 torchaudio>=2.3.0
 librosa==0.10.1
@@ -17,7 +17,10 @@ soundfile==0.12.1
 numpy>=1.24.0
 scipy>=1.11.0
 
-# OpenVoice specific dependencies (optional)
+# System monitoring
+psutil>=5.8.0
+
+# OpenVoice specific dependencies
 huggingface_hub>=0.17.0
 
 # MeloTTS and text processing
@@ -28,7 +31,7 @@ inflect>=7.0.0
 unidecode>=1.3.7
 eng_to_ipa>=0.0.2
 
-# Japanese text processing (optional)
+# Japanese text processing
 fugashi>=1.3.0
 unidic-lite>=1.0.8
 
