@@ -10,15 +10,19 @@ output "artifact_registry_id" {
 }
 
 # Cloud Build Outputs
-output "cloud_build_triggers" {
-  description = "Information about created Cloud Build triggers"
-  value       = module.cloud_build.triggers
+output "cloud_build_service_account_email" {
+  description = "Cloud Build service account email"
+  value       = module.cloud_build.service_account_email
 }
 
-output "cloud_build_service_accounts" {
-  description = "Service accounts created for Cloud Build"
-  value       = module.cloud_build.service_accounts
-  sensitive   = true
+output "cloud_build_docker_images" {
+  description = "Docker image URLs for each service"
+  value       = module.cloud_build.docker_images
+}
+
+output "cloud_build_commands" {
+  description = "Manual build commands for each service"
+  value       = module.cloud_build.build_commands
 }
 
 # Harbor Registry Outputs
