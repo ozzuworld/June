@@ -5,3 +5,19 @@ docker build -t june-tts:latest .
 
 
 docker push ozzuworld/june-tts:latest
+
+
+Never
+
+Access permissions
+
+Read, Write, Delete
+
+To use the access token from your Docker CLI client:
+
+1. Run
+
+docker login -u ozzuworld
+2. At the password prompt, enter the personal access token.
+
+dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
