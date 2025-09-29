@@ -1,0 +1,76 @@
+name: CI/CD Pipeline
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+  KUBE_NAMESPACE: june
+  IMAGE_TAG: latest
+
+permissions:
+  contents: read
+
+jobs:
+  # 1. Build & Push Images in parallel
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [june-stt, june-tts, june-dark, june-idp, june-web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ${{ matrix.service }}
+        run: |
+          docker build -t $REGISTRY/${{ matrix.service }}:$IMAGE_TAG \
+            June/services/${{ matrix.service }}
+          docker push $REGISTRY/${{ matrix.service }}:$IMAGE_TAG
+
+  # 2. Deploy to Kubernetes (runs after all builds succeed)
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode Kubeconfig
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > kubeconfig
+          chmod 600 kubeconfig
+
+      - name: Apply Kubernetes Manifests
+        env:
+          KUBECONFIG: kubeconfig
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/secrets.yaml
+          kubectl apply -f k8s/june-stt-deployment.yaml
+          kubectl apply -f k8s/june-tts-deployment.yaml
+          kubectl apply -f k8s/june-dark-deployment.yaml
+          kubectl apply -f k8s/june-idp-deployment.yaml
+          kubectl apply -f k8s/june-web-deployment.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+  # 3. Smoke Tests (verify rollout)
+  smoke-test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode Kubeconfig
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > kubeconfig
+          chmod 600 kubeconfig
+
+      - name: Wait for Deployments
+        env:
+          KUBECONFIG: kubeconfig
+        run: |
+          for svc in june-stt june-tts june-dark june-idp june-web; do
+            kubectl rollout status deployment/$svc -n june --timeout=2m
+          done
