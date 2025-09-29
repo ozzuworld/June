@@ -37,14 +37,32 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
+      # ✅ FIXED: Proper kubeconfig setup
       - name: 🔐 Setup Kubeconfig
         run: |
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > kubeconfig
-          chmod 600 kubeconfig
-          echo "KUBECONFIG=$(pwd)/kubeconfig" >> $GITHUB_ENV
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+          
+          # Verify the config file was created properly
+          echo "📋 Kubeconfig file created:"
+          ls -la ~/.kube/config
+          
+          # Set KUBECONFIG environment variable for all subsequent steps
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+      # ✅ ADDED: Verify kubeconfig content
+      - name: 🔍 Verify kubeconfig
+        run: |
+          echo "📋 Current kubeconfig contexts:"
+          kubectl config get-contexts
+          
+          echo "📋 Current context:"
+          kubectl config current-context
 
       - name: 🔍 Verify Kubernetes connection
         run: |
+          echo "🔍 Testing connection to cluster..."
           kubectl cluster-info
           kubectl get nodes
 
@@ -135,34 +153,4 @@ jobs:
             service=$(echo "$service" | xargs) # trim whitespace
             echo "⏳ Waiting for $service to be ready..."
             if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s
-              echo "✅ $service is ready"
-            else
-              echo "⚠️ Deployment $service not found, skipping..."
-            fi
-          done
-
-      - name: 📊 Deployment status
-        run: |
-          echo "📊 Final deployment status:"
-          kubectl get deployments -n $KUBE_NAMESPACE -o wide
-          echo ""
-          echo "🔗 Services:"
-          kubectl get services -n $KUBE_NAMESPACE
-          echo ""
-          echo "🌐 Ingress:"
-          kubectl get ingress -n $KUBE_NAMESPACE
-
-      - name: 🏥 Health check
-        run: |
-          echo "🏥 Running basic health checks..."
-          kubectl get pods -n $KUBE_NAMESPACE
-          
-          # Check for any pods that are not running
-          NOT_RUNNING=$(kubectl get pods -n $KUBE_NAMESPACE --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
-          if [ "$NOT_RUNNING" -gt 0 ]; then
-            echo "⚠️ Warning: Some pods are not in Running state:"
-            kubectl get pods -n $KUBE_NAMESPACE --field-selector=status.phase!=Running
-          else
-            echo "✅ All pods are running successfully!"
-          fi
+              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300
