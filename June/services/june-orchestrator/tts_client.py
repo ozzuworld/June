@@ -1,4 +1,6 @@
-# TTS Client for external TTS service
+# June/services/june-orchestrator/tts_client.py
+# TTS Client for external TTS service with service-to-service auth
+
 import os
 import base64
 import time
@@ -8,7 +10,10 @@ import logging
 import httpx
 from fastapi import HTTPException
 
+from service_auth import get_service_auth_headers
+
 logger = logging.getLogger(__name__)
+
 
 class TTSClient:
     def __init__(self):
@@ -57,7 +62,18 @@ class TTSClient:
             logger.error(f"TTS synthesis failed: {e}")
             raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
     
-    async def _synthesize_standard(self, text: str, voice: str, speed: float, language: str) -> bytes:
+    async def _synthesize_standard(
+        self, 
+        text: str, 
+        voice: str, 
+        speed: float, 
+        language: str
+    ) -> bytes:
+        """Standard TTS synthesis with service authentication"""
+        
+        # Get service auth headers
+        auth_headers = await get_service_auth_headers()
+        
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.tts_url}/v1/tts",
@@ -68,7 +84,10 @@ class TTSClient:
                     "language": language,
                     "format": "wav"
                 },
-                headers={"Content-Type": "application/json"}
+                headers={
+                    **auth_headers,
+                    "Content-Type": "application/json"
+                }
             )
             
             if response.status_code != 200:
@@ -76,7 +95,18 @@ class TTSClient:
             
             return response.content
     
-    async def _synthesize_with_cloning(self, text: str, reference_audio_b64: str, speed: float, language: str) -> bytes:
+    async def _synthesize_with_cloning(
+        self, 
+        text: str, 
+        reference_audio_b64: str, 
+        speed: float, 
+        language: str
+    ) -> bytes:
+        """Voice cloning synthesis with service authentication"""
+        
+        # Get service auth headers
+        auth_headers = await get_service_auth_headers()
+        
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.tts_url}/tts/generate",
@@ -89,7 +119,10 @@ class TTSClient:
                     "pitch": 0.0,
                     "format": "wav"
                 },
-                headers={"Content-Type": "application/json"}
+                headers={
+                    **auth_headers,
+                    "Content-Type": "application/json"
+                }
             )
             
             if response.status_code != 200:
@@ -99,11 +132,17 @@ class TTSClient:
     
     async def get_status(self) -> Dict[str, Any]:
         try:
+            # Get service auth headers
+            auth_headers = await get_service_auth_headers()
+            
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self.tts_url}/healthz")
+                response = await client.get(
+                    f"{self.tts_url}/healthz",
+                    headers=auth_headers
+                )
                 
                 if response.status_code == 200:
-                    return {"available": True, "url": self.tts_url}
+                    return {"available": True, "url": self.tts_url, "authenticated": True}
                 else:
                     return {"available": False, "error": f"Status check failed: {response.status_code}"}
                     
@@ -111,7 +150,9 @@ class TTSClient:
             logger.warning(f"TTS status check failed: {e}")
             return {"available": False, "error": str(e)}
 
+
 _tts_client: Optional[TTSClient] = None
+
 
 def get_tts_client() -> TTSClient:
     global _tts_client

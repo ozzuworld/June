@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    version: "3.1.0-service-auth"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+        version: "3.1.0-service-auth"
+    spec:
+      serviceAccountName: june-orchestrator
+      containers:
+        - name: orchestrator
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:v3.1.0-tts-1758980678
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: gemini-api-key
+                  optional: true
+            - name: TTS_SERVICE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: tts-service-url
+            - name: TTS_DEFAULT_VOICE
+              value: "default"
+            - name: TTS_DEFAULT_SPEED
+              value: "1.0"
+            - name: TTS_DEFAULT_LANGUAGE
+              value: "EN"
+            - name: KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: ENVIRONMENT
+              value: "production"
+            - name: PORT
+              value: "8080"
+            - name: SERVICE_ACCOUNT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: SERVICE_ACCOUNT_CLIENT_ID
+            - name: SERVICE_ACCOUNT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: SERVICE_ACCOUNT_CLIENT_SECRET
+            - name: EXTERNAL_STT_URL
+              value: "https://stt.allsafe.world"
+            - name: EXTERNAL_TTS_URL
+              value: "https://tts.allsafe.world"
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60

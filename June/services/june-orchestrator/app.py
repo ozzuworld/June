@@ -7,6 +7,7 @@ import base64
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
+from service_auth import get_service_auth_client
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -385,6 +386,17 @@ async def startup_event():
         logger.info("✅ External TTS service ready")
     else:
         logger.warning("⚠️ External TTS service not reachable")
+
+@app.get("/v1/service-auth/status")
+async def service_auth_status():
+    """Test service-to-service authentication"""
+    client = get_service_auth_client()
+    auth_status = await client.test_authentication()
+    
+    return {
+        "service_auth": auth_status,
+        "timestamp": time.time()
+    }
 
 if __name__ == "__main__":
     import uvicorn

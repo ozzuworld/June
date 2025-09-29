@@ -1,0 +1,401 @@
+# Complete OpenCTI Micro Deployment - GKE Autopilot Compatible
+# Fixes: No privileged containers, uses emptyDir volumes
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opencti
+  labels:
+    name: opencti
+
+---
+# Secrets (replace with real values)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: opencti-secrets
+  namespace: opencti
+type: Opaque
+stringData:
+  admin-password: "ChangeMeNow123!"
+  admin-token: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+  rabbitmq-password: "RabbitSecure456!"
+  minio-password: "MinIOSecure789!"
+
+---
+# Elasticsearch - GKE Autopilot Compatible (NO privileged initContainer)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        env:
+        - name: discovery.type
+          value: single-node
+        - name: ES_JAVA_OPTS
+          value: "-Xms256m -Xmx512m"
+        - name: xpack.security.enabled
+          value: "false"
+        - name: bootstrap.memory_lock
+          value: "false"
+        - name: cluster.routing.allocation.disk.threshold_enabled
+          value: "false"
+        ports:
+        - containerPort: 9200
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?wait_for_status=yellow
+            port: 9200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+          initialDelaySeconds: 60
+          periodSeconds: 20
+      volumes:
+      - name: es-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: opencti
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+  - port: 9200
+    targetPort: 9200
+
+---
+# Redis - Ultra Light
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.2-alpine
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        ports:
+        - containerPort: 6379
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: opencti
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# RabbitMQ - Ultra Light
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3.13-management-alpine
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "100m"
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          value: "opencti"
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: rabbitmq-password
+        ports:
+        - containerPort: 5672
+        - containerPort: 15672
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+      volumes:
+      - name: rabbitmq-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: opencti
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+  - port: 5672
+    targetPort: 5672
+    name: amqp
+  - port: 15672
+    targetPort: 15672
+    name: management
+
+---
+# MinIO - Ultra Light
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:RELEASE.2024-09-13T20-26-02Z
+        command: ["/bin/sh"]
+        args: ["-c", "mkdir -p /data/opencti-bucket && minio server /data --console-address :9001"]
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        env:
+        - name: MINIO_ROOT_USER
+          value: "opencti"
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: minio-password
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        volumeMounts:
+        - name: minio-data
+          mountPath: /data
+      volumes:
+      - name: minio-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: opencti
+spec:
+  selector:
+    app: minio
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+
+---
+# OpenCTI Platform - Ultra Light with startup dependencies
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencti-platform
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opencti-platform
+  template:
+    metadata:
+      labels:
+        app: opencti-platform
+    spec:
+      initContainers:
+      - name: wait-for-elasticsearch
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z elasticsearch.opencti.svc.cluster.local 9200; do
+            echo "Waiting for Elasticsearch..."
+            sleep 5
+          done
+          echo "Elasticsearch is ready!"
+      - name: wait-for-redis
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z redis.opencti.svc.cluster.local 6379; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready!"
+      containers:
+      - name: opencti
+        image: opencti/platform:6.3.7
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "400m"
+        env:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=512"
+        - name: APP__PORT
+          value: "4000"
+        - name: APP__BASE_URL
+          value: "http://opencti-platform.opencti.svc.cluster.local:4000"
+        - name: APP__ADMIN__EMAIL
+          value: "admin@opencti.io"
+        - name: APP__ADMIN__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: admin-password
+        - name: APP__ADMIN__TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: admin-token
+        - name: APP__APP_LOGS__LOGS_LEVEL
+          value: "info"
+        - name: ELASTICSEARCH__URL
+          value: "http://elasticsearch.opencti.svc.cluster.local:9200"
+        - name: REDIS__HOSTNAME
+          value: "redis.opencti.svc.cluster.local"
+        - name: REDIS__PORT
+          value: "6379"
+        - name: RABBITMQ__HOSTNAME
+          value: "rabbitmq.opencti.svc.cluster.local"
+        - name: RABBITMQ__PORT
+          value: "5672"
+        - name: RABBITMQ__USERNAME
+          value: "opencti"
+        - name: RABBITMQ__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: rabbitmq-password
+        - name: MINIO__ENDPOINT
+          value: "minio.opencti.svc.cluster.local"
+        - name: MINIO__PORT
+          value: "9000"
+        - name: MINIO__USE_SSL
+          value: "false"
+        - name: MINIO__ACCESS_KEY
+          value: "opencti"
+        - name: MINIO__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: opencti-secrets
+              key: minio-password
+        - name: MINIO__BUCKET_NAME
+          value: "opencti-bucket"
+        ports:
+        - containerPort: 4000
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 4000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4000
+          initialDelaySeconds: 180
+          periodSeconds: 20
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencti-platform
+  namespace: opencti
+spec:
+  selector:
+    app: opencti-platform
+  ports:
+  - port: 4000
+    targetPort: 4000
+  type: LoadBalancer
+
