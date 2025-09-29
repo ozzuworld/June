@@ -35,3 +35,13 @@ class AuthService:
 async def require_user_auth(credentials = Depends(security)) -> dict:
     auth_service = get_auth_service()
     return await auth_service.validate_user_token(credentials.credentials)
+import os
+from fastapi import HTTPException, Header
+
+async def verify_api_key(api_key: str = Header(None, alias="X-API-Key")):
+    expected_key = os.getenv("ADMIN_API_KEY", "default-insecure-key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    if api_key != expected_key:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    return True

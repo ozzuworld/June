@@ -521,3 +521,17 @@ async def general_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=config.PORT, log_level="info")
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "status_code": exc.status_code},
+        headers=getattr(exc, 'headers', None)
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"❌ Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"error": "Internal server error", "status_code": 500})

@@ -148,3 +148,10 @@ async def clear_cache_endpoint():
     except Exception as e:
         logger.error(f"Failed to clear cache: {e}")
         return {"status": "error", "message": str(e)}
+
+import time
+
+@app.get("/healthz")
+@app.get("/health")
+async def healthz():
+    return {"status": "healthy", "service": "june-tts", "version": "1.0", "timestamp": time.time()}

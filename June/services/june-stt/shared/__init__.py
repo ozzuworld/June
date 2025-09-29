@@ -76,15 +76,12 @@ class _JWKSCache:
 _JWKS = _JWKSCache()
 
 class ExternalAuthService:
-    """Authentication service for external STT deployment"""
-    
     def __init__(self, config: Optional[AuthConfig] = None):
         self.config = config or AuthConfig.from_env()
         self._oidc_config = None
         self._jwks_uri = None
     
     async def _get_oidc_config(self) -> Dict[str, Any]:
-        """Get OIDC configuration from Keycloak"""
         if self._oidc_config:
             return self._oidc_config
             
@@ -102,33 +99,19 @@ class ExternalAuthService:
                 return self._oidc_config
         except Exception as e:
             logger.error(f"❌ OIDC discovery failed for {discovery_url}: {e}")
-            raise HTTPException(
-                status_code=503, 
-                detail=f"Authentication service unavailable: {e}"
-            )
+            raise HTTPException(status_code=503, detail=f"Authentication service unavailable: {e}")
 
     async def verify_token(self, token: str) -> Dict[str, Any]:
-        """Verify JWT token from Keycloak"""
         if not token:
-            raise HTTPException(
-                status_code=401,
-                detail="Missing authentication token",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=401, detail="Missing authentication token", headers={"WWW-Authenticate": "Bearer"})
         
-        # Clean up token
         if token.startswith('Bearer '):
             token = token[7:]
         token = token.strip()
         
-        # Validate token format
         if token.count('.') != 2:
             logger.warning(f"Invalid token format: {len(token)} chars, {token.count('.')} dots")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token format",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=401, detail="Invalid token format", headers={"WWW-Authenticate": "Bearer"})
 
         try:
             oidc_config = await self._get_oidc_config()
@@ -152,35 +135,18 @@ class ExternalAuthService:
 
         except InvalidAudienceError as e:
             logger.warning(f"Invalid token audience: {e}")
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid token audience",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=403, detail="Invalid token audience", headers={"WWW-Authenticate": "Bearer"})
         except InvalidSignatureError as e:
             logger.warning(f"Invalid token signature: {e}")
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token signature",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=401, detail="Invalid token signature", headers={"WWW-Authenticate": "Bearer"})
         except InvalidTokenError as e:
             logger.warning(f"Invalid token: {e}")
-            raise HTTPException(
-                status_code=401,
-                detail=f"Invalid or expired token: {str(e)}",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=401, detail=f"Invalid or expired token: {str(e)}", headers={"WWW-Authenticate": "Bearer"})
         except Exception as e:
             logger.error(f"Token verification error: {e}")
-            raise HTTPException(
-                status_code=401,
-                detail="Token verification failed",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise HTTPException(status_code=401, detail="Token verification failed", headers={"WWW-Authenticate": "Bearer"})
 
     async def get_service_token(self) -> str:
-        """Get service-to-service token for calling orchestrator"""
         token_url = f"{self.config.keycloak_url}/realms/{self.config.realm}/protocol/openid-connect/token"
         
         try:
@@ -201,10 +167,7 @@ class ExternalAuthService:
                 return access_token
         except Exception as e:
             logger.error(f"❌ Failed to get service token: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail="Failed to obtain service authentication"
-            )
+            raise HTTPException(status_code=503, detail="Failed to obtain service authentication")
 
 _auth_service: Optional[ExternalAuthService] = None
 
@@ -215,26 +178,25 @@ def get_auth_service() -> ExternalAuthService:
     return _auth_service
 
 async def require_user_auth(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Require user authentication for STT endpoints"""
     auth_service = get_auth_service()
     return await auth_service.verify_token(credentials.credentials)
 
 async def require_service_auth(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Require service authentication"""
     auth_service = get_auth_service()
     token_data = await auth_service.verify_token(credentials.credentials)
     return token_data
 
 def extract_user_id(auth_data: Dict[str, Any]) -> str:
-    """Extract user ID from authentication data"""
     return auth_data.get("sub") or auth_data.get("user_id", "unknown")
 
 def extract_client_id(auth_data: Dict[str, Any]) -> str:
-    """Extract client ID from authentication data"""
     return auth_data.get("client_id") or auth_data.get("azp", "unknown")
 
+async def validate_websocket_token(token: str) -> Dict[str, Any]:
+    auth_service = get_auth_service()
+    return await auth_service.verify_token(token)
+
 async def test_auth_connectivity() -> Dict[str, Any]:
-    """Test Keycloak connectivity"""
     try:
         auth_service = get_auth_service()
         await auth_service._get_oidc_config()
