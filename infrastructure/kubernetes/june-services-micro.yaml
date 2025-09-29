@@ -1,0 +1,202 @@
+# June Services - Micro Deployment for Control Plane
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: june-services
+  labels:
+    name: june-services
+
+---
+# June Orchestrator - Micro Configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    version: "2.0.0"
+    component: api
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+        version: "2.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: orchestrator
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          
+          env:
+            # Authentication
+            - name: KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: REQUIRED_AUDIENCE
+              value: "june-orchestrator"
+            
+            # AI Configuration
+            - name: GEMINI_API_KEY
+              value: "your-gemini-key-here"  # Replace with actual key
+            
+            # Application Configuration
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: ENVIRONMENT
+              value: "production"
+            
+            # OpenCTI Integration
+            - name: OPENCTI_URL
+              value: "http://opencti-platform.opencti.svc.cluster.local:4000"
+            - name: OPENCTI_TOKEN
+              value: "f47ac10b-58cc-4372-a567-0e02b2c3d479"  # From OpenCTI secrets
+          
+          # Ultra-light resource allocation
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+              ephemeral-storage: "256Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+              ephemeral-storage: "512Mi"
+          
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 20
+      
+      restartPolicy: Always
+      dnsPolicy: ClusterFirst
+      terminationGracePeriodSeconds: 30
+
+---
+# June Orchestrator Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  selector:
+    app: june-orchestrator
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+
+---
+# June IDP - Micro Configuration (placeholder)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+    version: "1.0.0"
+    component: identity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+        version: "1.0.0"
+    spec:
+      containers:
+        - name: idp
+          image: nginx:alpine  # Placeholder - replace with actual IDP image
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          
+          # Ultra-light resources
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+          
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+# June IDP Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+  labels:
+    app: june-idp
+spec:
+  type: ClusterIP
+  selector:
+    app: june-idp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+

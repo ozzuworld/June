@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+    spec:
+      containers:
+      - name: orchestrator
+        image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
+        ports:
+        - containerPort: 8080  # Changed from 8000 to 8080
+        env:
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: gemini-api-key
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: OPENCTI_URL
+          value: "http://opencti-platform.opencti.svc.cluster.local:4000"
+        - name: OPENCTI_TOKEN
+          value: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080  # Changed from 8000 to 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080  # Changed from 8000 to 8080
+          initialDelaySeconds: 60
+          periodSeconds: 20
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080  # Changed from 8000 to 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30  # Give it more time to start
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+  - port: 80
+    targetPort: 8080  # Changed from 8000 to 8080
+  type: ClusterIP
+

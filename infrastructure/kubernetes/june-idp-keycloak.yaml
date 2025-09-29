@@ -1,0 +1,191 @@
+# Internal Keycloak IDP for June Services
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+data:
+  KC_HTTP_PORT: "8080"
+  KC_HOSTNAME_STRICT: "false"
+  KC_HOSTNAME_STRICT_HTTPS: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  KEYCLOAK_ADMIN: "admin"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-secrets
+  namespace: june-services
+type: Opaque
+stringData:
+  KEYCLOAK_ADMIN_PASSWORD: "admin123"
+  KC_DB_PASSWORD: "keycloak123"
+
+---
+# PostgreSQL for Keycloak
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-postgres
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-postgres
+  template:
+    metadata:
+      labels:
+        app: keycloak-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "keycloak"
+        - name: POSTGRES_USER
+          value: "keycloak"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KC_DB_PASSWORD
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-postgres
+  namespace: june-services
+spec:
+  selector:
+    app: keycloak-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Keycloak IDP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z keycloak-postgres.june-services.svc.cluster.local 5432; do
+            echo "Waiting for PostgreSQL..."
+            sleep 5
+          done
+          echo "PostgreSQL is ready!"
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:23.0
+        command: ["/opt/keycloak/bin/kc.sh"]
+        args: ["start", "--optimized"]
+        env:
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://keycloak-postgres.june-services.svc.cluster.local:5432/keycloak"
+        - name: KC_DB_USERNAME
+          value: "keycloak"
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KC_DB_PASSWORD
+        - name: KEYCLOAK_ADMIN
+          value: "admin"
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-secrets
+              key: KEYCLOAK_ADMIN_PASSWORD
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_HTTP_PORT
+          value: "8080"
+        - name: KC_PROXY
+          value: "edge"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: LoadBalancer
+

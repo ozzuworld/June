@@ -1,0 +1,143 @@
+# Replace the nginx placeholder with real Keycloak
+# PostgreSQL for Keycloak
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-postgres
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-postgres
+  template:
+    metadata:
+      labels:
+        app: keycloak-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "keycloak"
+        - name: POSTGRES_USER
+          value: "keycloak"
+        - name: POSTGRES_PASSWORD
+          value: "keycloak123"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-postgres
+  namespace: june-services
+spec:
+  selector:
+    app: keycloak-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Replace the nginx june-idp with real Keycloak
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z keycloak-postgres.june-services.svc.cluster.local 5432; do
+            echo "Waiting for PostgreSQL..."
+            sleep 5
+          done
+          echo "PostgreSQL is ready!"
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:23.0
+        command: ["/opt/keycloak/bin/kc.sh"]
+        args: ["start-dev"]  # Development mode for easier setup
+        env:
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://keycloak-postgres.june-services.svc.cluster.local:5432/keycloak"
+        - name: KC_DB_USERNAME
+          value: "keycloak"
+        - name: KC_DB_PASSWORD
+          value: "keycloak123"
+        - name: KEYCLOAK_ADMIN
+          value: "admin"
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          value: "admin123"
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 20
+
+---
+# Update the service to use port 8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: LoadBalancer  # So you can access it externally
+
