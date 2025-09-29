@@ -38,15 +38,34 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      # ✅ ADD THIS STEP - Checkout repository to access k8s manifests
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Decode Kubeconfig
         run: |
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > kubeconfig
           chmod 600 kubeconfig
 
+      # ✅ IMPROVED - Verify files exist before applying
+      - name: Verify Kubernetes manifests
+        run: |
+          echo "Verifying k8s manifest files exist..."
+          ls -la k8s/
+          for file in namespace.yaml configmap.yaml secrets.yaml june-stt-deployment.yaml june-tts-deployment.yaml june-orchestrator-deployment.yaml june-idp-deployment.yaml ingress.yaml; do
+            if [ -f "k8s/$file" ]; then
+              echo "✅ k8s/$file exists"
+            else
+              echo "❌ k8s/$file NOT FOUND"
+              exit 1
+            fi
+          done
+
       - name: Apply Kubernetes Manifests
         env:
           KUBECONFIG: kubeconfig
         run: |
+          # Apply in logical order
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmap.yaml
           kubectl apply -f k8s/secrets.yaml
@@ -56,7 +75,7 @@ jobs:
           kubectl apply -f k8s/june-idp-deployment.yaml
           kubectl apply -f k8s/ingress.yaml
 
-  # 3. Smoke Tests
+  # 3. Smoke Tests  
   smoke-test:
     needs: deploy
     runs-on: ubuntu-latest
