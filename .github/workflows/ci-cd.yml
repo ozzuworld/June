@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [june-stt, june-tts, june-dark, june-idp, june-web]
+        service: [june-stt, june-tts, june-orchestrator, june-idp]
     steps:
       - uses: actions/checkout@v4
 
@@ -52,9 +52,8 @@ jobs:
           kubectl apply -f k8s/secrets.yaml
           kubectl apply -f k8s/june-stt-deployment.yaml
           kubectl apply -f k8s/june-tts-deployment.yaml
-          kubectl apply -f k8s/june-dark-deployment.yaml
+          kubectl apply -f k8s/june-orchestrator-deployment.yaml
           kubectl apply -f k8s/june-idp-deployment.yaml
-          kubectl apply -f k8s/june-web-deployment.yaml
           kubectl apply -f k8s/ingress.yaml
 
   # 3. Smoke Tests (verify rollout)
@@ -71,6 +70,6 @@ jobs:
         env:
           KUBECONFIG: kubeconfig
         run: |
-          for svc in june-stt june-tts june-dark june-idp june-web; do
+          for svc in june-stt june-tts june-orchestrator june-idp; do
             kubectl rollout status deployment/$svc -n june --timeout=2m
           done
