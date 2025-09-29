@@ -1,5 +1,18 @@
+# Complete Keycloak IDP Deployment for June Services
+# Based on official Keycloak documentation
+# https://www.keycloak.org/server/containers
+
 ---
-# PostgreSQL Database
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: june-services
+  labels:
+    name: june-services
+
+---
+# PostgreSQL Database Secrets
 apiVersion: v1
 kind: Secret
 metadata:
@@ -8,9 +21,11 @@ metadata:
 type: Opaque
 stringData:
   username: "keycloak"
-  password: "keycloak123"
+  password: "Pokemon123!"
+  database: "keycloak"
 
 ---
+# Keycloak Admin Secrets
 apiVersion: v1
 kind: Secret
 metadata:
@@ -18,31 +33,40 @@ metadata:
   namespace: june-services
 type: Opaque
 stringData:
-  password: "admin123"
+  username: "admin"
+  password: "Pokemon123!"
 
 ---
+# PostgreSQL StatefulSet for Keycloak
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgresql-db
+  name: keycloak-db
   namespace: june-services
+  labels:
+    app: keycloak-db
+    component: database
 spec:
   serviceName: keycloak-db
   replicas: 1
   selector:
     matchLabels:
-      app: postgresql-db
+      app: keycloak-db
   template:
     metadata:
       labels:
-        app: postgresql-db
+        app: keycloak-db
+        component: database
     spec:
       containers:
-      - name: postgresql
-        image: postgres:15
+      - name: postgres
+        image: postgres:15-alpine
         env:
         - name: POSTGRES_DB
-          value: "keycloak"
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: database
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
@@ -58,38 +82,106 @@ spec:
         ports:
         - containerPort: 5432
           name: postgres
-        volumeMounts:
-        - name: postgres-storage
-          mountPath: /var/lib/postgresql/data
         resources:
           requests:
             memory: "256Mi"
-            cpu: "100m"
+            cpu: "250m"
           limits:
             memory: "512Mi"
             cpu: "500m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
   volumeClaimTemplates:
   - metadata:
-      name: postgres-storage
+      name: postgres-data
     spec:
       accessModes: ["ReadWriteOnce"]
+      storageClassName: standard-rwo
       resources:
         requests:
-          storage: 5Gi
+          storage: 10Gi
 
 ---
+# PostgreSQL Service
 apiVersion: v1
 kind: Service
 metadata:
   name: keycloak-db
   namespace: june-services
+  labels:
+    app: keycloak-db
+    component: database
 spec:
-  selector:
-    app: postgresql-db
+  type: ClusterIP
+  clusterIP: None
   ports:
   - port: 5432
     targetPort: 5432
-  clusterIP: None
+    name: postgres
+  selector:
+    app: keycloak-db
+
+---
+# Keycloak ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+data:
+  # Database configuration
+  KC_DB: "postgres"
+  KC_DB_URL_HOST: "keycloak-db.june-services.svc.cluster.local"
+  KC_DB_URL_PORT: "5432"
+  KC_DB_URL_DATABASE: "keycloak"
+  KC_DB_SCHEMA: "public"
+  
+  # Hostname configuration
+  KC_HOSTNAME_STRICT: "false"
+  KC_HOSTNAME_STRICT_HTTPS: "false"
+  KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
+  
+  # HTTP configuration
+  KC_HTTP_ENABLED: "true"
+  KC_HTTP_PORT: "8080"
+  
+  # Proxy configuration (for ingress/load balancer)
+  KC_PROXY: "edge"
+  KC_PROXY_ADDRESS_FORWARDING: "true"
+  
+  # Health and metrics
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  
+  # Logging
+  KC_LOG_LEVEL: "INFO"
+  KC_LOG_CONSOLE_OUTPUT: "default"
+  
+  # Performance tuning
+  KC_CACHE: "ispn"
+  KC_CACHE_STACK: "kubernetes"
 
 ---
 # Keycloak Deployment
@@ -100,8 +192,15 @@ metadata:
   namespace: june-services
   labels:
     app: june-idp
+    component: identity-provider
+    version: "23.0"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-idp
@@ -109,33 +208,44 @@ spec:
     metadata:
       labels:
         app: june-idp
+        component: identity-provider
+        version: "23.0"
     spec:
+      # Wait for database to be ready
       initContainers:
       - name: wait-for-db
-        image: busybox:1.35
-        command: 
-          - sh
-          - -c
-          - |
-            until nc -z keycloak-db.june-services.svc.cluster.local 5432; do
-              echo "Waiting for PostgreSQL..."
-              sleep 2
-            done
-            echo "PostgreSQL is ready!"
+        image: postgres:15-alpine
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for PostgreSQL to be ready..."
+          until pg_isready -h keycloak-db.june-services.svc.cluster.local -p 5432 -U keycloak; do
+            echo "PostgreSQL is unavailable - waiting..."
+            sleep 3
+          done
+          echo "PostgreSQL is ready!"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
       
       containers:
       - name: keycloak
         image: quay.io/keycloak/keycloak:23.0
         args:
-          - "start"
-          - "--db=postgres"
-          - "--db-url=jdbc:postgresql://keycloak-db.june-services.svc.cluster.local:5432/keycloak"
-          - "--http-enabled=true"
-          - "--hostname-strict=false"
-          - "--hostname-strict-https=false"
-          - "--proxy-headers=xforwarded"
+        - "start"
+        - "--optimized"
         
+        # Environment variables from ConfigMap
+        envFrom:
+        - configMapRef:
+            name: keycloak-config
+        
+        # Environment variables from Secrets
         env:
+        # Database credentials
         - name: KC_DB_USERNAME
           valueFrom:
             secretKeyRef:
@@ -146,45 +256,104 @@ spec:
             secretKeyRef:
               name: keycloak-db-secret
               key: password
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: "admin"
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+        
+        # Admin credentials
+        - name: KEYCLOAK_ADMIN
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: username
+        - name: KEYCLOAK_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
               name: keycloak-admin-secret
               key: password
         
+        # Java options for performance
+        - name: JAVA_OPTS_APPEND
+          value: >-
+            -XX:+UseContainerSupport
+            -XX:MaxRAMPercentage=75.0
+            -Djava.net.preferIPv4Stack=true
+            -Djgroups.dns.query=june-idp-headless.june-services.svc.cluster.local
+        
         ports:
         - name: http
           containerPort: 8080
+          protocol: TCP
+        - name: jgroups
+          containerPort: 7600
+          protocol: TCP
         
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "200m"
-          limits:
             memory: "1Gi"
             cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
         
+        # Startup probe - gives Keycloak time to start
+        startupProbe:
+          httpGet:
+            path: /health/started
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 60
+          successThreshold: 1
+        
+        # Readiness probe - determines when pod is ready to receive traffic
         readinessProbe:
           httpGet:
             path: /health/ready
             port: 8080
-          initialDelaySeconds: 120
+            scheme: HTTP
+          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 6
+          failureThreshold: 3
+          successThreshold: 1
         
+        # Liveness probe - determines when to restart the pod
         livenessProbe:
           httpGet:
             path: /health/live
             port: 8080
-          initialDelaySeconds: 180
+            scheme: HTTP
+          initialDelaySeconds: 60
           periodSeconds: 20
           timeoutSeconds: 5
-          failureThreshold: 3
+          failureThreshold: 5
+          successThreshold: 1
+        
+        # Volume mounts for caching and temporary files
+        volumeMounts:
+        - name: cache
+          mountPath: /opt/keycloak/data/cache
+        - name: tmp
+          mountPath: /tmp
+      
+      volumes:
+      - name: cache
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+      
+      # Security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      # DNS configuration for clustering
+      dnsPolicy: ClusterFirst
+      terminationGracePeriodSeconds: 60
 
 ---
+# Keycloak Service (Regular ClusterIP for internal access)
 apiVersion: v1
 kind: Service
 metadata:
@@ -192,11 +361,194 @@ metadata:
   namespace: june-services
   labels:
     app: june-idp
+    component: identity-provider
 spec:
-  type: LoadBalancer
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: jgroups
+    port: 7600
+    targetPort: 7600
+    protocol: TCP
   selector:
     app: june-idp
+
+---
+# Keycloak Headless Service (for clustering/DNS discovery)
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp-headless
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for clustering
+  publishNotReadyAddresses: true
   ports:
-  - port: 8080
+  - name: http
+    port: 8080
     targetPort: 8080
-    name: http
+    protocol: TCP
+  - name: jgroups
+    port: 7600
+    targetPort: 7600
+    protocol: TCP
+  selector:
+    app: june-idp
+
+---
+# Keycloak Service (LoadBalancer for external access)
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp-external
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+  annotations:
+    cloud.google.com/load-balancer-type: "External"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: june-idp
+
+---
+# HorizontalPodAutoscaler for Keycloak
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: june-idp-hpa
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: june-idp
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+
+---
+# PodDisruptionBudget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: june-idp-pdb
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: june-idp
+
+---
+# NetworkPolicy for Keycloak
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: june-idp-netpol
+  namespace: june-services
+  labels:
+    app: june-idp
+    component: identity-provider
+spec:
+  podSelector:
+    matchLabels:
+      app: june-idp
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow HTTP traffic from anywhere
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow JGroups traffic between Keycloak pods
+  - from:
+    - podSelector:
+        matchLabels:
+          app: june-idp
+    ports:
+    - protocol: TCP
+      port: 7600
+  egress:
+  # Allow DNS
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow PostgreSQL access
+  - to:
+    - podSelector:
+        matchLabels:
+          app: keycloak-db
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow external HTTPS (for OIDC discovery, etc.)
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow JGroups clustering
+  - to:
+    - podSelector:
+        matchLabels:
+          app: june-idp
+    ports:
+    - protocol: TCP
+      port: 7600
