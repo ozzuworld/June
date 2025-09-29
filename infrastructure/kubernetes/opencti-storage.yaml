@@ -1,0 +1,170 @@
+# PersistentVolumeClaims for OpenCTI data persistence
+# Elasticsearch Data Storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elasticsearch-data-pvc
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search-engine
+    app.kubernetes.io/part-of: opencti
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard-rwo  # GKE standard persistent disk
+  resources:
+    requests:
+      storage: 20Gi  # Minimum for production OpenCTI
+
+---
+# Redis Data Storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: opencti
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# RabbitMQ Data Storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbitmq-data-pvc
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-queue
+    app.kubernetes.io/part-of: opencti
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# MinIO Data Storage for OpenCTI files
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data-pvc
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-storage
+    app.kubernetes.io/part-of: opencti
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 50Gi  # Storage for OpenCTI files and artifacts
+
+---
+# ConfigMap for Elasticsearch configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: search-engine
+data:
+  elasticsearch.yml: |
+    cluster.name: "opencti-cluster"
+    network.host: 0.0.0.0
+    discovery.type: single-node
+    xpack.security.enabled: false
+    xpack.security.enrollment.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+    cluster.routing.allocation.disk.threshold_enabled: false
+    bootstrap.memory_lock: true
+  jvm.options: |
+    -Xms4g
+    -Xmx4g
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32m
+    -XX:+DisableExplicitGC
+    -Djava.io.tmpdir=${ES_TMPDIR}
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:HeapDumpPath=data
+    -XX:ErrorFile=logs/hs_err_pid%p.log
+    -Xlog:gc*,gc+age=trace,safepoint:gc.log:utctime,pid,tid,level,tags:filecount=32,filesize=64m
+
+---
+# ConfigMap for Redis configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+data:
+  redis.conf: |
+    # Redis configuration for OpenCTI
+    maxmemory 2gb
+    maxmemory-policy allkeys-lru
+    save 900 1
+    save 300 10
+    save 60 10000
+    rdbcompression yes
+    rdbchecksum yes
+    stop-writes-on-bgsave-error yes
+    # Networking
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    # Logging
+    loglevel notice
+    logfile ""
+
+---
+# ConfigMap for RabbitMQ configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-queue
+data:
+  rabbitmq.conf: |
+    # RabbitMQ configuration for OpenCTI
+    loopback_users.guest = false
+    listeners.tcp.default = 5672
+    management.tcp.port = 15672
+    management.tcp.ip = 0.0.0.0
+    
+    # Memory and disk thresholds
+    vm_memory_high_watermark.absolute = 1GB
+    disk_free_limit.absolute = 2GB
+    
+    # Cluster configuration
+    cluster_formation.peer_discovery_backend = classic_config
+    
+    # Logging
+    log.console = true
+    log.console.level = info
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_prometheus].
