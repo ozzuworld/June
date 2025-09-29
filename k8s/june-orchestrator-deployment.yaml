@@ -1,0 +1,73 @@
+name: Deploy june-idp
+
+on:
+  push:
+    paths:
+      - 'June/services/june-idp/**'
+      - 'k8s/june-idp-deployment.yaml'
+
+env:
+  REGISTRY: docker.io/ozzuworld
+  KUBE_NAMESPACE: june
+
+permissions:
+  contents: read
+
+jobs:
+  set-kubeconfig:
+    runs-on: ubuntu-latest
+    outputs:
+      kubeconfig: ${{ steps.kc.outputs.kubeconfig }}
+    steps:
+      - name: Decode Kubeconfig
+        id: kc
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > kubeconfig
+          chmod 600 kubeconfig
+
+  build-and-deploy:
+    needs: set-kubeconfig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Debug: Show repo root and k8s folder
+        run: |
+          echo "Workspace: $(pwd)"
+          echo "Contents of root:"
+          ls -1
+          echo "Contents of k8s/:"
+          ls -1 k8s || true
+
+      - name: Debug: Cluster connectivity
+        env:
+          KUBECONFIG: kubeconfig
+        run: |
+          echo "Kubeconfig server:"
+          grep 'server:' -m1 kubeconfig
+          kubectl version --short || true
+          kubectl cluster-info || true
+          SERVER=$(grep 'server:' -m1 kubeconfig | awk '{print $2}')
+          echo "Curl healthz:"
+          curl -k -m5 $SERVER/healthz || echo "API unreachable"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull, Tag & Push Keycloak
+        run: |
+          docker pull quay.io/keycloak/keycloak:21.1.1
+          docker tag quay.io/keycloak/keycloak:21.1.1 $REGISTRY/june-idp:21.1.1
+          docker push $REGISTRY/june-idp:21.1.1
+
+      - name: Apply Kubernetes Manifests
+        env:
+          KUBECONFIG: ${{ needs.set-kubeconfig.outputs.kubeconfig }}
+        run: |
+          kubectl apply --validate=false -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/june-idp-deployment.yaml
+          kubectl apply -f k8s/ingress.yaml
