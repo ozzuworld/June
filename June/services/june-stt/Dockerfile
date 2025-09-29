@@ -1,4 +1,3 @@
-# June/services/june-stt/Dockerfile - Enhanced version
 FROM python:3.10-slim
 
 # Set environment variables
@@ -32,7 +31,10 @@ RUN pip install -e ./shared/
 
 # Copy application code and environment file
 COPY app.py .
-COPY .env* ./
+COPY tts_client.py .
+
+# ⭐ ADD THIS LINE - Copy .env file into the image
+COPY .env .env
 
 # Create non-root user and necessary directories
 RUN useradd -m -u 1001 appuser && \
