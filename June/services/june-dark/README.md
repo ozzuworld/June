@@ -1,390 +1,152 @@
-# June Dark OSINT Framework
-
-**Advanced Open Source Intelligence Platform with Computer Vision and Threat Intelligence**
-
-## Overview
-
-June Dark is a sophisticated OSINT (Open Source Intelligence) framework that combines state-of-the-art computer vision with threat intelligence capabilities. It processes visual media to extract actionable intelligence and automatically enriches findings with threat data from OpenCTI.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        June Dark OSINT                         │
-├─────────────────────────────────────────────────────────────────┤
-│  FastAPI Web Interface                                          │
-├─────────────────┬───────────────────┬───────────────────────────┤
-│   YOLOv11       │   OpenCTI Client  │   Vision Services         │
-│   Detector      │   Integration     │   Pipeline                │
-├─────────────────┼───────────────────┼───────────────────────────┤
-│ GPU Processing  │ Threat Intel DB   │ Queue Management          │
-│ • Object Det.   │ • Indicators      │ • Redis Cache             │
-│ • Face Recog.   │ • Observables     │ • RabbitMQ                │
-│ • OCR           │ • Reports         │ • Background Tasks        │
-├─────────────────┼───────────────────┼───────────────────────────┤
-│                 Data Storage Layer                              │
-│ Elasticsearch  │  Neo4j Graph     │  PostgreSQL               │
-│ MinIO Objects  │  Artifacts       │  Logs                     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Core Capabilities
-
-### 🔍 Computer Vision Analysis
-- **YOLOv11 Object Detection**: Latest YOLO model for real-time object identification
-- **Face Recognition**: InsightFace integration for person identification
-- **OCR Processing**: Tesseract for text extraction from images
-- **CLIP Embeddings**: Visual similarity search and classification
-- **Batch Processing**: Efficient multi-image analysis
-
-### 🛡️ Threat Intelligence Integration
-- **OpenCTI Integration**: Full STIX 2.1 compatibility
-- **Indicator Enrichment**: Automatic threat context for detections
-- **Relationship Mapping**: Visual evidence linked to threat actors
-- **Intelligence Reporting**: Automated OSINT report generation
-- **IOC Management**: Create and manage indicators of compromise
-
-### ⚡ Performance Features
-- **GPU Acceleration**: CUDA-optimized inference
-- **Async Processing**: Non-blocking operations
-- **Resource Management**: Smart GPU memory allocation
-- **Caching Layer**: Redis-based result caching
-- **Queue System**: RabbitMQ for task distribution
-
-## What to Expect When Running
-
-### System Startup Sequence
-
-1. **Container Initialization** (30-60 seconds)
-   ```
-   [INFO] Initializing June Dark OSINT Framework...
-   [INFO] Loading YOLOv11 model: yolo11s.pt
-   [INFO] Model loaded on GPU: NVIDIA GeForce RTX 4090
-   [INFO] Connecting to OpenCTI: http://opencti:8080
-   [INFO] Connected to OpenCTI: version 6.3.7
-   [INFO] June Dark OSINT Framework initialized successfully
-   ```
-
-2. **Health Check Response**
-   ```json
-   {
-     "status": "healthy",
-     "timestamp": "2025-09-29T03:55:00Z",
-     "services": {
-       "yolo": true,
-       "opencti": true,
-       "gpu": true,
-       "gpu_name": "NVIDIA GeForce RTX 4090",
-       "queue_manager": true
-     },
-     "model": "YOLOv11",
-     "version": "2.0.0"
-   }
-   ```
-
-3. **Available Endpoints**
-   - `http://localhost:9009/health` - System status
-   - `http://localhost:9009/docs` - Interactive API documentation
-   - `http://localhost:9009/detect/objects` - Single image analysis
-   - `http://localhost:9009/detect/batch` - Batch processing
-   - `http://localhost:9009/opencti/indicators` - Threat intelligence
-
-### Expected Performance Metrics
-
-#### Single Image Processing
-- **YOLOv11n (Nano)**: ~15ms on RTX 4090, ~200ms on CPU
-- **YOLOv11s (Small)**: ~25ms on RTX 4090, ~400ms on CPU
-- **YOLOv11m (Medium)**: ~45ms on RTX 4090, ~800ms on CPU
-
-#### Batch Processing (10 images)
-- **GPU Batch**: ~150ms total (15ms per image)
-- **CPU Batch**: ~2.5s total (250ms per image)
-
-#### Memory Usage
-- **Base Container**: ~2GB RAM
-- **YOLOv11s Model**: ~20MB VRAM
-- **Per Image**: ~50MB VRAM during processing
-
-### Example API Usage
-
-#### Object Detection
-```bash
-curl -X POST "http://localhost:9009/detect/objects" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@suspicious_image.jpg"
-```
-
-**Expected Response:**
-```json
-{
-  "image_id": "uuid-12345",
-  "detections": [
-    {
-      "id": "det-001",
-      "class_id": 0,
-      "class_name": "person",
-      "confidence": 0.92,
-      "bbox": [120, 80, 350, 420],
-      "center": [235, 250],
-      "timestamp": "2025-09-29T03:55:15Z"
-    }
-  ],
-  "opencti_indicators": [
-    {
-      "id": "indicator-001",
-      "pattern": "[file:hashes.MD5 = 'd41d8cd98f00b204e9800998ecf8427e']",
-      "labels": ["suspicious-person", "surveillance"]
-    }
-  ],
-  "threat_level": "medium",
-  "metadata": {
-    "filename": "suspicious_image.jpg",
-    "detection_count": 1,
-    "model": "YOLOv11s"
-  }
-}
-```
-
-## Component Details
-
-### YOLOv11 Detector (`models/yolo_detector.py`)
-
-**Purpose**: Real-time object detection and classification
-
-**Key Features**:
-- Multiple model sizes (nano to extra-large)
-- Priority class detection for OSINT scenarios
-- Performance monitoring and statistics
-- GPU memory optimization
-- Warmup routines for consistent performance
-
-**OSINT-Specific Classes**:
-```python
-PRIORITY_CLASSES = {
-    'person', 'car', 'motorcycle', 'bicycle', 'truck', 'bus',
-    'laptop', 'cell phone', 'backpack', 'handbag', 'suitcase',
-    'knife', 'scissors', 'stop sign', 'traffic light'
-}
-```
-
-### OpenCTI Client (`models/opencti_client.py`)
-
-**Purpose**: Threat intelligence integration and enrichment
-
-**Capabilities**:
-- Create and manage STIX indicators
-- Search existing threat intelligence
-- Enrich visual detections with context
-- Generate intelligence reports
-- Bulk operations for efficiency
-
-**Supported Indicator Types**:
-```python
-INDICATOR_TYPES = {
-    'file': 'File',
-    'url': 'Url', 
-    'domain': 'Domain-Name',
-    'ipv4': 'IPv4-Addr',
-    'email': 'Email-Addr',
-    'hash_sha256': 'File'
-}
-```
-
-### Vision Service (`services/vision_service.py`)
-
-**Purpose**: Orchestrates computer vision pipeline
-
-**Workflow**:
-1. Image preprocessing and validation
-2. YOLOv11 object detection
-3. Face recognition (if enabled)
-4. OCR text extraction
-5. CLIP feature extraction
-6. Result aggregation and scoring
-
-### OpenCTI Service (`services/opencti_service.py`)
-
-**Purpose**: Threat intelligence automation
-
-**Functions**:
-- Automatic indicator creation from detections
-- Context enrichment for suspicious objects
-- Relationship mapping between entities
-- Report generation for analysts
-- IOC management and updates
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# OpenCTI Configuration
-OPENCTI_URL=http://opencti:8080
-OPENCTI_TOKEN=your-api-token
-OPENCTI_SSL_VERIFY=true
-
-# YOLO Configuration  
-YOLO_MODEL_SIZE=small  # nano, small, medium, large, extra_large
-YOLO_CONFIDENCE=0.4
-YOLO_IOU_THRESHOLD=0.7
-
-# Redis Configuration
-REDIS_URL=redis://redis:6379/0
-REDIS_CACHE_TTL=3600
-
-# RabbitMQ Configuration
-RABBIT_URL=amqp://guest:guest@rabbitmq:5672//
-
-# GPU Configuration
-CUDA_VISIBLE_DEVICES=0
-GPU_MEMORY_FRACTION=0.8
-
-# Logging
-LOG_LEVEL=INFO
-LOG_FORMAT=json
-```
-
-### Docker Compose Integration
-
-The service integrates with your existing docker-compose.yml:
-
-```yaml
-services:
-  june-dark:
-    build:
-      context: ./services/june-dark
-      dockerfile: Dockerfile.gpu
-    environment:
-      - OPENCTI_URL=http://opencti:8080
-      - OPENCTI_TOKEN=${OPENCTI_TOKEN}
-      - REDIS_URL=redis://redis:6379/2
-    ports:
-      - "9009:9009"
-    depends_on:
-      - redis
-      - rabbitmq
-      - opencti
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: ["gpu"]
-    networks:
-      - osint
-```
-
-## Use Cases
-
-### 1. Surveillance Analysis
-- **Input**: Security camera footage or images
-- **Process**: Detect persons, vehicles, suspicious objects
-- **Output**: Threat assessment with OpenCTI enrichment
-- **Result**: Automated alerts for security teams
-
-### 2. Social Media Intelligence
-- **Input**: Images from social media platforms
-- **Process**: Object detection, face recognition, OCR
-- **Output**: Structured intelligence reports
-- **Result**: Person of interest tracking
-
-### 3. Digital Forensics
-- **Input**: Evidence images from investigations
-- **Process**: Extract all visual elements and text
-- **Output**: Comprehensive forensic report
-- **Result**: Admissible evidence documentation
-
-### 4. Threat Actor Profiling
-- **Input**: Images associated with threat campaigns
-- **Process**: Link visual evidence to known indicators
-- **Output**: Threat actor attribution analysis
-- **Result**: Enhanced threat intelligence
-
-## Monitoring and Observability
-
-### Health Endpoints
-
-- `GET /health` - Basic health check
-- `GET /health/detailed` - Comprehensive system status
-- `GET /metrics` - Prometheus metrics
-- `GET /gpu/status` - GPU utilization
-- `GET /queue/status` - Queue depths and processing rates
-
-### Logging Output
-
-```json
-{
-  "timestamp": "2025-09-29T03:55:30Z",
-  "level": "INFO",
-  "service": "june-dark",
-  "component": "yolo_detector",
-  "message": "Processed batch of 5 images",
-  "metrics": {
-    "processing_time": 0.125,
-    "detections_count": 23,
-    "gpu_memory_used": "15%"
-  }
-}
-```
-
-### Performance Metrics
-
-- **Images processed per second**
-- **Average detection confidence**
-- **GPU utilization percentage**
-- **Memory usage trends**
-- **OpenCTI API response times**
-- **Queue processing rates**
-
-## Troubleshooting
-
-### Common Issues
-
-1. **GPU Not Available**
-   ```
-   Error: CUDA device not found
-   Solution: Ensure nvidia-docker2 is installed and GPU is visible
-   ```
-
-2. **OpenCTI Connection Failed**
-   ```
-   Error: Failed to connect to OpenCTI
-   Solution: Verify OPENCTI_URL and OPENCTI_TOKEN environment variables
-   ```
-
-3. **Model Loading Timeout**
-   ```
-   Error: YOLOv11 model failed to load
-   Solution: Increase container memory or use smaller model size
-   ```
-
-4. **High Memory Usage**
-   ```
-   Warning: GPU memory usage > 90%
-   Solution: Reduce batch size or use model quantization
-   ```
-
-### Debug Mode
-
-```bash
-docker run --gpus all -p 9009:9009 \
-  -e LOG_LEVEL=DEBUG \
-  -e CUDA_LAUNCH_BLOCKING=1 \
-  june-dark:latest
-```
-
-## Security Considerations
-
-- **Input Validation**: All uploads are validated for type and size
-- **Rate Limiting**: API endpoints have configurable rate limits
-- **Access Control**: JWT-based authentication available
-- **Audit Logging**: All operations are logged with user context
-- **Data Encryption**: TLS encryption for all external communications
-- **Secrets Management**: Environment-based credential storage
-
-## License
-
-This project is part of the June OSINT platform and follows the same licensing terms.
-
----
-
-**June Dark OSINT Framework** - Advanced intelligence through computer vision and threat correlation.
+Here's a README that is clear, concise, and gives full context to any AI or human operator about the purpose, architecture, and operational approach of June Dark and the supporting control plane infrastructure on Kubernetes.
+
+June Dark OSINT Framework and Control Plane Deployment
+Project Purpose
+June Dark is an advanced Open Source Intelligence (OSINT) platform combining computer vision, threat intelligence, and orchestration. It's designed to process and correlate visual/media data with cyber intelligence, but all heavy computation (AI, vision, ML) is offloaded to dedicated external machines.
+
+The Kubernetes cluster serves as the admin, monitoring, database, coordination, and web UI layer for up to 3 users.
+Heavy tasks are dispatched from this control plane to GPU-powered servers, with results returned via REST API and RabbitMQ.
+
+High-Level Architecture
+Component	Cluster Role	Resources (in-cluster)	Offloaded to external
+OpenCTI Platform	Threat intel, admin, API	1GB RAM, 0.3 CPU	No
+June Orchestrator	Coordination/queue/admin	512Mi RAM, 0.2 CPU	No
+June IDP	Identity/Auth	256Mi RAM, 0.2 CPU	No
+PostgreSQL	Metadata, configs	512Mi RAM, 0.1 CPU	No
+Elasticsearch	Search, index, dashboard	1GB RAM, 0.3 CPU	No
+RabbitMQ	Queue dispatch (AI/vision jobs)	256Mi RAM, 0.1 CPU	Yes
+Redis	Session, cache	256Mi RAM, 0.1 CPU	No
+MinIO	Artifact, result storage	128Mi RAM, 0.1 CPU	Yes
+Monitoring stack	Prometheus/Grafana (optional)	256Mi RAM, 0.1 CPU each	No
+June Dark OSINT	Heavy GPU/AI analysis	none (EXTERNAL, off-cluster)	Yes
+Key Design: Control Plane vs. Worker Layer
+K8s Cluster: Only runs admin services, UI, queue, artifact storage, and databases with minimal resource needs.
+
+Vision/AI and ML: All detection and analysis (YOLO, embedding, etc.) are run on powerful baremetal/VMs external to cluster.
+
+RabbitMQ: Central coordination - June Dark (external) polls jobs, processes, and sends results via MinIO/REST/Rabbit.
+
+Interaction Pattern
+User/Analyst interacts with UI/API → (on cluster)
+
+Task queued in RabbitMQ
+
+External Worker (June Dark) takes job:
+
+Pulls image/artifact from MinIO/S3 or database via REST
+
+Runs vision/AI (YOLO, OCR, audio, etc.)
+
+Posts results back to OpenCTI/Elasticsearch for reporting
+
+Notifies via REST or queue callback
+
+Resource Optimization
+All microservices (<1GB RAM, <0.3 CPU, 1 pod/replica each)
+
+Shared queues/cache/database
+
+Elasticsearch JVM heap: 512Mi to 1Gi
+
+MinIO: Dedicated bucket for artifacts, limit retention
+
+All admin/monitoring is low-frequency, suitable for 1–3 users only
+
+PVCs and storage class set for free tier GKE quotas
+
+Off-Cluster/External Worker Example
+python
+# External Worker - how real June Dark GPU processing happens in practice
+import pika, requests
+def worker_loop():
+    rabbit = pika.BlockingConnection(pika.URLParameters('amqp://user:pass@rabbit.yourcluster:5672/'))
+    # poll queue, download artifact from MinIO or REST
+    # process AI/vision work on local GPU
+    # upload results, POST to cluster API for reporting/storage
+Quickstart
+Deploy Control Plane
+bash
+kubectl apply -f infrastructure/kubernetes/opencti-micro/
+kubectl apply -f infrastructure/kubernetes/june-orchestrator-micro.yaml
+kubectl apply -f infrastructure/kubernetes/june-idp-micro.yaml
+# ... and supporting databases/queues/storage
+Deploy External Workers
+Spin up powerful machines externally.
+Configure connection to cluster RabbitMQ, MinIO, REST API endpoints.
+Keep credentials/secrets in .env and k8s Secrets.
+
+Maintenance/Scaling
+Scale up cluster if user count or admin workload increases.
+
+Offload more tasks to external workers as data volume grows.
+
+Watch for cluster resource exhaustion especially if adding more users or concurrent reporting.
+
+Security
+All secrets/credentials managed in k8s Secrets, IAM
+
+Network restricted by namespace and NetworkPolicy
+
+Data at rest: MinIO S3 bucket encryption enabled, KMS integration possible
+
+All external traffic over HTTPS, tokens (JWT) for worker API access
+
+Useful Endpoints
+Service	Endpoint
+OpenCTI API	/api/
+June Orchestrator	/v1/chat /health /metrics
+MinIO S3	/minio/
+RabbitMQ	/amqp/ queue interface
+Grafana/Prometheus	/grafana/ /prometheus/
+Summary
+June Dark (external) is the heavy OSINT/AI engine.
+The cluster is its admin/dashboard/queue/data backbone.
+You get full functionality and reporting for a small group,
+but offload all compute and AI expenses to dedicated external machines.
+
+I will update the current README at ozzuworld/june/june/services/june-dark/README.md to reflect this model, and document the infrastructure plan for K8s in detail as shown above.
+
+cat > June/services/june-dark/README.md <<'EOF'
+# June Dark OSINT Framework - Control Plane Architecture
+
+## **Project Overview**
+
+June Dark is a distributed OSINT (Open Source Intelligence) platform where the **Kubernetes cluster serves as the control plane** (admin, coordination, storage, queuing) and **heavy AI/ML processing is offloaded to external powerful machines**.
+
+### **Architecture Philosophy**
+- **K8s Cluster**: Admin UI, APIs, databases, queues, coordination (lightweight)
+- **External Workers**: GPU-intensive YOLO, speech processing, computer vision (heavy)
+- **Communication**: RabbitMQ queues + REST APIs + MinIO artifact storage
+
+## **Current Deployment Model**
+
+### **Control Plane Services (On K8s Cluster)**
+| Service | Purpose | Resources | Replicas |
+|---------|---------|-----------|----------|
+| OpenCTI Platform | Threat intelligence UI/API | 1GB RAM, 0.4 CPU | 1 |
+| June Orchestrator | Coordination API | 512Mi RAM, 0.2 CPU | 1 |
+| June IDP | Authentication | 256Mi RAM, 0.1 CPU | 1 |
+| Elasticsearch | Search/indexing only | 512Mi RAM, 0.2 CPU | 1 |
+| PostgreSQL | Metadata storage | 256Mi RAM, 0.1 CPU | 1 |
+| Redis | Session/cache | 128Mi RAM, 0.1 CPU | 1 |
+| RabbitMQ | Task queuing | 256Mi RAM, 0.1 CPU | 1 |
+| MinIO | Artifact storage | 128Mi RAM, 0.1 CPU | 1 |
+
+**Total Cluster Usage**: ~3GB RAM, 1.5 CPU cores
+
+### **External Worker Services (Off K8s Cluster)**
+| Service | Purpose | Location | Resources |
+|---------|---------|-----------|-----------|
+| June Dark OSINT | YOLOv11, computer vision | Powerful GPU server | 8GB+ VRAM, 4+ CPU |
+| June STT | Speech-to-text | Powerful CPU/GPU server | 4GB+ RAM, GPU optional |
+| June TTS | Text-to-speech | Powerful CPU/GPU server | 4GB+ RAM, GPU optional |
+
+## **Cluster Resource Optimization**
+
+### **Current Cluster Constraints**
+- **Node Pool**: 2x e2-standard-2 (2 vCPU, 8GB RAM each)
+- **Total Available**: ~3.8 CPU cores, 11.6GB RAM
+- **User Limit**: Maximum 3 concurrent users
+- **Usage Pattern**: Admin/monitoring/coordination only
+
+### **Resource Allocation Strategy**

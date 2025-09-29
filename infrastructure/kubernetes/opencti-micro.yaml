@@ -1,0 +1,27 @@
+# OpenCTI (micro, only API/UI, 1 pod)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencti-platform
+  namespace: opencti
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opencti-platform
+  template:
+    metadata:
+      labels:
+        app: opencti-platform
+    spec:
+      containers:
+      - name: opencti
+        image: opencti/platform:6.3.7
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "300m"
+        # ... env/config here (see previous manifest example)
