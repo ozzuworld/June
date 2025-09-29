@@ -1,0 +1,129 @@
+# CORRECTED Keycloak IDP Configuration - Connects to existing keycloak-db
+# This removes the wrong keycloak-postgres and connects to your working keycloak-db
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-config
+  namespace: june-services
+data:
+  KC_HTTP_PORT: "8080"
+  KC_HOSTNAME_STRICT: "false"
+  KC_HOSTNAME_STRICT_HTTPS: "false"
+  KC_HTTP_ENABLED: "true"
+  KC_HEALTH_ENABLED: "true"
+  KC_METRICS_ENABLED: "true"
+  KEYCLOAK_ADMIN: "admin"
+
+---
+# Keycloak IDP - Fixed to connect to existing keycloak-db
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z keycloak-db.june-services.svc.cluster.local 5432; do
+            echo "Waiting for PostgreSQL..."
+            sleep 5
+          done
+          echo "PostgreSQL is ready!"
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:23.0
+        command: ["/opt/keycloak/bin/kc.sh"]
+        args: ["start", "--optimized", "--db=postgres"]
+        env:
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL_HOST
+          value: "keycloak-db.june-services.svc.cluster.local"
+        - name: KC_DB_URL_PORT
+          value: "5432"
+        - name: KC_DB_URL_DATABASE
+          value: "keycloak"
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        - name: KEYCLOAK_ADMIN
+          value: "admin"
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-admin-secret
+              key: password
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_HTTP_PORT
+          value: "8080"
+        - name: KC_PROXY
+          value: "edge"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 20
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 40
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: LoadBalancer
