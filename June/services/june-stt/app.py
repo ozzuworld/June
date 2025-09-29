@@ -18,6 +18,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Backgroun
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
 
 # Import the shared auth (same as TTS service)
 try:
@@ -496,13 +497,27 @@ async def get_stats(auth_data: dict = Depends(require_user_auth)):
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    return {"error": exc.detail, "status_code": exc.status_code}
+    """Handle HTTP exceptions properly"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code
+        },
+        headers=exc.headers
+    )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    logger.error(f"❌ Unhandled exception: {exc}")
-    return {"error": "Internal server error", "status_code": 500}
-
+    """Handle unexpected exceptions"""
+    logger.error(f"❌ Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "status_code": 500
+        }
+    )
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=config.PORT, log_level="info")
