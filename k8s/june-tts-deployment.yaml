@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: june
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+    spec:
+      imagePullSecrets:
+      - name: dockerhub-credentials
+      containers:
+      - name: tts
+        image: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/june-tts:latest
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "4Gi"
+            cpu: "2"
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: june-config
+      nodeSelector:
+        gpu: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: june
+spec:
+  type: ClusterIP
+  selector:
+    app: june-tts
+  ports:
+  - port: 8000
+    targetPort: 8000

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      imagePullSecrets:
+      - name: dockerhub-credentials
+      containers:
+      - name: idp
+        image: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/june-idp:latest
+        env:
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db
+              key: DB_USER
+        - name: DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db
+              key: DB_PASS
+        ports:
+        - containerPort: 8080
+      nodeSelector:
+        gpu: "false"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: june
+spec:
+  type: ClusterIP
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
