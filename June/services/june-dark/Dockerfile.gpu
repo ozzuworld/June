@@ -1,0 +1,24 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    python3-pip python3-dev git ffmpeg libgl1 tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps: torch w/ CUDA, ultralytics (YOLO), open-clip, faiss-cpu, insightface, pillow, opencv
+RUN pip3 install --no-cache-dir \
+    torch==2.3.1+cu121 torchvision==0.18.1+cu121 torchaudio==2.3.1+cu121 \
+      -f https://download.pytorch.org/whl/cu121 \
+    ultralytics==8.3.33 open-clip-torch==2.24.0 faiss-cpu==1.8.0 \
+    insightface==0.7.3 onnxruntime-gpu==1.18.1 \
+    opencv-python-headless==4.10.0.84 pillow==10.4.0 \
+    numpy==1.26.4 scipy==1.13.1 \
+    redis==5.0.8 pika==1.3.2 requests==2.32.3 \
+    fastapi==0.114.0 uvicorn[standard]==0.30.6
+
+WORKDIR /app
+COPY ./app /app
+
+# Optional: expose a health endpoint for k8s/compose
+EXPOSE 9009
+CMD ["uvicorn", "worker:app", "--host", "0.0.0.0", "--port", "9009"]

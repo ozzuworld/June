@@ -1,0 +1,220 @@
+version: "3.9"
+
+x-env: &default-env
+  TZ: America/Bogota
+
+x-deploy-defaults: &deploy_defaults
+  restart: unless-stopped
+
+networks:
+  osint:
+    driver: bridge
+
+volumes:
+  es-data:
+  pg-data:
+  neo4j-data:
+  neo4j-logs:
+  minio-data:
+  redis-data:
+  rabbit-data:
+  kibana-data:
+  artifacts:
+  faiss-index:
+  logs:
+
+services:
+  # ---------- CORE DATA STORES ----------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    environment:
+      <<: *default-env
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms8g -Xmx8g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+    mem_limit: 12g
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports: ["9200:9200"]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    environment:
+      <<: *default-env
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    volumes:
+      - kibana-data:/usr/share/kibana/data
+    ports: ["5601:5601"]
+    networks: [osint]
+    depends_on: [elasticsearch]
+    deploy: *deploy_defaults
+
+  postgres:
+    image: postgres:16
+    environment:
+      <<: *default-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: osint
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  neo4j:
+    image: neo4j:5.21
+    environment:
+      <<: *default-env
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-neo4j}
+      NEO4J_dbms_memory_heap_initial__size: 4G
+      NEO4J_dbms_memory_heap_max__size: 8G
+      NEO4J_dbms_memory_pagecache_size: 2G
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    ports: ["7474:7474", "7687:7687"]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    ports: ["6379:6379"]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      <<: *default-env
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports: ["5672:5672", "15672:15672"]
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-14T21-00-00Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      <<: *default-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+      - artifacts:/artifacts
+    ports: ["9000:9000", "9001:9001"]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  # ---------- PIPELINE SERVICES ----------
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    environment:
+      <<: *default-env
+      ELASTIC_URL: http://elasticsearch:9200
+      NEO4J_URL: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j}
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/osint
+      REDIS_URL: redis://redis:6379/0
+      RABBIT_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET_ARTIFACTS: osint-artifacts
+    ports: ["8080:8080"]   # FastAPI/REST + healthz
+    depends_on: [elasticsearch, neo4j, postgres, redis, rabbitmq, minio]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  collector:
+    build:
+      context: ./services/collector
+    environment:
+      <<: *default-env
+      REDIS_URL: redis://redis:6379/1
+      RABBIT_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET_ARTIFACTS: osint-artifacts
+    volumes:
+      - artifacts:/artifacts
+      - logs:/logs
+    depends_on: [orchestrator, redis, rabbitmq, minio]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  enricher:
+    build:
+      context: ./services/enricher
+    environment:
+      <<: *default-env
+      ELASTIC_URL: http://elasticsearch:9200
+      POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/osint
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET_ARTIFACTS: osint-artifacts
+      RABBIT_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+    depends_on: [elasticsearch, postgres, minio, rabbitmq]
+    networks: [osint]
+    deploy: *deploy_defaults
+
+  # GPU vision worker (YOLO/CLIP/face/OCR); can pin to 3090 or 3060 later
+  vision-worker:
+    build:
+      context: ./services/vision-worker
+      dockerfile: Dockerfile.gpu
+    environment:
+      <<: *default-env
+      REDIS_URL: redis://redis:6379/2
+      RABBIT_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+      ELASTIC_URL: http://elasticsearch:9200
+      FAISS_PATH: /faiss/index.faiss
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      BUCKET_ARTIFACTS: osint-artifacts
+      GPU_LOCK_REDIS: redis://redis:6379/9     # for simple GPU mutex
+    volumes:
+      - artifacts:/artifacts
+      - faiss-index:/faiss
+      - logs:/logs
+    deploy: *deploy_defaults
+    networks: [osint]
+    # uncomment on NVIDIA hosts:
+    # runtime: nvidia
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: ["gpu"]
+
+  # Simple UI (optional): dashboards for queue depth / throughput (FastAPI + charts)
+  ops-ui:
+    build:
+      context: ./services/ops-ui
+    environment:
+      <<: *default-env
+      ELASTIC_URL: http://elasticsearch:9200
+      REDIS_URL: redis://redis:6379/0
+      RABBIT_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+    ports: ["8090:8090"]
+    depends_on: [elasticsearch, redis, rabbitmq]
+    networks: [osint]
+    deploy: *deploy_defaults
