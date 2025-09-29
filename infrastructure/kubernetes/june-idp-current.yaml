@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    autopilot.gke.io/resource-adjustment: '{"input":{"initContainers":[{"name":"wait-for-postgres"}],"containers":[{"limits":{"cpu":"500m","memory":"1Gi"},"requests":{"cpu":"200m","memory":"512Mi"},"name":"keycloak"}]},"output":{"initContainers":[{"limits":{"ephemeral-storage":"1Gi"},"requests":{"cpu":"200m","ephemeral-storage":"1Gi","memory":"512Mi"},"name":"wait-for-postgres"}],"containers":[{"limits":{"cpu":"500m","ephemeral-storage":"1Gi","memory":"1Gi"},"requests":{"cpu":"200m","ephemeral-storage":"1Gi","memory":"512Mi"},"name":"keycloak"}]},"computeClassAtAdmission":"Default","modified":true}'
+    autopilot.gke.io/warden-version: 33.33.19-gke.0
+    deployment.kubernetes.io/revision: "1"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"june-idp"},"name":"june-idp","namespace":"june-services"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"june-idp"}},"template":{"metadata":{"labels":{"app":"june-idp"}},"spec":{"containers":[{"args":["start","--db=postgres","--db-url=jdbc:postgresql://keycloak-db.june-services.svc.cluster.local:5432/keycloak"],"env":[{"name":"KC_DB_USERNAME","valueFrom":{"secretKeyRef":{"key":"username","name":"keycloak-db-secret"}}},{"name":"KC_DB_PASSWORD","valueFrom":{"secretKeyRef":{"key":"password","name":"keycloak-db-secret"}}},{"name":"KC_BOOTSTRAP_ADMIN_USERNAME","value":"admin"},{"name":"KC_BOOTSTRAP_ADMIN_PASSWORD","valueFrom":{"secretKeyRef":{"key":"password","name":"keycloak-admin-secret"}}},{"name":"KC_HTTP_ENABLED","value":"true"},{"name":"KC_HOSTNAME_STRICT","value":"false"},{"name":"KC_HOSTNAME_STRICT_HTTPS","value":"false"},{"name":"KC_PROXY_HEADERS","value":"xforwarded"}],"image":"quay.io/keycloak/keycloak:23.0","livenessProbe":{"httpGet":{"path":"/health/live","port":8080},"initialDelaySeconds":180,"periodSeconds":20,"timeoutSeconds":5},"name":"keycloak","ports":[{"containerPort":8080,"name":"http"}],"readinessProbe":{"httpGet":{"path":"/health/ready","port":8080},"initialDelaySeconds":120,"periodSeconds":10,"timeoutSeconds":5},"resources":{"limits":{"cpu":"500m","memory":"1Gi"},"requests":{"cpu":"200m","memory":"512Mi"}}}],"initContainers":[{"command":["sh","-c","until nc -z keycloak-db.june-services.svc.cluster.local 5432; do echo \"Waiting for PostgreSQL...\"; sleep 3; done"],"image":"busybox:1.35","name":"wait-for-postgres"}]}}}}
+  creationTimestamp: "2025-09-29T18:47:07Z"
+  generation: 1
+  labels:
+    app: june-idp
+  name: june-idp
+  namespace: june-services
+  resourceVersion: "1759171629777903013"
+  uid: 1866b38d-520f-4ba1-991d-0328a2387277
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: june-idp
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: june-idp
+    spec:
+      containers:
+      - args:
+        - start
+        - --db=postgres
+        - --db-url=jdbc:postgresql://keycloak-db.june-services.svc.cluster.local:5432/keycloak
+        env:
+        - name: KC_DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: username
+              name: keycloak-db-secret
+        - name: KC_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: keycloak-db-secret
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: admin
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: password
+              name: keycloak-admin-secret
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_PROXY_HEADERS
+          value: xforwarded
+        image: quay.io/keycloak/keycloak:23.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 180
+          periodSeconds: 20
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: keycloak
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health/ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            ephemeral-storage: 1Gi
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            ephemeral-storage: 1Gi
+            memory: 512Mi
+        securityContext:
+          capabilities:
+            drop:
+            - NET_RAW
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until nc -z keycloak-db.june-services.svc.cluster.local 5432; do echo "Waiting
+          for PostgreSQL..."; sleep 3; done
+        image: busybox:1.35
+        imagePullPolicy: IfNotPresent
+        name: wait-for-postgres
+        resources:
+          limits:
+            ephemeral-storage: 1Gi
+          requests:
+            cpu: 200m
+            ephemeral-storage: 1Gi
+            memory: 512Mi
+        securityContext:
+          capabilities:
+            drop:
+            - NET_RAW
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: kubernetes.io/arch
+        operator: Equal
+        value: amd64
+status:
+  conditions:
+  - lastTransitionTime: "2025-09-29T18:47:08Z"
+    lastUpdateTime: "2025-09-29T18:47:08Z"
+    message: Deployment does not have minimum availability.
+    reason: MinimumReplicasUnavailable
+    status: "False"
+    type: Available
+  - lastTransitionTime: "2025-09-29T18:47:07Z"
+    lastUpdateTime: "2025-09-29T18:47:09Z"
+    message: ReplicaSet "june-idp-5997456d5d" is progressing.
+    reason: ReplicaSetUpdated
+    status: "True"
+    type: Progressing
+  observedGeneration: 1
+  replicas: 1
+  unavailableReplicas: 1
+  updatedReplicas: 1
