@@ -27,6 +27,10 @@ resource "google_project_service" "secretmanager" {
   service = "secretmanager.googleapis.com"
 }
 
+resource "google_project_service" "container" {
+  service = "container.googleapis.com"
+}
+
 # Local values
 locals {
   common_labels = {
@@ -56,6 +60,88 @@ resource "google_project_iam_member" "cloudbuild_artifactregistry" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
   member  = "serviceAccount:${data.google_project.current.number}@cloudbuild.gserviceaccount.com"
+}
+
+# GKE Cluster
+resource "google_container_cluster" "june_cluster" {
+  name     = var.cluster_name
+  location = var.region
+  
+  # We can't create a cluster with no node pool defined, but we want to only use
+  # separately managed node pools. So we create the smallest possible default
+  # node pool and immediately delete it.
+  remove_default_node_pool = true
+  initial_node_count       = 1
+  
+  # Basic cluster settings
+  deletion_protection = false
+  
+  # Network configuration
+  network    = "default"
+  subnetwork = "default"
+  
+  # Addons
+  addons_config {
+    http_load_balancing {
+      disabled = false
+    }
+    horizontal_pod_autoscaling {
+      disabled = false
+    }
+  }
+  
+  # Master auth networks - allow access from anywhere for now
+  master_authorized_networks_config {
+    cidr_blocks {
+      cidr_block   = "0.0.0.0/0"
+      display_name = "All networks"
+    }
+  }
+  
+  depends_on = [
+    google_project_service.container,
+    google_project_service.cloudbuild
+  ]
+}
+
+# Separately Managed Node Pool
+resource "google_container_node_pool" "june_nodes" {
+  name       = "june-node-pool"
+  location   = var.region
+  cluster    = google_container_cluster.june_cluster.name
+  node_count = 1
+
+  node_config {
+    preemptible  = true
+    machine_type = "e2-medium"
+    disk_size_gb = 20
+    disk_type    = "pd-standard"
+    
+    # OAuth scopes
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+    
+    # Labels
+    labels = local.common_labels
+    
+    # Metadata
+    metadata = {
+      disable-legacy-endpoints = "true"
+    }
+  }
+  
+  # Management
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+  
+  # Autoscaling
+  autoscaling {
+    min_node_count = 1
+    max_node_count = 3
+  }
 }
 
 # Cloud Build Trigger for June-TTS
