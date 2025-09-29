@@ -30,7 +30,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Debug: Show current directory
         run: |
           pwd
+          echo "Contents of repo root:"
           ls -R .
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull, Tag & Push Keycloak
+        run: |
+          docker pull quay.io/keycloak/keycloak:21.1.1
+          docker tag quay.io/keycloak/keycloak:21.1.1 $REGISTRY/june-idp:21.1.1
+          docker push $REGISTRY/june-idp:21.1.1
+
+      - name: Update Kubernetes Deployment
+        env:
+          KUBECONFIG: ${{ needs.set-kubeconfig.outputs.kubeconfig }}
+        run: |
+          kubectl set image deployment/june-idp \
+            june-idp=$REGISTRY/june-idp:21.1.1 \
+            -n $KUBE_NAMESPACE

@@ -33,7 +33,7 @@ jobs:
             June/services/${{ matrix.service }}
           docker push $REGISTRY/${{ matrix.service }}:$IMAGE_TAG
 
-  # 2. Deploy to Kubernetes (runs after all builds succeed)
+  # 2. Deploy to Kubernetes
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
           kubectl apply -f k8s/june-idp-deployment.yaml
           kubectl apply -f k8s/ingress.yaml
 
-  # 3. Smoke Tests (verify rollout)
+  # 3. Smoke Tests
   smoke-test:
     needs: deploy
     runs-on: ubuntu-latest
