@@ -40,11 +40,12 @@ jobs:
 
       - name: Build and Push Images
         run: |
-          services=(june-stt june-tts june-dark june-idp june-web)
-          for svc in "${services[@]}"; do
-            docker build -t $REGISTRY/$svc:$IMAGE_TAG services/$svc
+            services=(june-stt june-tts june-dark june-idp june-web)
+            for svc in "${services[@]}"; do
+            docker build -t $REGISTRY/$svc:$IMAGE_TAG June/services/$svc
             docker push $REGISTRY/$svc:$IMAGE_TAG
-          done
+            done
+
 
       - name: Deploy to Kubernetes
         env:
