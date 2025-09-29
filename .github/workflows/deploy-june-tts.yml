@@ -3,7 +3,7 @@ name: Deploy june-tts
 on:
   push:
     paths:
-      - 'services/june-tts/**'
+      - 'June/services/june-tts/**'
       - 'k8s/june-tts-deployment.yaml'
 
 env:
@@ -42,7 +42,7 @@ jobs:
 
       - name: Build and Push june-tts Image
         run: |
-          docker build -t $REGISTRY/june-tts:${{ github.sha }} services/june-tts
+          docker build -t $REGISTRY/june-tts:${{ github.sha }} June/services/june-tts
           docker push $REGISTRY/june-tts:${{ github.sha }}
 
       - name: Update Kubernetes Deployment

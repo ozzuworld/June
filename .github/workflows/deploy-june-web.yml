@@ -3,7 +3,7 @@ name: Deploy june-web
 on:
   push:
     paths:
-      - 'services/june-web/**'
+      - 'June/services/june-web/**'
       - 'k8s/june-web-deployment.yaml'
 
 env:

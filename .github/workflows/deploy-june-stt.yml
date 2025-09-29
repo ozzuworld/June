@@ -3,7 +3,7 @@ name: Deploy june-stt
 on:
   push:
     paths:
-      - 'services/june-stt/**'
+      - 'June/services/june-stt/**'
       - 'k8s/june-stt-deployment.yaml'
 
 env:

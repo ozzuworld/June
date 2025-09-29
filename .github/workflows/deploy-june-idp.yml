@@ -3,7 +3,7 @@ name: Deploy june-idp
 on:
   push:
     paths:
-      - 'services/june-idp/**'
+      - 'June/services/june-idp/**'
       - 'k8s/june-idp-deployment.yaml'
 
 env:

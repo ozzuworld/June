@@ -3,7 +3,7 @@ name: Deploy june-dark
 on:
   push:
     paths:
-      - 'services/june-dark/**'
+      - 'June/services/june-dark/**'
       - 'k8s/june-dark-deployment.yaml'
 
 env:
