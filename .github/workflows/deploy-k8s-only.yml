@@ -37,26 +37,17 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ FIXED: Proper kubeconfig setup
       - name: 🔐 Setup Kubeconfig
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > ~/.kube/config
           chmod 600 ~/.kube/config
-          
-          # Verify the config file was created properly
-          echo "📋 Kubeconfig file created:"
-          ls -la ~/.kube/config
-          
-          # Set KUBECONFIG environment variable for all subsequent steps
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
-      # ✅ ADDED: Verify kubeconfig content
       - name: 🔍 Verify kubeconfig
         run: |
           echo "📋 Current kubeconfig contexts:"
           kubectl config get-contexts
-          
           echo "📋 Current context:"
           kubectl config current-context
 
@@ -116,7 +107,7 @@ jobs:
           fi
           
           for service in "${SERVICES_TO_DEPLOY[@]}"; do
-            service=$(echo "$service" | xargs) # trim whitespace
+            service=$(echo "$service" | xargs)
             if [ -f "k8s/${service}-deployment.yaml" ]; then
               echo "🔄 Applying ${service}-deployment.yaml"
               kubectl apply -f "k8s/${service}-deployment.yaml"
@@ -150,7 +141,18 @@ jobs:
           fi
           
           for service in "${SERVICES_TO_CHECK[@]}"; do
-            service=$(echo "$service" | xargs) # trim whitespace
+            service=$(echo "$service" | xargs)
             echo "⏳ Waiting for $service to be ready..."
             if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300
+              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s
+            else
+              echo "⚠️ Deployment $service not found, skipping..."
+            fi
+          done
+
+      - name: 📊 Show deployment status
+        run: |
+          echo "📊 Final deployment status:"
+          kubectl get pods -n $KUBE_NAMESPACE
+          kubectl get services -n $KUBE_NAMESPACE
+          echo "✅ Deployment completed!"
