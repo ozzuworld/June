@@ -147,4 +147,30 @@ jobs:
           if [ -z "$SERVICES_INPUT" ]; then
             SERVICES_TO_CHECK=("${ALL_SERVICES[@]}")
           else
-            I
+            IFS=',' read -ra SERVICES_TO_CHECK <<< "$SERVICES_INPUT"
+          fi
+          
+          for service in "${SERVICES_TO_CHECK[@]}"; do
+            service=$(echo "$service" | xargs)
+            echo "⏳ Waiting for $service to be ready..."
+            if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
+              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s || {
+                echo "❌ $service deployment failed or timed out"
+                kubectl describe deployment "$service" -n $KUBE_NAMESPACE
+                kubectl describe pods -l app="$service" -n $KUBE_NAMESPACE
+                exit 1
+              }
+            else
+              echo "⚠️ Deployment $service not found, skipping..."
+            fi
+          done
+          
+          echo "✅ All deployments processed!"
+
+      - name: 📊 Show deployment status
+        run: |
+          echo "📊 Final deployment status:"
+          kubectl get pods -n $KUBE_NAMESPACE -o wide
+          kubectl get services -n $KUBE_NAMESPACE
+          echo "✅ Deployment completed!"
+
