@@ -1,13 +1,14 @@
 #!/bin/bash
 # Enhanced Kubernetes Setup Script for GPU-enabled June AI services
 # Complete bootstrap solution with NVIDIA GPU Operator via Helm
-# Version 5.0 - Production Ready with Auto-Fix for Pre-installed Drivers
+# Version 6.0 - NO NGC API KEY REQUIRED for public GPU Operator
 
 set -e
 
 echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script v5.0"
-echo "   GPU Support + Auto-Fix for Pre-installed Drivers"
+echo "🚀 Enhanced Kubernetes Setup Script v6.0"
+echo "   GPU Support with Public NVIDIA GPU Operator"
+echo "   NO NGC API KEY REQUIRED!"
 echo "======================================================"
 
 # Global variable to track if host has drivers
@@ -38,7 +39,8 @@ check_gpu_availability() {
         HAS_HOST_DRIVERS=true
         return 0
     else
-        echo "❌ No NVIDIA GPU or drivers detected"
+        echo "ℹ️  No NVIDIA GPU drivers detected on host"
+        echo "   GPU Operator will install drivers if GPU hardware is present"
         HAS_HOST_DRIVERS=false
         return 1
     fi
@@ -78,17 +80,19 @@ check_nfd_running() {
     fi
 }
 
-# Function to install NVIDIA GPU Operator using Helm
+# Function to install NVIDIA GPU Operator using PUBLIC Helm repository
 install_gpu_operator() {
-    echo "🚀 Installing NVIDIA GPU Operator using Helm..."
+    echo "🚀 Installing NVIDIA GPU Operator (Public - No API Key Required)..."
     
     # Ensure Helm is installed
     install_helm
     
-    # Add NVIDIA Helm repository
-    echo "📦 Adding NVIDIA Helm repository..."
-    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+    # Add PUBLIC NVIDIA Helm repository (NO AUTHENTICATION REQUIRED)
+    echo "📦 Adding NVIDIA public Helm repository..."
+    helm repo add nvidia https://nvidia.github.io/gpu-operator
     helm repo update
+    
+    echo "✅ Repository added successfully (no authentication required)"
     
     # Create namespace with privileged PSA policy
     echo "📂 Creating gpu-operator namespace..."
@@ -109,14 +113,18 @@ install_gpu_operator() {
         driver_setting="--set driver.enabled=false"
     fi
     
-    # Install GPU Operator with recommended settings
-    echo "🎮 Installing NVIDIA GPU Operator v25.3.4..."
+    # Get latest GPU Operator version
+    LATEST_VERSION=$(helm search repo nvidia/gpu-operator --versions | grep gpu-operator | head -1 | awk '{print $2}')
+    echo "📦 Latest GPU Operator version: $LATEST_VERSION"
+    
+    # Install GPU Operator from PUBLIC repository
+    echo "🎮 Installing NVIDIA GPU Operator $LATEST_VERSION..."
     helm install gpu-operator \
         --wait \
         --timeout 15m \
         --namespace gpu-operator \
         nvidia/gpu-operator \
-        --version=v25.3.4 \
+        --version=$LATEST_VERSION \
         $driver_setting \
         --set toolkit.enabled=true \
         --set devicePlugin.enabled=true \
@@ -140,6 +148,7 @@ install_gpu_operator() {
     
     # Only wait for driver if it's enabled
     if [ "$HAS_HOST_DRIVERS" != true ]; then
+        echo "⏳ Waiting for driver pods..."
         kubectl wait --for=condition=ready pods \
             --selector=app=nvidia-driver-daemonset \
             --namespace=gpu-operator \
@@ -149,6 +158,7 @@ install_gpu_operator() {
     fi
     
     # Wait for device plugin
+    echo "⏳ Waiting for device plugin..."
     kubectl wait --for=condition=ready pods \
         --selector=app=nvidia-device-plugin-daemonset \
         --namespace=gpu-operator \
@@ -157,6 +167,7 @@ install_gpu_operator() {
     }
     
     # Wait for container toolkit
+    echo "⏳ Waiting for container toolkit..."
     kubectl wait --for=condition=ready pods \
         --selector=app=nvidia-container-toolkit-daemonset \
         --namespace=gpu-operator \
@@ -319,10 +330,8 @@ install_github_cli() {
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
     apt update && apt install gh -y
     
-    echo "🔐 Please authenticate with GitHub:"
-    gh auth login --web || {
-        echo "⚠️  GitHub authentication skipped. You can authenticate later with: gh auth login"
-    }
+    echo "✅ GitHub CLI installed"
+    echo "ℹ️  Authenticate later with: gh auth login"
 }
 
 # Function to setup secrets and environment variables
@@ -335,25 +344,20 @@ setup_secrets() {
     prompt_input "Enter your Gemini API key" GEMINI_API_KEY
     prompt_input "Enter your Chatterbox API key (optional)" CHATTERBOX_API_KEY ""
     
-    # Create GitHub repository secrets (requires gh CLI)
-    if command -v gh &> /dev/null && gh auth status &> /dev/null; then
-        echo "📝 Setting up GitHub repository secrets..."
-        echo "$DOCKERHUB_USERNAME" | gh secret set DOCKERHUB_USERNAME
-        echo "$DOCKERHUB_TOKEN" | gh secret set DOCKERHUB_TOKEN
-        echo "$DOCKERHUB_EMAIL" | gh secret set DOCKERHUB_EMAIL
-        echo "✅ GitHub secrets configured"
-    else
-        echo "⚠️  GitHub CLI not authenticated. Please manually set these repository secrets:"
-        echo "   - DOCKERHUB_USERNAME: $DOCKERHUB_USERNAME"
-        echo "   - DOCKERHUB_TOKEN: [your token]"
-        echo "   - DOCKERHUB_EMAIL: $DOCKERHUB_EMAIL"
-    fi
-    
     # Create Kubernetes secrets
     kubectl create namespace june || true
     kubectl create secret generic june-secrets \
         --from-literal=gemini-api-key="$GEMINI_API_KEY" \
         --from-literal=chatterbox-api-key="$CHATTERBOX_API_KEY" \
+        --namespace=june \
+        --dry-run=client -o yaml | kubectl apply -f -
+        
+    # Create Docker Hub secret
+    kubectl create secret docker-registry dockerhub-secret \
+        --docker-server=docker.io \
+        --docker-username=$DOCKERHUB_USERNAME \
+        --docker-password=$DOCKERHUB_TOKEN \
+        --docker-email=$DOCKERHUB_EMAIL \
         --namespace=june \
         --dry-run=client -o yaml | kubectl apply -f -
         
@@ -420,66 +424,7 @@ EOF
     echo "✅ Storage configured"
 }
 
-# Function to standardize namespaces
-standardize_namespaces() {
-    echo "📝 Standardizing namespaces..."
-    
-    # Only update if k8s directory exists
-    if [ -d "k8s/" ]; then
-        # Update manifest files to use consistent namespace
-        find k8s/ -name "*.yaml" -exec sed -i 's/namespace: june-services/namespace: june/g' {} \; 2>/dev/null || true
-        echo "✅ Namespaces standardized to 'june'"
-    else
-        echo "ℹ️  No k8s directory found, skipping namespace standardization"
-    fi
-}
-
-# Function to validate deployment
-validate_deployment() {
-    echo "🔍 Validating deployment readiness..."
-    
-    # Check if Docker Hub credentials work
-    if echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin docker.io 2>/dev/null; then
-        echo "✅ Docker Hub authentication successful"
-        docker logout docker.io
-        
-        # Check if all required images exist in Docker Hub
-        IMAGES=("june-stt" "june-tts" "june-orchestrator" "june-idp" "june-web" "june-dark")
-        
-        for image in "${IMAGES[@]}"; do
-            if docker manifest inspect "$DOCKERHUB_USERNAME/$image:latest" >/dev/null 2>&1; then
-                echo "✅ $image image found"
-            else
-                echo "⚠️  $image image not found in Docker Hub - you'll need to build and push it"
-            fi
-        done
-    else
-        echo "⚠️  Docker Hub authentication failed - please check credentials"
-    fi
-    
-    # Validate Kubernetes manifests if they exist
-    if [ -d "k8s/" ]; then
-        echo "🔍 Validating Kubernetes manifests..."
-        for file in k8s/*.yaml; do
-            if [ -f "$file" ]; then
-                if kubectl apply --dry-run=client -f "$file" >/dev/null 2>&1; then
-                    echo "✅ $(basename $file) is valid"
-                else
-                    echo "❌ $(basename $file) has validation errors"
-                fi
-            fi
-        done
-    fi
-    
-    # GPU validation
-    echo "🎮 GPU Operator validation:"
-    kubectl get pods -n gpu-operator
-    
-    # Check GPU resources
-    verify_gpu_support
-}
-
-# Function for cleanup on failure
+# Function to cleanup on failure
 cleanup_on_failure() {
     echo "🧹 Cleaning up failed installation..."
     
@@ -513,8 +458,7 @@ prompt_input "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 if check_gpu_availability; then
     prompt_input "Setup GPU Operator? (y/n)" SETUP_GPU "y"
 else
-    echo "❌ No GPU detected. GPU Operator setup will be skipped."
-    SETUP_GPU="n"
+    prompt_input "Setup GPU Operator anyway? (GPU hardware might be present) (y/n)" SETUP_GPU "n"
 fi
 
 prompt_input "Create GPU test workload? (y/n)" CREATE_GPU_TEST "y"
@@ -527,6 +471,8 @@ echo "  GPU Test: $CREATE_GPU_TEST"
 if [ "$HAS_HOST_DRIVERS" = true ]; then
     echo "  Host Drivers: Detected (will use pre-installed drivers)"
 fi
+echo ""
+echo "💡 Note: PUBLIC GPU Operator - No NGC API key required!"
 echo ""
 
 read -p "Continue with installation? (y/n): " confirm
@@ -552,7 +498,7 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
 
-# Configure containerd (GPU Operator will handle NVIDIA runtime configuration)
+# Configure containerd
 echo "🔧 Configuring containerd..."
 systemctl stop containerd
 containerd config default | tee /etc/containerd/config.toml > /dev/null
@@ -569,19 +515,12 @@ echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.d/k8s.conf
 echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/k8s.conf
 sysctl --system
 
-# Install Kubernetes using NEW repository
+# Install Kubernetes
 echo "☸️  Installing Kubernetes..."
-# Remove old repository if it exists
 rm -f /etc/apt/sources.list.d/kubernetes.list
-
-# Create keyrings directory
 mkdir -p /etc/apt/keyrings
-
-# Add the new Kubernetes repository
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
-
-# Update and install
 apt-get update && apt-get install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
 
@@ -607,7 +546,7 @@ chown root:root /root/.kube/config
 echo "🌐 Installing Flannel network plugin..."
 kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
 
-# Remove control plane taints to allow scheduling on master
+# Remove control plane taints
 echo "🔧 Configuring single-node cluster..."
 kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
 kubectl taint nodes --all node-role.kubernetes.io/master- || true
@@ -621,27 +560,21 @@ if [[ $SETUP_GPU == [yY] ]]; then
     install_gpu_operator
 fi
 
-# Prepare for GitHub Actions runner (INTEGRATED FIX)
-prepare_github_runner
-
 # Install enhanced components
 install_github_cli
+prepare_github_runner
 setup_secrets
 install_ingress_controller
 setup_storage
-standardize_namespaces
 
-# Create GPU test workload if requested and GPU is setup
+# Create GPU test workload if requested
 if [[ $SETUP_GPU == [yY] && $CREATE_GPU_TEST == [yY] ]]; then
     if [ "$HAS_HOST_DRIVERS" != true ]; then
-        echo "⏳ Waiting for GPU Operator to be fully ready before creating test workload..."
-        sleep 60  # Give GPU Operator more time to initialize
+        echo "⏳ Waiting for GPU Operator to be fully ready..."
+        sleep 60
         create_gpu_test_pod
     fi
 fi
-
-# Validate deployment
-validate_deployment
 
 # Print final information
 echo ""
@@ -655,13 +588,11 @@ echo "  • NGINX Ingress Controller installed"
 echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 if [[ $SETUP_GPU == [yY] ]]; then
-    echo "  • 🚀 NVIDIA GPU Operator v25.3.4 installed via Helm"
+    echo "  • 🚀 NVIDIA GPU Operator installed (PUBLIC - No API Key)"
     if [ "$HAS_HOST_DRIVERS" = true ]; then
         echo "  • 🎮 GPU support configured (using pre-installed host drivers)"
-        echo "  • ✅ Driver installation disabled (correct for your setup)"
     else
         echo "  • 🎮 GPU support configured with full operator stack"
-        echo "  • 🐳 Automatic driver and container toolkit management"
     fi
 fi
 echo "  • 🔧 GitHub Actions runner environment prepared"
@@ -673,7 +604,7 @@ echo "  3. Deploy your June services using GitHub Actions"
 echo ""
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "🎮 GPU Commands:"
-    echo "  • Check GPU Operator status: kubectl get pods -n gpu-operator"
+    echo "  • Check GPU Operator: kubectl get pods -n gpu-operator"
     echo "  • Check GPU availability: kubectl describe nodes | grep nvidia.com/gpu"
     if [ "$CREATE_GPU_TEST" == [yY] ] && [ "$HAS_HOST_DRIVERS" != true ]; then
         echo "  • View test pod logs: kubectl logs gpu-test -f"
@@ -685,32 +616,13 @@ if [[ $SETUP_GPU == [yY] ]]; then
     echo "    kubectl run gpu-example --image=nvidia/cuda:12.2.2-base-ubuntu22.04 \\"
     echo "    --rm -it --restart=Never --limits nvidia.com/gpu=1 -- nvidia-smi"
     echo ""
-    echo "🔧 GPU Operator Management:"
-    echo "  • View operator status: helm status gpu-operator -n gpu-operator"
-    echo "  • Update operator: helm upgrade gpu-operator nvidia/gpu-operator -n gpu-operator"
-    echo "  • Remove operator: helm uninstall gpu-operator -n gpu-operator"
-    echo ""
-    if [ "$HAS_HOST_DRIVERS" = true ]; then
-        echo "ℹ️  Important Note:"
-        echo "  Your system has NVIDIA drivers pre-installed on the host."
-        echo "  The GPU Operator was configured to use these drivers instead"
-        echo "  of trying to install its own. This prevents unnecessary errors"
-        echo "  and is the recommended configuration."
-        echo ""
-    fi
 fi
 echo "🔍 Useful Commands:"
 echo "  • View cluster: kubectl get all -A"
 echo "  • Check ingress: kubectl get ingress -A"
 echo "  • Monitor deployments: kubectl get pods -n june -w"
-echo "  • Fix runner after install: /root/fix-github-runner.sh"
+echo "  • Fix runner: /root/fix-github-runner.sh"
 echo ""
 echo "🌐 Your external IP: $EXTERNAL_IP"
-echo "📱 Access your services via ingress once deployed"
-echo ""
-echo "💡 GitHub Actions Workflow:"
-echo "  Step 1: sudo ./install-k8s-ubuntu.sh  ✅ (Just completed)"
-echo "  Step 2: sudo ./stage1-runner-only.sh"
-echo "  Step 3: /root/fix-github-runner.sh  (auto-fixes kubectl access)"
 echo ""
 echo "======================================================"
