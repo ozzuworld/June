@@ -1,5 +1,3 @@
-version: "3.9"
-
 # JUNE DARK OSINT FRAMEWORK - MACHINE 2 (Data Spine)
 # 32GB RAM / 8 vCPU / 900GB HDD
 # Ubuntu 22.04 LTS
@@ -303,7 +301,6 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-juneadmin}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-juneR@bbit2024}
       RABBITMQ_DEFAULT_VHOST: /
-      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 1.5GB
     volumes:
       - rabbit-data:/var/lib/rabbitmq
       - ./configs/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
@@ -354,7 +351,7 @@ services:
         reservations:
           memory: 512m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
       interval: 30s
       timeout: 10s
       retries: 3

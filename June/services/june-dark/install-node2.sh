@@ -174,6 +174,17 @@ chmod -R 755 ${INSTALL_DIR}
 # Set proper permissions for data directory
 chmod -R 755 ${DATA_DIR}
 
+log_step "11/11 - Creating Application Setup Script"
+
+cat > ${INSTALL_DIR}/setup-june-app.sh << 'SCRIPT_EOF'
+[... paste the script content above ...]
+SCRIPT_EOF
+
+chmod +x ${INSTALL_DIR}/setup-june-app.sh
+
+log_info "Application setup script created at: ${INSTALL_DIR}/setup-june-app.sh"
+
+
 log_info "
 ${GREEN}═══════════════════════════════════════════════════════════${NC}
 ${GREEN}  June Dark OSINT Framework - Node 2 Installation Complete ${NC}
