@@ -1,11 +1,12 @@
 #!/bin/bash
 # Enhanced Kubernetes Setup Script for Vast.ai
 # Complete bootstrap solution for June AI services (No GitHub Runner)
+# Version 2.0 - With GitHub Actions Runner Preparation
 
 set -e
 
 echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script"
+echo "🚀 Enhanced Kubernetes Setup Script v2.0"
 echo "======================================================"
 
 # Function to prompt for user input
@@ -21,6 +22,58 @@ prompt_input() {
         read -p "$prompt_text: " user_input
         eval "$var_name=\"$user_input\""
     fi
+}
+
+# Function to prepare for GitHub Actions runner (future-proof)
+prepare_github_runner() {
+    echo "🔧 Preparing environment for GitHub Actions runner..."
+    
+    # Create runner directories structure
+    mkdir -p /root/actions-runner
+    
+    # Create .env file template for when runner is installed
+    cat > /root/actions-runner/.env.template << 'EOF'
+# GitHub Actions Runner Environment Variables
+KUBECONFIG=/root/.kube/config
+LANG=C.UTF-8
+EOF
+
+    # Create script to fix runner after installation
+    cat > /root/fix-github-runner.sh << 'EOF'
+#!/bin/bash
+# Auto-fix script for GitHub Actions runner kubectl access
+
+echo "🔧 Configuring GitHub Actions runner for kubectl access..."
+
+# Check if runner is installed
+if [ ! -f "/root/actions-runner/.runner" ]; then
+    echo "⚠️  GitHub Actions runner not found. Install it first with stage1-runner-only.sh"
+    exit 1
+fi
+
+# Setup environment file
+if [ -f "/root/actions-runner/.env.template" ]; then
+    cp /root/actions-runner/.env.template /root/actions-runner/.env
+    echo "✅ Environment variables configured"
+else
+    echo "KUBECONFIG=/root/.kube/config" > /root/actions-runner/.env
+    echo "LANG=C.UTF-8" >> /root/actions-runner/.env
+fi
+
+# Restart runner service if it exists
+if systemctl is-active --quiet actions.runner.*; then
+    echo "🔄 Restarting GitHub Actions runner..."
+    systemctl restart actions.runner.*
+    echo "✅ Runner restarted with new configuration"
+fi
+
+echo "✅ GitHub Actions runner configured for kubectl access!"
+EOF
+
+    chmod +x /root/fix-github-runner.sh
+    
+    echo "✅ GitHub Actions runner environment prepared"
+    echo "ℹ️  When you install the runner later, run: /root/fix-github-runner.sh"
 }
 
 # Function to install GitHub CLI
@@ -315,6 +368,9 @@ kubectl taint nodes --all node-role.kubernetes.io/master- || true
 echo "⏳ Waiting for cluster to be ready..."
 kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
+# Prepare for GitHub Actions runner (INTEGRATED FIX)
+prepare_github_runner
+
 # Install enhanced components
 install_github_cli
 setup_secrets
@@ -343,22 +399,25 @@ echo "  • NGINX Ingress Controller installed"
 echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 echo "  • GPU support configured (if available)"
+echo "  • 🔧 GitHub Actions runner environment prepared"
 echo ""
 echo "🔧 Next Steps:"
-echo "  1. Setup GitHub Actions runner separately if needed"
-echo "  2. Deploy your June services using kubectl or GitHub Actions"
-echo "  3. Ensure your Docker images are built and pushed to Docker Hub"
+echo "  1. Install GitHub Actions runner: ./stage1-runner-only.sh"
+echo "  2. Auto-fix runner access: /root/fix-github-runner.sh"
+echo "  3. Deploy your June services using GitHub Actions"
 echo ""
 echo "🔍 Useful Commands:"
 echo "  • View cluster: kubectl get all -A"
 echo "  • Check ingress: kubectl get ingress -A"
 echo "  • Monitor deployments: kubectl get pods -n june -w"
-echo "  • Check node status: kubectl get nodes -o wide"
+echo "  • Fix runner after install: /root/fix-github-runner.sh"
 echo ""
 echo "🌐 Your external IP: $EXTERNAL_IP"
 echo "📱 Access your services via ingress once deployed"
 echo ""
-echo "💡 To add GitHub Actions runner later:"
-echo "  Run your stage1-runner-only.sh script separately"
+echo "💡 GitHub Actions Workflow:"
+echo "  Step 1: sudo ./k8s-only-install-v2.sh  ✅ (Just completed)"
+echo "  Step 2: sudo ./stage1-runner-only.sh"
+echo "  Step 3: /root/fix-github-runner.sh  (auto-fixes kubectl access)"
 echo ""
 echo "======================================================"
