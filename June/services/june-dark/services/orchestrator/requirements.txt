@@ -1,0 +1,81 @@
+# June Dark OSINT Framework - Orchestrator Requirements
+# Complete Python dependencies for the orchestrator service
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+starlette>=0.27.0
+
+# Database Drivers
+asyncpg>=0.28.0
+psycopg2-binary>=2.9.0
+databases[postgresql]>=0.7.0
+sqlalchemy[asyncio]>=2.0.0
+
+# Message Queue & Task Management
+aio-pika>=9.3.0
+celery>=5.3.0
+
+# Search & NoSQL Databases
+elasticsearch>=8.11.0
+neo4j>=5.14.0
+redis>=5.0.0
+aioredis>=2.0.0
+
+# Object Storage
+minio>=7.2.0
+boto3>=1.34.0
+
+# HTTP Client & Networking
+httpx>=0.25.0
+aiohttp>=3.9.0
+requests>=2.31.0
+
+# Data Processing & Analysis
+pandas>=2.1.0
+numpy>=1.25.0
+
+# File & Data Handling
+aiofiles>=23.2.0
+python-multipart>=0.0.6
+
+# Configuration & Environment
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+cryptography>=41.0.0
+
+# Monitoring & Logging
+structlog>=23.2.0
+
+# Date & Time
+python-dateutil>=2.8.2
+
+# Image Processing
+Pillow>=10.1.0
+
+# Web Scraping & Parsing
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# OSINT Specific
+shodan>=1.30.0
+dnspython>=2.4.0
+
+# Utilities
+click>=8.1.0
+rich>=13.7.0
+colorama>=0.4.0
+tqdm>=4.66.0
+pytz>=2023.3
+
+# Additional async utilities
+async-timeout>=4.0.0
+
+# JSON processing
+jsonschema>=4.20.0
+pyyaml>=6.0.1
