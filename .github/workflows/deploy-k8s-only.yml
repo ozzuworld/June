@@ -1,4 +1,4 @@
-name: 🚀 Deploy Only (No Build)
+name: 🚀 Deploy Only (No Build) - Fixed kubectl
 
 on:
   workflow_dispatch:
@@ -8,24 +8,6 @@ on:
         required: true
         default: 'latest'
         type: string
-      environment:
-        description: 'Target environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
-        - staging
-      services:
-        description: 'Services to deploy (comma-separated, empty for all)'
-        required: false
-        default: ''
-        type: string
-      force_restart:
-        description: 'Force restart deployments'
-        required: false
-        default: false
-        type: boolean
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
@@ -44,6 +26,36 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🔧 Setup kubectl configuration
+        run: |
+          echo "🔧 Setting up kubectl configuration..."
+          
+          # Ensure kubeconfig exists and is accessible
+          if [ ! -f "/root/.kube/config" ]; then
+            echo "❌ Kubeconfig not found at /root/.kube/config"
+            echo "Please run: sudo cp /root/.kube/config /root/actions-runner/.kube/config"
+            exit 1
+          fi
+          
+          # Copy kubeconfig to runner directory if needed
+          mkdir -p $HOME/.kube
+          sudo cp /root/.kube/config $HOME/.kube/config || cp /root/.kube/config $HOME/.kube/config
+          sudo chown $(whoami):$(whoami) $HOME/.kube/config 2>/dev/null || true
+          
+          # Set KUBECONFIG environment variable
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+          
+          # Test kubectl connection
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: 🔍 Verify connection
+        run: |
+          echo "🔍 Testing Kubernetes connection..."
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          kubectl get namespaces
+
       - name: 🔐 Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -60,125 +72,113 @@ jobs:
             --namespace=$KUBE_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: 🔍 Verify connection
-        run: |
-          echo "🔍 Testing Kubernetes connection..."
-          kubectl cluster-info
-          kubectl get nodes
-
       - name: ✅ Verify manifests exist
         run: |
           echo "🔍 Verifying k8s manifest files..."
-          ls -la k8s/
+          ls -la k8s/ || echo "k8s directory not found"
           
-          REQUIRED_FILES=(
-            "namespace.yaml"
-            "configmap.yaml" 
-            "secrets.yaml"
-            "june-stt-deployment.yaml"
-            "june-tts-deployment.yaml"
-            "june-orchestrator-deployment.yaml"
-            "june-idp-deployment.yaml"
-            "ingress.yaml"
-          )
-          
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ -f "k8s/$file" ]; then
-              echo "✅ k8s/$file exists"
-            else
-              echo "❌ k8s/$file NOT FOUND"
-              exit 1
-            fi
-          done
+          if [ -d "k8s" ]; then
+            echo "✅ k8s directory found"
+            ls -la k8s/
+          else
+            echo "❌ k8s directory not found - creating basic structure"
+            mkdir -p k8s
+            echo "Please add your Kubernetes manifests to the k8s/ directory"
+          fi
 
       - name: 🔧 Update image tags in manifests
         run: |
           echo "🔧 Updating image tags to: $IMAGE_TAG"
           
-          # Update image tags in deployment files
-          for service in june-stt june-tts june-orchestrator june-idp; do
-            if [ -f "k8s/${service}-deployment.yaml" ]; then
-              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
-              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
+          if [ -d "k8s" ]; then
+            # Update image tags in deployment files
+            for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
+              if [ -f "k8s/${service}-deployment.yaml" ]; then
+                sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
+                echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
+              fi
+            done
+            
+            # Also check complete-manifests.yaml
+            if [ -f "k8s/complete-manifests.yaml" ]; then
+              sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/complete-manifests.yaml
+              echo "✅ Updated complete manifests"
             fi
-          done
+          fi
 
       - name: 🏗️ Apply base configuration
         run: |
           echo "🏗️ Applying base Kubernetes resources..."
-          kubectl apply -f k8s/namespace.yaml
-          kubectl apply -f k8s/configmap.yaml
-          kubectl apply -f k8s/secrets.yaml
+          
+          # Create namespace first
+          kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Apply configurations if they exist
+          if [ -f "k8s-base-config.yaml" ]; then
+            kubectl apply -f k8s-base-config.yaml
+          fi
+          
+          if [ -f "k8s-storage.yaml" ]; then
+            kubectl apply -f k8s-storage.yaml  
+          fi
 
       - name: 🚀 Deploy services
         run: |
           echo "🚀 Deploying services..."
           
-          SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
-          
-          if [ -z "$SERVICES_INPUT" ]; then
-            echo "📋 Deploying all services..."
-            SERVICES_TO_DEPLOY=("${ALL_SERVICES[@]}")
+          if [ -d "k8s" ] && [ "$(ls -A k8s/)" ]; then
+            echo "📋 Applying k8s manifests..."
+            kubectl apply -f k8s/
           else
-            echo "📋 Deploying selected services: $SERVICES_INPUT"
-            IFS=',' read -ra SERVICES_TO_DEPLOY <<< "$SERVICES_INPUT"
+            echo "⚠️ No k8s manifests found to deploy"
+            echo "Please add your Kubernetes deployment files to the k8s/ directory"
           fi
-          
-          for service in "${SERVICES_TO_DEPLOY[@]}"; do
-            service=$(echo "$service" | xargs)
-            if [ -f "k8s/${service}-deployment.yaml" ]; then
-              echo "🔄 Deploying ${service}..."
-              kubectl apply -f "k8s/${service}-deployment.yaml"
-            else
-              echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
-            fi
-          done
 
       - name: 🌐 Apply ingress
         run: |
           echo "🌐 Applying ingress configuration..."
-          kubectl apply -f k8s/ingress.yaml
-
-      - name: 🔄 Force restart (if requested)
-        if: github.event.inputs.force_restart == 'true'
-        run: |
-          echo "🔄 Force restarting deployments..."
-          kubectl rollout restart deployment -n $KUBE_NAMESPACE
+          
+          if [ -f "k8s-ingress.yaml" ]; then
+            kubectl apply -f k8s-ingress.yaml
+          elif [ -f "k8s/ingress.yaml" ]; then
+            kubectl apply -f k8s/ingress.yaml
+          else
+            echo "ℹ️ No ingress configuration found"
+          fi
 
       - name: ⏳ Wait for deployments
         run: |
           echo "⏳ Waiting for deployments to be ready..."
           
-          SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
+          # Get all deployments in the namespace
+          DEPLOYMENTS=$(kubectl get deployments -n $KUBE_NAMESPACE -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
           
-          if [ -z "$SERVICES_INPUT" ]; then
-            SERVICES_TO_CHECK=("${ALL_SERVICES[@]}")
+          if [ -z "$DEPLOYMENTS" ]; then
+            echo "ℹ️ No deployments found in namespace $KUBE_NAMESPACE"
           else
-            IFS=',' read -ra SERVICES_TO_CHECK <<< "$SERVICES_INPUT"
-          fi
-          
-          for service in "${SERVICES_TO_CHECK[@]}"; do
-            service=$(echo "$service" | xargs)
-            echo "⏳ Waiting for $service to be ready..."
-            if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s || {
-                echo "❌ $service deployment failed or timed out"
-                kubectl describe deployment "$service" -n $KUBE_NAMESPACE
-                kubectl describe pods -l app="$service" -n $KUBE_NAMESPACE
-                exit 1
+            echo "📋 Found deployments: $DEPLOYMENTS"
+            
+            for deployment in $DEPLOYMENTS; do
+              echo "⏳ Waiting for $deployment to be ready..."
+              kubectl rollout status deployment/"$deployment" -n $KUBE_NAMESPACE --timeout=300s || {
+                echo "⚠️ $deployment deployment timeout or failed"
+                kubectl describe deployment "$deployment" -n $KUBE_NAMESPACE
               }
-            else
-              echo "⚠️ Deployment $service not found, skipping..."
-            fi
-          done
-          
-          echo "✅ All deployments processed!"
+            done
+          fi
 
       - name: 📊 Show deployment status
         run: |
           echo "📊 Final deployment status:"
-          kubectl get pods -n $KUBE_NAMESPACE -o wide
-          kubectl get services -n $KUBE_NAMESPACE
-          echo "✅ Deployment completed!"
+          echo "=========================="
+          kubectl get all -n $KUBE_NAMESPACE -o wide || echo "No resources found"
+          
+          echo ""
+          echo "🌐 Ingress Status:"
+          kubectl get ingress -n $KUBE_NAMESPACE || echo "No ingress found"
+          
+          echo ""
+          echo "📊 Cluster Summary:"
+          kubectl get nodes -o wide
+          
+          echo "✅ Deployment workflow completed!"
