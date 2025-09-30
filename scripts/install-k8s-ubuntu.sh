@@ -1,6 +1,6 @@
 #!/bin/bash
 # Kubernetes + GitHub Actions Runner Setup Script for Vast.ai
-# Interactive installation with variable prompts
+# Fixed for container runtime and removed proxy
 
 set -e
 
@@ -32,7 +32,6 @@ prompt_input "Enter your GitHub Actions runner token" GITHUB_TOKEN
 prompt_input "Enter runner name" RUNNER_NAME "vast-ai-k8s-runner"
 prompt_input "Enter additional runner labels (comma-separated)" RUNNER_LABELS "kubernetes,vast-ai,docker"
 prompt_input "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
-prompt_input "Kubectl proxy port for external access" PROXY_PORT "8080"
 prompt_input "Install as service? (y/n)" INSTALL_SERVICE "y"
 
 echo ""
@@ -41,7 +40,6 @@ echo "  Repository: $GITHUB_REPO_URL"
 echo "  Runner Name: $RUNNER_NAME"
 echo "  Runner Labels: $RUNNER_LABELS"
 echo "  Pod Network: $POD_NETWORK_CIDR"
-echo "  Proxy Port: $PROXY_PORT"
 echo "  Install as service: $INSTALL_SERVICE"
 echo ""
 
@@ -68,11 +66,38 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
 
-# Install Kubernetes
+# Configure containerd
+echo "🔧 Configuring containerd..."
+systemctl stop containerd
+containerd config default | tee /etc/containerd/config.toml > /dev/null
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl start containerd
+systemctl enable containerd
+
+# Enable required kernel modules
+echo "🔧 Setting up kernel modules..."
+modprobe br_netfilter
+echo 'br_netfilter' >> /etc/modules-load.d/k8s.conf
+echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.d/k8s.conf
+echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.d/k8s.conf
+echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/k8s.conf
+sysctl --system
+
+# Install Kubernetes using NEW repository
 echo "☸️  Installing Kubernetes..."
-curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
+# Remove old repository if it exists
+rm -f /etc/apt/sources.list.d/kubernetes.list
+
+# Create keyrings directory
+mkdir -p /etc/apt/keyrings
+
+# Add the new Kubernetes repository
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update and install
 apt-get update && apt-get install -y kubelet kubeadm kubectl
+apt-mark hold kubelet kubeadm kubectl
 
 # Get external IP for API server
 EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/)
@@ -84,7 +109,7 @@ echo "  Internal IP: $INTERNAL_IP"
 
 # Initialize Kubernetes
 echo "☸️  Initializing Kubernetes cluster..."
-kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR --apiserver-advertise-address=$INTERNAL_IP
+kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR --apiserver-advertise-address=$INTERNAL_IP --cri-socket=unix:///var/run/containerd/containerd.sock
 
 # Setup kubeconfig
 echo "⚙️  Setting up kubeconfig..."
@@ -175,11 +200,6 @@ else
     echo "   Run './run.sh' to start manually"
 fi
 
-# Start kubectl proxy for external access
-echo "🌐 Starting kubectl proxy on port $PROXY_PORT..."
-pkill -f "kubectl proxy" || true
-nohup kubectl proxy --address='0.0.0.0' --port=$PROXY_PORT --accept-hosts='.*' > /tmp/kubectl-proxy.log 2>&1 &
-
 # Create sample workflow
 echo "📄 Creating sample workflow..."
 mkdir -p /tmp/sample-workflow
@@ -222,8 +242,7 @@ echo ""
 echo "📋 Summary:"
 echo "  • Kubernetes cluster initialized and ready"
 echo "  • GitHub Actions runner installed and running"
-echo "  • kubectl proxy running on port $PROXY_PORT"
-echo "  • External API access: http://$EXTERNAL_IP:$PROXY_PORT"
+echo "  • Direct cluster access (no proxy needed)"
 echo ""
 echo "🔧 Next Steps:"
 echo "  1. Copy the sample workflow from /tmp/sample-workflow/deploy.yml"
@@ -236,8 +255,6 @@ echo "  • Check runner status: systemctl status actions.runner.*"
 echo "  • View cluster: kubectl get all -A"
 echo "  • Runner logs: journalctl -u actions.runner.* -f"
 echo ""
-echo "🌐 Access URLs:"
-echo "  • Kubernetes API: http://$EXTERNAL_IP:$PROXY_PORT"
-echo "  • Your Vast.ai external IP: $EXTERNAL_IP"
+echo "🌐 Your external IP: $EXTERNAL_IP"
 echo ""
 echo "======================================================"

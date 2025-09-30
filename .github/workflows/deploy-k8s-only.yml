@@ -38,13 +38,27 @@ permissions:
 jobs:
   deploy:
     name: 🔧 Deploy to Kubernetes
-    runs-on: self-hosted  # ✅ CHANGED: Use self-hosted runner
+    runs-on: self-hosted
     
     steps:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ REMOVED: Kubeconfig setup step (not needed on self-hosted)
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔐 Create/Update Docker Registry Secret
+        run: |
+          kubectl create secret docker-registry dockerhub-secret \
+            --docker-server=docker.io \
+            --docker-username=${{ secrets.DOCKERHUB_USERNAME }} \
+            --docker-password=${{ secrets.DOCKERHUB_TOKEN }} \
+            --docker-email=${{ secrets.DOCKERHUB_EMAIL }} \
+            --namespace=$KUBE_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       - name: 🔍 Verify connection
         run: |
