@@ -38,18 +38,13 @@ permissions:
 jobs:
   deploy:
     name: 🔧 Deploy to Kubernetes
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # ✅ CHANGED: Use self-hosted runner
     
     steps:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🔐 Setup Kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 --decode > ~/.kube/config
-          chmod 600 ~/.kube/config
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+      # ✅ REMOVED: Kubeconfig setup step (not needed on self-hosted)
 
       - name: 🔍 Verify connection
         run: |
@@ -173,4 +168,3 @@ jobs:
           kubectl get pods -n $KUBE_NAMESPACE -o wide
           kubectl get services -n $KUBE_NAMESPACE
           echo "✅ Deployment completed!"
-
