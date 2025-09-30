@@ -44,14 +44,29 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🔧 Setup Kubernetes Context
+        run: |
+          echo "🔧 Setting up Kubernetes context..."
+          export KUBECONFIG=/root/.kube/config
+          echo "KUBECONFIG=/root/.kube/config" >> $GITHUB_ENV
+          kubectl config current-context
+          echo "✅ Kubernetes context configured"
+
       - name: 🔐 Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: 🏗️ Ensure namespace exists
+        run: |
+          echo "🏗️ Ensuring namespace exists..."
+          kubectl apply -f k8s/namespace.yaml
+          echo "✅ Namespace applied"
+
       - name: 🔐 Create/Update Docker Registry Secret
         run: |
+          echo "🔐 Creating Docker Hub secret..."
           kubectl create secret docker-registry dockerhub-secret \
             --docker-server=docker.io \
             --docker-username=${{ secrets.DOCKERHUB_USERNAME }} \
@@ -59,12 +74,15 @@ jobs:
             --docker-email=${{ secrets.DOCKERHUB_EMAIL }} \
             --namespace=$KUBE_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Docker Hub secret created/updated"
 
       - name: 🔍 Verify connection
         run: |
           echo "🔍 Testing Kubernetes connection..."
           kubectl cluster-info
           kubectl get nodes
+          kubectl get namespaces | grep june
+          echo "✅ Connection verified"
 
       - name: ✅ Verify manifests exist
         run: |
@@ -106,9 +124,9 @@ jobs:
       - name: 🏗️ Apply base configuration
         run: |
           echo "🏗️ Applying base Kubernetes resources..."
-          kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/configmap.yaml
           kubectl apply -f k8s/secrets.yaml
+          echo "✅ Base configuration applied"
 
       - name: 🚀 Deploy services
         run: |
@@ -130,6 +148,7 @@ jobs:
             if [ -f "k8s/${service}-deployment.yaml" ]; then
               echo "🔄 Deploying ${service}..."
               kubectl apply -f "k8s/${service}-deployment.yaml"
+              echo "✅ ${service} deployed"
             else
               echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
             fi
@@ -139,12 +158,14 @@ jobs:
         run: |
           echo "🌐 Applying ingress configuration..."
           kubectl apply -f k8s/ingress.yaml
+          echo "✅ Ingress applied"
 
       - name: 🔄 Force restart (if requested)
         if: github.event.inputs.force_restart == 'true'
         run: |
           echo "🔄 Force restarting deployments..."
           kubectl rollout restart deployment -n $KUBE_NAMESPACE
+          echo "✅ Deployments restarted"
 
       - name: ⏳ Wait for deployments
         run: |
@@ -165,10 +186,15 @@ jobs:
             if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
               kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s || {
                 echo "❌ $service deployment failed or timed out"
+                echo "🔍 Deployment details:"
                 kubectl describe deployment "$service" -n $KUBE_NAMESPACE
+                echo "🔍 Pod details:"
                 kubectl describe pods -l app="$service" -n $KUBE_NAMESPACE
+                echo "🔍 Pod logs:"
+                kubectl logs -l app="$service" -n $KUBE_NAMESPACE --tail=50 || echo "No logs available"
                 exit 1
               }
+              echo "✅ $service is ready"
             else
               echo "⚠️ Deployment $service not found, skipping..."
             fi
@@ -179,6 +205,16 @@ jobs:
       - name: 📊 Show deployment status
         run: |
           echo "📊 Final deployment status:"
+          echo "===================="
+          echo "Pods:"
           kubectl get pods -n $KUBE_NAMESPACE -o wide
+          echo ""
+          echo "Services:"
           kubectl get services -n $KUBE_NAMESPACE
+          echo ""
+          echo "Ingress:"
+          kubectl get ingress -n $KUBE_NAMESPACE
+          echo ""
+          echo "Secrets:"
+          kubectl get secrets -n $KUBE_NAMESPACE
           echo "✅ Deployment completed!"
