@@ -1,12 +1,12 @@
 #!/bin/bash
 # Enhanced Kubernetes Setup Script for GPU-enabled June AI services
-# Complete bootstrap solution with NVIDIA GPU support
-# Version 3.0 - GPU-Optimized Edition
+# Complete bootstrap solution with NVIDIA GPU Operator via Helm
+# Version 4.0 - GPU Operator Edition
 
 set -e
 
 echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script v3.0 (GPU Edition)"
+echo "🚀 Enhanced Kubernetes Setup Script v4.0 (GPU Operator Edition)"
 echo "======================================================"
 
 # Function to prompt for user input
@@ -38,116 +38,145 @@ check_gpu_availability() {
     fi
 }
 
-# Function to install NVIDIA drivers (if not present)
-install_nvidia_drivers() {
-    echo "🔧 Installing NVIDIA drivers..."
+# Function to install Helm
+install_helm() {
+    echo "⎈ Installing Helm..."
     
-    # Update system first
-    apt-get update
-    
-    # Install recommended driver
-    ubuntu-drivers autoinstall
-    
-    # Alternative method if autoinstall doesn't work
-    if ! command -v nvidia-smi &> /dev/null; then
-        echo "⚠️ Autoinstall failed, trying manual installation..."
-        apt-get install -y nvidia-driver-535 nvidia-dkms-535
+    if command -v helm &> /dev/null; then
+        echo "✅ Helm already installed: $(helm version --short)"
+        return 0
     fi
     
-    echo "🔄 System reboot may be required after driver installation"
-    echo "   Run 'sudo reboot' and re-run this script if nvidia-smi doesn't work"
+    # Install Helm using the official installation script
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    ./get_helm.sh
+    rm -f get_helm.sh
+    
+    echo "✅ Helm installed successfully: $(helm version --short)"
 }
 
-# Function to install NVIDIA Container Toolkit
-install_nvidia_container_toolkit() {
-    echo "🐳 Installing NVIDIA Container Toolkit..."
+# Function to check if NFD is already running
+check_nfd_running() {
+    echo "🔍 Checking if Node Feature Discovery (NFD) is already running..."
     
-    # Add NVIDIA Container Toolkit repository
-    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-        gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    local nfd_exists
+    nfd_exists=$(kubectl get nodes -o json | jq '.items[].metadata.labels | keys | any(startswith("feature.node.kubernetes.io"))' 2>/dev/null || echo "false")
     
-    echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /" | \
-        tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-    
-    # Update package list and install
-    apt-get update
-    apt-get install -y nvidia-container-toolkit
-    
-    echo "✅ NVIDIA Container Toolkit installed"
-}
-
-# Function to configure containerd for GPU support
-configure_containerd_gpu() {
-    echo "⚙️ Configuring containerd for GPU support..."
-    
-    # Generate default containerd config if it doesn't exist
-    if [ ! -f /etc/containerd/config.toml ]; then
-        containerd config default | tee /etc/containerd/config.toml > /dev/null
-    fi
-    
-    # Configure containerd to use systemd cgroups
-    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-    
-    # Configure NVIDIA Container Toolkit for containerd
-    nvidia-ctk runtime configure --runtime=containerd --config=/etc/containerd/config.toml
-    
-    # Restart containerd to apply changes
-    systemctl restart containerd
-    systemctl enable containerd
-    
-    echo "✅ containerd configured for GPU support"
-}
-
-# Function to setup GPU support with latest device plugin
-setup_gpu_support() {
-    echo "🎮 Setting up GPU support in Kubernetes..."
-    
-    # Check if NVIDIA GPU is present
-    if ! command -v nvidia-smi &> /dev/null; then
-        echo "❌ NVIDIA GPU drivers not detected. Installing drivers first..."
-        install_nvidia_drivers
-        echo "⚠️ Please reboot and re-run this script to continue with GPU setup"
+    if [ "$nfd_exists" = "true" ]; then
+        echo "✅ NFD is already running in the cluster"
+        return 0
+    else
+        echo "ℹ️  NFD is not running, GPU Operator will deploy it"
         return 1
     fi
+}
+
+# Function to install NVIDIA GPU Operator using Helm
+install_gpu_operator() {
+    echo "🚀 Installing NVIDIA GPU Operator using Helm..."
     
-    echo "📱 NVIDIA GPU detected, configuring device plugin..."
+    # Ensure Helm is installed
+    install_helm
     
-    # Install NVIDIA Container Toolkit if not present
-    if ! command -v nvidia-ctk &> /dev/null; then
-        install_nvidia_container_toolkit
-        configure_containerd_gpu
+    # Add NVIDIA Helm repository
+    echo "📦 Adding NVIDIA Helm repository..."
+    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+    helm repo update
+    
+    # Create namespace with privileged PSA policy
+    echo "📂 Creating gpu-operator namespace..."
+    kubectl create namespace gpu-operator || true
+    kubectl label --overwrite namespace gpu-operator pod-security.kubernetes.io/enforce=privileged
+    
+    # Check if NFD is already running
+    local nfd_disable=""
+    if check_nfd_running; then
+        nfd_disable="--set nfd.enabled=false"
+        echo "⚠️  Disabling NFD deployment in GPU Operator since it's already running"
     fi
     
-    # Wait for cluster to be ready before installing device plugin
-    echo "⏳ Waiting for cluster to be ready..."
-    kubectl wait --for=condition=Ready nodes --all --timeout=300s
+    # Install GPU Operator with recommended settings
+    echo "🎮 Installing NVIDIA GPU Operator v25.3.4..."
+    helm install gpu-operator \
+        --wait \
+        --namespace gpu-operator \
+        nvidia/gpu-operator \
+        --version=v25.3.4 \
+        --set driver.enabled=true \
+        --set toolkit.enabled=true \
+        --set devicePlugin.enabled=true \
+        --set dcgmExporter.enabled=true \
+        --set gfd.enabled=true \
+        --set migManager.enabled=true \
+        --set nodeStatusExporter.enabled=true \
+        --set gds.enabled=false \
+        --set vfioManager.enabled=true \
+        --set sandboxWorkloads.enabled=false \
+        --set vgpuManager.enabled=false \
+        --set vgpuDeviceManager.enabled=false \
+        --set ccManager.enabled=false \
+        $nfd_disable
     
-    # Install latest NVIDIA Device Plugin (v0.17.4 as of Sept 2025)
-    echo "🔌 Installing NVIDIA Device Plugin v0.17.4..."
-    kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.4/deployments/static/nvidia-device-plugin.yml
+    echo "✅ NVIDIA GPU Operator installed successfully!"
     
-    # Wait for device plugin to be ready
-    echo "⏳ Waiting for NVIDIA Device Plugin to be ready..."
-    kubectl wait --namespace kube-system \
-        --for=condition=ready pod \
-        --selector=name=nvidia-device-plugin-ds \
-        --timeout=120s || {
-        echo "⚠️ Device plugin taking longer than expected, continuing..."
+    # Wait for GPU Operator components to be ready
+    echo "⏳ Waiting for GPU Operator components to be ready..."
+    
+    # Wait for the driver daemonset
+    kubectl wait --for=condition=ready pods \
+        --selector=app=nvidia-driver-daemonset \
+        --namespace=gpu-operator \
+        --timeout=600s || {
+        echo "⚠️  Driver pods taking longer than expected, continuing..."
     }
     
-    # Verify GPU resources are available
-    echo "🔍 Verifying GPU resources..."
-    sleep 10
-    GPU_COUNT=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' | tr ' ' '+' | bc 2>/dev/null || echo "0")
+    # Wait for device plugin
+    kubectl wait --for=condition=ready pods \
+        --selector=app=nvidia-device-plugin-daemonset \
+        --namespace=gpu-operator \
+        --timeout=300s || {
+        echo "⚠️  Device plugin pods taking longer than expected, continuing..."
+    }
     
-    if [ "$GPU_COUNT" -gt 0 ]; then
-        echo "✅ GPU support configured successfully! $GPU_COUNT GPU(s) available"
+    # Wait for container toolkit
+    kubectl wait --for=condition=ready pods \
+        --selector=app=nvidia-container-toolkit-daemonset \
+        --namespace=gpu-operator \
+        --timeout=300s || {
+        echo "⚠️  Container toolkit pods taking longer than expected, continuing..."
+    }
+    
+    echo "✅ GPU Operator components are ready!"
+}
+
+# Function to verify GPU support
+verify_gpu_support() {
+    echo "🔍 Verifying GPU support..."
+    
+    # Check GPU resources in nodes
+    echo "🎮 Checking GPU resources in nodes..."
+    sleep 30  # Give some time for resources to be registered
+    
+    local gpu_count
+    gpu_count=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' | tr ' ' '+' | bc 2>/dev/null || echo "0")
+    
+    if [ "$gpu_count" -gt 0 ]; then
+        echo "✅ GPU support verified! $gpu_count GPU(s) available in cluster"
+        
+        echo "📊 GPU Status:"
         kubectl get nodes -o wide
         echo ""
-        kubectl describe nodes | grep -A 5 "Capacity:" | grep "nvidia.com/gpu"
+        kubectl describe nodes | grep -A 5 "Capacity:" | grep "nvidia.com/gpu" || echo "GPU capacity information not yet available"
+        
+        return 0
     else
-        echo "⚠️ GPU resources not yet visible. This may take a few minutes..."
+        echo "⚠️  GPU resources not yet visible. Checking GPU Operator status..."
+        kubectl get pods -n gpu-operator
+        echo ""
+        echo "💡 If pods are still initializing, GPU resources will appear once all pods are ready."
         echo "   You can check later with: kubectl describe nodes | grep nvidia.com/gpu"
+        return 1
     fi
 }
 
@@ -169,13 +198,14 @@ spec:
       resources:
         limits:
           nvidia.com/gpu: 1
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
 EOF
     
-    echo "✅ GPU test pod created. Check with: kubectl logs gpu-test"
+    echo "✅ GPU test pod created. Monitor with: kubectl logs gpu-test -f"
+    echo "   The test should show 'Test PASSED' when GPU is working properly"
 }
 
 # Function to prepare for GitHub Actions runner (future-proof)
@@ -239,7 +269,9 @@ install_github_cli() {
     apt update && apt install gh -y
     
     echo "🔐 Please authenticate with GitHub:"
-    gh auth login --web
+    gh auth login --web || {
+        echo "⚠️  GitHub authentication skipped. You can authenticate later with: gh auth login"
+    }
 }
 
 # Function to setup secrets and environment variables
@@ -358,6 +390,7 @@ validate_deployment() {
     # Check if Docker Hub credentials work
     if echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin docker.io 2>/dev/null; then
         echo "✅ Docker Hub authentication successful"
+        docker logout docker.io
         
         # Check if all required images exist in Docker Hub
         IMAGES=("june-stt" "june-tts" "june-orchestrator" "june-idp" "june-web" "june-dark")
@@ -388,16 +421,20 @@ validate_deployment() {
     fi
     
     # GPU validation
-    if command -v nvidia-smi &> /dev/null; then
-        echo "🎮 GPU validation:"
-        kubectl describe nodes | grep -A 3 "Capacity:" | grep "nvidia.com/gpu" || \
-            echo "⚠️  GPU resources not yet visible in Kubernetes"
-    fi
+    echo "🎮 GPU Operator validation:"
+    kubectl get pods -n gpu-operator
+    
+    # Check GPU resources
+    verify_gpu_support
 }
 
 # Function for cleanup on failure
 cleanup_on_failure() {
     echo "🧹 Cleaning up failed installation..."
+    
+    # Remove GPU Operator if installed
+    helm uninstall gpu-operator -n gpu-operator 2>/dev/null || true
+    kubectl delete namespace gpu-operator 2>/dev/null || true
     
     # Stop and remove containers
     docker stop $(docker ps -aq) 2>/dev/null || true
@@ -423,9 +460,9 @@ prompt_input "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 
 # Check GPU availability and ask for setup
 if check_gpu_availability; then
-    prompt_input "Setup GPU support? (y/n)" SETUP_GPU "y"
+    prompt_input "Setup GPU Operator? (y/n)" SETUP_GPU "y"
 else
-    echo "❌ No GPU detected. GPU support will be skipped."
+    echo "❌ No GPU detected. GPU Operator setup will be skipped."
     SETUP_GPU="n"
 fi
 
@@ -434,7 +471,7 @@ prompt_input "Create GPU test workload? (y/n)" CREATE_GPU_TEST "y"
 echo ""
 echo "🔍 Configuration Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
-echo "  GPU Support: $SETUP_GPU"
+echo "  GPU Operator: $SETUP_GPU"
 echo "  GPU Test: $CREATE_GPU_TEST"
 echo ""
 
@@ -461,29 +498,13 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
 
-# GPU setup before Kubernetes if requested
-if [[ $SETUP_GPU == [yY] ]]; then
-    echo "🎮 Setting up GPU support (pre-Kubernetes)..."
-    
-    # Install NVIDIA drivers if not present
-    if ! command -v nvidia-smi &> /dev/null; then
-        install_nvidia_drivers
-        echo "⚠️ GPU drivers installed. Please reboot and re-run this script."
-        exit 0
-    fi
-    
-    # Install and configure NVIDIA Container Toolkit
-    install_nvidia_container_toolkit
-    configure_containerd_gpu
-else
-    # Configure containerd without GPU support
-    echo "🔧 Configuring containerd..."
-    systemctl stop containerd
-    containerd config default | tee /etc/containerd/config.toml > /dev/null
-    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-    systemctl start containerd
-    systemctl enable containerd
-fi
+# Configure containerd (GPU Operator will handle NVIDIA runtime configuration)
+echo "🔧 Configuring containerd..."
+systemctl stop containerd
+containerd config default | tee /etc/containerd/config.toml > /dev/null
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl start containerd
+systemctl enable containerd
 
 # Enable required kernel modules
 echo "🔧 Setting up kernel modules..."
@@ -541,9 +562,9 @@ kubectl taint nodes --all node-role.kubernetes.io/master- || true
 echo "⏳ Waiting for cluster to be ready..."
 kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
-# Setup GPU support if requested (post-Kubernetes)
+# Install GPU Operator if requested
 if [[ $SETUP_GPU == [yY] ]]; then
-    setup_gpu_support
+    install_gpu_operator
 fi
 
 # Prepare for GitHub Actions runner (INTEGRATED FIX)
@@ -556,8 +577,10 @@ install_ingress_controller
 setup_storage
 standardize_namespaces
 
-# Create GPU test workload if requested
+# Create GPU test workload if requested and GPU is setup
 if [[ $SETUP_GPU == [yY] && $CREATE_GPU_TEST == [yY] ]]; then
+    echo "⏳ Waiting for GPU Operator to be fully ready before creating test workload..."
+    sleep 60  # Give GPU Operator more time to initialize
     create_gpu_test_pod
 fi
 
@@ -576,8 +599,9 @@ echo "  • NGINX Ingress Controller installed"
 echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 if [[ $SETUP_GPU == [yY] ]]; then
-    echo "  • 🎮 GPU support configured with NVIDIA Device Plugin v0.17.4"
-    echo "  • 🐳 NVIDIA Container Toolkit integrated with containerd"
+    echo "  • 🚀 NVIDIA GPU Operator v25.3.4 installed via Helm"
+    echo "  • 🎮 GPU support configured with full operator stack"
+    echo "  • 🐳 Automatic driver and container toolkit management"
 fi
 echo "  • 🔧 GitHub Actions runner environment prepared"
 echo ""
@@ -588,11 +612,17 @@ echo "  3. Deploy your June services using GitHub Actions"
 echo ""
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "🎮 GPU Commands:"
+    echo "  • Check GPU Operator status: kubectl get pods -n gpu-operator"
     echo "  • Check GPU availability: kubectl describe nodes | grep nvidia.com/gpu"
-    echo "  • View test pod logs: kubectl logs gpu-test"
+    echo "  • View test pod logs: kubectl logs gpu-test -f"
     echo "  • Run GPU workload:"
     echo "    kubectl run gpu-example --image=nvidia/cuda:12.2.2-base-ubuntu22.04 \\"
     echo "    --rm -it --restart=Never --limits nvidia.com/gpu=1 -- nvidia-smi"
+    echo ""
+    echo "🔧 GPU Operator Management:"
+    echo "  • View operator status: helm status gpu-operator -n gpu-operator"
+    echo "  • Update operator: helm upgrade gpu-operator nvidia/gpu-operator -n gpu-operator"
+    echo "  • Remove operator: helm uninstall gpu-operator -n gpu-operator"
     echo ""
 fi
 echo "🔍 Useful Commands:"
@@ -605,7 +635,7 @@ echo "🌐 Your external IP: $EXTERNAL_IP"
 echo "📱 Access your services via ingress once deployed"
 echo ""
 echo "💡 GitHub Actions Workflow:"
-echo "  Step 1: sudo ./install-k8s-ubuntu-gpu.sh  ✅ (Just completed)"
+echo "  Step 1: sudo ./install-k8s-ubuntu.sh  ✅ (Just completed)"
 echo "  Step 2: sudo ./stage1-runner-only.sh"
 echo "  Step 3: /root/fix-github-runner.sh  (auto-fixes kubectl access)"
 echo ""
