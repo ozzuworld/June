@@ -1,15 +1,9 @@
 #!/bin/bash
 
-# June Dark OSINT Framework Deployment Script
-# Usage: ./deploy.sh [build|run|stop|logs|status]
+# June Dark OSINT Framework - Docker Compose Deployment Script
+# Multi-service architecture deployment
 
 set -e
-
-# Configuration
-IMAGE_NAME="june-dark"
-TAG="latest"
-CONTAINER_NAME="june-dark-osint"
-PORT="9009"
 
 # Colors for output
 RED='\033[0;31m'
@@ -44,220 +38,266 @@ check_requirements() {
         exit 1
     fi
     
-    # Check nvidia-docker for GPU support
-    if ! docker info | grep -q "nvidia"; then
-        log_warn "NVIDIA Docker runtime not detected. GPU acceleration will not be available."
-        GPU_SUPPORT=false
+    # Check Docker Compose
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        log_error "Docker Compose is not installed. Please install Docker Compose first."
+        exit 1
+    fi
+    
+    # Check system resources
+    TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
+    if [ "$TOTAL_MEM" -lt 30 ]; then
+        log_warn "System has ${TOTAL_MEM}GB RAM. Recommended: 32GB+ for optimal performance."
     else
-        log_info "NVIDIA Docker runtime detected. GPU acceleration available."
-        GPU_SUPPORT=true
+        log_info "System resources: ${TOTAL_MEM}GB RAM ✓"
     fi
     
-    # Check if .env file exists
-    if [ ! -f ".env" ]; then
-        log_warn ".env file not found. Creating template..."
-        create_env_template
-    fi
+    log_info "Requirements check completed."
 }
 
-create_env_template() {
-    cat > .env << EOF
-# June Dark OSINT Framework Configuration
-
-# OpenCTI Configuration (Required for threat intelligence)
-OPENCTI_URL=http://localhost:8080
-OPENCTI_TOKEN=your-opencti-api-token-here
-OPENCTI_SSL_VERIFY=true
-
-# YOLO Configuration
-YOLO_MODEL_SIZE=small
-YOLO_CONFIDENCE=0.4
-YOLO_IOU_THRESHOLD=0.7
-
-# Redis Configuration
-REDIS_URL=redis://localhost:6379/0
-
-# RabbitMQ Configuration
-RABBIT_URL=amqp://guest:guest@localhost:5672//
-
-# GPU Configuration
-CUDA_VISIBLE_DEVICES=0
-GPU_MEMORY_FRACTION=0.8
-
-# Logging
-LOG_LEVEL=INFO
-EOF
-    log_info "Created .env template. Please edit it with your configuration."
-}
-
-build_image() {
-    log_info "Building June Dark OSINT Framework..."
+setup_directories() {
+    log_info "Setting up data directories..."
     
-    # Build with appropriate Dockerfile
-    if [ "$GPU_SUPPORT" = true ]; then
-        log_info "Building with GPU support..."
-        docker build -f Dockerfile.gpu -t ${IMAGE_NAME}:${TAG} .
-    else
-        log_warn "Building CPU-only version..."
-        # Create CPU Dockerfile if it doesn't exist
-        if [ ! -f "Dockerfile.cpu" ]; then
-            log_info "Creating CPU Dockerfile..."
-            sed 's/nvidia\/cuda:12.1.1-cudnn8-runtime-ubuntu22.04/ubuntu:22.04/g' Dockerfile.gpu > Dockerfile.cpu
-            sed -i 's/faiss-gpu/faiss-cpu/g' Dockerfile.cpu
-            sed -i 's/onnxruntime-gpu/onnxruntime/g' Dockerfile.cpu
-        fi
-        docker build -f Dockerfile.cpu -t ${IMAGE_NAME}:${TAG} .
-    fi
+    # Create required directories
+    sudo mkdir -p /data/june-dark/docker-volumes/{es-data,kibana-data,neo4j-data,neo4j-logs,pg-data,redis-data,rabbit-data,minio-data,artifacts,logs}
     
-    log_info "Build completed successfully!"
+    # Set proper permissions
+    sudo chown -R 1000:1000 /data/june-dark/docker-volumes/
+    
+    log_info "Data directories created and configured."
 }
 
-run_container() {
+build_services() {
+    log_info "Building June Dark OSINT Framework services..."
+    
+    # Build all services
+    docker compose build --no-cache
+    
+    log_info "All services built successfully!"
+}
+
+start_services() {
     log_info "Starting June Dark OSINT Framework..."
     
-    # Stop existing container if running
-    if docker ps -q -f name=${CONTAINER_NAME} | grep -q .; then
-        log_warn "Stopping existing container..."
-        docker stop ${CONTAINER_NAME}
-        docker rm ${CONTAINER_NAME}
-    fi
+    # Start infrastructure services first
+    log_info "Starting infrastructure services (databases, storage)..."
+    docker compose up -d elasticsearch kibana postgres neo4j redis rabbitmq minio
     
-    # Prepare Docker run command
-    DOCKER_CMD="docker run -d --name ${CONTAINER_NAME}"
+    # Wait for infrastructure to be ready
+    log_info "Waiting for infrastructure services to be healthy..."
+    sleep 60
     
-    # Add GPU support if available
-    if [ "$GPU_SUPPORT" = true ]; then
-        DOCKER_CMD="$DOCKER_CMD --gpus all"
-        log_info "GPU acceleration enabled"
-    fi
+    # Check infrastructure health
+    check_infrastructure_health
     
-    # Add environment variables from .env file
-    DOCKER_CMD="$DOCKER_CMD --env-file .env"
+    # Start application services
+    log_info "Starting application services..."
+    docker compose up -d orchestrator enricher ops-ui collector
     
-    # Add port mapping
-    DOCKER_CMD="$DOCKER_CMD -p ${PORT}:9009"
+    # Wait for application services
+    log_info "Waiting for application services to start..."
+    sleep 45
     
-    # Add restart policy
-    DOCKER_CMD="$DOCKER_CMD --restart unless-stopped"
-    
-    # Add image
-    DOCKER_CMD="$DOCKER_CMD ${IMAGE_NAME}:${TAG}"
-    
-    # Run the container
-    eval $DOCKER_CMD
-    
-    log_info "Container started successfully!"
-    log_blue "Access the API at: http://localhost:${PORT}"
-    log_blue "API Documentation: http://localhost:${PORT}/docs"
-    log_blue "Health Check: http://localhost:${PORT}/health"
-    
-    # Wait a moment and check status
-    sleep 3
-    check_status
+    log_info "June Dark OSINT Framework started successfully!"
+    show_access_info
 }
 
-stop_container() {
+stop_services() {
     log_info "Stopping June Dark OSINT Framework..."
-    
-    if docker ps -q -f name=${CONTAINER_NAME} | grep -q .; then
-        docker stop ${CONTAINER_NAME}
-        docker rm ${CONTAINER_NAME}
-        log_info "Container stopped and removed."
-    else
-        log_warn "Container is not running."
-    fi
+    docker compose down
+    log_info "All services stopped."
+}
+
+restart_services() {
+    log_info "Restarting June Dark OSINT Framework..."
+    stop_services
+    sleep 5
+    start_services
 }
 
 show_logs() {
     log_info "Showing logs for June Dark OSINT Framework..."
     
-    if docker ps -q -f name=${CONTAINER_NAME} | grep -q .; then
-        docker logs -f ${CONTAINER_NAME}
+    case "${2:-all}" in
+        orchestrator|collector|enricher|ops-ui)
+            docker compose logs -f $2
+            ;;
+        infrastructure|infra)
+            docker compose logs -f elasticsearch postgres neo4j redis rabbitmq minio
+            ;;
+        all|*)
+            docker compose logs -f
+            ;;
+    esac
+}
+
+check_infrastructure_health() {
+    log_info "Checking infrastructure health..."
+    
+    # Check Elasticsearch
+    if curl -s -f http://localhost:9200/_cluster/health > /dev/null 2>&1; then
+        log_info "✅ Elasticsearch is healthy"
     else
-        log_error "Container is not running."
-        exit 1
+        log_warn "⚠️  Elasticsearch health check failed"
+    fi
+    
+    # Check Neo4j
+    if curl -s -f http://localhost:7474/ > /dev/null 2>&1; then
+        log_info "✅ Neo4j is responding"
+    else
+        log_warn "⚠️  Neo4j health check failed"
+    fi
+    
+    # Check RabbitMQ
+    if curl -s -f http://localhost:15672 > /dev/null 2>&1; then
+        log_info "✅ RabbitMQ Management is accessible"
+    else
+        log_warn "⚠️  RabbitMQ health check failed"
+    fi
+    
+    # Check MinIO
+    if curl -s -f http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+        log_info "✅ MinIO is healthy"
+    else
+        log_warn "⚠️  MinIO health check failed"
     fi
 }
 
 check_status() {
     log_info "Checking June Dark OSINT Framework status..."
     
-    if docker ps -q -f name=${CONTAINER_NAME} | grep -q .; then
-        log_info "Container is running."
-        
-        # Check health endpoint
-        sleep 2
-        if curl -s -f http://localhost:${PORT}/health > /dev/null 2>&1; then
-            log_info "✅ Health check passed - API is responding"
-            
-            # Show detailed status
-            echo -e "\n${BLUE}Service Status:${NC}"
-            curl -s http://localhost:${PORT}/health | python3 -m json.tool 2>/dev/null || echo "Health endpoint responded but JSON parsing failed"
-        else
-            log_warn "⚠️  Container is running but health check failed"
-            log_info "Check logs with: $0 logs"
-        fi
-        
-        # Show resource usage
-        echo -e "\n${BLUE}Resource Usage:${NC}"
-        docker stats ${CONTAINER_NAME} --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
-        
+    echo -e "\n${BLUE}=== Container Status ===${NC}"
+    docker compose ps
+    
+    echo -e "\n${BLUE}=== Service Health Checks ===${NC}"
+    
+    # Check Orchestrator API
+    if curl -s -f http://localhost:8080/health > /dev/null 2>&1; then
+        log_info "✅ Orchestrator API is healthy"
+        echo "   📖 API Documentation: http://localhost:8080/docs"
     else
-        log_error "Container is not running."
-        exit 1
+        log_warn "⚠️  Orchestrator API health check failed"
+    fi
+    
+    # Check Enricher API  
+    if curl -s -f http://localhost:9010/health > /dev/null 2>&1; then
+        log_info "✅ Enricher API is healthy"
+    else
+        log_warn "⚠️  Enricher API health check failed"
+    fi
+    
+    # Check Ops UI
+    if curl -s -f http://localhost:8090/health > /dev/null 2>&1; then
+        log_info "✅ Operations UI is healthy"
+        echo "   📊 Operations Dashboard: http://localhost:8090"
+    else
+        log_warn "⚠️  Operations UI health check failed"
+    fi
+    
+    # Infrastructure health
+    check_infrastructure_health
+    
+    echo -e "\n${BLUE}=== Resource Usage ===${NC}"
+    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" | head -10
+}
+
+show_access_info() {
+    echo -e "\n${GREEN}🎉 June Dark OSINT Framework is running!${NC}"
+    echo -e "\n${BLUE}=== Access Points ===${NC}"
+    echo "📖 Main API Documentation:    http://localhost:8080/docs"
+    echo "📊 Operations Dashboard:      http://localhost:8090"
+    echo "🔍 Kibana Analytics:          http://localhost:5601"
+    echo "🕸️  Neo4j Browser:            http://localhost:7474"
+    echo "📨 RabbitMQ Management:       http://localhost:15672"
+    echo "💾 MinIO Console:             http://localhost:9001"
+    echo "⚙️  Enricher API:             http://localhost:9010/docs"
+    
+    echo -e "\n${BLUE}=== Default Credentials ===${NC}"
+    echo "Neo4j:    neo4j / juneN3o4j2024"
+    echo "RabbitMQ: juneadmin / juneR@bbit2024"
+    echo "MinIO:    juneadmin / juneM1ni0P@ss2024"
+    
+    echo -e "\n${BLUE}=== Quick Health Check ===${NC}"
+    echo "curl http://localhost:8080/health"
+}
+
+clean_system() {
+    log_warn "This will remove all containers, images, and data. Are you sure? (y/N)"
+    read -r response
+    if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+        log_info "Cleaning up June Dark OSINT Framework..."
+        docker compose down -v
+        docker system prune -af
+        sudo rm -rf /data/june-dark/docker-volumes/
+        log_info "System cleaned."
+    else
+        log_info "Clean operation cancelled."
     fi
 }
 
 show_help() {
-    echo "June Dark OSINT Framework Deployment Script"
+    echo "June Dark OSINT Framework - Docker Compose Deployment Script"
     echo ""
-    echo "Usage: $0 [COMMAND]"
+    echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  build     Build the Docker image"
-    echo "  run       Run the container"
-    echo "  stop      Stop and remove the container"
-    echo "  logs      Show container logs (follow mode)"
-    echo "  status    Show container and service status"
-    echo "  restart   Restart the container"
-    echo "  help      Show this help message"
+    echo "  setup         Set up data directories and requirements"
+    echo "  build         Build all Docker images"
+    echo "  start         Start all services"
+    echo "  stop          Stop all services"
+    echo "  restart       Restart all services"
+    echo "  status        Show service status and health"
+    echo "  logs [svc]    Show logs (all, orchestrator, collector, enricher, ops-ui, infra)"
+    echo "  clean         Clean up all containers and data (DESTRUCTIVE)"
+    echo "  help          Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 build                 # Build the image"
-    echo "  $0 run                   # Start the service"
+    echo "  $0 setup                 # Initial setup"
+    echo "  $0 build                 # Build all services"
+    echo "  $0 start                 # Start the framework"
     echo "  $0 status                # Check if everything is working"
-    echo "  $0 logs                  # View real-time logs"
+    echo "  $0 logs orchestrator     # View orchestrator logs"
+    echo "  $0 logs infra           # View infrastructure logs"
     echo ""
-    echo "Configuration:"
-    echo "  Edit .env file to configure OpenCTI, Redis, and other settings"
-    echo "  Default API port: ${PORT}"
-    echo "  Default API docs: http://localhost:${PORT}/docs"
+    echo "Full Deployment:"
+    echo "  $0 setup && $0 build && $0 start"
 }
 
 # Main script logic
 case "${1:-help}" in
+    setup)
+        check_requirements
+        setup_directories
+        ;;
     build)
         check_requirements
-        build_image
+        build_services
         ;;
-    run)
-        check_requirements
-        run_container
+    start)
+        setup_directories
+        start_services
         ;;
     stop)
-        stop_container
+        stop_services
+        ;;
+    restart)
+        restart_services
         ;;
     logs)
-        show_logs
+        show_logs "$@"
         ;;
     status)
         check_status
         ;;
-    restart)
-        stop_container
-        sleep 2
+    clean)
+        clean_system
+        ;;
+    deploy)
+        # Full deployment
         check_requirements
-        run_container
+        setup_directories
+        build_services
+        start_services
         ;;
     help|--help|-h)
         show_help
