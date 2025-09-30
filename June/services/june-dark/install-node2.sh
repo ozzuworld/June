@@ -151,8 +151,8 @@ mkdir -p ${INSTALL_DIR}/services/enricher/{app,app/processors,app/utils}
 mkdir -p ${INSTALL_DIR}/configs/{elasticsearch,neo4j,kibana}
 
 log_step "8/10 - Installing Python Tools (for management scripts)"
-pip3 install --upgrade pip
-pip3 install docker-compose httpx requests
+pip3 install --upgrade pip --break-system-packages
+pip3 install docker-compose httpx requests --break-system-packages
 
 log_step "9/10 - Creating Management Aliases"
 cat >> /root/.bashrc <<'EOF'
