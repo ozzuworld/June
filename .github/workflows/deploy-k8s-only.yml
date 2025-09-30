@@ -1,8 +1,13 @@
-name: 🚀 Deploy to Kubernetes
+name: 🚀 Deploy Only (No Build)
 
 on:
   workflow_dispatch:
     inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: true
+        default: 'latest'
+        type: string
       environment:
         description: 'Target environment'
         required: true
@@ -11,26 +16,28 @@ on:
         options:
         - production
         - staging
-      force_restart:
-        description: 'Force restart all deployments'
-        required: false
-        default: false
-        type: boolean
       services:
-        description: 'Services to deploy (comma-separated, leave empty for all)'
+        description: 'Services to deploy (comma-separated, empty for all)'
         required: false
         default: ''
         type: string
+      force_restart:
+        description: 'Force restart deployments'
+        required: false
+        default: false
+        type: boolean
 
 env:
+  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
   KUBE_NAMESPACE: june
-  
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+
 permissions:
   contents: read
 
 jobs:
   deploy:
-    name: 🔧 Deploy to K8s
+    name: 🔧 Deploy to Kubernetes
     runs-on: ubuntu-latest
     
     steps:
@@ -44,16 +51,9 @@ jobs:
           chmod 600 ~/.kube/config
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
 
-      - name: 🔍 Verify kubeconfig
+      - name: 🔍 Verify connection
         run: |
-          echo "📋 Current kubeconfig contexts:"
-          kubectl config get-contexts
-          echo "📋 Current context:"
-          kubectl config current-context
-
-      - name: 🔍 Verify Kubernetes connection
-        run: |
-          echo "🔍 Testing connection to cluster..."
+          echo "🔍 Testing Kubernetes connection..."
           kubectl cluster-info
           kubectl get nodes
 
@@ -69,9 +69,7 @@ jobs:
             "june-stt-deployment.yaml"
             "june-tts-deployment.yaml"
             "june-orchestrator-deployment.yaml"
-            "june-dark-deployment.yaml"
             "june-idp-deployment.yaml"
-            "june-web-deployment.yaml"
             "ingress.yaml"
           )
           
@@ -81,6 +79,18 @@ jobs:
             else
               echo "❌ k8s/$file NOT FOUND"
               exit 1
+            fi
+          done
+
+      - name: 🔧 Update image tags in manifests
+        run: |
+          echo "🔧 Updating image tags to: $IMAGE_TAG"
+          
+          # Update image tags in deployment files
+          for service in june-stt june-tts june-orchestrator june-idp; do
+            if [ -f "k8s/${service}-deployment.yaml" ]; then
+              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
+              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
             fi
           done
 
@@ -96,7 +106,7 @@ jobs:
           echo "🚀 Deploying services..."
           
           SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-dark" "june-idp" "june-web")
+          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
           
           if [ -z "$SERVICES_INPUT" ]; then
             echo "📋 Deploying all services..."
@@ -109,7 +119,7 @@ jobs:
           for service in "${SERVICES_TO_DEPLOY[@]}"; do
             service=$(echo "$service" | xargs)
             if [ -f "k8s/${service}-deployment.yaml" ]; then
-              echo "🔄 Applying ${service}-deployment.yaml"
+              echo "🔄 Deploying ${service}..."
               kubectl apply -f "k8s/${service}-deployment.yaml"
             else
               echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
@@ -121,10 +131,10 @@ jobs:
           echo "🌐 Applying ingress configuration..."
           kubectl apply -f k8s/ingress.yaml
 
-      - name: 🔄 Force restart deployments (if requested)
+      - name: 🔄 Force restart (if requested)
         if: github.event.inputs.force_restart == 'true'
         run: |
-          echo "🔄 Force restarting all deployments..."
+          echo "🔄 Force restarting deployments..."
           kubectl rollout restart deployment -n $KUBE_NAMESPACE
 
       - name: ⏳ Wait for deployments
@@ -132,27 +142,9 @@ jobs:
           echo "⏳ Waiting for deployments to be ready..."
           
           SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-dark" "june-idp" "june-web")
+          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
           
           if [ -z "$SERVICES_INPUT" ]; then
             SERVICES_TO_CHECK=("${ALL_SERVICES[@]}")
           else
-            IFS=',' read -ra SERVICES_TO_CHECK <<< "$SERVICES_INPUT"
-          fi
-          
-          for service in "${SERVICES_TO_CHECK[@]}"; do
-            service=$(echo "$service" | xargs)
-            echo "⏳ Waiting for $service to be ready..."
-            if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s
-            else
-              echo "⚠️ Deployment $service not found, skipping..."
-            fi
-          done
-
-      - name: 📊 Show deployment status
-        run: |
-          echo "📊 Final deployment status:"
-          kubectl get pods -n $KUBE_NAMESPACE
-          kubectl get services -n $KUBE_NAMESPACE
-          echo "✅ Deployment completed!"
+            I
