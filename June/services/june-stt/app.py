@@ -6,6 +6,7 @@ import time
 import uuid
 import asyncio
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -77,7 +78,7 @@ class Config:
     TRANSCRIPT_RETENTION_HOURS = int(os.getenv("TRANSCRIPT_RETENTION_HOURS", "24"))
     
     # Service
-    PORT = int(os.getenv("PORT", "8000"))  # Fixed to match service expectation
+    PORT = int(os.getenv("PORT", "8000"))
 
 config = Config()
 
@@ -105,22 +106,31 @@ class TranscriptNotification(BaseModel):
     timestamp: datetime
     metadata: Dict[str, Any] = {}
 
-# Faster-Whisper Service (Optimized)
+# Enhanced Faster-Whisper Service with Model Persistence
 class WhisperService:
     def __init__(self):
         self.model = None
         self.device = config.WHISPER_DEVICE
         self.compute_type = config.WHISPER_COMPUTE_TYPE
         self.is_loading = False
+        self.model_path = "/app/models"  # Persistent model storage
+        self.is_ready = threading.Event()
+        self.load_error = None
         
     async def initialize(self):
-        """Initialize Faster-Whisper model with optimizations"""
+        """Initialize Faster-Whisper model with persistent storage and readiness tracking"""
         if self.model or self.is_loading:
             return
             
         self.is_loading = True
+        self.load_error = None
+        
         try:
+            # Ensure model directory exists
+            os.makedirs(self.model_path, exist_ok=True)
+            
             logger.info(f"🔄 Loading Faster-Whisper model {config.WHISPER_MODEL} on {self.device} ({self.compute_type})")
+            logger.info(f"📁 Model cache directory: {self.model_path}")
             
             # Run model loading in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
@@ -132,24 +142,78 @@ class WhisperService:
                     compute_type=self.compute_type,
                     cpu_threads=config.WHISPER_CPU_THREADS if self.device == "cpu" else None,
                     num_workers=config.WHISPER_NUM_WORKERS,
-                    download_root="/app/models"  # Cache directory
+                    download_root=self.model_path,  # Persistent storage
+                    local_files_only=False  # Allow download if not cached
                 )
             )
-            logger.info("✅ Faster-Whisper model loaded successfully")
+            
+            # Mark as ready for low-latency requests
+            self.is_ready.set()
+            logger.info("✅ Faster-Whisper model loaded and ready for inference")
+            logger.info(f"🚀 Model cached at: {self.model_path}")
+            
         except Exception as e:
             logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
             self.model = None
+            self.load_error = str(e)
             raise
         finally:
             self.is_loading = False
+
+    def is_model_ready(self) -> bool:
+        """Check if model is ready for inference"""
+        return self.is_ready.is_set() and self.model is not None
+
+    async def wait_for_ready(self, timeout: float = 300.0) -> bool:
+        """Wait for model to be ready with timeout"""
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self.is_ready.wait, timeout
+            )
+        except Exception:
+            return False
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get detailed model status"""
+        if self.model and self.is_ready.is_set():
+            status = "ready"
+        elif self.is_loading:
+            status = "loading"
+        elif self.load_error:
+            status = "error"
+        else:
+            status = "not_loaded"
+            
+        return {
+            "status": status,
+            "ready": self.is_model_ready(),
+            "loading": self.is_loading,
+            "error": self.load_error,
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "model_path": self.model_path
+        }
     
     async def transcribe(self, audio_file_path: str, language: Optional[str] = None, 
                         task: str = "transcribe", temperature: float = 0.0) -> Dict[str, Any]:
         """Transcribe audio file with optimizations"""
-        if not self.model:
+        if not self.is_model_ready():
             if self.is_loading:
-                raise HTTPException(status_code=503, detail="Faster-Whisper model is still loading, please try again")
-            raise HTTPException(status_code=500, detail="Faster-Whisper model not initialized")
+                raise HTTPException(
+                    status_code=503, 
+                    detail="Faster-Whisper model is still loading, please try again in a few moments"
+                )
+            elif self.load_error:
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Faster-Whisper model failed to load: {self.load_error}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Faster-Whisper model not initialized"
+                )
         
         try:
             start_time = time.time()
@@ -261,19 +325,21 @@ async def lifespan(app: FastAPI):
     global cleanup_task
     
     logger.info("🚀 Starting June STT Service v2.0.0 (Faster-Whisper)")
+    logger.info(f"🔧 Config: Model={config.WHISPER_MODEL}, Device={config.WHISPER_DEVICE}, Compute={config.WHISPER_COMPUTE_TYPE}")
     
-    # Initialize Faster-Whisper model
+    # Initialize Faster-Whisper model at startup
+    logger.info("🔄 Initializing Faster-Whisper model at startup...")
     try:
         await whisper_service.initialize()
+        logger.info("✅ Model initialization completed successfully")
     except Exception as e:
         logger.error(f"❌ Failed to initialize Faster-Whisper service: {e}")
-        # Continue anyway - model will be loaded on first request
+        logger.warning("⚠️ Service will continue but model loading will be attempted on first request")
     
     # Start background cleanup task
     cleanup_task = asyncio.create_task(periodic_cleanup())
     
     logger.info("✅ June STT Service started successfully")
-    logger.info(f"✅ Model: {config.WHISPER_MODEL}, Device: {config.WHISPER_DEVICE}, Compute: {config.WHISPER_COMPUTE_TYPE}")
     
     yield
     
@@ -307,40 +373,66 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
+    model_status_info = whisper_service.get_status()
     
     return {
         "service": "June STT Service (Faster-Whisper)",
-        "version": "2.0.0",
-        "status": "healthy",
+        "version": "2.0.0", 
+        "status": "healthy" if model_status_info["ready"] else "initializing",
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
         "compute_type": config.WHISPER_COMPUTE_TYPE,
-        "model_status": model_status,
+        "model_status": model_status_info["status"],
+        "model_ready": model_status_info["ready"],
         "auth_available": AUTH_AVAILABLE,
         "endpoints": {
             "transcribe": "/v1/transcribe",
             "transcripts": "/v1/transcripts/{transcript_id}",
-            "health": "/healthz"
+            "health": "/healthz",
+            "ready": "/ready"
         }
     }
 
 @app.get("/healthz")
 async def health_check():
-    """Health check for Kubernetes/Docker"""
-    model_status = "ready" if whisper_service.model else ("loading" if whisper_service.is_loading else "not_loaded")
+    """Kubernetes liveness probe - always healthy if service is running"""
+    model_status_info = whisper_service.get_status()
     
     return {
         "status": "healthy",
         "service": "june-stt",
         "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "whisper_model_status": model_status,
+        "whisper_model_status": model_status_info["status"],
+        "model_ready": model_status_info["ready"],
         "auth_status": "keycloak" if AUTH_AVAILABLE else "fallback",
         "transcripts_in_memory": len(transcript_storage),
         "device": config.WHISPER_DEVICE,
         "compute_type": config.WHISPER_COMPUTE_TYPE
     }
+
+@app.get("/ready")
+async def readiness_check():
+    """Kubernetes readiness probe - only ready when model is loaded"""
+    model_status_info = whisper_service.get_status()
+    
+    if model_status_info["ready"]:
+        return {
+            "status": "ready",
+            "model_loaded": True,
+            "service": "june-stt",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    else:
+        raise HTTPException(
+            status_code=503, 
+            detail={
+                "status": "not_ready",
+                "model_status": model_status_info["status"],
+                "message": f"Service initializing - model status: {model_status_info['status']}",
+                "error": model_status_info.get("error")
+            }
+        )
 
 @app.post("/v1/transcribe", response_model=TranscriptionResult)
 async def transcribe_audio(
@@ -364,10 +456,20 @@ async def transcribe_audio(
     start_time = time.time()
     user_id = extract_user_id(auth_data)
     
-    # Ensure Faster-Whisper model is loaded
-    if not whisper_service.model and not whisper_service.is_loading:
-        logger.info("🔄 Loading Faster-Whisper model on demand...")
-        await whisper_service.initialize()
+    # Check if model is ready, if not try to initialize
+    if not whisper_service.is_model_ready():
+        if not whisper_service.is_loading:
+            logger.info("🔄 Loading Faster-Whisper model on demand...")
+            await whisper_service.initialize()
+        
+        # Wait for model to be ready (with timeout)
+        logger.info("⏳ Waiting for model to be ready...")
+        ready = await whisper_service.wait_for_ready(timeout=60.0)
+        if not ready:
+            raise HTTPException(
+                status_code=503, 
+                detail="Model is taking too long to load. Please try again in a few minutes."
+            )
     
     try:
         # Validate file type
@@ -427,7 +529,9 @@ async def transcribe_audio(
                         "processing_time_ms": result["processing_time_ms"],
                         "task": task,
                         "filename": audio_file.filename,
-                        "engine": "faster-whisper"
+                        "engine": "faster-whisper",
+                        "model": config.WHISPER_MODEL,
+                        "device": config.WHISPER_DEVICE
                     }
                 )
                 background_tasks.add_task(orchestrator_client.notify_transcript, notification)
@@ -513,6 +617,7 @@ async def get_stats(auth_data: dict = Depends(require_user_auth)):
     """Get service statistics"""
     user_id = extract_user_id(auth_data)
     user_transcripts = [t for t in transcript_storage.values() if t.user_id == user_id]
+    model_status_info = whisper_service.get_status()
     
     return {
         "user_transcripts": len(user_transcripts),
@@ -521,8 +626,9 @@ async def get_stats(auth_data: dict = Depends(require_user_auth)):
         "device": config.WHISPER_DEVICE,
         "compute_type": config.WHISPER_COMPUTE_TYPE,
         "auth_provider": "keycloak" if AUTH_AVAILABLE else "fallback",
-        "model_loaded": whisper_service.model is not None,
-        "model_loading": whisper_service.is_loading,
+        "model_loaded": model_status_info["ready"],
+        "model_loading": model_status_info["loading"],
+        "model_status": model_status_info["status"],
         "engine": "faster-whisper"
     }
 
