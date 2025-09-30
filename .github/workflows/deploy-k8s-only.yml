@@ -26,11 +26,6 @@ on:
         required: false
         default: false
         type: boolean
-      skip_missing_images:
-        description: 'Skip services with missing images instead of failing'
-        required: false
-        default: true
-        type: boolean
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
@@ -81,20 +76,13 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
           echo "✅ Docker Hub secret created/updated"
 
-      - name: 🔍 Verify connection and setup
+      - name: 🔍 Verify connection
         run: |
           echo "🔍 Testing Kubernetes connection..."
           kubectl cluster-info
           kubectl get nodes
           kubectl get namespaces | grep june
-          
-          echo "🎮 Checking GPU availability..."
-          kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' || echo "No GPU resources found"
-          
-          echo "💾 Checking storage..."
-          kubectl get pv,pvc -A
-          
-          echo "✅ Connection and setup verified"
+          echo "✅ Connection verified"
 
       - name: ✅ Verify manifests exist
         run: |
@@ -121,12 +109,67 @@ jobs:
             fi
           done
 
-      - name: 🔍 Verify Docker images exist and pull them
+      - name: 🔧 Update image tags in manifests
         run: |
-          echo "🔍 Checking and pulling Docker images..."
-          AVAILABLE_SERVICES=()
-          MISSING_SERVICES=()
-          FAILED_SERVICES=()
+          echo "🔧 Updating image tags to: $IMAGE_TAG"
+          
+          # Update image tags in deployment files
+          for service in june-stt june-tts june-orchestrator june-idp; do
+            if [ -f "k8s/${service}-deployment.yaml" ]; then
+              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
+              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
+            fi
+          done
+
+      - name: 🏗️ Apply base configuration
+        run: |
+          echo "🏗️ Applying base Kubernetes resources..."
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/secrets.yaml
+          echo "✅ Base configuration applied"
+
+      - name: 🚀 Deploy services
+        run: |
+          echo "🚀 Deploying services..."
+          
+          SERVICES_INPUT="${{ github.event.inputs.services }}"
+          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
+          
+          if [ -z "$SERVICES_INPUT" ]; then
+            echo "📋 Deploying all services..."
+            SERVICES_TO_DEPLOY=("${ALL_SERVICES[@]}")
+          else
+            echo "📋 Deploying selected services: $SERVICES_INPUT"
+            IFS=',' read -ra SERVICES_TO_DEPLOY <<< "$SERVICES_INPUT"
+          fi
+          
+          for service in "${SERVICES_TO_DEPLOY[@]}"; do
+            service=$(echo "$service" | xargs)
+            if [ -f "k8s/${service}-deployment.yaml" ]; then
+              echo "🔄 Deploying ${service}..."
+              kubectl apply -f "k8s/${service}-deployment.yaml"
+              echo "✅ ${service} deployed"
+            else
+              echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
+            fi
+          done
+
+      - name: 🌐 Apply ingress
+        run: |
+          echo "🌐 Applying ingress configuration..."
+          kubectl apply -f k8s/ingress.yaml
+          echo "✅ Ingress applied"
+
+      - name: 🔄 Force restart (if requested)
+        if: github.event.inputs.force_restart == 'true'
+        run: |
+          echo "🔄 Force restarting deployments..."
+          kubectl rollout restart deployment -n $KUBE_NAMESPACE
+          echo "✅ Deployments restarted"
+
+      - name: ⏳ Wait for deployments
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
           
           SERVICES_INPUT="${{ github.event.inputs.services }}"
           ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
@@ -139,173 +182,17 @@ jobs:
           
           for service in "${SERVICES_TO_CHECK[@]}"; do
             service=$(echo "$service" | xargs)
-            echo ""
-            echo "📦 Checking $service..."
-            
-            # Check if image exists in Docker Hub
-            if curl -s -f "https://hub.docker.com/v2/repositories/${{ secrets.DOCKERHUB_USERNAME }}/$service/tags/" >/dev/null 2>&1; then
-              echo "✅ $service exists in Docker Hub"
-              
-              # Try to pull with retry logic
-              PULL_SUCCESS=false
-              for attempt in 1 2 3 4 5; do
-                echo "  📥 Pull attempt $attempt/5 for $service..."
-                if timeout 300 docker pull $REGISTRY/$service:$IMAGE_TAG 2>/dev/null; then
-                  echo "  ✅ Successfully pulled $service:$IMAGE_TAG"
-                  AVAILABLE_SERVICES+=($service)
-                  PULL_SUCCESS=true
-                  break
-                else
-                  echo "  ⚠️  Pull attempt $attempt failed, waiting 15 seconds..."
-                  sleep 15
-                fi
-              done
-              
-              if [ "$PULL_SUCCESS" = false ]; then
-                echo "  ❌ Failed to pull $service after 5 attempts"
-                FAILED_SERVICES+=($service)
-              fi
-            else
-              echo "❌ $service does not exist in Docker Hub"
-              MISSING_SERVICES+=($service)
-            fi
-          done
-          
-          # Set environment variables for next steps
-          echo "AVAILABLE_SERVICES=${AVAILABLE_SERVICES[*]}" >> $GITHUB_ENV
-          echo "MISSING_SERVICES=${MISSING_SERVICES[*]}" >> $GITHUB_ENV
-          echo "FAILED_SERVICES=${FAILED_SERVICES[*]}" >> $GITHUB_ENV
-          
-          echo ""
-          echo "📊 Image Status Summary:"
-          echo "✅ Available: ${AVAILABLE_SERVICES[*]:-none}"
-          echo "❌ Missing: ${MISSING_SERVICES[*]:-none}"
-          echo "⚠️  Failed to pull: ${FAILED_SERVICES[*]:-none}"
-          
-          # Check if we should continue or fail
-          if [ ${#AVAILABLE_SERVICES[@]} -eq 0 ]; then
-            if [ "${{ github.event.inputs.skip_missing_images }}" = "true" ]; then
-              echo "⚠️  No images available, but continuing due to skip_missing_images=true"
-            else
-              echo "❌ No images available for deployment"
-              exit 1
-            fi
-          fi
-
-      - name: 🔧 Update image tags in manifests
-        run: |
-          echo "🔧 Updating image tags to: $IMAGE_TAG"
-          
-          # Only update manifests for available services
-          AVAILABLE_SERVICES=(${{ env.AVAILABLE_SERVICES }})
-          
-          for service in "${AVAILABLE_SERVICES[@]}"; do
-            if [ -f "k8s/${service}-deployment.yaml" ]; then
-              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
-              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
-            fi
-          done
-
-      - name: 🏗️ Apply base configuration
-        run: |
-          echo "🏗️ Applying base Kubernetes resources..."
-          kubectl apply -f k8s/configmap.yaml
-          kubectl apply -f k8s/secrets.yaml
-          
-          # Apply storage if it exists
-          if [ -f "k8s/storage.yaml" ]; then
-            kubectl apply -f k8s/storage.yaml
-            echo "✅ Storage configuration applied"
-          fi
-          
-          echo "✅ Base configuration applied"
-
-      - name: 🚀 Deploy available services
-        run: |
-          echo "🚀 Deploying available services..."
-          
-          AVAILABLE_SERVICES=(${{ env.AVAILABLE_SERVICES }})
-          MISSING_SERVICES=(${{ env.MISSING_SERVICES }})
-          FAILED_SERVICES=(${{ env.FAILED_SERVICES }})
-          
-          if [ ${#AVAILABLE_SERVICES[@]} -eq 0 ]; then
-            echo "⚠️  No services available for deployment"
-          else
-            echo "📋 Deploying services: ${AVAILABLE_SERVICES[*]}"
-            
-            for service in "${AVAILABLE_SERVICES[@]}"; do
-              if [ -f "k8s/${service}-deployment.yaml" ]; then
-                echo "🔄 Deploying ${service}..."
-                kubectl apply -f "k8s/${service}-deployment.yaml"
-                echo "✅ ${service} deployment applied"
-              else
-                echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
-              fi
-            done
-          fi
-          
-          # Scale down unavailable services
-          ALL_UNAVAILABLE=("${MISSING_SERVICES[@]}" "${FAILED_SERVICES[@]}")
-          for service in "${ALL_UNAVAILABLE[@]}"; do
-            echo "⏸️  Scaling down $service (image not available)"
-            kubectl scale deployment $service --replicas=0 -n $KUBE_NAMESPACE 2>/dev/null || {
-              echo "ℹ️  Service $service doesn't exist yet, skipping scale down"
-            }
-          done
-
-      - name: 🌐 Apply ingress
-        run: |
-          echo "🌐 Applying ingress configuration..."
-          kubectl apply -f k8s/ingress.yaml
-          echo "✅ Ingress applied"
-
-      - name: 🔄 Force restart (if requested)
-        if: github.event.inputs.force_restart == 'true'
-        run: |
-          echo "🔄 Force restarting available deployments..."
-          AVAILABLE_SERVICES=(${{ env.AVAILABLE_SERVICES }})
-          
-          for service in "${AVAILABLE_SERVICES[@]}"; do
-            kubectl rollout restart deployment/$service -n $KUBE_NAMESPACE 2>/dev/null || {
-              echo "⚠️  Could not restart $service deployment"
-            }
-          done
-          echo "✅ Available deployments restarted"
-
-      - name: ⏳ Wait for available deployments
-        run: |
-          echo "⏳ Waiting for available deployments to be ready..."
-          
-          AVAILABLE_SERVICES=(${{ env.AVAILABLE_SERVICES }})
-          
-          if [ ${#AVAILABLE_SERVICES[@]} -eq 0 ]; then
-            echo "ℹ️  No deployments to wait for"
-            exit 0
-          fi
-          
-          for service in "${AVAILABLE_SERVICES[@]}"; do
             echo "⏳ Waiting for $service to be ready..."
             if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=600s || {
+              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=300s || {
                 echo "❌ $service deployment failed or timed out"
-                echo ""
                 echo "🔍 Deployment details:"
                 kubectl describe deployment "$service" -n $KUBE_NAMESPACE
-                echo ""
                 echo "🔍 Pod details:"
                 kubectl describe pods -l app="$service" -n $KUBE_NAMESPACE
-                echo ""
-                echo "🔍 Recent events:"
-                kubectl get events -n $KUBE_NAMESPACE --sort-by='.lastTimestamp' | tail -20
-                echo ""
-                echo "🔍 Pod logs (last 100 lines):"
-                kubectl logs -l app="$service" -n $KUBE_NAMESPACE --tail=100 || echo "No logs available yet"
-                
-                if [ "${{ github.event.inputs.skip_missing_images }}" = "true" ]; then
-                  echo "⚠️  Continuing despite $service failure due to skip_missing_images=true"
-                else
-                  exit 1
-                fi
+                echo "🔍 Pod logs:"
+                kubectl logs -l app="$service" -n $KUBE_NAMESPACE --tail=50 || echo "No logs available"
+                exit 1
               }
               echo "✅ $service is ready"
             else
@@ -313,48 +200,21 @@ jobs:
             fi
           done
           
-          echo "✅ All available deployments processed!"
+          echo "✅ All deployments processed!"
 
-      - name: 📊 Show final deployment status
+      - name: 📊 Show deployment status
         run: |
           echo "📊 Final deployment status:"
-          echo "=========================================="
-          
-          AVAILABLE_SERVICES=(${{ env.AVAILABLE_SERVICES }})
-          MISSING_SERVICES=(${{ env.MISSING_SERVICES }})
-          FAILED_SERVICES=(${{ env.FAILED_SERVICES }})
-          
-          echo "🎯 Deployment Summary:"
-          echo "✅ Successfully deployed: ${AVAILABLE_SERVICES[*]:-none}"
-          echo "❌ Missing from Docker Hub: ${MISSING_SERVICES[*]:-none}"
-          echo "⚠️  Failed to pull: ${FAILED_SERVICES[*]:-none}"
-          echo ""
-          
-          echo "🪄 Pods in june namespace:"
+          echo "===================="
+          echo "Pods:"
           kubectl get pods -n $KUBE_NAMESPACE -o wide
           echo ""
-          
-          echo "🌐 Services:"
+          echo "Services:"
           kubectl get services -n $KUBE_NAMESPACE
           echo ""
-          
-          echo "🔗 Ingress:"
+          echo "Ingress:"
           kubectl get ingress -n $KUBE_NAMESPACE
           echo ""
-          
-          echo "💾 Storage:"
-          kubectl get pvc -n $KUBE_NAMESPACE
-          echo ""
-          
-          echo "🔐 Secrets:"
+          echo "Secrets:"
           kubectl get secrets -n $KUBE_NAMESPACE
-          echo ""
-          
-          if [ ${#MISSING_SERVICES[@]} -gt 0 ] || [ ${#FAILED_SERVICES[@]} -gt 0 ]; then
-            echo "💡 Next Steps:"
-            echo "  1. Build and push missing images: ${MISSING_SERVICES[*]} ${FAILED_SERVICES[*]}"
-            echo "  2. Run the workflow again with all images available"
-            echo "  3. Or use 'services' input to deploy only specific services"
-          fi
-          
-          echo "✅ Deployment workflow completed!"
+          echo "✅ Deployment completed!"
