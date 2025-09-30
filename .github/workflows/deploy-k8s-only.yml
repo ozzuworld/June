@@ -57,101 +57,11 @@ jobs:
           kubectl config current-context
           echo "✅ Kubernetes context configured"
 
-      - name: 🌐 Network diagnostics and Docker fix
-        run: |
-          echo "🌐 Running network diagnostics..."
-          
-          # Test basic connectivity
-          ping -c 3 8.8.8.8 || echo "⚠️ Internet connectivity issues"
-          
-          # Test Docker Hub connectivity
-          curl -I --connect-timeout 10 --max-time 30 https://registry-1.docker.io/ || {
-            echo "⚠️ Docker Hub connectivity issues"
-          }
-          
-          # Restart Docker daemon to clear any connection issues
-          echo "🔄 Restarting Docker daemon..."
-          sudo systemctl restart docker
-          sleep 10
-          
-          # Clear Docker system cache
-          echo "🧹 Clearing Docker cache..."
-          docker system prune -f || true
-          
-          # Configure Docker for better networking
-          echo "🔧 Optimizing Docker daemon configuration..."
-          sudo mkdir -p /etc/docker
-          sudo tee /etc/docker/daemon.json << 'EOF'
-          {
-            "max-concurrent-downloads": 2,
-            "max-concurrent-uploads": 2,
-            "registry-mirrors": [],
-            "storage-driver": "overlay2",
-            "log-driver": "json-file",
-            "log-opts": {
-              "max-size": "10m",
-              "max-file": "3"
-            }
-          }
-          EOF
-          
-          sudo systemctl restart docker
-          sleep 15
-          
-          echo "✅ Docker daemon restarted and optimized"
-
-      - name: 🔐 Manual Docker Hub Login (with retry)
-        run: |
-          echo "🔐 Manual Docker Hub login with enhanced retry..."
-          
-          # Function to attempt login
-          attempt_login() {
-            timeout 180 docker login docker.io \
-              --username "${{ secrets.DOCKERHUB_USERNAME }}" \
-              --password "${{ secrets.DOCKERHUB_TOKEN }}"
-          }
-          
-          # Retry logic
-          for i in {1..6}; do
-            echo "🔄 Login attempt $i/6..."
-            
-            if attempt_login; then
-              echo "✅ Docker login successful on attempt $i"
-              docker info | grep "Registry:" || true
-              break
-            else
-              echo "❌ Login attempt $i failed"
-              
-              # Progressive delays and interventions
-              case $i in
-                1|2) 
-                  echo "⏳ Short wait (15s)..."
-                  sleep 15 
-                  ;;
-                3|4) 
-                  echo "🔄 Restarting Docker daemon..."
-                  sudo systemctl restart docker
-                  sleep 30
-                  ;;
-                5) 
-                  echo "🌐 Testing alternative DNS..."
-                  sudo systemctl restart systemd-resolved
-                  sleep 20
-                  ;;
-                6) 
-                  echo "💥 All attempts failed - network issues persist"
-                  
-                  # Comprehensive diagnostic
-                  echo "🔍 Network diagnostic:"
-                  ping -c 3 registry-1.docker.io || true
-                  nslookup registry-1.docker.io || true
-                  curl -I --connect-timeout 30 https://registry-1.docker.io/ || true
-                  
-                  exit 1
-                  ;;
-              esac
-            fi
-          done
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 🏗️ Ensure namespace exists
         run: |
