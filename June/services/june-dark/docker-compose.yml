@@ -1,0 +1,566 @@
+version: "3.9"
+
+# JUNE DARK OSINT FRAMEWORK - MACHINE 2 (Data Spine)
+# 32GB RAM / 8 vCPU / 900GB HDD
+# Ubuntu 22.04 LTS
+
+x-env: &default-env
+  TZ: America/Bogota
+  LOG_LEVEL: INFO
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  june-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+volumes:
+  es-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/es-data
+  kibana-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/kibana-data
+  neo4j-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/neo4j-data
+  neo4j-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/neo4j-logs
+  pg-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/pg-data
+  redis-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/redis-data
+  rabbit-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/rabbit-data
+  minio-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/minio-data
+  artifacts:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/artifacts
+  logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/june-dark/docker-volumes/logs
+
+services:
+  # ============================================================================
+  # STORAGE LAYER - Core Data Stores
+  # ============================================================================
+  
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: june-elasticsearch
+    hostname: elasticsearch
+    environment:
+      <<: *default-env
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.monitoring.collection.enabled: "true"
+      ES_JAVA_OPTS: "-Xms16g -Xmx16g"
+      cluster.name: june-osint-cluster
+      node.name: june-es-node1
+      bootstrap.memory_lock: "true"
+      indices.query.bool.max_clause_count: 4096
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.10
+    deploy:
+      resources:
+        limits:
+          memory: 20g
+        reservations:
+          memory: 16g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    <<: *restart-policy
+    logging: *default-logging
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    container_name: june-kibana
+    hostname: kibana
+    environment:
+      <<: *default-env
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      SERVER_NAME: kibana
+      SERVER_HOST: "0.0.0.0"
+      XPACK_SECURITY_ENABLED: "false"
+      XPACK_MONITORING_UI_CONTAINER_ELASTICSEARCH_ENABLED: "true"
+    volumes:
+      - kibana-data:/usr/share/kibana/data
+    ports:
+      - "5601:5601"
+    networks:
+      - june-internal
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    <<: *restart-policy
+    logging: *default-logging
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: june-postgres
+    hostname: postgres
+    environment:
+      <<: *default-env
+      POSTGRES_USER: ${POSTGRES_USER:-juneadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-juneP@ssw0rd2024}
+      POSTGRES_DB: june_osint
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./configs/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.11
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=6GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juneadmin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    <<: *restart-policy
+    logging: *default-logging
+
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: june-neo4j
+    hostname: neo4j
+    environment:
+      <<: *default-env
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-juneN3o4j2024}
+      NEO4J_ACCEPT_LICENSE_AGREEMENT: "yes"
+      NEO4J_server_memory_heap_initial__size: 4g
+      NEO4J_server_memory_heap_max__size: 8g
+      NEO4J_server_memory_pagecache_size: 2g
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*,gds.*
+      NEO4JLABS_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_dbms_connector_bolt_listen__address: 0.0.0.0:7687
+      NEO4J_dbms_connector_http_listen__address: 0.0.0.0:7474
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - ./configs/neo4j/plugins:/plugins
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.12
+    deploy:
+      resources:
+        limits:
+          memory: 11g
+        reservations:
+          memory: 8g
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-juneN3o4j2024} 'RETURN 1' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    <<: *restart-policy
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: june-redis
+    hostname: redis
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.13
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    <<: *restart-policy
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: june-rabbitmq
+    hostname: rabbitmq
+    environment:
+      <<: *default-env
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-juneadmin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-juneR@bbit2024}
+      RABBITMQ_DEFAULT_VHOST: /
+      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 1.5GB
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+      - ./configs/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.14
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    <<: *restart-policy
+    logging: *default-logging
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: june-minio
+    hostname: minio
+    command: server /data --console-address ":9001"
+    environment:
+      <<: *default-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-juneadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-juneM1ni0P@ss2024}
+      MINIO_BROWSER: "on"
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    volumes:
+      - minio-data:/data
+      - artifacts:/artifacts
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      june-internal:
+        ipv4_address: 172.25.0.15
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    <<: *restart-policy
+    logging: *default-logging
+
+  # ============================================================================
+  # APPLICATION LAYER - June Services
+  # ============================================================================
+
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: june-orchestrator
+    hostname: orchestrator
+    environment:
+      <<: *default-env
+      # Database connections
+      ELASTIC_URL: http://elasticsearch:9200
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-juneN3o4j2024}
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-juneadmin}:${POSTGRES_PASSWORD:-juneP@ssw0rd2024}@postgres:5432/june_osint
+      REDIS_URL: redis://redis:6379/0
+      RABBIT_URL: amqp://${RABBITMQ_USER:-juneadmin}:${RABBITMQ_PASS:-juneR@bbit2024}@rabbitmq:5672//
+      # MinIO configuration
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-juneadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-juneM1ni0P@ss2024}
+      MINIO_SECURE: "false"
+      BUCKET_ARTIFACTS: june-artifacts
+      # Service configuration
+      API_HOST: 0.0.0.0
+      API_PORT: 8080
+      WORKERS: 2
+      MODE: ${JUNE_MODE:-day}
+    volumes:
+      - ./services/orchestrator/app:/app
+      - logs:/logs
+    ports:
+      - "8080:8080"
+    networks:
+      - june-internal
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    <<: *restart-policy
+    logging: *default-logging
+
+  collector:
+    build:
+      context: ./services/collector
+      dockerfile: Dockerfile
+    container_name: june-collector
+    hostname: collector
+    environment:
+      <<: *default-env
+      REDIS_URL: redis://redis:6379/1
+      RABBIT_URL: amqp://${RABBITMQ_USER:-juneadmin}:${RABBITMQ_PASS:-juneR@bbit2024}@rabbitmq:5672//
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-juneadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-juneM1ni0P@ss2024}
+      MINIO_SECURE: "false"
+      BUCKET_ARTIFACTS: june-artifacts
+      ORCHESTRATOR_URL: http://orchestrator:8080
+      MODE: ${JUNE_MODE:-day}
+      CONCURRENT_REQUESTS: ${COLLECTOR_CONCURRENCY:-8}
+      DOWNLOAD_DELAY: ${COLLECTOR_DELAY:-1.0}
+    volumes:
+      - ./services/collector/app:/app
+      - artifacts:/artifacts
+      - logs:/logs
+    networks:
+      - june-internal
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 1g
+    <<: *restart-policy
+    logging: *default-logging
+
+  enricher:
+    build:
+      context: ./services/enricher
+      dockerfile: Dockerfile
+    container_name: june-enricher
+    hostname: enricher
+    environment:
+      <<: *default-env
+      ELASTIC_URL: http://elasticsearch:9200
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-juneN3o4j2024}
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-juneadmin}:${POSTGRES_PASSWORD:-juneP@ssw0rd2024}@postgres:5432/june_osint
+      RABBIT_URL: amqp://${RABBITMQ_USER:-juneadmin}:${RABBITMQ_PASS:-juneR@bbit2024}@rabbitmq:5672//
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-juneadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-juneM1ni0P@ss2024}
+      MINIO_SECURE: "false"
+      BUCKET_ARTIFACTS: june-artifacts
+      MODE: ${JUNE_MODE:-day}
+    volumes:
+      - ./services/enricher/app:/app
+      - artifacts:/artifacts
+      - logs:/logs
+    ports:
+      - "9010:9010"
+    networks:
+      - june-internal
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    <<: *restart-policy
+    logging: *default-logging
+
+  # ============================================================================
+  # MONITORING & OPERATIONS
+  # ============================================================================
+
+  ops-ui:
+    build:
+      context: ./services/ops-ui
+      dockerfile: Dockerfile
+    container_name: june-ops-ui
+    hostname: ops-ui
+    environment:
+      <<: *default-env
+      ELASTIC_URL: http://elasticsearch:9200
+      REDIS_URL: redis://redis:6379/0
+      RABBIT_URL: amqp://${RABBITMQ_USER:-juneadmin}:${RABBITMQ_PASS:-juneR@bbit2024}@rabbitmq:5672//
+      ORCHESTRATOR_URL: http://orchestrator:8080
+    ports:
+      - "8090:8090"
+    networks:
+      - june-internal
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    <<: *restart-policy
+    logging: *default-logging

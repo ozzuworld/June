@@ -1,0 +1,199 @@
+{
+  "rabbit_version": "3.13",
+  "users": [],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [],
+  "parameters": [],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "ha-all",
+      "pattern": ".*",
+      "apply-to": "all",
+      "definition": {
+        "ha-mode": "all"
+      },
+      "priority": 0
+    }
+  ],
+  "queues": [
+    {
+      "name": "crawl.requests",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 10000,
+        "x-message-ttl": 86400000,
+        "x-queue-type": "classic"
+      }
+    },
+    {
+      "name": "crawl.results",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 10000,
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "enrichment.requests",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 50000,
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "enrichment.results",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 50000,
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "vision.requests",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 20000,
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "vision.results",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 20000,
+        "x-message-ttl": 86400000
+      }
+    },
+    {
+      "name": "alerts.queue",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 5000,
+        "x-message-ttl": 604800000
+      }
+    },
+    {
+      "name": "dead_letter",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "june.crawl",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "june.enrichment",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "june.vision",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "june.alerts",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "june.crawl",
+      "vhost": "/",
+      "destination": "crawl.requests",
+      "destination_type": "queue",
+      "routing_key": "crawl.request.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.crawl",
+      "vhost": "/",
+      "destination": "crawl.results",
+      "destination_type": "queue",
+      "routing_key": "crawl.result.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.enrichment",
+      "vhost": "/",
+      "destination": "enrichment.requests",
+      "destination_type": "queue",
+      "routing_key": "enrich.request.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.enrichment",
+      "vhost": "/",
+      "destination": "enrichment.results",
+      "destination_type": "queue",
+      "routing_key": "enrich.result.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.vision",
+      "vhost": "/",
+      "destination": "vision.requests",
+      "destination_type": "queue",
+      "routing_key": "vision.request.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.vision",
+      "vhost": "/",
+      "destination": "vision.results",
+      "destination_type": "queue",
+      "routing_key": "vision.result.*",
+      "arguments": {}
+    },
+    {
+      "source": "june.alerts",
+      "vhost": "/",
+      "destination": "alerts.queue",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}
