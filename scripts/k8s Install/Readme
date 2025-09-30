@@ -1,0 +1,288 @@
+# 🚀 June AI Services - Complete K8s Bootstrap Guide
+
+This repository contains everything you need to bootstrap a complete Kubernetes deployment of the June AI services on any VM (including Vast.ai).
+
+## 📁 File Structure
+
+```
+/
+├── enhanced-k8s-bootstrap.sh      # Main bootstrap script
+├── .env.template                  # Environment configuration template
+├── k8s-base-config.yaml          # Base namespace, secrets, and config
+├── k8s-storage.yaml               # Storage configuration
+├── k8s-ingress.yaml               # Enhanced ingress setup
+├── status-check.sh                # Deployment status checker
+├── github-workflow-complete.yml   # Complete CI/CD workflow
+└── k8s/                          # Your existing Kubernetes manifests
+    ├── complete-manifests.yaml
+    ├── namespace.yaml
+    ├── configmap.yaml
+    ├── secrets.yaml
+    ├── june-*-deployment.yaml
+    └── ingress.yaml
+```
+
+## 🎯 Quick Start
+
+### 1. Copy Files to Your Repository
+
+Copy these files to your `ozzuworld/june` repository:
+
+- `enhanced-k8s-bootstrap.sh` → Root directory
+- `.env.template` → Root directory (rename to `.env` and update)
+- `k8s-base-config.yaml` → Root directory
+- `k8s-storage.yaml` → Root directory  
+- `k8s-ingress.yaml` → Root directory
+- `status-check.sh` → Root directory (make executable: `chmod +x status-check.sh`)
+- `github-workflow-complete.yml` → `.github/workflows/deploy-complete.yml`
+
+### 2. Run the Bootstrap Script
+
+On your fresh VM:
+
+```bash
+# Download and run the bootstrap script
+wget https://raw.githubusercontent.com/ozzuworld/june/main/enhanced-k8s-bootstrap.sh
+chmod +x enhanced-k8s-bootstrap.sh
+sudo ./enhanced-k8s-bootstrap.sh
+```
+
+The script will interactively ask for:
+- GitHub repository URL
+- GitHub Actions runner token
+- Docker Hub credentials
+- API keys (Gemini, Chatterbox, etc.)
+- Configuration options
+
+### 3. What Gets Installed
+
+✅ **Core Infrastructure:**
+- Kubernetes cluster (single-node)
+- Docker with containerd runtime
+- NGINX Ingress Controller
+- GitHub Actions self-hosted runner
+
+✅ **Enhanced Features:**
+- GitHub CLI for automated secret management
+- Persistent storage with local volumes
+- GPU support (if NVIDIA GPUs detected)
+- Comprehensive RBAC setup
+- Enhanced ingress with CORS and rate limiting
+
+✅ **June-Specific Setup:**
+- June namespace and resources
+- Docker registry secrets
+- Application secrets management
+- Service discovery configuration
+- Storage for AI models and data
+
+## 🔧 Configuration
+
+### Environment Variables
+
+The `.env.template` file contains all configuration options. Key settings:
+
+```bash
+# Docker Registry
+DOCKERHUB_USERNAME=your_username
+DOCKERHUB_EMAIL=your_email
+
+# API Keys
+GEMINI_API_KEY=your_gemini_key
+CHATTERBOX_API_KEY=your_chatterbox_key
+
+# Kubernetes
+KUBE_NAMESPACE=june
+POD_NETWORK_CIDR=10.244.0.0/16
+
+# Resources (adjust for your VM)
+STT_MEMORY_LIMIT=2Gi
+TTS_MEMORY_LIMIT=4Gi
+```
+
+### Service Domains
+
+The ingress is configured for these domains:
+- `api.allsafe.world` → June Orchestrator
+- `idp.allsafe.world` → Identity Provider
+- `stt.allsafe.world` → Speech-to-Text
+- `tts.allsafe.world` → Text-to-Speech
+- `app.allsafe.world` → Web Interface
+- `admin.allsafe.world` → Admin Interface
+
+For IP-based access:
+- `/api/*` → Orchestrator
+- `/auth/*` → Identity Provider
+- `/stt/*` → Speech-to-Text
+- `/tts/*` → Text-to-Speech
+
+## 🚀 Deployment Workflow
+
+### Automatic Deployment
+
+The GitHub Actions workflow triggers on:
+- Push to `main` or `develop` branches
+- Pull requests to `main`
+- Manual dispatch
+
+### Manual Deployment
+
+Use workflow dispatch with options:
+- **Image Tag**: Specify which Docker image tag to deploy
+- **Environment**: Choose production/staging/development
+- **Services**: Deploy specific services or all
+- **Force Restart**: Force restart existing deployments
+- **Build Images**: Whether to build and push new images
+
+### Deployment Process
+
+1. **Build Phase**: Builds and pushes Docker images for all services
+2. **Deploy Phase**: 
+   - Updates Kubernetes manifests with new image tags
+   - Applies base configuration (namespace, secrets, storage)
+   - Deploys services
+   - Configures ingress
+   - Performs health checks
+
+## 📊 Status Monitoring
+
+Use the status checker to monitor your deployment:
+
+```bash
+./status-check.sh
+```
+
+**Output includes:**
+- ✅ Infrastructure status (nodes, namespaces, ingress)
+- 🚀 Service status (all June services)
+- 📊 Pod details and resource usage
+- 🌐 Network configuration
+- 🔐 Secrets and config status
+- 💾 Storage status
+- 🔄 Recent events
+- 🌍 External access information
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+1. **Services not starting**: Check resource limits in your VM
+2. **Images not found**: Ensure Docker images are built and pushed
+3. **Ingress not working**: Verify NGINX ingress controller is running
+4. **Secrets missing**: Run the bootstrap script again to reconfigure
+
+### Useful Commands
+
+```bash
+# Check all resources
+kubectl get all -n june
+
+# View service logs
+kubectl logs -l app=june-stt -n june --tail=50
+
+# Restart a service
+kubectl rollout restart deployment/june-stt -n june
+
+# Check ingress
+kubectl get ingress -n june
+
+# Port forward for local testing
+kubectl port-forward svc/june-orchestrator 8080:8080 -n june
+```
+
+### Debug Failed Deployments
+
+```bash
+# Check pod status
+kubectl get pods -n june
+
+# Describe problematic pod
+kubectl describe pod <pod-name> -n june
+
+# Check events
+kubectl get events -n june --sort-by='.lastTimestamp'
+
+# Check resource usage
+kubectl top pods -n june
+```
+
+## 🎯 Production Considerations
+
+### Security
+- [ ] Update default passwords and API keys
+- [ ] Configure TLS certificates for ingress
+- [ ] Set up network policies
+- [ ] Enable audit logging
+
+### Monitoring
+- [ ] Install Prometheus and Grafana
+- [ ] Set up log aggregation (ELK stack)
+- [ ] Configure alerts for service failures
+- [ ] Monitor resource usage
+
+### Scalability
+- [ ] Configure horizontal pod autoscaling
+- [ ] Set up cluster autoscaling (if using cloud)
+- [ ] Use dedicated nodes for AI workloads
+- [ ] Optimize resource requests and limits
+
+### Backup
+- [ ] Set up persistent volume backups
+- [ ] Configure database backups (if applicable)
+- [ ] Document disaster recovery procedures
+
+## 📝 Customization
+
+### Adding New Services
+
+1. Create Kubernetes manifests in `k8s/` directory
+2. Add service to the GitHub Actions workflow matrix
+3. Update ingress configuration
+4. Add to status checker script
+
+### Modifying Resource Limits
+
+Update the `.env` file and rerun the bootstrap script:
+
+```bash
+# Example for high-memory VM
+TTS_MEMORY_LIMIT=8Gi
+STT_MEMORY_LIMIT=4Gi
+```
+
+### Custom Domains
+
+Update the ingress configuration in `k8s-ingress.yaml`:
+
+```yaml
+spec:
+  rules:
+  - host: your-custom-domain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+```
+
+## 🆘 Support
+
+If you encounter issues:
+
+1. Run `./status-check.sh` to get current status
+2. Check the troubleshooting section above
+3. Review GitHub Actions workflow logs
+4. Check Kubernetes events: `kubectl get events -n june`
+
+## 🎉 Success Indicators
+
+Your deployment is successful when:
+- ✅ All services show "Ready" status
+- ✅ Ingress controller is running
+- ✅ External IP is accessible
+- ✅ Status checker shows all green
+- ✅ GitHub Actions runner is connected

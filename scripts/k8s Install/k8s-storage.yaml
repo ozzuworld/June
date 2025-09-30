@@ -1,0 +1,130 @@
+---
+# Storage Class for Local Storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+
+---
+# Persistent Volume for June Data
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-storage-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+    storage-type: local
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
+
+---
+# Persistent Volume Claim for Application Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-storage-pvc
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: local-storage
+
+---
+# Persistent Volume for Models (if you need to store AI models)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-models-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: models
+    storage-type: local
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
+
+---
+# Persistent Volume Claim for Models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-models-pvc
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: models
+spec:
+  accessModes:
+  - ReadOnlyMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: local-storage
+
+---
+# ConfigMap for Storage Initialization Script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-init-script
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+data:
+  init-storage.sh: |
+    #!/bin/bash
+    echo "Initializing June storage directories..."
+    
+    # Create main data directories
+    mkdir -p /opt/june-data/{logs,uploads,cache,temp}
+    mkdir -p /opt/june-models/{stt,tts,llm}
+    
+    # Set permissions
+    chmod -R 755 /opt/june-data
+    chmod -R 755 /opt/june-models
+    
+    # Create sample model directory structure
+    touch /opt/june-models/stt/.gitkeep
+    touch /opt/june-models/tts/.gitkeep
+    touch /opt/june-models/llm/.gitkeep
+    
+    echo "Storage initialization completed!"

@@ -1,0 +1,323 @@
+name: 🚀 Complete June Services CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '.gitignore'
+  
+  pull_request:
+    branches: [ main ]
+  
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: true
+        default: 'latest'
+        type: string
+      
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+        - development
+      
+      services:
+        description: 'Services to deploy (comma-separated, empty for all)'
+        required: false
+        default: ''
+        type: string
+      
+      force_restart:
+        description: 'Force restart deployments'
+        required: false
+        default: false
+        type: boolean
+      
+      build_images:
+        description: 'Build and push Docker images'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+  KUBE_NAMESPACE: june
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Build and Push Docker Images
+  build-and-push:
+    name: 🔨 Build & Push Images
+    runs-on: self-hosted
+    if: github.event.inputs.build_images != 'false'
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        service: 
+          - june-stt
+          - june-tts
+          - june-orchestrator
+          - june-idp
+          - june-web
+          - june-dark
+    
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.IMAGE_TAG }}
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  # Deploy to Kubernetes
+  deploy:
+    name: 🚀 Deploy to K8s
+    runs-on: self-hosted
+    needs: build-and-push
+    if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Verify Kubernetes connection
+        run: |
+          echo "🔍 Testing Kubernetes connection..."
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          echo "📊 Current namespace status:"
+          kubectl get all -n $KUBE_NAMESPACE || echo "Namespace doesn't exist yet"
+
+      - name: 🔐 Create/Update Docker Registry Secret
+        run: |
+          kubectl create secret docker-registry dockerhub-secret \
+            --docker-server=docker.io \
+            --docker-username=${{ secrets.DOCKERHUB_USERNAME }} \
+            --docker-password=${{ secrets.DOCKERHUB_TOKEN }} \
+            --docker-email=${{ secrets.DOCKERHUB_EMAIL }} \
+            --namespace=$KUBE_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: 🔧 Update image tags in manifests
+        run: |
+          echo "🔧 Updating image tags to: $IMAGE_TAG"
+          
+          # Create temporary directory for updated manifests
+          mkdir -p /tmp/k8s-updated
+          cp -r k8s/* /tmp/k8s-updated/
+          
+          # Update image tags in deployment files
+          for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
+            if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
+              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" /tmp/k8s-updated/${service}-deployment.yaml
+              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
+            elif [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
+              sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" /tmp/k8s-updated/complete-manifests.yaml
+              echo "✅ Updated ${service} in complete manifests to use tag: $IMAGE_TAG"
+            fi
+          done
+
+      - name: 🏗️ Apply base configuration
+        run: |
+          echo "🏗️ Applying base Kubernetes resources..."
+          
+          # Apply in correct order
+          if [ -f "/tmp/k8s-updated/namespace.yaml" ]; then
+            kubectl apply -f /tmp/k8s-updated/namespace.yaml
+          fi
+          
+          if [ -f "/tmp/k8s-updated/configmap.yaml" ]; then
+            kubectl apply -f /tmp/k8s-updated/configmap.yaml
+          fi
+          
+          if [ -f "/tmp/k8s-updated/secrets.yaml" ]; then
+            kubectl apply -f /tmp/k8s-updated/secrets.yaml
+          fi
+          
+          # Apply storage if exists
+          if [ -f "k8s-storage-complete.yaml" ]; then
+            kubectl apply -f k8s-storage-complete.yaml
+          fi
+          
+          # Apply base config if exists
+          if [ -f "k8s-base-config-complete.yaml" ]; then
+            kubectl apply -f k8s-base-config-complete.yaml
+          fi
+
+      - name: 🚀 Deploy services
+        run: |
+          echo "🚀 Deploying services..."
+          
+          SERVICES_INPUT="${{ github.event.inputs.services }}"
+          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp" "june-web" "june-dark")
+          
+          if [ -z "$SERVICES_INPUT" ]; then
+            echo "📋 Deploying all services..."
+            SERVICES_TO_DEPLOY=("${ALL_SERVICES[@]}")
+          else
+            echo "📋 Deploying selected services: $SERVICES_INPUT"
+            IFS=',' read -ra SERVICES_TO_DEPLOY <<< "$SERVICES_INPUT"
+          fi
+          
+          # Deploy individual service files or complete manifest
+          if [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
+            echo "🔄 Deploying from complete manifests..."
+            kubectl apply -f /tmp/k8s-updated/complete-manifests.yaml
+          else
+            for service in "${SERVICES_TO_DEPLOY[@]}"; do
+              service=$(echo "$service" | xargs)
+              if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
+                echo "🔄 Deploying ${service}..."
+                kubectl apply -f "/tmp/k8s-updated/${service}-deployment.yaml"
+              else
+                echo "⚠️ Warning: /tmp/k8s-updated/${service}-deployment.yaml not found"
+              fi
+            done
+          fi
+
+      - name: 🌐 Apply ingress
+        run: |
+          echo "🌐 Applying ingress configuration..."
+          
+          if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
+            kubectl apply -f /tmp/k8s-updated/ingress.yaml
+          elif [ -f "k8s-ingress-complete.yaml" ]; then
+            kubectl apply -f k8s-ingress-complete.yaml
+          else
+            echo "⚠️ No ingress configuration found"
+          fi
+
+      - name: 🔄 Force restart (if requested)
+        if: github.event.inputs.force_restart == 'true'
+        run: |
+          echo "🔄 Force restarting deployments..."
+          kubectl rollout restart deployment -n $KUBE_NAMESPACE
+
+      - name: ⏳ Wait for deployments
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          
+          # Get all deployments in the namespace
+          DEPLOYMENTS=$(kubectl get deployments -n $KUBE_NAMESPACE -o jsonpath='{.items[*].metadata.name}')
+          
+          if [ -z "$DEPLOYMENTS" ]; then
+            echo "⚠️ No deployments found in namespace $KUBE_NAMESPACE"
+            exit 0
+          fi
+          
+          echo "📋 Found deployments: $DEPLOYMENTS"
+          
+          for deployment in $DEPLOYMENTS; do
+            echo "⏳ Waiting for $deployment to be ready..."
+            if kubectl rollout status deployment/"$deployment" -n $KUBE_NAMESPACE --timeout=300s; then
+              echo "✅ $deployment is ready"
+            else
+              echo "❌ $deployment failed or timed out"
+              kubectl describe deployment "$deployment" -n $KUBE_NAMESPACE
+              kubectl describe pods -l app="$deployment" -n $KUBE_NAMESPACE
+              kubectl logs -l app="$deployment" -n $KUBE_NAMESPACE --tail=50 || true
+            fi
+          done
+
+      - name: 🔍 Health check
+        run: |
+          echo "🔍 Performing health checks..."
+          
+          # Wait a bit for services to stabilize
+          sleep 30
+          
+          # Check pod status
+          echo "📊 Pod Status:"
+          kubectl get pods -n $KUBE_NAMESPACE -o wide
+          
+          # Check service status
+          echo "🌐 Service Status:"
+          kubectl get services -n $KUBE_NAMESPACE
+          
+          # Check ingress status
+          echo "🚪 Ingress Status:"
+          kubectl get ingress -n $KUBE_NAMESPACE || echo "No ingress found"
+          
+          # Check for any failed pods
+          FAILED_PODS=$(kubectl get pods -n $KUBE_NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded -o jsonpath='{.items[*].metadata.name}')
+          
+          if [ -n "$FAILED_PODS" ]; then
+            echo "❌ Failed pods detected: $FAILED_PODS"
+            for pod in $FAILED_PODS; do
+              echo "🔍 Logs for failed pod $pod:"
+              kubectl logs "$pod" -n $KUBE_NAMESPACE --tail=20 || true
+              echo "📝 Description for failed pod $pod:"
+              kubectl describe pod "$pod" -n $KUBE_NAMESPACE || true
+            done
+          else
+            echo "✅ All pods are running successfully!"
+          fi
+
+      - name: 📊 Final deployment status
+        if: always()
+        run: |
+          echo "📊 Final deployment status:"
+          echo "=========================="
+          
+          kubectl get all -n $KUBE_NAMESPACE -o wide || true
+          
+          echo ""
+          echo "🌐 External Access:"
+          echo "=================="
+          
+          EXTERNAL_IP=$(kubectl get service -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Not available")
+          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "Not available")
+          
+          if [ "$EXTERNAL_IP" != "Not available" ]; then
+            echo "🔗 Load Balancer IP: $EXTERNAL_IP"
+          elif [ "$NODE_IP" != "Not available" ]; then
+            echo "🔗 Node External IP: $NODE_IP"
+          else
+            echo "🔗 External IP: $(curl -s http://checkip.amazonaws.com/ || echo 'Unable to detect')"
+          fi
+          
+          echo ""
+          echo "✅ Deployment completed!"
+          echo "=========================="

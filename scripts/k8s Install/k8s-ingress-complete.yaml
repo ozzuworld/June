@@ -1,0 +1,200 @@
+---
+# Enhanced Ingress with SSL and Multiple Domains
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: june-ingress
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: ingress
+  annotations:
+    # NGINX Ingress Controller annotations
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # CORS settings
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+    
+    # Upload size limits
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    
+    # Timeout settings
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  rules:
+  
+  # Main API Gateway (Orchestrator)
+  - host: api.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+  
+  # Identity Provider Service
+  - host: idp.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+  
+  # Speech-to-Text Service (direct access)
+  - host: stt.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+  
+  # Text-to-Speech Service (direct access)
+  - host: tts.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-tts
+            port:
+              number: 8000
+  
+  # Web Interface (if you have one)
+  - host: app.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-web
+            port:
+              number: 3000
+  
+  # Admin Interface
+  - host: admin.allsafe.world
+    http:
+      paths:
+      - path: /(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-dark
+            port:
+              number: 8080
+
+---
+# Alternative Ingress for IP-based access (for development/testing)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: june-ip-ingress
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/variant: ip-access
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+  - http:
+      paths:
+      # API routes
+      - path: /api(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-orchestrator
+            port:
+              number: 8080
+      
+      # Identity routes
+      - path: /auth(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-idp
+            port:
+              number: 8080
+      
+      # STT routes
+      - path: /stt(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-stt
+            port:
+              number: 8080
+      
+      # TTS routes
+      - path: /tts(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-tts
+            port:
+              number: 8000
+      
+      # Web interface routes
+      - path: /web(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-web
+            port:
+              number: 3000
+      
+      # Admin routes
+      - path: /admin(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: june-dark
+            port:
+              number: 8080
+
+---
+# Service Monitor for Prometheus (if using monitoring)
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-nginx-metrics
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller-metrics
+spec:
+  ports:
+  - name: prometheus
+    port: 10254
+    targetPort: 10254
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
