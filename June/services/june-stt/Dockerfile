@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.3.2-devel-ubuntu22.04
+# Use official NVIDIA CUDA base image with cuDNN (recommended by faster-whisper docs)
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -15,9 +16,13 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install Python dependencies with NVIDIA CUDA libraries
 RUN python3 -m pip install --no-cache-dir --upgrade pip
+RUN python3 -m pip install --no-cache-dir nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
+
+# Set LD_LIBRARY_PATH for NVIDIA libraries (from official docs)
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
 
 # Create directories
 RUN mkdir -p /app/models /app/cache /tmp
@@ -25,6 +30,11 @@ RUN chmod 777 /app/models /app/cache /tmp
 
 # Copy application code
 COPY . .
+
+# Create non-root user
+RUN useradd -m -u 1000 june && \
+    chown -R june:june /app
+USER june
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
