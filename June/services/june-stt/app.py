@@ -117,24 +117,24 @@ class WhisperService:
         self.is_ready = threading.Event()
         self.load_error = None
         
-    async def initialize(self):
-        """Initialize Faster-Whisper model with persistent storage and readiness tracking"""
-        if self.model or self.is_loading:
-            return
-            
-        self.is_loading = True
-        self.load_error = None
+async def initialize(self):
+    """Initialize Faster-Whisper model with persistent storage and readiness tracking"""
+    if self.model or self.is_loading:
+        return
         
-        try:
-            # Ensure model directory exists
-            os.makedirs(self.model_path, exist_ok=True)
-            
-            logger.info(f"🔄 Loading Faster-Whisper model {config.WHISPER_MODEL} on {self.device} ({self.compute_type})")
-            logger.info(f"📁 Model cache directory: {self.model_path}")
-            
-            # Run model loading in thread pool to avoid blocking
-        # FIXED CODE:
-            self.model = await loop.run_in_executor(
+    self.is_loading = True
+    self.load_error = None
+    
+    try:
+        # Ensure model directory exists
+        os.makedirs(self.model_path, exist_ok=True)
+        
+        logger.info(f"🔄 Loading Faster-Whisper model {config.WHISPER_MODEL} on {self.device} ({self.compute_type})")
+        logger.info(f"📁 Model cache directory: {self.model_path}")
+        
+        # Run model loading in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()  # ✅ ADDED: Define loop variable
+        self.model = await loop.run_in_executor(
             None, 
             lambda: WhisperModel(
                 config.WHISPER_MODEL,
@@ -146,19 +146,20 @@ class WhisperService:
                 local_files_only=False
             )
         )
+        
+        # Mark as ready for low-latency requests
+        self.is_ready.set()
+        logger.info("✅ Faster-Whisper model loaded and ready for inference")
+        logger.info(f"🚀 Model cached at: {self.model_path}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
+        self.model = None
+        self.load_error = str(e)
+        raise
+    finally:
+        self.is_loading = False
 
-            # Mark as ready for low-latency requests
-            self.is_ready.set()
-            logger.info("✅ Faster-Whisper model loaded and ready for inference")
-            logger.info(f"🚀 Model cached at: {self.model_path}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to load Faster-Whisper model: {e}")
-            self.model = None
-            self.load_error = str(e)
-            raise
-        finally:
-            self.is_loading = False
 
     def is_model_ready(self) -> bool:
         """Check if model is ready for inference"""
