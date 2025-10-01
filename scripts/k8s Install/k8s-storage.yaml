@@ -12,18 +12,70 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 
 ---
-# Persistent Volume for June Data
+# Persistent Volume for June STT Models
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: june-storage-pv
+  name: june-stt-models
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: storage
+    app.kubernetes.io/component: stt-storage
     storage-type: local
 spec:
   capacity:
-    storage: 50Gi
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-stt-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
+
+---
+# Persistent Volume for June TTS Models
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-tts-models
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: tts-storage
+    storage-type: local
+spec:
+  capacity:
+    storage: 15Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-tts-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
+
+---
+# Persistent Volume for General June Data  
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-data
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: general-storage
+    storage-type: local
+spec:
+  capacity:
+    storage: 20Gi
   accessModes:
   - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -38,62 +90,54 @@ spec:
           operator: Exists
 
 ---
-# Persistent Volume Claim for Application Data
+# Persistent Volume Claim for STT Models
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: june-storage-pvc
+  name: june-stt-models
   namespace: june
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: storage
+    app.kubernetes.io/component: stt-storage
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 50Gi
+      storage: 10Gi
   storageClassName: local-storage
 
 ---
-# Persistent Volume for Models (if you need to store AI models)
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-models-pv
-  labels:
-    app.kubernetes.io/name: june
-    app.kubernetes.io/component: models
-    storage-type: local
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-  - ReadOnlyMany
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: Exists
-
----
-# Persistent Volume Claim for Models
+# Persistent Volume Claim for TTS Models
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: june-models-pvc
+  name: june-tts-models
   namespace: june
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: models
+    app.kubernetes.io/component: tts-storage
 spec:
   accessModes:
-  - ReadOnlyMany
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 15Gi
+  storageClassName: local-storage
+
+---
+# Persistent Volume Claim for General Data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-data
+  namespace: june
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: general-storage
+spec:
+  accessModes:
+  - ReadWriteOnce
   resources:
     requests:
       storage: 20Gi
@@ -115,16 +159,13 @@ data:
     echo "Initializing June storage directories..."
     
     # Create main data directories
+    mkdir -p /opt/june-stt-models
+    mkdir -p /opt/june-tts-models  
     mkdir -p /opt/june-data/{logs,uploads,cache,temp}
-    mkdir -p /opt/june-models/{stt,tts,llm}
     
     # Set permissions
-    chmod -R 755 /opt/june-data
-    chmod -R 755 /opt/june-models
-    
-    # Create sample model directory structure
-    touch /opt/june-models/stt/.gitkeep
-    touch /opt/june-models/tts/.gitkeep
-    touch /opt/june-models/llm/.gitkeep
+    chmod -R 777 /opt/june-stt-models
+    chmod -R 777 /opt/june-tts-models
+    chmod -R 777 /opt/june-data
     
     echo "Storage initialization completed!"

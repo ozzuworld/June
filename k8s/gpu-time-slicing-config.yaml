@@ -1,333 +1,84 @@
-# ==============================================================================
-# FIXED GPU SHARING SOLUTION FOR JUNE TTS & STT
-# ==============================================================================
-
-# Step 1: ConfigMap for GPU Time-Slicing in GPU Operator namespace
 ---
+# GPU Time-Slicing Configuration for NVIDIA GPU Operator
+# This enables sharing a single GPU between multiple pods
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: time-slicing-config
   namespace: gpu-operator
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: gpu-config
 data:
   any: |-
     version: v1
+    flags:
+      migStrategy: none
     sharing:
       timeSlicing:
-        replicas: 4
-        renameByDefault: false
-        failRequestsGreaterThanOne: false
+        resources:
+        - name: nvidia.com/gpu
+          replicas: 2
 
 ---
-# Step 2: Patch GPU Operator to use time-slicing config
-# Run this command after applying:
-# kubectl patch clusterpolicy/cluster-policy \
-#   -n gpu-operator --type merge \
-#   -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
-
----
-# Step 3: FIXED TTS Deployment with corrected securityContext
-apiVersion: apps/v1
-kind: Deployment
+# Script to apply GPU time-slicing configuration
+# This patches the cluster policy to enable time-slicing
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: june-tts
+  name: gpu-config-script
   namespace: june
   labels:
-    app: june-tts
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: june-tts
-  template:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: gpu-config
+data:
+  enable-gpu-sharing.sh: |
+    #!/bin/bash
+    echo "🚀 Enabling GPU time-slicing..."
+    
+    # Apply time-slicing config
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: ConfigMap
     metadata:
-      labels:
-        app: june-tts
-    spec:
-      # Node selector for GPU nodes
-      nodeSelector:
-        gpu: "true"
-      
-      # Tolerate GPU taints
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      # FIXED: Pod-level securityContext (not container-level)
-      securityContext:
-        fsGroup: 1001
-        runAsUser: 1001
-        runAsGroup: 1001
-      
-      # Init container to fix permissions
-      initContainers:
-      - name: fix-permissions
-        image: busybox
-        command:
-          - sh
-          - -c
-          - |
-            mkdir -p /app/models /app/cache /tmp
-            chmod -R 777 /app/models /app/cache /tmp
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        securityContext:
-          runAsUser: 0  # Run as root for permission fixes
-      
-      containers:
-      - name: june-tts
-        image: ozzuworld/june-tts:latest
-        imagePullPolicy: Always
-        
-        env:
-        # OpenVoice Configuration
-        - name: OPENVOICE_CHECKPOINTS_V2
-          value: "/models/openvoice/checkpoints_v2"
-        - name: OPENVOICE_DEVICE
-          value: "cuda"
-        
-        # Optimization flags
-        - name: ENABLE_QUANTIZATION
-          value: "false"
-        - name: PRELOAD_MODELS
-          value: "true"
-        - name: TTS_CACHE_SIZE
-          value: "100"
-        
-        # CUDA optimizations for shared GPU
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
-        
-        # Keycloak
-        - name: KEYCLOAK_URL
-          value: "http://june-idp:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-tts"
-        - name: KEYCLOAK_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: keycloak-tts-secret
-        
-        ports:
-        - name: http
-          containerPort: 8000
-        
-        resources:
-          requests:
-            cpu: "1"
-            memory: "2Gi"
-            nvidia.com/gpu: 1  # Request 1 shared GPU slice
-          limits:
-            cpu: "2"
-            memory: "4Gi"
-            nvidia.com/gpu: 1  # Limit to 1 shared GPU slice
-        
-        volumeMounts:
-        - name: model-cache
-          mountPath: /models
-        - name: cache
-          mountPath: /tmp/june_tts_cache
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 10
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180
-          periodSeconds: 30
-        
-        # FIXED: Container-level securityContext (no fsGroup here)
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
-      
-      volumes:
-      - name: model-cache
-        persistentVolumeClaim:
-          claimName: tts-model-cache
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
-
----
-# Step 4: FIXED STT Deployment with corrected securityContext
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-stt
-  namespace: june
-  labels:
-    app: june-stt
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: june-stt
-  template:
-    metadata:
-      labels:
-        app: june-stt
-    spec:
-      nodeSelector:
-        gpu: "true"
-      
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      # FIXED: Pod-level securityContext
-      securityContext:
-        fsGroup: 1000
-        runAsUser: 1000
-        runAsGroup: 1000
-      
-      # Init container to fix permissions
-      initContainers:
-      - name: fix-permissions
-        image: busybox
-        command:
-          - sh
-          - -c
-          - |
-            mkdir -p /app/models /app/cache
-            chmod -R 777 /app/models /app/cache
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        securityContext:
-          runAsUser: 0
-      
-      containers:
-      - name: june-stt
-        image: nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
-        command: ["python3", "app.py"]
-        
-        env:
-        # Whisper Configuration
-        - name: WHISPER_MODEL
-          value: "large-v3"
-        - name: WHISPER_DEVICE
-          value: "cuda"
-        - name: WHISPER_COMPUTE_TYPE
-          value: "float16"
-        - name: WHISPER_CACHE_DIR
-          value: "/app/models"
-        
-        # CUDA optimizations
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
-        
-        # Keycloak
-        - name: KEYCLOAK_URL
-          value: "http://june-idp:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-stt"
-        - name: KEYCLOAK_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: keycloak-stt-secret
-        
-        # Orchestrator
-        - name: ORCHESTRATOR_URL
-          value: "http://june-orchestrator:8080"
-        - name: ENABLE_ORCHESTRATOR_NOTIFICATIONS
-          value: "true"
-        
-        ports:
-        - name: http
-          containerPort: 8000
-        
-        resources:
-          requests:
-            cpu: "1"
-            memory: "2Gi"
-            nvidia.com/gpu: 1  # Request 1 shared GPU slice
-          limits:
-            cpu: "2"
-            memory: "4Gi"
-            nvidia.com/gpu: 1  # Limit to 1 shared GPU slice
-        
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 10
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180
-          periodSeconds: 30
-        
-        # FIXED: Container-level securityContext (no fsGroup here)
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
-      
-      volumes:
-      - name: model-cache
-        persistentVolumeClaim:
-          claimName: stt-model-cache
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
-
----
-# Step 5: PersistentVolumeClaims for model storage
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: tts-model-cache
-  namespace: june
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
-  storageClassName: local-storage
-
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: stt-model-cache
-  namespace: june
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
-  storageClassName: local-storage
+      name: time-slicing-config
+      namespace: gpu-operator
+    data:
+      any: |-
+        version: v1
+        flags:
+          migStrategy: none
+        sharing:
+          timeSlicing:
+            resources:
+            - name: nvidia.com/gpu
+              replicas: 2
+    EOF
+    
+    # Patch cluster policy
+    kubectl patch clusterpolicy/cluster-policy -n gpu-operator --type merge -p '{
+      "spec": {
+        "devicePlugin": {
+          "config": {
+            "name": "time-slicing-config",
+            "default": "any"
+          }
+        }
+      }
+    }'
+    
+    echo "✅ GPU time-slicing configuration applied"
+    echo "⏳ Waiting for device plugin to restart..."
+    
+    # Wait for changes to take effect
+    sleep 30
+    
+    # Verify GPU capacity
+    GPU_COUNT=$(kubectl get nodes -o json | jq '.items[].status.allocatable."nvidia.com/gpu"' | tr -d '"')
+    echo "🔍 Available GPU slots: $GPU_COUNT"
+    
+    if [ "$GPU_COUNT" = "2" ]; then
+      echo "✅ GPU time-slicing successfully enabled!"
+    else
+      echo "⚠️ GPU time-slicing may still be applying..."
+    fi
