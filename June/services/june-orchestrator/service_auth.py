@@ -35,8 +35,8 @@ class ServiceAuthClient:
     def __init__(self):
         self.keycloak_url = os.getenv("KEYCLOAK_URL", "https://idp.allsafe.world")
         self.realm = os.getenv("KEYCLOAK_REALM", "allsafe")
-        self.client_id = os.getenv("SERVICE_ACCOUNT_CLIENT_ID")
-        self.client_secret = os.getenv("SERVICE_ACCOUNT_CLIENT_SECRET")
+        self.client_id = os.getenv("KEYCLOAK_CLIENT_ID")
+        self.client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET")
         
         if not self.client_id or not self.client_secret:
             logger.warning("⚠️ Service account credentials not configured")
@@ -63,7 +63,8 @@ class ServiceAuthClient:
             Valid access token string
         """
         if not self.enabled:
-            raise RuntimeError("Service authentication not configured")
+            logger.warning("⚠️ Service auth not enabled, returning empty token")
+            return ""
         
         # Check cache
         if not force_refresh and self._token_cache and not self._token_cache.is_expired():
@@ -90,7 +91,6 @@ class ServiceAuthClient:
             "grant_type": "client_credentials",
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "scope": "stt:transcribe stt:read tts:synthesize tts:read"
         }
         
         try:
@@ -130,6 +130,12 @@ class ServiceAuthClient:
         Returns:
             Dictionary of headers including Authorization
         """
+        if not self.enabled:
+            return {
+                "User-Agent": "june-orchestrator/3.1.0",
+                "X-Service-Source": "june-orchestrator"
+            }
+        
         token = await self.get_service_token()
         
         return {

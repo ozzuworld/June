@@ -57,6 +57,11 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: 🏷️ Label nodes for GPU scheduling
+        run: |
+          echo "🏷️ Labeling nodes..."
+          kubectl label nodes --all gpu=true --overwrite || echo "Label already exists"
+          echo "✅ Nodes labeled"
 
       - name: 🏗️ Ensure namespace exists
         run: |

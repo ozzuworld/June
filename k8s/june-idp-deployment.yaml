@@ -3,6 +3,8 @@ kind: Deployment
 metadata:
   name: june-idp
   namespace: june
+  labels:
+    app: june-idp
 spec:
   replicas: 1
   selector:
@@ -13,26 +15,79 @@ spec:
       labels:
         app: june-idp
     spec:
-      imagePullSecrets:
-      - name: dockerhub-credentials
       containers:
-      - name: idp
-        image: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/june-idp:latest
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:latest
+        args:
+          - "start-dev"  # Development mode with HTTP enabled
         env:
-        - name: DB_USER
+        # Database Configuration
+        - name: KC_DB
+          value: "postgres"
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://postgresql:5432/keycloak"
+        - name: KC_DB_USERNAME
+          value: "keycloak"
+        - name: KC_DB_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: keycloak-db
-              key: DB_USER
-        - name: DB_PASS
+              name: keycloak-secrets
+              key: db-password
+        
+        # Admin Configuration
+        - name: KEYCLOAK_ADMIN
+          value: "admin"
+        - name: KEYCLOAK_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: keycloak-db
-              key: DB_PASS
+              name: keycloak-secrets
+              key: admin-password
+        
+        # HTTP Configuration (for development/internal)
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        
+        # Proxy Configuration (if behind ingress)
+        - name: KC_PROXY
+          value: "edge"
+        
+        # Health and Metrics
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        - name: KC_METRICS_ENABLED
+          value: "true"
+        
         ports:
-        - containerPort: 8080
-      nodeSelector:
-        gpu: "false"
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+
 ---
 apiVersion: v1
 kind: Service
@@ -40,9 +95,22 @@ metadata:
   name: june-idp
   namespace: june
 spec:
-  type: ClusterIP
   selector:
     app: june-idp
   ports:
-  - port: 8080
+  - name: http
+    port: 8080
     targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-secrets
+  namespace: june
+type: Opaque
+stringData:
+  db-password: "Pokemon123!"
+  admin-password: "Pokemon123!"

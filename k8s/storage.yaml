@@ -145,3 +145,29 @@ spec:
     requests:
       storage: 20Gi
   storageClassName: local-storage
+
+---
+# Add this to your existing storage.yaml file
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-stt-models-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: stt-storage
+    storage-type: local
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-stt-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists

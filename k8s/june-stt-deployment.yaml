@@ -13,9 +13,12 @@ spec:
       labels:
         app: june-stt
     spec:
+      imagePullSecrets:
+      - name: dockerhub-secret  # Added
       containers:
       - name: stt
         image: docker.io/ozzuworld/june-stt:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         resources:
@@ -27,7 +30,6 @@ spec:
             memory: "8Gi" 
             cpu: "2"
             nvidia.com/gpu: 1
-        # Enhanced probes
         livenessProbe:
           httpGet:
             path: /healthz
@@ -41,7 +43,6 @@ spec:
           initialDelaySeconds: 60
           periodSeconds: 10
           timeoutSeconds: 5
-        # Persistent model storage
         volumeMounts:
         - name: model-cache
           mountPath: /app/models
@@ -56,13 +57,28 @@ spec:
         gpu: "true"
 ---
 apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june
+spec:
+  type: ClusterIP
+  selector:
+    app: june-stt
+  ports:
+  - port: 8000
+    targetPort: 8000
+---
+# FIXED: Added storageClassName
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: june-stt-models
   namespace: june
 spec:
   accessModes:
-    - ReadWriteOnce
+  - ReadWriteOnce
+  storageClassName: local-storage  # ADDED THIS LINE
   resources:
     requests:
-      storage: 10Gi  # Enough for model storage
+      storage: 10Gi

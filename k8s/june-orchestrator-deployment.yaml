@@ -13,13 +13,12 @@ spec:
       labels:
         app: june-orchestrator
     spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
       imagePullSecrets:
-      - name: dockerhub-credentials
+      - name: dockerhub-secret  # Changed from dockerhub-credentials
       containers:
       - name: orchestrator
         image: docker.io/ozzuworld/june-orchestrator:latest
+        imagePullPolicy: Always
         resources:
           limits:
             memory: "2Gi"
@@ -29,17 +28,17 @@ spec:
             cpu: "500m"
         ports:
         - containerPort: 8000
-          hostPort: 8000
         envFrom:
         - configMapRef:
             name: june-config
         env:
+        # FIXED: Use Kubernetes service DNS names
         - name: STT_SERVICE_URL
-          value: "http://10.0.2.15:8001"
+          value: "http://june-stt:8000"
         - name: TTS_SERVICE_URL
-          value: "http://10.0.2.15:8002"
+          value: "http://june-tts:8000"
         - name: IDP_SERVICE_URL
-          value: "http://10.0.2.15:8003"
+          value: "http://june-idp:8080"
 ---
 apiVersion: v1
 kind: Service
@@ -54,4 +53,3 @@ spec:
   - port: 8000
     targetPort: 8000
     nodePort: 30000
-    name: http
