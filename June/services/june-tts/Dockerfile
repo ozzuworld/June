@@ -180,7 +180,7 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/healthz || exit 1
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8080
 
 # Use optimized entrypoint
 ENTRYPOINT ["/workspace/entrypoint.sh"]

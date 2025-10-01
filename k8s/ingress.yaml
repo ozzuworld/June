@@ -3,9 +3,9 @@ kind: Ingress
 metadata:
   name: june-ingress
   namespace: june-services
+  # If you don't have cert-manager installed yet, remove the annotations and the whole tls: block.
   annotations:
-  cert-manager.io/cluster-issuer: letsencrypt-http
-
+    cert-manager.io/cluster-issuer: letsencrypt-http
 spec:
   ingressClassName: nginx
   tls:

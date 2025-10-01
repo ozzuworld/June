@@ -7,7 +7,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-tts
-  namespace: june
+  namespace: june-services
   labels:
     app: june-tts
 spec:
@@ -136,7 +136,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-tts
-  namespace: june
+  namespace: june-services
 spec:
   type: ClusterIP
   selector:
@@ -152,7 +152,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-stt
-  namespace: june
+  namespace: june-services
   labels:
     app: june-stt
 spec:
@@ -283,7 +283,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-stt
-  namespace: june
+  namespace: june-services
 spec:
   type: ClusterIP
   selector:
@@ -299,7 +299,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: tts-model-cache
-  namespace: june
+  namespace: june-services
 spec:
   accessModes:
   - ReadWriteOnce
@@ -314,7 +314,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: stt-model-cache
-  namespace: june
+  namespace: june-services
 spec:
   accessModes:
   - ReadWriteOnce
