@@ -46,7 +46,7 @@ check_gpu_availability() {
     fi
 }
 
-# Function to install Helm
+# Function to install Helm (using snap - proven method)
 install_helm() {
     echo "⎈ Installing Helm..."
     
@@ -55,13 +55,36 @@ install_helm() {
         return 0
     fi
     
-    # Install Helm using the official installation script
-    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
-    chmod 700 get_helm.sh
-    ./get_helm.sh
-    rm -f get_helm.sh
+    echo "📦 Installing Helm via snap (most reliable method)..."
+    snap install helm --classic
     
-    echo "✅ Helm installed successfully: $(helm version --short)"
+    if command -v helm &> /dev/null; then
+        echo "✅ Helm installed successfully: $(helm version --short)"
+        return 0
+    else
+        echo "❌ Helm installation via snap failed, trying alternative method..."
+        
+        # Fallback: direct binary download
+        echo "📦 Downloading Helm binary directly..."
+        cd /tmp
+        wget --timeout=30 --tries=3 https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz || {
+            echo "❌ Helm installation failed completely"
+            return 1
+        }
+        
+        tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
+        mv linux-amd64/helm /usr/local/bin/helm
+        chmod +x /usr/local/bin/helm
+        rm -rf linux-amd64 helm-v3.14.0-linux-amd64.tar.gz
+        
+        if command -v helm &> /dev/null; then
+            echo "✅ Helm installed via binary: $(helm version --short)"
+            return 0
+        else
+            echo "❌ All Helm installation methods failed"
+            return 1
+        fi
+    fi
 }
 
 # Function to check if NFD is already running
