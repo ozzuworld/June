@@ -127,9 +127,36 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           fi
 
+      # ⬇️ Inline ingress-nginx install/upgrade (no external script needed)
       - name: 🌉 Install/Upgrade ingress-nginx (hostNetwork)
         run: |
-          bash scripts/k8s/install-ingress-nginx.sh ops/ingress-nginx-values.yaml
+          set -e
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create ns ingress-nginx
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+
+          if [ -f ops/ingress-nginx-values.yaml ]; then
+            echo "Using ops/ingress-nginx-values.yaml"
+            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+              -n ingress-nginx \
+              -f ops/ingress-nginx-values.yaml \
+              --wait --timeout 5m
+          else
+            echo "Installing ingress-nginx with inline values"
+            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+              -n ingress-nginx \
+              --set controller.kind=DaemonSet \
+              --set controller.hostNetwork=true \
+              --set controller.dnsPolicy=ClusterFirstWithHostNet \
+              --set controller.service.type=ClusterIP \
+              --set controller.metrics.enabled=false \
+              --set controller.ingressClass=nginx \
+              --set controller.ingressClassResource.create=true \
+              --set controller.ingressClassResource.name=nginx \
+              --set controller.ingressClassResource.default=false \
+              --set controller.admissionWebhooks.enabled=false \
+              --wait --timeout 5m
+          fi
 
       - name: 🔍 Verify Kubernetes connection
         run: |
