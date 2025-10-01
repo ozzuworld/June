@@ -133,20 +133,20 @@ class WhisperService:
             logger.info(f"📁 Model cache directory: {self.model_path}")
             
             # Run model loading in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
+        # FIXED CODE:
             self.model = await loop.run_in_executor(
-                None, 
-                lambda: WhisperModel(
-                    config.WHISPER_MODEL,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                    cpu_threads=config.WHISPER_CPU_THREADS if self.device == "cpu" else None,
-                    num_workers=config.WHISPER_NUM_WORKERS,
-                    download_root=self.model_path,  # Persistent storage
-                    local_files_only=False  # Allow download if not cached
-                )
+            None, 
+            lambda: WhisperModel(
+                config.WHISPER_MODEL,
+                device=self.device,
+                compute_type=self.compute_type,
+                cpu_threads=config.WHISPER_CPU_THREADS if self.device == "cpu" else 0,  # ✅ FIXED: Use 0 instead of None
+                num_workers=config.WHISPER_NUM_WORKERS,
+                download_root=self.model_path,
+                local_files_only=False
             )
-            
+        )
+
             # Mark as ready for low-latency requests
             self.is_ready.set()
             logger.info("✅ Faster-Whisper model loaded and ready for inference")
