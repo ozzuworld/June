@@ -49,7 +49,7 @@ on:
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
-  KUBE_NAMESPACE: june
+  KUBE_NAMESPACE: june-services
   IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
 
 permissions:
