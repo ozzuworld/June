@@ -3,8 +3,16 @@ kind: Ingress
 metadata:
   name: june-ingress
   namespace: june-services
+  annotations:
+  cert-manager.io/cluster-issuer: letsencrypt-http
+
 spec:
   ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.allsafe.world
+    - idp.allsafe.world
+    secretName: allsafe-tls
   rules:
   - host: api.allsafe.world
     http:
@@ -15,7 +23,7 @@ spec:
           service:
             name: june-orchestrator
             port:
-              number: 80
+              number: 8080
   - host: idp.allsafe.world
     http:
       paths:
@@ -25,4 +33,4 @@ spec:
           service:
             name: june-idp
             port:
-              number: 80
+              number: 8080

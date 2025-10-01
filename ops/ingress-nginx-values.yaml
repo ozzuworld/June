@@ -1,0 +1,19 @@
+# ingress-nginx pinned config for single-VM setups
+controller:
+  kind: DaemonSet                 # bind to each node (we have 1)
+  hostNetwork: true               # listen on host :80/:443
+  dnsPolicy: ClusterFirstWithHostNet
+  service:
+    type: ClusterIP               # no LB needed when using hostNetwork
+  metrics:
+    enabled: false
+
+  # Avoid Helm ownership clashes from prior partial installs
+  admissionWebhooks:
+    enabled: false
+
+  # Use a predictable class name
+  ingressClass: nginx
+  ingressClassResource:
+    create: true
+    name: nginx
