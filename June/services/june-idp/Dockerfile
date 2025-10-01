@@ -1,15 +1,15 @@
-FROM quay.io/keycloak/keycloak:latest
+FROM quay.io/keycloak/keycloak:26.4.0
 
-# Set environment variables
-ENV KC_DB=postgres
-ENV KC_HEALTH_ENABLED=true
-ENV KC_METRICS_ENABLED=true
-ENV KC_FEATURES=token-exchange
+# Copy custom configuration
+COPY keycloak.conf /opt/keycloak/conf/keycloak.conf
 
-# Build the optimized Keycloak image
-RUN /opt/keycloak/bin/kc.sh build
+# Build optimized Keycloak for production
+RUN /opt/keycloak/bin/kc.sh build --db=postgres
 
-# Set the entrypoint
-ENTRYPOINT ["/opt/keycloak/bin/kc.sh"]
-# Use development mode for easier setup
-CMD ["start-dev"]
+# Create non-root user
+USER 1000
+
+EXPOSE 8080 9000
+
+# Use optimized startup
+ENTRYPOINT ["/opt/keycloak/bin/kc.sh", "start", "--optimized"]
