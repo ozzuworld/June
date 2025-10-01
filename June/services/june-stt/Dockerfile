@@ -1,44 +1,49 @@
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
 
-# Install system dependencies (minimal)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+    python3.11 \
+    python3.11-pip \
+    python3.11-dev \
     ffmpeg \
+    libsndfile1 \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables for optimal performance
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV CUDA_VISIBLE_DEVICES=0
+# Set Python 3.11 as default
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python
 
-# Create app directories with proper permissions
 WORKDIR /app
-RUN mkdir -p /app/models /app/cache /tmp && \
-    chmod -R 755 /app
+
+# Copy requirements first for better caching
+COPY requirements.txt .
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+# Create directories
+RUN mkdir -p /app/models /app/cache /tmp
+RUN chmod 777 /app/models /app/cache /tmp
 
 # Copy application code
 COPY . .
 
-# Create non-root user for security
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+# Create non-root user
+RUN useradd -m -u 1000 june && \
+    chown -R june:june /app
+USER june
 
-USER appuser
-
-# Health check with longer initial period for model download
-HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/healthz || exit 1
 
-# Expose port
 EXPOSE 8000
 
-# Start the application (model downloads on first startup)
-CMD ["python3", "app.py"]
+# Environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Start the service
+CMD ["python", "app.py"]
