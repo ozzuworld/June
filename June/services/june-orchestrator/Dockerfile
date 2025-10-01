@@ -12,9 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY app.py .
-COPY tts_client.py .
+# Copy ALL application code (including service_auth.py)
+COPY *.py ./
 
 # Create non-root user for security
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app

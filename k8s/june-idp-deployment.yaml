@@ -15,13 +15,30 @@ spec:
       labels:
         app: june-idp
     spec:
+      # Add init container to wait for database
+      initContainers:
+      - name: wait-for-db
+        image: postgres:15-alpine
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          until pg_isready -h postgresql -p 5432 -U keycloak; do
+            echo "PostgreSQL is unavailable - waiting..."
+            sleep 3
+          done
+          echo "✅ PostgreSQL is ready!"
+        env:
+        - name: PGPASSWORD
+          value: "Pokemon123!"
+      
       containers:
       - name: keycloak
         image: quay.io/keycloak/keycloak:latest
         args:
-          - "start-dev"  # Development mode with HTTP enabled
+          - "start-dev"
         env:
-        # Database Configuration
+        # Database Configuration - FIXED hostname
         - name: KC_DB
           value: "postgres"
         - name: KC_DB_URL
@@ -29,21 +46,15 @@ spec:
         - name: KC_DB_USERNAME
           value: "keycloak"
         - name: KC_DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: keycloak-secrets
-              key: db-password
+          value: "Pokemon123!"
         
         # Admin Configuration
         - name: KEYCLOAK_ADMIN
           value: "admin"
         - name: KEYCLOAK_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: keycloak-secrets
-              key: admin-password
+          value: "Pokemon123!"
         
-        # HTTP Configuration (for development/internal)
+        # HTTP Configuration
         - name: KC_HTTP_ENABLED
           value: "true"
         - name: KC_HOSTNAME_STRICT
@@ -51,7 +62,7 @@ spec:
         - name: KC_HOSTNAME_STRICT_HTTPS
           value: "false"
         
-        # Proxy Configuration (if behind ingress)
+        # Proxy Configuration
         - name: KC_PROXY
           value: "edge"
         
@@ -103,14 +114,3 @@ spec:
     targetPort: 8080
     protocol: TCP
   type: ClusterIP
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: keycloak-secrets
-  namespace: june
-type: Opaque
-stringData:
-  db-password: "Pokemon123!"
-  admin-password: "Pokemon123!"
