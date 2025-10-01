@@ -6,27 +6,17 @@ LABEL description="Orchestrator - Control Plane API and Coordination"
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    fastapi==0.115.0 \
-    uvicorn[standard]==0.30.6 \
-    pydantic==2.9.2 \
-    pydantic-settings==2.5.2 \
-    httpx==0.27.2 \
-    elasticsearch==8.15.1 \
-    neo4j==5.24.0 \
-    psycopg[binary,pool]==3.2.2 \
-    redis==5.1.0 \
-    pika==1.3.2 \
-    minio==7.2.9 \
-    python-multipart==0.0.9 \
-    python-jose[cryptography]==3.3.0 \
-    tenacity==9.0.0 \
-    schedule==1.2.2
-
 WORKDIR /app
+
+# Copy requirements first (for better Docker layer caching)
+COPY requirements.txt .
+
+# Install Python dependencies from requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY ./app /app
