@@ -3,10 +3,7 @@ name: 🚀 Complete June Services CI/CD Pipeline
 on:
   push:
     branches: [ main, develop ]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
-      - '.gitignore'
+    paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -48,23 +45,14 @@ permissions:
   packages: write
 
 jobs:
-  # Build and Push Docker Images
   build-and-push:
     name: 🔨 Build & Push Images
     runs-on: self-hosted
     if: github.event.inputs.build_images != 'false'
-
     strategy:
       fail-fast: false
       matrix:
-        service:
-          - june-stt
-          - june-tts
-          - june-orchestrator
-          - june-idp
-          - june-web
-          - june-dark
-
+        service: [june-stt, june-tts, june-orchestrator, june-idp, june-web, june-dark]
     steps:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
@@ -102,7 +90,6 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-  # Deploy to Kubernetes
   deploy:
     name: 🚀 Deploy to K8s
     runs-on: self-hosted
@@ -118,23 +105,46 @@ jobs:
           set -e
           echo "🔍 Verifying k8s manifest files..."
           ls -la k8s || true
-          # Required files
-          test -f k8s/namespace.yaml       && echo "✅ k8s/namespace.yaml"       || (echo "❌ missing k8s/namespace.yaml"; exit 1)
-          test -f k8s/configmap.yaml       && echo "✅ k8s/configmap.yaml"       || (echo "❌ missing k8s/configmap.yaml"; exit 1)
-          # Secrets are optional here if you render them elsewhere; we apply if present
-          test -f k8s/secrets.yaml         && echo "ℹ️ k8s/secrets.yaml present" || echo "ℹ️ k8s/secrets.yaml not found (ok)"
+          test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found; will create namespace with kubectl"
+
+          # Sanity check: no file should still say 'namespace: june'
+          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
+            echo "❌ Found manifests still using 'namespace: june'. Replace with 'namespace: june-services'."
+            exit 1
+          fi
+
+      - name: 🧰 Ensure Helm is available
+        run: |
+          if ! command -v helm >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          fi
+
+      - name: 🌉 Install/Upgrade ingress-nginx (hostNetwork)
+        run: |
+          bash scripts/k8s/install-ingress-nginx.sh ops/ingress-nginx-values.yaml
 
       - name: 🔍 Verify Kubernetes connection
         run: |
           echo "🔍 Testing Kubernetes connection..."
           kubectl cluster-info
           kubectl get nodes -o wide
-          echo "📊 Current namespace status:"
-          kubectl get all -n $KUBE_NAMESPACE || echo "Namespace doesn't exist yet"
 
-      - name: 🔐 Ensure Docker Registry Secret (for image pulls)
+      - name: 🏗️ Create/Apply Namespace FIRST (very important)
         run: |
-          # Create/update the image pull secret in the target namespace
+          if [ -f k8s/namespace.yaml ]; then
+            echo "🏗️ Applying k8s/namespace.yaml..."
+            kubectl apply -f k8s/namespace.yaml
+          else
+            echo "🏗️ Creating namespace $KUBE_NAMESPACE (no file present)..."
+            kubectl get ns "$KUBE_NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$KUBE_NAMESPACE"
+          fi
+
+          echo "📊 Namespace status:"
+          kubectl get ns "$KUBE_NAMESPACE" -o yaml | sed -n '1,80p'
+
+      - name: 🔐 Create/Update Docker Registry Secret (image pulls)
+        run: |
+          echo "# Create/update the image pull secret in the target namespace"
           kubectl create secret docker-registry dockerhub-secret \
             --docker-server=docker.io \
             --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
@@ -143,46 +153,33 @@ jobs:
             --namespace="$KUBE_NAMESPACE" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-          # Attach it to the default ServiceAccount so ALL pods can pull private images
+          echo "# Attach secret to default ServiceAccount so all pods can pull private images"
           kubectl -n "$KUBE_NAMESPACE" patch serviceaccount default \
             -p '{"imagePullSecrets":[{"name":"dockerhub-secret"}]}' \
             --type merge || true
 
-          echo "✅ dockerhub-secret ensured and attached to default SA in namespace $KUBE_NAMESPACE"
-
-      - name: 🔧 Prepare manifests & (optional) update image refs in files
+      - name: 🔧 Update image tags in manifests (optional convenience)
         run: |
-          echo "🔧 Preparing manifests..."
+          echo "🔧 Updating image tags to: $IMAGE_TAG"
           mkdir -p /tmp/k8s-updated
-          cp -r k8s/* /tmp/k8s-updated/
-
-          # Optional: try to rewrite image lines in YAML if they match known patterns
-          # This makes the files nicer, but we will still enforce images via kubectl set image later.
-          for svc in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
-            # Replace any repo prefix with our registry and set tag
-            # Examples handled: image: ozzuworld/<svc>:..., image: docker.io/whatever/<svc>:..., image: <svc>:...
-            sed -i -E "s|image:\s*([a-z0-9\./-]*/)?${svc}:[^[:space:]]+|image: ${REGISTRY}/${svc}:${IMAGE_TAG}|g" /tmp/k8s-updated/* 2>/dev/null || true
+          cp -r k8s/* /tmp/k8s-updated/ || true
+          for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
+            if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
+              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/${service}-deployment.yaml" || true
+            elif [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
+              sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/complete-manifests.yaml" || true
+            fi
           done
-          echo "✅ Manifests prepared"
 
       - name: 🏗️ Apply base configuration
         run: |
           echo "🏗️ Applying base Kubernetes resources..."
-          if [ -f "/tmp/k8s-updated/namespace.yaml" ]; then
-            kubectl apply -f /tmp/k8s-updated/namespace.yaml
-          fi
-          if [ -f "/tmp/k8s-updated/configmap.yaml" ]; then
-            kubectl apply -f /tmp/k8s-updated/configmap.yaml
-          fi
-          if [ -f "/tmp/k8s-updated/secrets.yaml" ]; then
-            kubectl apply -f /tmp/k8s-updated/secrets.yaml
-          fi
+          [ -f "/tmp/k8s-updated/configmap.yaml" ] && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/configmap.yaml || true
+          [ -f "/tmp/k8s-updated/secrets.yaml" ]   && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/secrets.yaml || true
           echo "ℹ️ Storage is owned by the install script; skipping here."
-          if [ -f "k8s-base-config-complete.yaml" ]; then
-            kubectl apply -f k8s-base-config-complete.yaml
-          fi
+          [ -f "k8s-base-config-complete.yaml" ] && kubectl apply -f k8s-base-config-complete.yaml || true
 
-      - name: 🚀 Deploy services (apply manifests)
+      - name: 🚀 Deploy services
         run: |
           echo "🚀 Deploying services..."
           SERVICES_INPUT="${{ github.event.inputs.services }}"
@@ -195,23 +192,21 @@ jobs:
           fi
 
           if [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
-            kubectl apply -f /tmp/k8s-updated/complete-manifests.yaml
+            kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/complete-manifests.yaml
           else
             for service in "${SERVICES_TO_DEPLOY[@]}"; do
               service="$(echo "$service" | xargs)"
               if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
-                kubectl apply -f "/tmp/k8s-updated/${service}-deployment.yaml"
+                kubectl apply -n "$KUBE_NAMESPACE" -f "/tmp/k8s-updated/${service}-deployment.yaml"
               else
                 echo "⚠️ /tmp/k8s-updated/${service}-deployment.yaml not found"
               fi
             done
           fi
 
-      - name: 🖇️ Enforce image versions on deployments (bullet-proof)
+      - name: 🖇️ Enforce images on live deployments (belt & suspenders)
         run: |
-          echo "🖇️ Forcing images on live deployments to ${REGISTRY}/<svc>:${IMAGE_TAG}"
           set -e
-          # Only change images for deployments that actually exist
           for DEP in $(kubectl -n "$KUBE_NAMESPACE" get deploy -o jsonpath='{.items[*].metadata.name}'); do
             case "$DEP" in
               june-stt)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP stt=${REGISTRY}/june-stt:${IMAGE_TAG} --record ;;
@@ -222,11 +217,9 @@ jobs:
               june-dark)         kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP dark=${REGISTRY}/june-dark:${IMAGE_TAG} --record || true ;;
             esac
           done
-          echo "✅ Images enforced"
 
       - name: 🌐 Apply ingress
         run: |
-          echo "🌐 Applying ingress configuration..."
           if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
             kubectl apply -f /tmp/k8s-updated/ingress.yaml
           elif [ -f "k8s-ingress-complete.yaml" ]; then
@@ -234,71 +227,23 @@ jobs:
           else
             echo "⚠️ No ingress configuration found"
           fi
-
-      - name: 🔄 Force restart (if requested)
-        if: github.event.inputs.force_restart == 'true'
-        run: |
-          echo "🔄 Force restarting deployments..."
-          kubectl rollout restart deployment -n $KUBE_NAMESPACE
+          kubectl -n "$KUBE_NAMESPACE" get ingress -o wide || true
 
       - name: ⏳ Wait for deployments
         run: |
           echo "⏳ Waiting for deployments to be ready..."
-          DEPLOYMENTS=$(kubectl get deployments -n $KUBE_NAMESPACE -o jsonpath='{.items[*].metadata.name}')
-          if [ -z "$DEPLOYMENTS" ]; then
-            echo "⚠️ No deployments found in namespace $KUBE_NAMESPACE"
-            exit 0
-          fi
-          echo "📋 Found deployments: $DEPLOYMENTS"
+          DEPLOYMENTS=$(kubectl get deployments -n "$KUBE_NAMESPACE" -o jsonpath='{.items[*].metadata.name}')
           for deployment in $DEPLOYMENTS; do
-            echo "⏳ Waiting for $deployment to be ready..."
-            if kubectl rollout status deployment/"$deployment" -n $KUBE_NAMESPACE --timeout=300s; then
-              echo "✅ $deployment is ready"
-            else
-              echo "❌ $deployment failed or timed out"
-              kubectl describe deployment "$deployment" -n $KUBE_NAMESPACE
-              kubectl describe pods -l app="$deployment" -n $KUBE_NAMESPACE
-              kubectl logs -l app="$deployment" -n $KUBE_NAMESPACE --tail=50 || true
-            fi
+            kubectl rollout status deployment/"$deployment" -n "$KUBE_NAMESPACE" --timeout=300s || true
           done
 
       - name: 🔍 Health check
         run: |
-          echo "🔍 Performing health checks..."
-          sleep 20
-          echo "📊 Pod Status:"
-          kubectl get pods -n $KUBE_NAMESPACE -o wide
-          echo "🌐 Service Status:"
-          kubectl get services -n $KUBE_NAMESPACE
-          echo "🚪 Ingress Status:"
-          kubectl get ingress -n $KUBE_NAMESPACE || echo "No ingress found"
-          FAILED_PODS=$(kubectl get pods -n $KUBE_NAMESPACE --field-selector=status.phase!=Running,status.phase!=Succeeded -o jsonpath='{.items[*].metadata.name}')
-          if [ -n "$FAILED_PODS" ]; then
-            echo "❌ Failed pods detected: $FAILED_PODS"
-            for pod in $FAILED_PODS; do
-              echo "🔍 Logs for failed pod $pod:"
-              kubectl logs "$pod" -n $KUBE_NAMESPACE --tail=50 || true
-              echo "📝 Description for failed pod $pod:"
-              kubectl describe pod "$pod" -n $KUBE_NAMESPACE || true
-            done
-          else
-            echo "✅ All pods are running successfully!"
-          fi
+          echo "📊 Pods:";    kubectl -n "$KUBE_NAMESPACE" get pods -o wide || true
+          echo "🌐 Svc:";     kubectl -n "$KUBE_NAMESPACE" get svc -o wide || true
+          echo "🚪 Ingress:"; kubectl -n "$KUBE_NAMESPACE" get ingress -o wide || true
 
-      - name: 📊 Final deployment status
+      - name: 📊 Final status
         if: always()
         run: |
-          echo "📊 Final deployment status:"
-          kubectl get all -n $KUBE_NAMESPACE -o wide || true
-          echo ""
-          echo "🌐 External Access:"
-          EXTERNAL_IP=$(kubectl get service -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Not available")
-          NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "Not available")
-          if [ "$EXTERNAL_IP" != "Not available" ]; then
-            echo "🔗 Load Balancer IP: $EXTERNAL_IP"
-          elif [ "$NODE_IP" != "Not available" ]; then
-            echo "🔗 Node External IP: $NODE_IP"
-          else
-            echo "🔗 External IP: $(curl -s http://checkip.amazonaws.com/ || echo 'Unable to detect')"
-          fi
-          echo "✅ Deployment completed!"
+          kubectl get all -n "$KUBE_NAMESPACE" -o wide || true
