@@ -26,6 +26,11 @@ print_status() {
     esac
 }
 
+# Alias for print_step (same as print_status with "step")
+print_step() {
+    print_status "step" "$1"
+}
+
 print_header() {
     echo ""
     echo -e "${CYAN}================================================${NC}"
