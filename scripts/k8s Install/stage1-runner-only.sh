@@ -52,8 +52,8 @@ check_runner_status() {
     fi
     
     # Check if service exists
-    if systemctl list-unit-files | grep -q "actions.runner"; then
-        if systemctl is-active --quiet actions.runner.*; then
+    if systemctl list-unit-files 2>/dev/null | grep -q "actions.runner"; then
+        if systemctl is-active --quiet actions.runner.* 2>/dev/null; then
             return 0  # Running
         else
             return 3  # Configured but not running
