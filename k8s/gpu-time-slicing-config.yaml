@@ -1,10 +1,8 @@
 # ==============================================================================
-# GPU SHARING SOLUTION FOR JUNE TTS & STT
+# FIXED GPU SHARING SOLUTION FOR JUNE TTS & STT
 # ==============================================================================
-# This uses NVIDIA Time-Slicing to share a single GPU across multiple pods
-# Reference: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/gpu-sharing.html
 
-# Step 1: Create ConfigMap for GPU Time-Slicing
+# Step 1: ConfigMap for GPU Time-Slicing in GPU Operator namespace
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -16,35 +14,19 @@ data:
     version: v1
     sharing:
       timeSlicing:
-        replicas: 4  # Allow 4 pods to share the GPU
+        replicas: 4
         renameByDefault: false
         failRequestsGreaterThanOne: false
-        resources:
-        - name: nvidia.com/gpu
-          replicas: 4
 
 ---
-# Step 2: Update ClusterPolicy to enable time-slicing
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: device-plugin-config
-  namespace: gpu-operator
-data:
-  config.yaml: |
-    version: v1
-    flags:
-      migStrategy: none
-    sharing:
-      timeSlicing:
-        renameByDefault: false
-        failRequestsGreaterThanOne: false
-        resources:
-        - name: nvidia.com/gpu
-          replicas: 4  # 4 replicas per GPU
+# Step 2: Patch GPU Operator to use time-slicing config
+# Run this command after applying:
+# kubectl patch clusterpolicy/cluster-policy \
+#   -n gpu-operator --type merge \
+#   -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
 
 ---
-# Step 3: Updated TTS Deployment with GPU Sharing
+# Step 3: FIXED TTS Deployment with corrected securityContext
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -71,6 +53,12 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+      
+      # FIXED: Pod-level securityContext (not container-level)
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+        runAsGroup: 1001
       
       # Init container to fix permissions
       initContainers:
@@ -104,7 +92,7 @@ spec:
         
         # Optimization flags
         - name: ENABLE_QUANTIZATION
-          value: "false"  # Disable for GPU sharing
+          value: "false"
         - name: PRELOAD_MODELS
           value: "true"
         - name: TTS_CACHE_SIZE
@@ -163,12 +151,10 @@ spec:
           initialDelaySeconds: 180
           periodSeconds: 30
         
-        # Run as non-root after init
+        # FIXED: Container-level securityContext (no fsGroup here)
         securityContext:
-          runAsUser: 1001
-          runAsGroup: 1001
-          fsGroup: 1001
           allowPrivilegeEscalation: false
+          runAsNonRoot: true
       
       volumes:
       - name: model-cache
@@ -179,7 +165,7 @@ spec:
           sizeLimit: 5Gi
 
 ---
-# Step 4: Updated STT Deployment with GPU Sharing
+# Step 4: FIXED STT Deployment with corrected securityContext
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -204,6 +190,12 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+      
+      # FIXED: Pod-level securityContext
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
       
       # Init container to fix permissions
       initContainers:
@@ -298,11 +290,10 @@ spec:
           initialDelaySeconds: 180
           periodSeconds: 30
         
+        # FIXED: Container-level securityContext (no fsGroup here)
         securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
-          fsGroup: 1000
           allowPrivilegeEscalation: false
+          runAsNonRoot: true
       
       volumes:
       - name: model-cache
@@ -325,7 +316,7 @@ spec:
   resources:
     requests:
       storage: 20Gi
-  storageClassName: standard
+  storageClassName: local-storage
 
 ---
 apiVersion: v1
@@ -339,4 +330,4 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  storageClassName: standard
+  storageClassName: local-storage
