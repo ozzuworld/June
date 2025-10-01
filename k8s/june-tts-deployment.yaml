@@ -1,3 +1,7 @@
+# June TTS Deployment with GPU Support
+# This file includes all GPU configurations - no separate patching needed
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,29 +17,136 @@ spec:
       labels:
         app: june-tts
     spec:
+      # GPU node selector
+      nodeSelector:
+        gpu: "true"
+      
+      # GPU tolerations
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      # Pod-level security context
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+        runAsGroup: 1001
+      
+      # Image pull secrets
       imagePullSecrets:
-      - name: dockerhub-secret  # Changed from dockerhub-credentials
+      - name: dockerhub-secret
+      
+      # Permission fix init container
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command:
+          - sh
+          - -c
+          - |
+            mkdir -p /models /cache /tmp
+            chmod -R 777 /models /cache /tmp
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /cache
+        securityContext:
+          runAsUser: 0
+      
       containers:
       - name: tts
-        # FIXED: Replaced ${{ secrets.DOCKERHUB_USERNAME }}
         image: docker.io/ozzuworld/june-tts:latest
         imagePullPolicy: Always
-        resources:
-          limits:
-            nvidia.com/gpu: "1"
-            memory: "4Gi"
-            cpu: "2"
-          requests:
-            nvidia.com/gpu: "1"
-            memory: "2Gi"
-            cpu: "1"
-        ports:
-        - containerPort: 8000
+        
+        env:
+        # OpenVoice/TTS Configuration
+        - name: OPENVOICE_CHECKPOINTS_V2
+          value: "/models/openvoice/checkpoints_v2"
+        - name: OPENVOICE_DEVICE
+          value: "cuda"
+        - name: ENABLE_QUANTIZATION
+          value: "false"
+        - name: PRELOAD_MODELS
+          value: "true"
+        - name: TTS_CACHE_SIZE
+          value: "100"
+        
+        # CUDA optimizations for GPU sharing
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        
+        # Keycloak (optional)
+        - name: KEYCLOAK_URL
+          value: "http://june-idp:8080"
+        - name: KEYCLOAK_REALM
+          value: "allsafe"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "june-tts"
+        - name: KEYCLOAK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: keycloak-tts-secret
+              optional: true
+        
+        # Config from ConfigMap
         envFrom:
         - configMapRef:
             name: june-config
-      nodeSelector:
-        gpu: "true"
+        
+        ports:
+        - containerPort: 8000
+          name: http
+        
+        # GPU resource allocation (1 slice of shared GPU)
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+            nvidia.com/gpu: 1
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /tmp/june_tts_cache
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 180
+          periodSeconds: 30
+        
+        # Container-level security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: june-tts-models
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+
 ---
 apiVersion: v1
 kind: Service
@@ -49,3 +160,4 @@ spec:
   ports:
   - port: 8000
     targetPort: 8000
+    name: http

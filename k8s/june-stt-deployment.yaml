@@ -13,48 +13,126 @@ spec:
       labels:
         app: june-stt
     spec:
+      nodeSelector:
+        gpu: "true"
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      
       imagePullSecrets:
-      - name: dockerhub-secret  # Added
+      - name: dockerhub-secret
+      
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command:
+          - sh
+          - -c
+          - |
+            mkdir -p /app/models /app/cache
+            chmod -R 777 /app/models /app/cache
+        volumeMounts:
+        - name: model-cache
+          mountPath: /app/models
+        - name: cache
+          mountPath: /app/cache
+        securityContext:
+          runAsUser: 0
+      
       containers:
       - name: stt
         image: docker.io/ozzuworld/june-stt:latest
         imagePullPolicy: Always
+        
+        env:
+        - name: WHISPER_MODEL
+          value: "large-v3"
+        - name: WHISPER_DEVICE
+          value: "cuda"
+        - name: WHISPER_COMPUTE_TYPE
+          value: "float16"
+        - name: WHISPER_CACHE_DIR
+          value: "/app/models"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        - name: KEYCLOAK_URL
+          value: "http://june-idp:8080"
+        - name: KEYCLOAK_REALM
+          value: "allsafe"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "june-stt"
+        - name: KEYCLOAK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: keycloak-stt-secret
+              optional: true
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator:8080"
+        - name: ENABLE_ORCHESTRATOR_NOTIFICATIONS
+          value: "true"
+        
+        envFrom:
+        - configMapRef:
+            name: june-config
+        
         ports:
         - containerPort: 8000
+          name: http
+        
+        # REDUCED CPU from 1000m to 400m
         resources:
           requests:
-            memory: "4Gi"
-            cpu: "1"
+            cpu: "400m"
+            memory: "2Gi"
             nvidia.com/gpu: 1
           limits:
-            memory: "8Gi" 
             cpu: "2"
+            memory: "4Gi"
             nvidia.com/gpu: 1
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /app/models
+        - name: cache
+          mountPath: /app/cache
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 30
+          initialDelaySeconds: 180
           periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 8000
-          initialDelaySeconds: 60
-          periodSeconds: 10
-          timeoutSeconds: 5
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        envFrom:
-        - configMapRef:
-            name: june-config
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
       volumes:
       - name: model-cache
         persistentVolumeClaim:
           claimName: june-stt-models
-      nodeSelector:
-        gpu: "true"
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+
 ---
 apiVersion: v1
 kind: Service
@@ -68,17 +146,4 @@ spec:
   ports:
   - port: 8000
     targetPort: 8000
----
-# FIXED: Added storageClassName
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: june-stt-models
-  namespace: june
-spec:
-  accessModes:
-  - ReadWriteOnce
-  storageClassName: local-storage  # ADDED THIS LINE
-  resources:
-    requests:
-      storage: 10Gi
+    name: http
