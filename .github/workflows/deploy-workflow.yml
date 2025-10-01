@@ -176,11 +176,9 @@ jobs:
             kubectl apply -f /tmp/k8s-updated/secrets.yaml
           fi
           
-          # Apply storage if exists
-          if [ -f "k8s-storage-complete.yaml" ]; then
-            kubectl apply -f k8s-storage-complete.yaml
-          fi
-          
+          # ℹ️ Storage is managed by the install script (single source of truth)
+          echo "ℹ️ Skipping storage apply in CI."
+
           # Apply base config if exists
           if [ -f "k8s-base-config-complete.yaml" ]; then
             kubectl apply -f k8s-base-config-complete.yaml
