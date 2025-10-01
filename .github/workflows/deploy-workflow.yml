@@ -122,6 +122,24 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🔍 Verify k8s manifest files
+        run: |
+          set -e
+          echo "🔍 Verifying k8s manifest files..."
+          ls -la k8s || true
+
+          # Required files
+          if [ ! -f k8s/namespace.yaml ]; then echo "❌ k8s/namespace.yaml NOT FOUND"; exit 1; else echo "✅ k8s/namespace.yaml exists"; fi
+          if [ ! -f k8s/configmap.yaml ]; then echo "❌ k8s/configmap.yaml NOT FOUND"; exit 1; else echo "✅ k8s/configmap.yaml exists"; fi
+          if [ ! -f k8s/secrets.yaml ];   then echo "❌ k8s/secrets.yaml NOT FOUND";   exit 1; else echo "✅ k8s/secrets.yaml exists"; fi
+
+          # Optional (managed by install script now)
+          if [ -f k8s/storage.yaml ]; then
+            echo "ℹ️ k8s/storage.yaml present, but storage is managed by the install script. CI will not apply it."
+          else
+            echo "ℹ️ Skipping k8s/storage.yaml check (single source of truth = install script)."
+          fi
+
       - name: 🔍 Verify Kubernetes connection
         run: |
           echo "🔍 Testing Kubernetes connection..."
