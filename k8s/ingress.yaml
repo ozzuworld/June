@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: june-ingress
-  namespace: june-services
+  namespace: june-services-services
   # If you don't have cert-manager installed yet, remove the annotations and the whole tls: block.
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-http

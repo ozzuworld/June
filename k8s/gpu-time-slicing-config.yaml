@@ -27,7 +27,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gpu-config-script
-  namespace: june-services
+  namespace: june-services-services
   labels:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: gpu-config

@@ -13,7 +13,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: june-config
-  namespace: june-services-services
+  namespace: june-services-services-services
 data:
   APP_ENV: production
   LOG_LEVEL: info
@@ -25,7 +25,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: june-secrets
-  namespace: june-services-services
+  namespace: june-services-services-services
 type: Opaque
 stringData:
   gemini-api-key: "PLACEHOLDER"
@@ -37,7 +37,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-stt
-  namespace: june-services-services
+  namespace: june-services-services-services
   labels:
     app: june-stt
 spec:
@@ -85,7 +85,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-stt
-  namespace: june-services-services
+  namespace: june-services-services-services
 spec:
   type: ClusterIP
   selector:
@@ -101,7 +101,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-tts
-  namespace: june-services-services
+  namespace: june-services-services-services
   labels:
     app: june-tts
 spec:
@@ -149,7 +149,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-tts
-  namespace: june-services-services
+  namespace: june-services-services-services
 spec:
   type: ClusterIP
   selector:
@@ -165,7 +165,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-orchestrator
-  namespace: june-services-services
+  namespace: june-services-services-services
   labels:
     app: june-orchestrator
 spec:
@@ -218,7 +218,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-orchestrator
-  namespace: june-services-services
+  namespace: june-services-services-services
 spec:
   type: ClusterIP
   selector:
@@ -234,7 +234,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-idp
-  namespace: june-services-services
+  namespace: june-services-services-services
   labels:
     app: june-idp
 spec:
@@ -279,7 +279,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-idp
-  namespace: june-services-services
+  namespace: june-services-services-services
 spec:
   type: ClusterIP
   selector:
@@ -295,7 +295,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: june-ingress
-  namespace: june-services-services
+  namespace: june-services-services-services
   annotations:
     kubernetes.io/ingress.class: "gce"
     kubernetes.io/ingress.global-static-ip-name: "june-services-ip"
