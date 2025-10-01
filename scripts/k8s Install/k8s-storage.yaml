@@ -1,9 +1,11 @@
 ---
-# Storage Class for Local Storage
+# StorageClass (canonical, owned by install script)
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: local-storage
+  annotations:
+    app.kubernetes.io/managed-by: install-script
   labels:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: storage
@@ -12,20 +14,18 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 
 ---
-# Persistent Volume for June STT Models
+# PV: STT models
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: june-stt-models
+  name: june-stt-models-pv
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: stt-storage
-    storage-type: local
+    app.kubernetes.io/component: storage
 spec:
   capacity:
     storage: 10Gi
-  accessModes:
-  - ReadWriteOnce
+  accessModes: [ "ReadWriteOnce" ]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
@@ -38,20 +38,18 @@ spec:
           operator: Exists
 
 ---
-# Persistent Volume for June TTS Models
+# PV: TTS models
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: june-tts-models
+  name: june-tts-models-pv
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: tts-storage
-    storage-type: local
+    app.kubernetes.io/component: storage
 spec:
   capacity:
-    storage: 15Gi
-  accessModes:
-  - ReadWriteOnce
+    storage: 10Gi
+  accessModes: [ "ReadWriteOnce" ]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
@@ -64,20 +62,18 @@ spec:
           operator: Exists
 
 ---
-# Persistent Volume for General June Data  
+# PV: general data
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: june-data
+  name: june-data-pv
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: general-storage
-    storage-type: local
+    app.kubernetes.io/component: storage
 spec:
   capacity:
     storage: 20Gi
-  accessModes:
-  - ReadWriteOnce
+  accessModes: [ "ReadWriteOnce" ]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
@@ -90,82 +86,50 @@ spec:
           operator: Exists
 
 ---
-# Persistent Volume Claim for STT Models
+# PVCs (namespaced)
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: june-stt-models
-  namespace: june
+  namespace: june-services
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: stt-storage
+    app.kubernetes.io/component: storage
 spec:
-  accessModes:
-  - ReadWriteOnce
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
   resources:
     requests:
       storage: 10Gi
-  storageClassName: local-storage
 
 ---
-# Persistent Volume Claim for TTS Models
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: june-tts-models
-  namespace: june
+  namespace: june-services
   labels:
     app.kubernetes.io/name: june
-    app.kubernetes.io/component: tts-storage
+    app.kubernetes.io/component: storage
 spec:
-  accessModes:
-  - ReadWriteOnce
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
   resources:
     requests:
-      storage: 15Gi
-  storageClassName: local-storage
+      storage: 10Gi
 
 ---
-# Persistent Volume Claim for General Data
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: june-data
-  namespace: june
-  labels:
-    app.kubernetes.io/name: june
-    app.kubernetes.io/component: general-storage
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
-  storageClassName: local-storage
-
----
-# ConfigMap for Storage Initialization Script
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: storage-init-script
-  namespace: june
+  namespace: june-services
   labels:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: storage
-data:
-  init-storage.sh: |
-    #!/bin/bash
-    echo "Initializing June storage directories..."
-    
-    # Create main data directories
-    mkdir -p /opt/june-stt-models
-    mkdir -p /opt/june-tts-models  
-    mkdir -p /opt/june-data/{logs,uploads,cache,temp}
-    
-    # Set permissions
-    chmod -R 777 /opt/june-stt-models
-    chmod -R 777 /opt/june-tts-models
-    chmod -R 777 /opt/june-data
-    
-    echo "Storage initialization completed!"
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 20Gi
