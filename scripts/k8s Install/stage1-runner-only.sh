@@ -477,3 +477,6 @@ main() {
 
 # Run main function
 main "$@"
+
+# Exit with success
+exit 0
