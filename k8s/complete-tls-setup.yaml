@@ -1,14 +1,13 @@
 ---
-# 1. ClusterIssuer for Let's Encrypt (Staging for testing)
+# 1. ClusterIssuer for Let's Encrypt Staging (for testing)
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
   name: letsencrypt-staging
 spec:
   acme:
-    # Staging server (for testing - no rate limits)
     server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: your-email@example.com  # CHANGE THIS
+    email: your-email@example.com  # ⚠️ CHANGE THIS to your actual email
     privateKeySecretRef:
       name: letsencrypt-staging
     solvers:
@@ -17,16 +16,15 @@ spec:
           class: nginx
 
 ---
-# 2. ClusterIssuer for Let's Encrypt (Production)
+# 2. ClusterIssuer for Let's Encrypt Production
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
   name: letsencrypt-prod
 spec:
   acme:
-    # Production server (use after staging works)
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: your-email@example.com  # CHANGE THIS
+    email: your-email@example.com  # ⚠️ CHANGE THIS to your actual email
     privateKeySecretRef:
       name: letsencrypt-prod
     solvers:
@@ -35,39 +33,29 @@ spec:
           class: nginx
 
 ---
-# 3. Ingress with TLS configured
+# 3. Single Ingress with TLS for all domains
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: june-platform-ingress
   namespace: june
   annotations:
-    # Specify ingress class
-    kubernetes.io/ingress.class: nginx
-    
-    # cert-manager annotations (START WITH STAGING!)
+    # Use ingressClassName instead of deprecated annotation
     cert-manager.io/cluster-issuer: letsencrypt-staging  # Change to letsencrypt-prod after testing
-    
-    # ACME challenge configuration
-    acme.cert-manager.io/http01-edit-in-place: "true"
-    
-    # SSL configuration
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    
-    # CORS and other settings
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    
 spec:
+  ingressClassName: nginx
   tls:
   - hosts:
     - api.allsafe.world
     - auth.allsafe.world
     - stt.allsafe.world
     - tts.allsafe.world
-    secretName: june-tls-secret
+    secretName: june-tls-cert
   
   rules:
   # API / Orchestrator
@@ -117,19 +105,3 @@ spec:
             name: june-tts
             port:
               number: 8000
-
----
-# 4. Test Certificate (create manually to debug)
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: june-tls-test
-  namespace: june
-spec:
-  secretName: june-tls-test-secret
-  issuerRef:
-    name: letsencrypt-staging
-    kind: ClusterIssuer
-  dnsNames:
-  - api.allsafe.world
-  # Test with ONE domain first
