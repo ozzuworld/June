@@ -2,46 +2,27 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: june-ingress
-  namespace: june
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  namespace: june-services
 spec:
+  ingressClassName: nginx
   rules:
-  - host: june.example.com
+  - host: api.allsafe.world
     http:
       paths:
-      - path: /stt(/|$)(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
-            name: june-stt
+            name: june-orchestrator
             port:
-              number: 8000
-      - path: /tts(/|$)(.*)
-        pathType: Prefix
-        backend:
-          service:
-            name: june-tts
-            port:
-              number: 8000
-      - path: /dark(/|$)(.*)
-        pathType: Prefix
-        backend:
-          service:
-            name: june-dark
-            port:
-              number: 8000
-      - path: /idp(/|$)(.*)
+              number: 80
+  - host: idp.allsafe.world
+    http:
+      paths:
+      - path: /
         pathType: Prefix
         backend:
           service:
             name: june-idp
             port:
-              number: 8080
-      - path: /web(/|$)(.*)
-        pathType: Prefix
-        backend:
-          service:
-            name: june-web
-            port:
-              number: 3000
+              number: 80
