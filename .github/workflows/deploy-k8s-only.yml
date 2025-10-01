@@ -1,310 +1,135 @@
-name: 🚀 Deploy Only (No Build)
+---
+# StorageClass (canonical, owned by install script)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  annotations:
+    app.kubernetes.io/managed-by: install-script
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
 
-on:
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Image tag to deploy'
-        required: true
-        default: 'latest'
-        type: string
-      environment:
-        description: 'Target environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
-        - staging
-      services:
-        description: 'Services to deploy (comma-separated, empty for all)'
-        required: false
-        default: ''
-        type: string
-      force_restart:
-        description: 'Force restart deployments'
-        required: false
-        default: false
-        type: boolean
+---
+# PV: STT models
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-stt-models-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: [ "ReadWriteOnce" ]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-stt-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
 
-env:
-  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
-  KUBE_NAMESPACE: june
-  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+---
+# PV: TTS models
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-tts-models-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes: [ "ReadWriteOnce" ]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-tts-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
 
-permissions:
-  contents: read
+---
+# PV: general data
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-data-pv
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes: [ "ReadWriteOnce" ]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
 
-jobs:
-  deploy:
-    name: 🔧 Deploy to Kubernetes
-    runs-on: self-hosted
-    
-    steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
+---
+# PVCs (namespaced)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-stt-models
+  namespace: june-services
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 10Gi
 
-      - name: 🔧 Setup Kubernetes Context
-        run: |
-          echo "🔧 Setting up Kubernetes context..."
-          export KUBECONFIG=/root/.kube/config
-          echo "KUBECONFIG=/root/.kube/config" >> $GITHUB_ENV
-          kubectl config current-context
-          echo "✅ Kubernetes context configured"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-tts-models
+  namespace: june-services
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 10Gi
 
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🏷️ Label nodes for GPU scheduling
-        run: |
-          echo "🏷️ Labeling nodes..."
-          kubectl label nodes --all gpu=true --overwrite || echo "Label already exists"
-          echo "✅ Nodes labeled"
-
-      - name: 🏗️ Ensure namespace exists
-        run: |
-          echo "🏗️ Ensuring namespace exists..."
-          kubectl apply -f k8s/namespace.yaml
-          echo "✅ Namespace applied"
-
-      - name: 🗄️ Create required storage directories
-        run: |
-          echo "🗄️ Creating storage directories on nodes..."
-          sudo mkdir -p /opt/june-stt-models /opt/june-tts-models /opt/june-data
-          sudo chmod 777 /opt/june-stt-models /opt/june-tts-models /opt/june-data
-          echo "✅ Storage directories created"
-
-      - name: 🚀 Enable GPU Time-Slicing
-        run: |
-          echo "🚀 Configuring GPU time-slicing..."
-          
-          # Create time-slicing config
-          cat << 'EOF' | kubectl apply -f -
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: time-slicing-config
-            namespace: gpu-operator
-          data:
-            any: |-
-              version: v1
-              flags:
-                migStrategy: none
-              sharing:
-                timeSlicing:
-                  resources:
-                  - name: nvidia.com/gpu
-                    replicas: 2
-          EOF
-          
-          # Patch cluster policy to enable time-slicing
-          kubectl patch clusterpolicy/cluster-policy -n gpu-operator --type merge -p '{
-            "spec": {
-              "devicePlugin": {
-                "config": {
-                  "name": "time-slicing-config",
-                  "default": "any"
-                }
-              }
-            }
-          }'
-          
-          echo "✅ GPU time-slicing configuration applied"
-
-      - name: 🔐 Create/Update Docker Registry Secret
-        run: |
-          echo "🔐 Creating Docker Hub secret..."
-          kubectl create secret docker-registry dockerhub-secret \
-            --docker-server=docker.io \
-            --docker-username=${{ secrets.DOCKERHUB_USERNAME }} \
-            --docker-password=${{ secrets.DOCKERHUB_TOKEN }} \
-            --docker-email=${{ secrets.DOCKERHUB_EMAIL }} \
-            --namespace=$KUBE_NAMESPACE \
-            --dry-run=client -o yaml | kubectl apply -f -
-          echo "✅ Docker Hub secret created/updated"
-
-      - name: 🔍 Verify connection
-        run: |
-          echo "🔍 Testing Kubernetes connection..."
-          kubectl cluster-info
-          kubectl get nodes
-          kubectl get namespaces | grep june
-          echo "✅ Connection verified"
-
-      - name: ✅ Verify manifests exist
-        run: |
-          echo "🔍 Verifying k8s manifest files..."
-          ls -la k8s/
-          
-          REQUIRED_FILES=(
-            "namespace.yaml"
-            "configmap.yaml" 
-            "secrets.yaml"
-            "storage.yaml"
-            "june-stt-deployment.yaml"
-            "june-tts-deployment.yaml"
-            "june-orchestrator-deployment.yaml"
-            "june-idp-deployment.yaml"
-            "ingress.yaml"
-          )
-          
-          for file in "${REQUIRED_FILES[@]}"; do
-            if [ -f "k8s/$file" ]; then
-              echo "✅ k8s/$file exists"
-            else
-              echo "❌ k8s/$file NOT FOUND"
-              exit 1
-            fi
-          done
-
-      - name: 🔧 Update image tags in manifests
-        run: |
-          echo "🔧 Updating image tags to: $IMAGE_TAG"
-          
-          # Update image tags in deployment files
-          for service in june-stt june-tts june-orchestrator june-idp; do
-            if [ -f "k8s/${service}-deployment.yaml" ]; then
-              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" k8s/${service}-deployment.yaml
-              echo "✅ Updated ${service} to use tag: $IMAGE_TAG"
-            fi
-          done
-
-      - name: 🗃️ Apply storage configuration
-        run: |
-          echo "🗃️ Applying storage resources..."
-          kubectl apply -f k8s/storage.yaml
-          echo "✅ Storage configuration applied"
-          
-          # Wait for PVs to be available
-          echo "⏳ Waiting for Persistent Volumes to be available..."
-          kubectl get pv
-          echo "⏳ Waiting for Persistent Volume Claims to bind..."
-          kubectl get pvc -n $KUBE_NAMESPACE
-          echo "✅ Storage resources ready"
-
-      - name: 🏗️ Apply base configuration
-        run: |
-          echo "🏗️ Applying base Kubernetes resources..."
-          kubectl apply -f k8s/configmap.yaml
-          kubectl apply -f k8s/secrets.yaml
-          echo "✅ Base configuration applied"
-
-      - name: ⏳ Wait for GPU time-slicing to take effect
-        run: |
-          echo "⏳ Waiting for GPU device plugin to restart..."
-          sleep 30
-          
-          # Check GPU capacity
-          GPU_COUNT=$(kubectl get nodes -o json | jq '.items[].status.allocatable."nvidia.com/gpu"' | tr -d '"')
-          echo "🔍 Available GPU slots: $GPU_COUNT"
-          
-          if [ "$GPU_COUNT" != "2" ]; then
-            echo "⚠️ GPU time-slicing may still be applying, continuing with deployment..."
-          else
-            echo "✅ GPU time-slicing active with 2 slots"
-          fi
-
-      - name: 🚀 Deploy services
-        run: |
-          echo "🚀 Deploying services..."
-          
-          SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
-          
-          if [ -z "$SERVICES_INPUT" ]; then
-            echo "📋 Deploying all services..."
-            SERVICES_TO_DEPLOY=("${ALL_SERVICES[@]}")
-          else
-            echo "📋 Deploying selected services: $SERVICES_INPUT"
-            IFS=',' read -ra SERVICES_TO_DEPLOY <<< "$SERVICES_INPUT"
-          fi
-          
-          for service in "${SERVICES_TO_DEPLOY[@]}"; do
-            service=$(echo "$service" | xargs)
-            if [ -f "k8s/${service}-deployment.yaml" ]; then
-              echo "🔄 Deploying ${service}..."
-              kubectl apply -f "k8s/${service}-deployment.yaml"
-              echo "✅ ${service} deployed"
-            else
-              echo "⚠️ Warning: k8s/${service}-deployment.yaml not found"
-            fi
-          done
-
-      - name: 🌐 Apply ingress
-        run: |
-          echo "🌐 Applying ingress configuration..."
-          kubectl apply -f k8s/ingress.yaml
-          echo "✅ Ingress applied"
-
-      - name: 🔄 Force restart (if requested)
-        if: github.event.inputs.force_restart == 'true'
-        run: |
-          echo "🔄 Force restarting deployments..."
-          kubectl rollout restart deployment -n $KUBE_NAMESPACE
-          echo "✅ Deployments restarted"
-
-      - name: ⏳ Wait for deployments
-        run: |
-          echo "⏳ Waiting for deployments to be ready..."
-          
-          SERVICES_INPUT="${{ github.event.inputs.services }}"
-          ALL_SERVICES=("june-stt" "june-tts" "june-orchestrator" "june-idp")
-          
-          if [ -z "$SERVICES_INPUT" ]; then
-            SERVICES_TO_CHECK=("${ALL_SERVICES[@]}")
-          else
-            IFS=',' read -ra SERVICES_TO_CHECK <<< "$SERVICES_INPUT"
-          fi
-          
-          for service in "${SERVICES_TO_CHECK[@]}"; do
-            service=$(echo "$service" | xargs)
-            echo "⏳ Waiting for $service to be ready..."
-            if kubectl get deployment "$service" -n $KUBE_NAMESPACE >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$service" -n $KUBE_NAMESPACE --timeout=600s || {
-                echo "❌ $service deployment failed or timed out"
-                echo "🔍 Deployment details:"
-                kubectl describe deployment "$service" -n $KUBE_NAMESPACE
-                echo "🔍 Pod details:"
-                kubectl describe pods -l app="$service" -n $KUBE_NAMESPACE
-                echo "🔍 Pod logs:"
-                kubectl logs -l app="$service" -n $KUBE_NAMESPACE --tail=50 || echo "No logs available"
-                echo "🔍 PVC Status:"
-                kubectl get pvc -n $KUBE_NAMESPACE
-                echo "🔍 GPU Status:"
-                kubectl describe nodes | grep -A 5 -B 5 "nvidia.com/gpu"
-                exit 1
-              }
-              echo "✅ $service is ready"
-            else
-              echo "⚠️ Deployment $service not found, skipping..."
-            fi
-          done
-          
-          echo "✅ All deployments processed!"
-
-      - name: 📊 Show deployment status
-        run: |
-          echo "📊 Final deployment status:"
-          echo "===================="
-          echo "Pods:"
-          kubectl get pods -n $KUBE_NAMESPACE -o wide
-          echo ""
-          echo "Services:"
-          kubectl get services -n $KUBE_NAMESPACE
-          echo ""
-          echo "Ingress:"
-          kubectl get ingress -n $KUBE_NAMESPACE
-          echo ""
-          echo "Secrets:"
-          kubectl get secrets -n $KUBE_NAMESPACE
-          echo ""
-          echo "Storage:"
-          kubectl get pv
-          kubectl get pvc -n $KUBE_NAMESPACE
-          echo ""
-          echo "GPU Resources:"
-          kubectl describe nodes | grep -A 3 -B 1 "nvidia.com/gpu"
-          echo "✅ Deployment completed!"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: june-data
+  namespace: june-services
+  labels:
+    app.kubernetes.io/name: june
+    app.kubernetes.io/component: storage
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 20Gi
