@@ -100,18 +100,26 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
+      # Auto-fix any lingering "namespace: june" to "namespace: june-services"
+      - name: 🧽 Normalize namespaces in manifests (auto-fix)
+        run: |
+          set -e
+          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
+            echo "⚠️ Found 'namespace: june' — normalizing to 'june-services'..."
+            grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s \
+              | xargs sed -i -E 's/namespace:\s*june\b/namespace: june-services/g'
+          else
+            echo "✅ No hard-coded 'namespace: june' found."
+          fi
+          echo "🔎 Post-normalization diff (if any):"
+          git --no-pager diff -- k8s || true
+
       - name: 🔍 Verify k8s manifest files
         run: |
           set -e
           echo "🔍 Verifying k8s manifest files..."
           ls -la k8s || true
           test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found; will create namespace with kubectl"
-
-          # Sanity check: no file should still say 'namespace: june'
-          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
-            echo "❌ Found manifests still using 'namespace: june'. Replace with 'namespace: june-services'."
-            exit 1
-          fi
 
       - name: 🧰 Ensure Helm is available
         run: |
@@ -138,13 +146,11 @@ jobs:
             echo "🏗️ Creating namespace $KUBE_NAMESPACE (no file present)..."
             kubectl get ns "$KUBE_NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$KUBE_NAMESPACE"
           fi
-
           echo "📊 Namespace status:"
           kubectl get ns "$KUBE_NAMESPACE" -o yaml | sed -n '1,80p'
 
       - name: 🔐 Create/Update Docker Registry Secret (image pulls)
         run: |
-          echo "# Create/update the image pull secret in the target namespace"
           kubectl create secret docker-registry dockerhub-secret \
             --docker-server=docker.io \
             --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
@@ -152,8 +158,6 @@ jobs:
             --docker-email='${{ secrets.DOCKERHUB_EMAIL }}' \
             --namespace="$KUBE_NAMESPACE" \
             --dry-run=client -o yaml | kubectl apply -f -
-
-          echo "# Attach secret to default ServiceAccount so all pods can pull private images"
           kubectl -n "$KUBE_NAMESPACE" patch serviceaccount default \
             -p '{"imagePullSecrets":[{"name":"dockerhub-secret"}]}' \
             --type merge || true
