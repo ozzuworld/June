@@ -1,0 +1,324 @@
+# GPU-enabled TTS and STT Services with Time-Slicing
+# Each service gets 1/4 of the GPU
+
+---
+# June TTS Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: june
+  labels:
+    app: june-tts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+    spec:
+      nodeSelector:
+        gpu: "true"
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+        runAsGroup: 1001
+      
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command:
+          - sh
+          - -c
+          - |
+            mkdir -p /models /cache /tmp
+            chmod -R 777 /models /cache /tmp
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /cache
+        securityContext:
+          runAsUser: 0
+      
+      containers:
+      - name: june-tts
+        image: ozzuworld/june-tts:latest
+        imagePullPolicy: Always
+        
+        env:
+        - name: OPENVOICE_CHECKPOINTS_V2
+          value: "/models/openvoice/checkpoints_v2"
+        - name: OPENVOICE_DEVICE
+          value: "cuda"
+        - name: ENABLE_QUANTIZATION
+          value: "false"
+        - name: PRELOAD_MODELS
+          value: "true"
+        - name: TTS_CACHE_SIZE
+          value: "100"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        - name: KEYCLOAK_URL
+          value: "http://june-idp:8080"
+        - name: KEYCLOAK_REALM
+          value: "allsafe"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "june-tts"
+        - name: KEYCLOAK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: keycloak-tts-secret
+              optional: true
+        
+        ports:
+        - name: http
+          containerPort: 8000
+        
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+            nvidia.com/gpu: 1
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /tmp/june_tts_cache
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 180
+          periodSeconds: 30
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: tts-model-cache
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+
+---
+# June TTS Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: june
+spec:
+  type: ClusterIP
+  selector:
+    app: june-tts
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+
+---
+# June STT Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stt
+  namespace: june
+  labels:
+    app: june-stt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-stt
+  template:
+    metadata:
+      labels:
+        app: june-stt
+    spec:
+      nodeSelector:
+        gpu: "true"
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command:
+          - sh
+          - -c
+          - |
+            mkdir -p /models /cache
+            chmod -R 777 /models /cache
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /cache
+        securityContext:
+          runAsUser: 0
+      
+      containers:
+      - name: june-stt
+        image: ozzuworld/june-stt:latest
+        imagePullPolicy: Always
+        
+        env:
+        - name: WHISPER_MODEL
+          value: "large-v3"
+        - name: WHISPER_DEVICE
+          value: "cuda"
+        - name: WHISPER_COMPUTE_TYPE
+          value: "float16"
+        - name: WHISPER_CACHE_DIR
+          value: "/models"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        - name: KEYCLOAK_URL
+          value: "http://june-idp:8080"
+        - name: KEYCLOAK_REALM
+          value: "allsafe"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "june-stt"
+        - name: KEYCLOAK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: keycloak-stt-secret
+              optional: true
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator:8080"
+        - name: ENABLE_ORCHESTRATOR_NOTIFICATIONS
+          value: "true"
+        
+        ports:
+        - name: http
+          containerPort: 8000
+        
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+            nvidia.com/gpu: 1
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /cache
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 180
+          periodSeconds: 30
+        
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+      
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: stt-model-cache
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+
+---
+# June STT Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june
+spec:
+  type: ClusterIP
+  selector:
+    app: june-stt
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+
+---
+# PVC for TTS models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tts-model-cache
+  namespace: june
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: local-storage
+
+---
+# PVC for STT models
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stt-model-cache
+  namespace: june
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-storage
