@@ -84,6 +84,38 @@ log_step() {
     echo -e "\n${BLUE}🔄 STEP: $1${NC}"
 }
 
+install_prerequisites() {
+    log_step "Installing Prerequisites"
+    
+    # Install Docker if not present
+    if ! command -v docker &> /dev/null; then
+        log_info "Installing Docker..."
+        spin "Installing Docker..." &
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sudo sh get-docker.sh
+        sudo usermod -aG docker $USER
+        rm get-docker.sh
+        stop_spin "Docker installed"
+        log_warn "Docker installed. You may need to logout/login for group changes."
+    fi
+    
+    # Install Docker Compose if not present
+    if ! command -v docker-compose &> /dev/null; then
+        log_info "Installing Docker Compose..."
+        spin "Installing Docker Compose..." &
+        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        sudo chmod +x /usr/local/bin/docker-compose
+        stop_spin "Docker Compose installed"
+    fi
+    
+    # Start Docker service
+    sudo systemctl start docker 2>/dev/null || true
+    sudo systemctl enable docker 2>/dev/null || true
+    
+    log_info "Prerequisites installation completed."
+}
+
+    install_prerequisites
 check_requirements() {
     log_step "Checking System Requirements"
     log_debug "Verifying Docker installation..."
@@ -554,6 +586,7 @@ full_deployment() {
     
     local start_time=$(date +%s)
     
+    install_prerequisites
     check_requirements
     setup_directories
     build_services
@@ -613,10 +646,12 @@ case "${1:-help}" in
         full_deployment
         ;;
     setup)
+    install_prerequisites
         check_requirements
         setup_directories
         ;;
     build)
+    install_prerequisites
         check_requirements
         build_services
         ;;
