@@ -96,11 +96,11 @@ check_requirements() {
     log_debug "Docker found: $(docker --version)"
     
     # Check Docker Compose
-    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+    if ! command -v docker-compose &> /dev/null && ! docker-compose version &> /dev/null; then
         log_error "Docker Compose is not installed. Please install Docker Compose first."
         exit 1
     fi
-    log_debug "Docker Compose found: $(docker compose version --short 2>/dev/null || docker-compose --version)"
+    log_debug "Docker Compose found: $(docker-compose version --short 2>/dev/null || docker-compose --version)"
     
     # Check system resources
     TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
@@ -166,7 +166,7 @@ build_services() {
     spin "Building Docker images..." &
     
     # Build all services with timeout
-    if timeout $DEPLOY_TIMEOUT docker compose build --no-cache > /tmp/build.log 2>&1; then
+    if timeout $DEPLOY_TIMEOUT docker-compose build --no-cache > /tmp/build.log 2>&1; then
         stop_spin "Docker images built successfully"
         
         # Show what was built
@@ -193,7 +193,7 @@ start_services() {
     log_debug "Services: Elasticsearch, Kibana, PostgreSQL, Neo4j, Redis, RabbitMQ, MinIO"
     
     spin "Starting infrastructure services..." &
-    docker compose up -d elasticsearch kibana postgres neo4j redis rabbitmq minio
+    docker-compose up -d elasticsearch kibana postgres neo4j redis rabbitmq minio
     stop_spin "Infrastructure services started"
     
     # Wait for infrastructure with progress bar
@@ -208,7 +208,7 @@ start_services() {
     log_debug "Services: Orchestrator, Operations UI"
     
     spin "Starting application services..." &
-    docker compose up -d orchestrator ops-ui
+    docker-compose up -d orchestrator ops-ui
     stop_spin "Application services started"
     
     # Wait for application services
@@ -217,7 +217,7 @@ start_services() {
     # Start reverse proxy
     log_debug "Phase 4: Starting reverse proxy..."
     spin "Starting Nginx reverse proxy..." &
-    docker compose up -d nginx
+    docker-compose up -d nginx
     stop_spin "Nginx reverse proxy started"
     
     # Final wait
@@ -250,7 +250,7 @@ wait_for_infrastructure() {
         fi
         
         # Check PostgreSQL
-        if docker compose exec -T postgres pg_isready > /dev/null 2>&1; then
+        if docker-compose exec -T postgres pg_isready > /dev/null 2>&1; then
             log_debug "  ✅ PostgreSQL: Healthy"
             ((healthy++))
         else
@@ -266,7 +266,7 @@ wait_for_infrastructure() {
         fi
         
         # Check Redis
-        if docker compose exec -T redis redis-cli ping > /dev/null 2>&1; then
+        if docker-compose exec -T redis redis-cli ping > /dev/null 2>&1; then
             log_debug "  ✅ Redis: Healthy"
             ((healthy++))
         else
@@ -303,7 +303,7 @@ wait_for_infrastructure() {
     
     log_error "Infrastructure services failed to become healthy after $max_attempts attempts"
     log_error "Current container status:"
-    docker compose ps
+    docker-compose ps
     return 1
 }
 
@@ -318,7 +318,7 @@ run_comprehensive_tests() {
     # Test 1: Container Health
     log_debug "Test 1/12: Checking container health..."
     spin "Testing container health..." &
-    local unhealthy=$(docker compose ps --format json 2>/dev/null | jq -r '. | select(.Health == "unhealthy" or (.State != "running" and .State != "Up")) | .Name' 2>/dev/null | wc -l)
+    local unhealthy=$(docker-compose ps --format json 2>/dev/null | jq -r '. | select(.Health == "unhealthy" or (.State != "running" and .State != "Up")) | .Name' 2>/dev/null | wc -l)
     if [ "$unhealthy" -eq 0 ]; then
         stop_spin "✅ All containers are healthy"
         ((tests_passed++))
@@ -490,7 +490,7 @@ show_access_info() {
 
 stop_services() {
     log_info "Stopping June Dark OSINT Framework..."
-    docker compose down
+    docker-compose down
     log_info "All services stopped."
 }
 
@@ -508,13 +508,13 @@ show_logs() {
     
     case "${2:-all}" in
         orchestrator|ops-ui|nginx)
-            docker compose logs -f $2
+            docker-compose logs -f $2
             ;;
         infrastructure|infra)
-            docker compose logs -f elasticsearch postgres neo4j redis rabbitmq minio kibana
+            docker-compose logs -f elasticsearch postgres neo4j redis rabbitmq minio kibana
             ;;
         all|*)
-            docker compose logs -f
+            docker-compose logs -f
             ;;
     esac
 }
@@ -523,7 +523,7 @@ check_status() {
     log_info "Checking June Dark OSINT Framework status..."
     
     echo -e "\n${BLUE}=== Container Status ===${NC}"
-    docker compose ps
+    docker-compose ps
     
     echo -e "\n${BLUE}=== Quick Health Check ===${NC}"
     run_comprehensive_tests
@@ -537,7 +537,7 @@ clean_system() {
     read -r response
     if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
         log_info "Cleaning up June Dark OSINT Framework..."
-        docker compose down -v
+        docker-compose down -v
         docker system prune -af
         sudo rm -rf /data/june-dark/docker-volumes/
         log_info "System cleaned."
