@@ -19,20 +19,20 @@ prompt_input() {
     local prompt_text="$1"
     local var_name="$2"
     local default_value="$3"
-    
+
     if [ -n "$default_value" ]; then
         read -p "$prompt_text [$default_value]: " user_input
-        eval "$var_name=\"\${user_input:-$default_value}\""
+        eval "$var_name="\${user_input:-$default_value}""
     else
         read -p "$prompt_text: " user_input
-        eval "$var_name=\"$user_input\""
+        eval "$var_name="$user_input""
     fi
 }
 
 # Function to check GPU availability
 check_gpu_availability() {
     echo "🎮 Checking GPU availability..."
-    
+
     if command -v nvidia-smi &> /dev/null; then
         echo "✅ NVIDIA GPU detected:"
         nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
@@ -49,21 +49,21 @@ check_gpu_availability() {
 # Function to install Helm (using snap - proven method)
 install_helm() {
     echo "⎈ Installing Helm..."
-    
+
     if command -v helm &> /dev/null; then
         echo "✅ Helm already installed: $(helm version --short)"
         return 0
     fi
-    
+
     echo "📦 Installing Helm via snap (most reliable method)..."
     snap install helm --classic
-    
+
     if command -v helm &> /dev/null; then
         echo "✅ Helm installed successfully: $(helm version --short)"
         return 0
     else
         echo "❌ Helm installation via snap failed, trying alternative method..."
-        
+
         # Fallback: direct binary download
         echo "📦 Downloading Helm binary directly..."
         cd /tmp
@@ -71,12 +71,12 @@ install_helm() {
             echo "❌ Helm installation failed completely"
             return 1
         }
-        
+
         tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
         mv linux-amd64/helm /usr/local/bin/helm
         chmod +x /usr/local/bin/helm
         rm -rf linux-amd64 helm-v3.14.0-linux-amd64.tar.gz
-        
+
         if command -v helm &> /dev/null; then
             echo "✅ Helm installed via binary: $(helm version --short)"
             return 0
@@ -90,10 +90,10 @@ install_helm() {
 # Function to check if NFD is already running
 check_nfd_running() {
     echo "🔍 Checking if Node Feature Discovery (NFD) is already running..."
-    
+
     local nfd_exists
     nfd_exists=$(kubectl get nodes -o json | jq '.items[].metadata.labels | keys | any(startswith("feature.node.kubernetes.io"))' 2>/dev/null || echo "false")
-    
+
     if [ "$nfd_exists" = "true" ]; then
         echo "✅ NFD is already running in the cluster"
         return 0
@@ -106,40 +106,40 @@ check_nfd_running() {
 # Function to install NVIDIA GPU Operator using PUBLIC Helm repository
 install_gpu_operator() {
     echo "🚀 Installing NVIDIA GPU Operator (Public - No API Key Required)..."
-    
+
     # Ensure Helm is installed
     install_helm
-    
+
     # Add PUBLIC NVIDIA Helm repository (NO AUTHENTICATION REQUIRED)
     echo "📦 Adding NVIDIA public Helm repository..."
     helm repo add nvidia https://nvidia.github.io/gpu-operator
     helm repo update
-    
+
     echo "✅ Repository added successfully (no authentication required)"
-    
+
     # Create namespace with privileged PSA policy
     echo "📂 Creating gpu-operator namespace..."
     kubectl create namespace gpu-operator || true
     kubectl label --overwrite namespace gpu-operator pod-security.kubernetes.io/enforce=privileged
-    
+
     # Check if NFD is already running
     local nfd_disable=""
     if check_nfd_running; then
         nfd_disable="--set nfd.enabled=false"
         echo "⚠️  Disabling NFD deployment in GPU Operator since it's already running"
     fi
-    
+
     # Determine if we should disable driver installation (if host has drivers)
     local driver_setting="--set driver.enabled=true"
     if [ "$HAS_HOST_DRIVERS" = true ]; then
         echo "⚠️  Host drivers detected - configuring GPU Operator for pre-installed drivers"
         driver_setting="--set driver.enabled=false"
     fi
-    
+
     # Get latest GPU Operator version
     LATEST_VERSION=$(helm search repo nvidia/gpu-operator --versions | grep gpu-operator | head -1 | awk '{print $2}')
     echo "📦 Latest GPU Operator version: $LATEST_VERSION"
-    
+
     # Install GPU Operator from PUBLIC repository
     echo "🎮 Installing NVIDIA GPU Operator $LATEST_VERSION..."
     helm install gpu-operator \
@@ -163,12 +163,12 @@ install_gpu_operator() {
         --set ccManager.enabled=false \
         --set operator.defaultRuntime=containerd \
         $nfd_disable
-    
+
     echo "✅ NVIDIA GPU Operator installed successfully!"
-    
+
     # Wait for GPU Operator components to be ready
     echo "⏳ Waiting for GPU Operator components to be ready..."
-    
+
     # Only wait for driver if it's enabled
     if [ "$HAS_HOST_DRIVERS" != true ]; then
         echo "⏳ Waiting for driver pods..."
@@ -179,7 +179,7 @@ install_gpu_operator() {
             echo "⚠️  Driver pods taking longer than expected, continuing..."
         }
     fi
-    
+
     # Wait for device plugin
     echo "⏳ Waiting for device plugin..."
     kubectl wait --for=condition=ready pods \
@@ -188,7 +188,7 @@ install_gpu_operator() {
         --timeout=300s || {
         echo "⚠️  Device plugin pods taking longer than expected, continuing..."
     }
-    
+
     # Wait for container toolkit
     echo "⏳ Waiting for container toolkit..."
     kubectl wait --for=condition=ready pods \
@@ -197,9 +197,9 @@ install_gpu_operator() {
         --timeout=300s || {
         echo "⚠️  Container toolkit pods taking longer than expected, continuing..."
     }
-    
+
     echo "✅ GPU Operator components are ready!"
-    
+
     if [ "$HAS_HOST_DRIVERS" = true ]; then
         echo ""
         echo "ℹ️  Note: Driver installation was disabled because host drivers are present"
@@ -210,22 +210,22 @@ install_gpu_operator() {
 # Function to verify GPU support
 verify_gpu_support() {
     echo "🔍 Verifying GPU support..."
-    
+
     # Check GPU resources in nodes
     echo "🎮 Checking GPU resources in nodes..."
     sleep 30  # Give some time for resources to be registered
-    
+
     local gpu_count
     gpu_count=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' | tr ' ' '+' | bc 2>/dev/null || echo "0")
-    
+
     if [ "$gpu_count" -gt 0 ]; then
         echo "✅ GPU support verified! $gpu_count GPU(s) available in cluster"
-        
+
         echo "📊 GPU Status:"
         kubectl get nodes -o wide
         echo ""
         kubectl describe nodes | grep -A 5 "Capacity:" | grep "nvidia.com/gpu" || echo "GPU capacity information not yet available"
-        
+
         # Create verification test pod
         echo ""
         echo "🧪 Creating GPU verification test..."
@@ -245,15 +245,15 @@ spec:
       limits:
         nvidia.com/gpu: 1
 EOF
-        
+
         echo "⏳ Waiting for verification test to complete..."
         sleep 20
-        
+
         echo ""
         echo "✅ GPU Verification Test Results:"
         echo "=================================="
         kubectl logs gpu-verification 2>/dev/null || echo "Test pod still initializing..."
-        
+
         return 0
     else
         echo "⚠️  GPU resources not yet visible. Checking GPU Operator status..."
@@ -268,7 +268,7 @@ EOF
 # Function to create GPU test pod
 create_gpu_test_pod() {
     echo "🧪 Creating GPU test workload..."
-    
+
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Pod
@@ -288,7 +288,7 @@ spec:
     operator: Exists
     effect: NoSchedule
 EOF
-    
+
     echo "✅ GPU test pod created. Monitor with: kubectl logs gpu-test -f"
     echo "   The test should show 'Test PASSED' when GPU is working properly"
 }
@@ -296,10 +296,10 @@ EOF
 # Function to prepare for GitHub Actions runner (future-proof)
 prepare_github_runner() {
     echo "🔧 Preparing environment for GitHub Actions runner..."
-    
+
     # Create runner directories structure
     mkdir -p /root/actions-runner
-    
+
     # Create .env file template for when runner is installed
     cat > /root/actions-runner/.env.template << 'EOF'
 # GitHub Actions Runner Environment Variables
@@ -340,7 +340,7 @@ echo "✅ GitHub Actions runner configured for kubectl access!"
 EOF
 
     chmod +x /root/fix-github-runner.sh
-    
+
     echo "✅ GitHub Actions runner environment prepared"
     echo "ℹ️  When you install the runner later, run: /root/fix-github-runner.sh"
 }
@@ -352,7 +352,7 @@ install_github_cli() {
     chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
     apt update && apt install gh -y
-    
+
     echo "✅ GitHub CLI installed"
     echo "ℹ️  Authenticate later with: gh auth login"
 }
@@ -360,13 +360,13 @@ install_github_cli() {
 # Function to setup secrets and environment variables
 setup_secrets() {
     echo "🔐 Setting up secrets and environment variables..."
-    
+
     prompt_input "Enter your Docker Hub username" DOCKERHUB_USERNAME
     prompt_input "Enter your Docker Hub token" DOCKERHUB_TOKEN
     prompt_input "Enter your Docker Hub email" DOCKERHUB_EMAIL
     prompt_input "Enter your Gemini API key" GEMINI_API_KEY
     prompt_input "Enter your Chatterbox API key (optional)" CHATTERBOX_API_KEY ""
-    
+
     # Create Kubernetes secrets
     kubectl create namespace june || true
     kubectl create secret generic june-secrets \
@@ -374,7 +374,7 @@ setup_secrets() {
         --from-literal=chatterbox-api-key="$CHATTERBOX_API_KEY" \
         --namespace=june \
         --dry-run=client -o yaml | kubectl apply -f -
-        
+
     # Create Docker Hub secret
     kubectl create secret docker-registry dockerhub-secret \
         --docker-server=docker.io \
@@ -383,7 +383,7 @@ setup_secrets() {
         --docker-email=$DOCKERHUB_EMAIL \
         --namespace=june \
         --dry-run=client -o yaml | kubectl apply -f -
-        
+
     echo "✅ Kubernetes secrets created"
 }
 
@@ -391,7 +391,7 @@ setup_secrets() {
 install_ingress_controller() {
     echo "🌐 Installing NGINX Ingress Controller..."
     kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
-    
+
     # Wait for ingress controller to be ready
     echo "⏳ Waiting for ingress controller..."
     kubectl wait --namespace ingress-nginx \
@@ -400,28 +400,28 @@ install_ingress_controller() {
         --timeout=120s || {
         echo "⚠️  Ingress controller taking longer than expected, continuing..."
     }
-        
+
     echo "✅ Ingress controller installed!"
 }
 
 # Function to install cert-manager for TLS certificates
 install_cert_manager() {
-    echo "��� Installing cert-manager for TLS certificate management..."
-    
+    echo "🏗️ Installing cert-manager for TLS certificate management..."
+
     if kubectl get namespace cert-manager &>/dev/null; then
         echo "✅ cert-manager already installed"
         return 0
     fi
-    
-    echo "��� Installing cert-manager CRDs..."
+
+    echo "🏗️ Installing cert-manager CRDs..."
     kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
-    
-    echo "��� Creating cert-manager namespace..."
+
+    echo "🏗️ Creating cert-manager namespace..."
     kubectl create namespace cert-manager
-    
-    echo "��� Installing cert-manager..."
+
+    echo "🏗️ Installing cert-manager..."
     kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
-    
+
     echo "⏳ Waiting for cert-manager to be ready..."
     kubectl wait --for=condition=ready pod \
         -l app.kubernetes.io/instance=cert-manager \
@@ -430,22 +430,22 @@ install_cert_manager() {
         echo "⚠️ cert-manager taking longer than expected..."
         kubectl get pods -n cert-manager
     }
-    
+
     echo "✅ cert-manager installed!"
 }
 
 # Function to setup Let's Encrypt issuers
 setup_letsencrypt() {
-    echo "��� Setting up Let's Encrypt certificate issuers..."
-    
+    echo "🔐 Setting up Let's Encrypt certificate issuers..."
+
     prompt_input "Enter email for Let's Encrypt notifications" LETSENCRYPT_EMAIL ""
-    
+
     if [ -z "$LETSENCRYPT_EMAIL" ]; then
         echo "⚠️ No email provided, skipping Let's Encrypt setup"
         return 0
     fi
-    
-    echo "��� Creating Let's Encrypt Production issuer..."
+
+    echo "🔐 Creating Let's Encrypt Production issuer..."
     cat <<EOFINNER | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -462,8 +462,8 @@ spec:
         ingress:
           class: nginx
 EOFINNER
-    
-    echo "��� Creating Let's Encrypt Staging issuer..."
+
+    echo "🔐 Creating Let's Encrypt Staging issuer..."
     cat <<EOFINNER | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -480,22 +480,22 @@ spec:
         ingress:
           class: nginx
 EOFINNER
-    
+
     echo "✅ Let's Encrypt issuers created!"
     kubectl get clusterissuer
-    
+
     echo "\$LETSENCRYPT_EMAIL" > /root/.letsencrypt-email
-    echo "��� Email saved to /root/.letsencrypt-email"
+    echo "🔐 Email saved to /root/.letsencrypt-email"
 }
 
 # Function to setup persistent storage
 setup_storage() {
     echo "💾 Setting up persistent storage..."
-    
+
     # Create directory
     mkdir -p /opt/june-data
     chmod 755 /opt/june-data
-    
+
     # Create StorageClass for local storage
     cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
@@ -534,21 +534,21 @@ EOF
 # Function to cleanup on failure
 cleanup_on_failure() {
     echo "🧹 Cleaning up failed installation..."
-    
+
     # Remove GPU Operator if installed
     helm uninstall gpu-operator -n gpu-operator 2>/dev/null || true
     kubectl delete namespace gpu-operator 2>/dev/null || true
-    
+
     # Stop and remove containers
     docker stop $(docker ps -aq) 2>/dev/null || true
     docker rm $(docker ps -aq) 2>/dev/null || true
-    
+
     # Reset kubeadm
     kubeadm reset -f 2>/dev/null || true
-    
+
     # Remove directories
     rm -rf /root/.kube 2>/dev/null || true
-    
+
     echo "🗑️  Cleanup completed"
 }
 
@@ -694,8 +694,8 @@ echo ""
 echo "📋 Summary:"
 echo "  • Kubernetes cluster initialized and ready"
 echo "  • NGINX Ingress Controller installed"
-  • �� cert-manager installed (TLS certificate automation)
-  • ��� Let's Encrypt configured for automatic HTTPS
+echo "  • 🏗️ cert-manager installed (TLS certificate automation)"
+echo "  • 🔐 Let's Encrypt configured for automatic HTTPS"
 echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 if [[ $SETUP_GPU == [yY] ]]; then
