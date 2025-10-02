@@ -1,5 +1,5 @@
 ---
-# June STT Deployment - FIXED VERSION with increased memory for large-v3 model
+# June STT Deployment - FIXED VERSION with proper memory allocation
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -54,18 +54,36 @@ spec:
         imagePullPolicy: Always
         
         env:
+        # ✅ FIXED: Use smaller model OR increase memory limits
         - name: WHISPER_MODEL
-          value: "large-v3"
+          value: "large-v3"  # Keep this if using 10Gi memory
+          # value: "medium"  # OR use this for 6Gi memory
+        
         - name: WHISPER_DEVICE
           value: "cuda"
         - name: WHISPER_COMPUTE_TYPE
           value: "float16"
         - name: WHISPER_CACHE_DIR
           value: "/app/models"
+        
+        # ✅ FIXED: Reduce concurrent operations to prevent OOM
+        - name: WHISPER_CPU_THREADS
+          value: "2"  # Reduced from 4
+        - name: WHISPER_NUM_WORKERS
+          value: "1"  # Keep at 1
+        
+        # ✅ FIXED: Limit batch size to prevent memory spikes
+        - name: WHISPER_BATCH_SIZE
+          value: "8"  # Reduced from 16
+        
+        # ✅ NEW: Memory-aware settings
+        - name: MAX_CONCURRENT_TRANSCRIPTIONS
+          value: "1"  # Only 1 at a time
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
+        
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
         - name: PORT
           value: "8080"
         
@@ -91,15 +109,15 @@ spec:
         - containerPort: 8080
           name: http
         
-        # INCREASED MEMORY: large-v3 model needs ~4-5GB during loading
+        # ✅ FIXED: Proper memory allocation for large-v3
         resources:
           requests:
-            cpu: "400m"
-            memory: "3Gi"
+            cpu: "1000m"      # Increased for faster model loading
+            memory: "6Gi"     # Minimum for large-v3
             nvidia.com/gpu: 1
           limits:
             cpu: "2"
-            memory: "6Gi"
+            memory: "10Gi"    # ✅ Critical: Increased to prevent OOM
             nvidia.com/gpu: 1
         
         volumeMounts:
@@ -108,22 +126,24 @@ spec:
         - name: cache
           mountPath: /app/cache
         
-        # Increased startup time for model loading
+        # ✅ FIXED: Longer startup time for large model
         startupProbe:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 60
+          initialDelaySeconds: 90    # Increased from 60
           periodSeconds: 10
-          failureThreshold: 60  # 10 minutes total for model download
+          failureThreshold: 90       # 15 minutes total (90*10s)
+          timeoutSeconds: 5
         
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /ready
             port: 8080
-          initialDelaySeconds: 120
+          initialDelaySeconds: 120   # Wait for model to load
           periodSeconds: 10
           failureThreshold: 30
+          timeoutSeconds: 5
         
         livenessProbe:
           httpGet:
@@ -131,6 +151,8 @@ spec:
             port: 8080
           initialDelaySeconds: 180
           periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
         
         securityContext:
           allowPrivilegeEscalation: false
