@@ -404,90 +404,6 @@ install_ingress_controller() {
     echo "✅ Ingress controller installed!"
 }
 
-# Function to install cert-manager for TLS certificates
-install_cert_manager() {
-    echo "��� Installing cert-manager for TLS certificate management..."
-    
-    if kubectl get namespace cert-manager &>/dev/null; then
-        echo "✅ cert-manager already installed"
-        return 0
-    fi
-    
-    echo "��� Installing cert-manager CRDs..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
-    
-    echo "��� Creating cert-manager namespace..."
-    kubectl create namespace cert-manager
-    
-    echo "��� Installing cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
-    
-    echo "⏳ Waiting for cert-manager to be ready..."
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/instance=cert-manager \
-        -n cert-manager \
-        --timeout=180s || {
-        echo "⚠️ cert-manager taking longer than expected..."
-        kubectl get pods -n cert-manager
-    }
-    
-    echo "✅ cert-manager installed!"
-}
-
-# Function to setup Let's Encrypt issuers
-setup_letsencrypt() {
-    echo "��� Setting up Let's Encrypt certificate issuers..."
-    
-    prompt_input "Enter email for Let's Encrypt notifications" LETSENCRYPT_EMAIL ""
-    
-    if [ -z "$LETSENCRYPT_EMAIL" ]; then
-        echo "⚠️ No email provided, skipping Let's Encrypt setup"
-        return 0
-    fi
-    
-    echo "��� Creating Let's Encrypt Production issuer..."
-    cat <<EOFINNER | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: \${LETSENCRYPT_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOFINNER
-    
-    echo "��� Creating Let's Encrypt Staging issuer..."
-    cat <<EOFINNER | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-staging
-spec:
-  acme:
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: \${LETSENCRYPT_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-staging
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOFINNER
-    
-    echo "✅ Let's Encrypt issuers created!"
-    kubectl get clusterissuer
-    
-    echo "\$LETSENCRYPT_EMAIL" > /root/.letsencrypt-email
-    echo "��� Email saved to /root/.letsencrypt-email"
-}
-
 # Function to setup persistent storage
 setup_storage() {
     echo "💾 Setting up persistent storage..."
@@ -672,8 +588,6 @@ install_github_cli
 prepare_github_runner
 setup_secrets
 install_ingress_controller
-install_cert_manager
-setup_letsencrypt
 setup_storage
 
 # Create GPU test workload if requested
@@ -694,8 +608,6 @@ echo ""
 echo "📋 Summary:"
 echo "  • Kubernetes cluster initialized and ready"
 echo "  • NGINX Ingress Controller installed"
-  • �� cert-manager installed (TLS certificate automation)
-  • ��� Let's Encrypt configured for automatic HTTPS
 echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 if [[ $SETUP_GPU == [yY] ]]; then

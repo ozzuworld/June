@@ -106,9 +106,6 @@ jobs:
           echo "🔍 Verifying k8s manifest files..."
           ls -la k8s || true
           test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found; will create namespace with kubectl"
-          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
-            echo "⚠️ Found some files still with 'namespace: june' (will be fixed in temp copies)."
-          fi
 
       - name: 🔍 Verify Kubernetes connection
         run: |
@@ -117,7 +114,87 @@ jobs:
           kubectl get nodes -o wide
 
       # ============================================================================
-      # ✅ NEW STEP: Automated Ingress Setup with Environment Detection
+      # ✅ TLS/Certificate Setup (NEW SECTION - RUNS BEFORE INGRESS)
+      # ============================================================================
+      - name: 🔐 Setup cert-manager and Let's Encrypt
+        run: |
+          echo "🔐 Setting up TLS certificates with cert-manager..."
+          
+          # Check if cert-manager is already installed
+          if ! kubectl get namespace cert-manager &>/dev/null; then
+            echo "📦 Installing cert-manager..."
+            
+            # Install CRDs
+            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
+            
+            # Create namespace
+            kubectl create namespace cert-manager
+            
+            # Install cert-manager
+            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
+            
+            # Wait for cert-manager to be ready
+            echo "⏳ Waiting for cert-manager pods to be ready..."
+            kubectl wait --for=condition=ready pod \
+              -l app.kubernetes.io/instance=cert-manager \
+              -n cert-manager \
+              --timeout=180s || {
+              echo "⚠️ cert-manager taking longer than expected, checking status..."
+              kubectl get pods -n cert-manager
+            }
+            
+            echo "✅ cert-manager installed successfully"
+          else
+            echo "✅ cert-manager already installed"
+          fi
+          
+          # Create or update ClusterIssuers
+          echo "🔧 Creating/updating Let's Encrypt issuers..."
+          
+          # Production issuer (use secrets for email)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: ${{ secrets.LETSENCRYPT_EMAIL }}
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+          EOF
+          
+          # Staging issuer (for testing)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-staging
+          spec:
+            acme:
+              server: https://acme-staging-v02.api.letsencrypt.org/directory
+              email: ${{ secrets.LETSENCRYPT_EMAIL }}
+              privateKeySecretRef:
+                name: letsencrypt-staging
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+          EOF
+          
+          echo "✅ Let's Encrypt issuers configured"
+          
+          # Verify issuers
+          echo "📊 ClusterIssuer status:"
+          kubectl get clusterissuer
+
+      # ============================================================================
+      # ✅ Ingress Controller Setup (EXISTING - MOVED AFTER CERT-MANAGER)
       # ============================================================================
       - name: 🌐 Setup/Verify Ingress Controller
         run: |
@@ -335,16 +412,72 @@ jobs:
             esac
           done
 
-      - name: 🌐 Apply ingress
+      # ============================================================================
+      # ✅ Apply Ingress WITH TLS (UPDATED SECTION)
+      # ============================================================================
+      - name: 🌐 Apply ingress with TLS
         run: |
+          echo "🌐 Applying ingress with TLS configuration..."
+          
+          # Update ingress to use production Let's Encrypt
           if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
+            # Ensure ingress uses letsencrypt-prod issuer
+            if ! grep -q "cert-manager.io/cluster-issuer" /tmp/k8s-updated/ingress.yaml; then
+              echo "⚠️ Adding cert-manager annotation to ingress..."
+              # Add annotation if missing
+              kubectl annotate ingress june-ingress \
+                -n "$KUBE_NAMESPACE" \
+                cert-manager.io/cluster-issuer=letsencrypt-prod \
+                --overwrite || true
+            fi
+            
             kubectl apply -f /tmp/k8s-updated/ingress.yaml
           elif [ -f "k8s-ingress-complete.yaml" ]; then
             kubectl apply -f k8s-ingress-complete.yaml
           else
             echo "⚠️ No ingress configuration found"
           fi
+          
+          # Verify ingress has TLS annotation
+          echo "🔍 Verifying ingress TLS configuration..."
+          ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "none")
+          
+          if [ "$ISSUER" = "none" ]; then
+            echo "⚠️ Ingress missing cert-manager annotation, adding it..."
+            kubectl annotate ingress june-ingress \
+              -n "$KUBE_NAMESPACE" \
+              cert-manager.io/cluster-issuer=letsencrypt-prod \
+              --overwrite
+          elif [ "$ISSUER" = "letsencrypt-staging" ]; then
+            echo "⚠️ Ingress using staging certificate, switching to production..."
+            kubectl annotate ingress june-ingress \
+              -n "$KUBE_NAMESPACE" \
+              cert-manager.io/cluster-issuer=letsencrypt-prod \
+              --overwrite
+          else
+            echo "✅ Ingress configured with issuer: $ISSUER"
+          fi
+          
           kubectl -n "$KUBE_NAMESPACE" get ingress -o wide || true
+          
+          # Wait for certificate to be issued
+          echo "⏳ Waiting for TLS certificate to be ready..."
+          sleep 10
+          
+          for i in {1..30}; do
+            CERT_READY=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+            
+            if [ "$CERT_READY" = "True" ]; then
+              echo "✅ TLS certificate is ready!"
+              break
+            fi
+            
+            echo "⏳ Certificate status: $CERT_READY (waiting...)"
+            sleep 10
+          done
+          
+          echo "📊 Certificate status:"
+          kubectl get certificate -n "$KUBE_NAMESPACE" || echo "No certificates found yet"
 
       - name: ⏳ Wait for deployments
         run: |
@@ -359,6 +492,7 @@ jobs:
           echo "📊 Pods:";    kubectl -n "$KUBE_NAMESPACE" get pods -o wide || true
           echo "🌐 Svc:";     kubectl -n "$KUBE_NAMESPACE" get svc -o wide || true
           echo "🚪 Ingress:"; kubectl -n "$KUBE_NAMESPACE" get ingress -o wide || true
+          echo "🔐 Certs:";   kubectl -n "$KUBE_NAMESPACE" get certificate || true
 
       - name: 📊 Final status
         if: always()
@@ -366,10 +500,18 @@ jobs:
           kubectl get all -n "$KUBE_NAMESPACE" -o wide || true
           
           echo ""
+          echo "🔐 TLS Certificate Status:"
+          kubectl get certificate -n "$KUBE_NAMESPACE" || echo "No certificates found"
+          
+          echo ""
           echo "🌐 External Access Information:"
           EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || echo "Unable to detect")
           echo "   External IP: $EXTERNAL_IP"
           echo ""
-          echo "🧪 Test your services:"
-          echo "   curl -H 'Host: api.allsafe.world' http://$EXTERNAL_IP/healthz"
-          echo "   curl -H 'Host: idp.allsafe.world' http://$EXTERNAL_IP/"
+          echo "🧪 Test your services with HTTPS:"
+          echo "   curl https://api.allsafe.world/healthz"
+          echo "   curl https://idp.allsafe.world/"
+          echo ""
+          echo "🔍 Check certificate in browser:"
+          echo "   https://api.allsafe.world"
+          echo "   https://idp.allsafe.world"
