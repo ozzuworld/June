@@ -100,35 +100,24 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      # Auto-fix any lingering "namespace: june" to "namespace: june-services"
-      - name: 🧽 Normalize namespaces in manifests (auto-fix)
-        run: |
-          set -e
-          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
-            echo "⚠️ Found 'namespace: june' — normalizing to 'june-services'..."
-            grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s \
-              | xargs sed -i -E 's/namespace:\s*june\b/namespace: june-services/g'
-          else
-            echo "✅ No hard-coded 'namespace: june' found."
-          fi
-          echo "🔎 Post-normalization diff (if any):"
-          git --no-pager diff -- k8s || true
-
+      # Light check for old 'namespace: june' (won't mutate repo)
       - name: 🔍 Verify k8s manifest files
         run: |
           set -e
           echo "🔍 Verifying k8s manifest files..."
           ls -la k8s || true
           test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found; will create namespace with kubectl"
+          if grep -RIl --include='*.yaml' 'namespace:\s*june\b' k8s ; then
+            echo "⚠️ Found some files still with 'namespace: june' (will be fixed in temp copies)."
+          fi
 
-      # ✅ Ingress is installed by the install script — just verify it's healthy
+      # ✅ Ingress is installed by your install script — just verify it's healthy
       - name: ✅ Verify existing ingress-nginx (no install in CI)
         run: |
           set -e
           kubectl get ns ingress-nginx >/dev/null 2>&1 || (echo "❌ ingress-nginx namespace not found. Run your install script on the VM first." && exit 1)
           echo "🔎 ingress-nginx controller pods:"
           kubectl -n ingress-nginx get pods -l app.kubernetes.io/component=controller -o wide
-          # Optional: wait until the controller is Ready
           kubectl -n ingress-nginx wait --for=condition=ready pod -l app.kubernetes.io/component=controller --timeout=180s
 
       - name: 🔍 Verify Kubernetes connection
@@ -162,9 +151,10 @@ jobs:
             -p '{"imagePullSecrets":[{"name":"dockerhub-secret"}]}' \
             --type merge || true
 
-      - name: 🔧 Update image tags in manifests (optional convenience)
+      - name: 🔧 Prepare manifests in /tmp and update image tags
         run: |
-          echo "🔧 Updating image tags to: $IMAGE_TAG"
+          set -e
+          echo "📁 Copying k8s/* to /tmp/k8s-updated and updating image tags to: $IMAGE_TAG"
           mkdir -p /tmp/k8s-updated
           cp -r k8s/* /tmp/k8s-updated/ || true
           for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
@@ -174,6 +164,23 @@ jobs:
               sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/complete-manifests.yaml" || true
             fi
           done
+
+      # 🧽 Hard-enforce namespaces on the TEMP copies only
+      - name: 🧽 Normalize namespaces in temp manifests (enforce KUBE_NAMESPACE)
+        run: |
+          set -e
+          echo "🧹 Normalizing metadata.namespace to '${KUBE_NAMESPACE}' in /tmp/k8s-updated …"
+          # 1) collapse any accidental repeats like june-services-services-...
+          find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
+            | xargs -0 sed -i -E 's/\b(june-services)(-services)+\b/\1/g'
+          # 2) replace legacy 'namespace: june' to target
+          find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
+            | xargs -0 sed -i -E "s/^( *namespace:\s*)june\b/\\1${KUBE_NAMESPACE}/g"
+          # 3) enforce any namespace line to exactly KUBE_NAMESPACE (skips files without a namespace line)
+          find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
+            | xargs -0 sed -i -E "s/^( *namespace:\s*).*/\\1${KUBE_NAMESPACE}/"
+          echo "🔎 Namespaces after normalization:"
+          grep -RIn --include='*.yaml' '^[[:space:]]*namespace:' /tmp/k8s-updated || true
 
       - name: 🏗️ Apply base configuration
         run: |
