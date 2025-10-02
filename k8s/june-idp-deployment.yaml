@@ -1,5 +1,5 @@
 ---
-# Fixed June IDP Deployment with proper Keycloak configuration
+# June IDP (Keycloak) Deployment - FIXED VERSION
 apiVersion: apps/v1
 kind: Deployment
 metadata:

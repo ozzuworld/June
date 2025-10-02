@@ -1,8 +1,10 @@
+---
+# June STT Deployment - FIXED VERSION with increased memory for large-v3 model
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-stt
-  namespace: june-services-services
+  namespace: june-services
 spec:
   replicas: 1
   selector:
@@ -64,6 +66,10 @@ spec:
           value: "0"
         - name: PYTORCH_CUDA_ALLOC_CONF
           value: "max_split_size_mb:256"
+        - name: PORT
+          value: "8080"
+        
+        # Optional Keycloak config
         - name: KEYCLOAK_URL
           value: "http://june-idp:8080"
         - name: KEYCLOAK_REALM
@@ -76,28 +82,24 @@ spec:
               name: june-secrets
               key: keycloak-stt-secret
               optional: true
-        - name: ORCHESTRATOR_URL
-          value: "http://june-orchestrator:8080"
-        - name: ENABLE_ORCHESTRATOR_NOTIFICATIONS
-          value: "true"
         
         envFrom:
         - configMapRef:
             name: june-config
         
         ports:
-        - containerPort: 8000
+        - containerPort: 8080
           name: http
         
-        # REDUCED CPU from 1000m to 400m
+        # INCREASED MEMORY: large-v3 model needs ~4-5GB during loading
         resources:
           requests:
             cpu: "400m"
-            memory: "2Gi"
+            memory: "3Gi"
             nvidia.com/gpu: 1
           limits:
             cpu: "2"
-            memory: "4Gi"
+            memory: "6Gi"
             nvidia.com/gpu: 1
         
         volumeMounts:
@@ -106,10 +108,19 @@ spec:
         - name: cache
           mountPath: /app/cache
         
+        # Increased startup time for model loading
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 60  # 10 minutes total for model download
+        
         readinessProbe:
           httpGet:
             path: /healthz
-            port: 8000
+            port: 8080
           initialDelaySeconds: 120
           periodSeconds: 10
           failureThreshold: 30
@@ -117,7 +128,7 @@ spec:
         livenessProbe:
           httpGet:
             path: /healthz
-            port: 8000
+            port: 8080
           initialDelaySeconds: 180
           periodSeconds: 30
         
@@ -138,12 +149,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: june-stt
-  namespace: june-services-services
+  namespace: june-services
 spec:
   type: ClusterIP
   selector:
     app: june-stt
   ports:
-  - port: 8000
-    targetPort: 8000
+  - port: 8080
+    targetPort: 8080
     name: http
