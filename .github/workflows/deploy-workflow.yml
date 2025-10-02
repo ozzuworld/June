@@ -189,6 +189,40 @@ jobs:
           [ -f "/tmp/k8s-updated/secrets.yaml" ]   && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/secrets.yaml || true
           echo "ℹ️ Storage is owned by the install script; skipping here."
           [ -f "k8s-base-config-complete.yaml" ] && kubectl apply -f k8s-base-config-complete.yaml || true
+           
+# Add this step in your .github/workflows/deploy-workflow.yml
+# Insert it AFTER the "Apply base configuration" step and BEFORE the "Deploy services" step
+# Around line 140 in your current workflow
+
+      - name: 🗄️ Deploy PostgreSQL first (required for IDP)
+        run: |
+          echo "🗄️ Deploying PostgreSQL for june-idp..."
+          if kubectl get statefulset postgresql -n "$KUBE_NAMESPACE" &>/dev/null; then
+            echo "✅ PostgreSQL StatefulSet already exists"
+          else
+            kubectl apply -f k8s/postgresql-deployment.yaml
+          fi
+          
+          echo "⏳ Waiting for PostgreSQL pod to be created..."
+          for i in {1..30}; do
+            POD_NAME=$(kubectl get pods -n "$KUBE_NAMESPACE" -l app=postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$POD_NAME" ]; then
+              echo "✅ PostgreSQL pod created: $POD_NAME"
+              break
+            fi
+            echo "  Waiting for pod... ($i/30)"
+            sleep 2
+          done
+          
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          kubectl wait --for=condition=ready pod -l app=postgresql -n "$KUBE_NAMESPACE" --timeout=180s || {
+            echo "⚠️ PostgreSQL not ready yet, checking status..."
+            kubectl get pods -n "$KUBE_NAMESPACE" -l app=postgresql
+            kubectl describe pod -n "$KUBE_NAMESPACE" -l app=postgresql | tail -30
+          }
+          
+          echo "✅ PostgreSQL is ready"
+          kubectl get pods -n "$KUBE_NAMESPACE" -l app=postgresql
 
       - name: 🚀 Deploy services
         run: |

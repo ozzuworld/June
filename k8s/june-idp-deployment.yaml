@@ -1,8 +1,10 @@
+---
+# Fixed June IDP Deployment with proper Keycloak configuration
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-idp 
-  namespace: june-services-services
+  namespace: june-services
   labels:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: idp
@@ -20,58 +22,67 @@ spec:
     spec:
       initContainers:
       - name: wait-for-db
-        image: busybox:1.36
-        command: 
-        - sh
-        - -c
+        image: postgres:15-alpine
+        command: ['sh', '-c']
+        args:
         - |
-          echo "Waiting for PostgreSQL..."
-          until nc -z postgresql 5432; do
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          until pg_isready -h postgresql -p 5432 -U keycloak; do
             echo "PostgreSQL is unavailable - waiting..."
-            sleep 2
+            sleep 3
           done
           echo "✅ PostgreSQL is ready!"
+        env:
+        - name: PGPASSWORD
+          value: "Pokemon123!"
+      
       containers:
       - name: keycloak
-        image: docker.io/ozzuworld/june-idp:production
+        image: quay.io/keycloak/keycloak:23.0
+        command: ["/opt/keycloak/bin/kc.sh"]
+        args: ["start", "--optimized"]
+        
         ports:
         - containerPort: 8080
+          name: http
           protocol: TCP
-        - containerPort: 9000
-          protocol: TCP
-        env:
-        # Production admin bootstrap (new method)
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: "admin"
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: keycloak-admin-password
         
-        # Database connection (runtime config)
+        env:
+        # Database Configuration
+        - name: KC_DB
+          value: "postgres"
         - name: KC_DB_URL_HOST
           value: "postgresql"
+        - name: KC_DB_URL_PORT
+          value: "5432"
+        - name: KC_DB_URL_DATABASE
+          value: "keycloak"
         - name: KC_DB_USERNAME
           value: "keycloak"
         - name: KC_DB_PASSWORD
           value: "Pokemon123!"
         
-        # Production settings
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
+        # HTTP Configuration (CRITICAL FIX)
         - name: KC_HTTP_ENABLED
           value: "true"
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
         - name: KC_PROXY_HEADERS
-          value: "forwarded"
+          value: "xforwarded"
+        
+        # Admin Configuration
+        - name: KEYCLOAK_ADMIN
+          value: "admin"
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          value: "Pokemon123!"
+        
+        # Health and Metrics
         - name: KC_HEALTH_ENABLED
           value: "true"
         - name: KC_METRICS_ENABLED
           value: "true"
-        
-        # JVM Settings for performance
-        - name: JAVA_OPTS_APPEND
-          value: "-Djava.awt.headless=true -Djgroups.dns.query=june-idp"
         
         resources:
           requests:
@@ -80,37 +91,38 @@ spec:
           limits:
             cpu: 1500m
             memory: 2Gi
-            
-        livenessProbe:
+        
+        # Fixed probe timing for slower startup
+        startupProbe:
           httpGet:
-            path: /health/live
-            port: 9000
+            path: /health/started
+            port: 8080
           initialDelaySeconds: 60
-          periodSeconds: 30
-          failureThreshold: 3
+          periodSeconds: 10
+          failureThreshold: 30
           
         readinessProbe:
           httpGet:
             path: /health/ready
-            port: 9000
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
-          failureThreshold: 30
+          failureThreshold: 10
           
-        startupProbe:
+        livenessProbe:
           httpGet:
-            path: /health/started
-            port: 9000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          failureThreshold: 20
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          failureThreshold: 3
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: june-idp
-  namespace: june-services-services
+  namespace: june-services
   labels:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: idp
@@ -121,9 +133,5 @@ spec:
   - name: http
     port: 8080
     targetPort: 8080
-    protocol: TCP
-  - name: management
-    port: 9000
-    targetPort: 9000
     protocol: TCP
   type: ClusterIP

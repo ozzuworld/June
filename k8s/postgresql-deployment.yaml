@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgresql
-  namespace: june-services-services
+  namespace: june-services
   labels:
     app: postgresql
 spec:
@@ -38,7 +38,7 @@ spec:
             memory: "256Mi"
             cpu: "100m"
           limits:
-            memory: "1Gi"
+            memory: "512Mi"
             cpu: "500m"
         volumeMounts:
         - name: postgres-data
@@ -75,7 +75,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgresql
-  namespace: june-services-services
+  namespace: june-services
   labels:
     app: postgresql
 spec:
