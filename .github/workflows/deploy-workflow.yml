@@ -100,7 +100,6 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      # Light check for old 'namespace: june' (won't mutate repo)
       - name: 🔍 Verify k8s manifest files
         run: |
           set -e
@@ -111,20 +110,98 @@ jobs:
             echo "⚠️ Found some files still with 'namespace: june' (will be fixed in temp copies)."
           fi
 
-      # ✅ Ingress is installed by your install script — just verify it's healthy
-      - name: ✅ Verify existing ingress-nginx (no install in CI)
-        run: |
-          set -e
-          kubectl get ns ingress-nginx >/dev/null 2>&1 || (echo "❌ ingress-nginx namespace not found. Run your install script on the VM first." && exit 1)
-          echo "🔎 ingress-nginx controller pods:"
-          kubectl -n ingress-nginx get pods -l app.kubernetes.io/component=controller -o wide
-          kubectl -n ingress-nginx wait --for=condition=ready pod -l app.kubernetes.io/component=controller --timeout=180s
-
       - name: 🔍 Verify Kubernetes connection
         run: |
           echo "🔍 Testing Kubernetes connection..."
           kubectl cluster-info
           kubectl get nodes -o wide
+
+      # ============================================================================
+      # ✅ NEW STEP: Automated Ingress Setup with Environment Detection
+      # ============================================================================
+      - name: 🌐 Setup/Verify Ingress Controller
+        run: |
+          echo "🌐 Setting up ingress-nginx controller..."
+          
+          # Function to detect environment
+          detect_environment() {
+            echo "🔍 Detecting environment..."
+            
+            # Check for cloud provider metadata services
+            if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
+              echo "   ✅ AWS detected"
+              return 0  # Cloud
+            elif curl -s --max-time 2 -H "Metadata-Flavor: Google" http://metadata.google.internal >/dev/null 2>&1; then
+              echo "   ✅ GCP detected"
+              return 0  # Cloud
+            elif curl -s --max-time 2 -H "Metadata: true" http://169.254.169.254/metadata/instance >/dev/null 2>&1; then
+              echo "   ✅ Azure detected"
+              return 0  # Cloud
+            else
+              echo "   📦 Bare metal/VM detected"
+              return 1  # Bare metal
+            fi
+          }
+          
+          # Check if ingress-nginx namespace exists
+          if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
+            echo "📦 Installing ingress-nginx..."
+            
+            if detect_environment; then
+              echo "☁️  Installing for cloud environment..."
+              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml
+            else
+              echo "🔧 Installing for bare metal/VM environment..."
+              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/baremetal/deploy.yaml
+              
+              echo "⏳ Waiting for initial deployment..."
+              sleep 15
+              
+              echo "🔧 Enabling hostNetwork for bare metal..."
+              kubectl patch deployment ingress-nginx-controller \
+                -n ingress-nginx \
+                --type='json' \
+                -p='[
+                  {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": true},
+                  {"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}
+                ]'
+            fi
+          else
+            echo "✅ ingress-nginx namespace already exists"
+            
+            # Verify and fix hostNetwork for bare metal if needed
+            if ! detect_environment; then
+              HOST_NET=$(kubectl get deployment ingress-nginx-controller -n ingress-nginx -o jsonpath='{.spec.template.spec.hostNetwork}' 2>/dev/null || echo "false")
+              
+              if [ "$HOST_NET" != "true" ]; then
+                echo "🔧 Detected bare metal environment - enabling hostNetwork..."
+                kubectl patch deployment ingress-nginx-controller \
+                  -n ingress-nginx \
+                  --type='json' \
+                  -p='[
+                    {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": true},
+                    {"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}
+                  ]'
+              else
+                echo "✅ hostNetwork already enabled"
+              fi
+            fi
+          fi
+          
+          # Wait for controller to be ready
+          echo "⏳ Waiting for ingress controller to be ready..."
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=300s || {
+            echo "⚠️  Controller taking longer than expected, checking status..."
+            kubectl get pods -n ingress-nginx
+            kubectl describe pods -n ingress-nginx -l app.kubernetes.io/component=controller | tail -50
+          }
+          
+          echo "✅ Ingress controller ready"
+          echo "📊 Ingress status:"
+          kubectl get pods,svc -n ingress-nginx
 
       - name: 🏗️ Create/Apply Namespace FIRST (very important)
         run: |
@@ -165,7 +242,6 @@ jobs:
             fi
           done
 
-      # 🧽 Hard-enforce namespaces on the TEMP copies only
       - name: 🧽 Normalize namespaces in temp manifests (enforce KUBE_NAMESPACE)
         run: |
           set -e
@@ -189,10 +265,6 @@ jobs:
           [ -f "/tmp/k8s-updated/secrets.yaml" ]   && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/secrets.yaml || true
           echo "ℹ️ Storage is owned by the install script; skipping here."
           [ -f "k8s-base-config-complete.yaml" ] && kubectl apply -f k8s-base-config-complete.yaml || true
-           
-# Add this step in your .github/workflows/deploy-workflow.yml
-# Insert it AFTER the "Apply base configuration" step and BEFORE the "Deploy services" step
-# Around line 140 in your current workflow
 
       - name: 🗄️ Deploy PostgreSQL first (required for IDP)
         run: |
@@ -292,3 +364,12 @@ jobs:
         if: always()
         run: |
           kubectl get all -n "$KUBE_NAMESPACE" -o wide || true
+          
+          echo ""
+          echo "🌐 External Access Information:"
+          EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || echo "Unable to detect")
+          echo "   External IP: $EXTERNAL_IP"
+          echo ""
+          echo "🧪 Test your services:"
+          echo "   curl -H 'Host: api.allsafe.world' http://$EXTERNAL_IP/healthz"
+          echo "   curl -H 'Host: idp.allsafe.world' http://$EXTERNAL_IP/"
