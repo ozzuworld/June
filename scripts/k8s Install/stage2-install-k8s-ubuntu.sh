@@ -1,14 +1,15 @@
 #!/bin/bash
 # Enhanced Kubernetes Setup Script for GPU-enabled June AI services
 # Complete bootstrap solution with NVIDIA GPU Operator via Helm
-# Version 6.0 - NO NGC API KEY REQUIRED for public GPU Operator
+# Version 6.1 - FIXED NAMESPACE ISSUE
+# This script ONLY sets up infrastructure - services are deployed separately
 
 set -e
 
 echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script v6.0"
+echo "🚀 Enhanced Kubernetes Setup Script v6.1"
 echo "   GPU Support with Public NVIDIA GPU Operator"
-echo "   NO NGC API KEY REQUIRED!"
+echo "   INFRASTRUCTURE ONLY - No Service Deployment"
 echo "======================================================"
 
 # Global variable to track if host has drivers
@@ -357,7 +358,7 @@ install_github_cli() {
     echo "ℹ️  Authenticate later with: gh auth login"
 }
 
-# Function to setup secrets and environment variables
+# FIXED: Function to setup secrets and environment variables with CORRECT NAMESPACE
 setup_secrets() {
     echo "🔐 Setting up secrets and environment variables..."
     
@@ -367,24 +368,24 @@ setup_secrets() {
     prompt_input "Enter your Gemini API key" GEMINI_API_KEY
     prompt_input "Enter your Chatterbox API key (optional)" CHATTERBOX_API_KEY ""
     
-    # Create Kubernetes secrets
-    kubectl create namespace june || true
+    # FIXED: Create Kubernetes secrets in JUNE-SERVICES namespace (not 'june')
+    kubectl create namespace june-services || true
     kubectl create secret generic june-secrets \
         --from-literal=gemini-api-key="$GEMINI_API_KEY" \
         --from-literal=chatterbox-api-key="$CHATTERBOX_API_KEY" \
-        --namespace=june \
+        --namespace=june-services \
         --dry-run=client -o yaml | kubectl apply -f -
         
-    # Create Docker Hub secret
+    # FIXED: Create Docker Hub secret in JUNE-SERVICES namespace
     kubectl create secret docker-registry dockerhub-secret \
         --docker-server=docker.io \
         --docker-username=$DOCKERHUB_USERNAME \
         --docker-password=$DOCKERHUB_TOKEN \
         --docker-email=$DOCKERHUB_EMAIL \
-        --namespace=june \
+        --namespace=june-services \
         --dry-run=client -o yaml | kubectl apply -f -
         
-    echo "✅ Kubernetes secrets created"
+    echo "✅ Kubernetes secrets created in june-services namespace"
 }
 
 # Function to install ingress controller
@@ -496,6 +497,7 @@ if [ "$HAS_HOST_DRIVERS" = true ]; then
 fi
 echo ""
 echo "💡 Note: PUBLIC GPU Operator - No NGC API key required!"
+echo "⚠️  This script sets up INFRASTRUCTURE ONLY - deploy services separately"
 echo ""
 
 read -p "Continue with installation? (y/n): " confirm
@@ -602,14 +604,14 @@ fi
 # Print final information
 echo ""
 echo "🎉======================================================"
-echo "✅ Kubernetes Installation Complete!"
+echo "✅ Kubernetes Infrastructure Setup Complete!"
 echo "======================================================"
 echo ""
-echo "📋 Summary:"
+echo "📋 Infrastructure Summary:"
 echo "  • Kubernetes cluster initialized and ready"
 echo "  • NGINX Ingress Controller installed"
 echo "  • Persistent storage configured"
-echo "  • Secrets management setup"
+echo "  • Secrets management setup in june-services namespace"
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  • 🚀 NVIDIA GPU Operator installed (PUBLIC - No API Key)"
     if [ "$HAS_HOST_DRIVERS" = true ]; then
@@ -620,10 +622,14 @@ if [[ $SETUP_GPU == [yY] ]]; then
 fi
 echo "  • 🔧 GitHub Actions runner environment prepared"
 echo ""
-echo "🔧 Next Steps:"
-echo "  1. Install GitHub Actions runner: ./stage1-runner-only.sh"
+echo "🚀 Next Steps - Deploy Services:"
+echo "  1. Deploy services: kubectl apply -f k8s/complete-manifests.yaml"
+echo "  2. Or use individual files: kubectl apply -f k8s/postgresql-deployment.yaml && kubectl apply -f k8s/june-*-deployment.yaml"
+echo "  3. Check deployment: kubectl get pods -n june-services"
+echo ""
+echo "🔧 Optional - GitHub Actions Runner:"
+echo "  1. Install runner: ./stage1-runner-only.sh"
 echo "  2. Auto-fix runner access: /root/fix-github-runner.sh"
-echo "  3. Deploy your June services using GitHub Actions"
 echo ""
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "🎮 GPU Commands:"
@@ -643,7 +649,7 @@ fi
 echo "🔍 Useful Commands:"
 echo "  • View cluster: kubectl get all -A"
 echo "  • Check ingress: kubectl get ingress -A"
-echo "  • Monitor deployments: kubectl get pods -n june -w"
+echo "  • Monitor services: kubectl get pods -n june-services -w"
 echo "  • Fix runner: /root/fix-github-runner.sh"
 echo ""
 echo "🌐 Your external IP: $EXTERNAL_IP"

@@ -32,7 +32,7 @@ stringData:
   keycloak-client-secret: "PLACEHOLDER"
 
 ---
-# June STT Deployment
+# June STT Deployment - FIXED with consistent docker.io prefix
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: stt
-        image: ozzuworld/june-stt:latest
+        image: docker.io/ozzuworld/june-stt:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -96,7 +96,7 @@ spec:
     name: http
 
 ---
-# June TTS Deployment
+# June TTS Deployment - FIXED with consistent docker.io prefix
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -116,7 +116,7 @@ spec:
     spec:
       containers:
       - name: tts
-        image: ozzuworld/june-tts:latest
+        image: docker.io/ozzuworld/june-tts:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -160,7 +160,7 @@ spec:
     name: http
 
 ---
-# June Orchestrator Deployment
+# June Orchestrator Deployment - FIXED with consistent docker.io prefix
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -180,7 +180,7 @@ spec:
     spec:
       containers:
       - name: orchestrator
-        image: ozzuworld/june-orchestrator:latest
+        image: docker.io/ozzuworld/june-orchestrator:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -229,7 +229,7 @@ spec:
     name: http
 
 ---
-# June IDP Deployment - CORRECTED VERSION
+# June IDP Deployment - FIXED with consistent docker.io prefix
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -265,7 +265,7 @@ spec:
           echo "✅ Database ready!"
       containers:
       - name: keycloak
-        image: ozzuworld/june-idp:latest
+        image: docker.io/ozzuworld/june-idp:latest
         command: ["/opt/keycloak/bin/kc.sh"]
         args: ["start", "--optimized"]
         ports:
