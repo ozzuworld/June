@@ -329,9 +329,10 @@ jobs:
           # 2) replace legacy 'namespace: june' to target
           find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
             | xargs -0 sed -i -E "s/^( *namespace:\s*)june\b/\\1${KUBE_NAMESPACE}/g"
-          # 3) enforce any namespace line to exactly KUBE_NAMESPACE (skips files without a namespace line)
+          # 3) FIXED: Only match "namespace:" at the start of a line (metadata.namespace in YAML)
+          #    NOT environment variables that contain "namespace" in their name
           find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
-            | xargs -0 sed -i -E "s/^( *namespace:\s*).*/\\1${KUBE_NAMESPACE}/"
+            | xargs -0 sed -i -E "s/^( *namespace:\s*)[a-zA-Z0-9_-]+$/\\1${KUBE_NAMESPACE}/"
           echo "🔎 Namespaces after normalization:"
           grep -RIn --include='*.yaml' '^[[:space:]]*namespace:' /tmp/k8s-updated || true
 
