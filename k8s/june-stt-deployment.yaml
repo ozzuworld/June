@@ -1,5 +1,5 @@
 ---
-# June STT Deployment - FIXED VERSION with proper memory allocation
+# June STT Deployment - FIXED VERSION
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,30 +23,8 @@ spec:
         operator: Exists
         effect: NoSchedule
       
-      securityContext:
-        fsGroup: 1000
-        runAsUser: 1000
-        runAsGroup: 1000
-      
       imagePullSecrets:
       - name: dockerhub-secret
-      
-      initContainers:
-      - name: fix-permissions
-        image: busybox
-        command:
-          - sh
-          - -c
-          - |
-            mkdir -p /app/models /app/cache
-            chmod -R 777 /app/models /app/cache
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        securityContext:
-          runAsUser: 0
       
       containers:
       - name: stt
@@ -54,36 +32,22 @@ spec:
         imagePullPolicy: Always
         
         env:
-        # ✅ FIXED: Use smaller model OR increase memory limits
         - name: WHISPER_MODEL
-          value: "large-v3"  # Keep this if using 10Gi memory
-          # value: "medium"  # OR use this for 6Gi memory
-        
+          value: "large-v3"
         - name: WHISPER_DEVICE
           value: "cuda"
         - name: WHISPER_COMPUTE_TYPE
           value: "float16"
         - name: WHISPER_CACHE_DIR
           value: "/app/models"
-        
-        # ✅ FIXED: Reduce concurrent operations to prevent OOM
         - name: WHISPER_CPU_THREADS
-          value: "2"  # Reduced from 4
+          value: "2"
         - name: WHISPER_NUM_WORKERS
-          value: "1"  # Keep at 1
-        
-        # ✅ FIXED: Limit batch size to prevent memory spikes
-        - name: WHISPER_BATCH_SIZE
-          value: "8"  # Reduced from 16
-        
-        # ✅ NEW: Memory-aware settings
-        - name: MAX_CONCURRENT_TRANSCRIPTIONS
-          value: "1"  # Only 1 at a time
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
-        
+          value: "1"
         - name: CUDA_VISIBLE_DEVICES
           value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
         - name: PORT
           value: "8080"
         
@@ -101,10 +65,6 @@ spec:
               key: keycloak-stt-secret
               optional: true
         
-        envFrom:
-        - configMapRef:
-            name: june-config
-        
         ports:
         - containerPort: 8080
           name: http
@@ -112,14 +72,15 @@ spec:
         # ✅ FIXED: Proper memory allocation for large-v3
         resources:
           requests:
-            cpu: "1000m"      # Increased for faster model loading
-            memory: "6Gi"     # Minimum for large-v3
+            cpu: "1"
+            memory: "6Gi"
             nvidia.com/gpu: 1
           limits:
             cpu: "2"
-            memory: "10Gi"    # ✅ Critical: Increased to prevent OOM
+            memory: "10Gi"
             nvidia.com/gpu: 1
         
+        # ✅ FIXED: Using emptyDir instead of PVC
         volumeMounts:
         - name: model-cache
           mountPath: /app/models
@@ -131,16 +92,16 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 90    # Increased from 60
+          initialDelaySeconds: 90
           periodSeconds: 10
-          failureThreshold: 90       # 15 minutes total (90*10s)
+          failureThreshold: 90
           timeoutSeconds: 5
         
         readinessProbe:
           httpGet:
-            path: /ready
+            path: /healthz
             port: 8080
-          initialDelaySeconds: 120   # Wait for model to load
+          initialDelaySeconds: 120
           periodSeconds: 10
           failureThreshold: 30
           timeoutSeconds: 5
@@ -153,15 +114,12 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
-        
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
       
+      # ✅ FIXED: EmptyDir volumes (no PVC needed)
       volumes:
       - name: model-cache
-        persistentVolumeClaim:
-          claimName: june-stt-models
+        emptyDir:
+          sizeLimit: 10Gi
       - name: cache
         emptyDir:
           sizeLimit: 5Gi
