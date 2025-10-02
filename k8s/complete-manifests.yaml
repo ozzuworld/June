@@ -96,125 +96,125 @@ spec:
     name: http
 
 ---
-        # June STT Deployment - FIXED with GPU support and proper resources
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: june-stt
-          namespace: june-services
-          labels:
-            app: june-stt
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: june-stt
-          template:
-            metadata:
-              labels:
-                app: june-stt
-            spec:
-              nodeSelector:
-                gpu: "true"
-              
-              tolerations:
-              - key: nvidia.com/gpu
-                operator: Exists
-                effect: NoSchedule
-              
-              containers:
-              - name: stt
-                image: docker.io/ozzuworld/june-stt:latest
-                imagePullPolicy: Always
-                ports:
-                - containerPort: 8080
-                  name: http
-                
-                # ✅ FIXED: Proper resources for large-v3 with GPU
-                resources:
-                  requests:
-                    cpu: "1"
-                    memory: "6Gi"
-                    nvidia.com/gpu: 1
-                  limits:
-                    cpu: "2"
-                    memory: "10Gi"
-                    nvidia.com/gpu: 1
-                
-                env:
-                - name: PORT
-                  value: "8080"
-                - name: WHISPER_MODEL
-                  value: "large-v3"
-                - name: WHISPER_DEVICE
-                  value: "cuda"
-                - name: WHISPER_COMPUTE_TYPE
-                  value: "float16"
-                - name: WHISPER_CACHE_DIR
-                  value: "/app/models"
-                - name: WHISPER_CPU_THREADS
-                  value: "2"
-                - name: WHISPER_NUM_WORKERS
-                  value: "1"
-                - name: CUDA_VISIBLE_DEVICES
-                  value: "0"
-                - name: PYTORCH_CUDA_ALLOC_CONF
-                  value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
-                
-                volumeMounts:
-                - name: model-cache
-                  mountPath: /app/models
-                - name: cache
-                  mountPath: /app/cache
-                
-                # ✅ FIXED: Extended timeouts for model loading
-                startupProbe:
-                  httpGet:
-                    path: /healthz
-                    port: 8080
-                  initialDelaySeconds: 90
-                  periodSeconds: 10
-                  failureThreshold: 90
-                
-                readinessProbe:
-                  httpGet:
-                    path: /healthz
-                    port: 8080
-                  initialDelaySeconds: 120
-                  periodSeconds: 10
-                  failureThreshold: 30
-                
-                livenessProbe:
-                  httpGet:
-                    path: /healthz
-                    port: 8080
-                  initialDelaySeconds: 180
-                  periodSeconds: 30
-                  failureThreshold: 3
-              
-              # ✅ FIXED: EmptyDir volumes (no PVC)
-              volumes:
-              - name: model-cache
-                emptyDir:
-                  sizeLimit: 10Gi
-              - name: cache
-                emptyDir:
-                  sizeLimit: 5Gi
+# June STT Deployment - FIXED with GPU support and proper resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-stt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-stt
+  template:
+    metadata:
+      labels:
+        app: june-stt
+    spec:
+      nodeSelector:
+        gpu: "true"
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      containers:
+      - name: stt
+        image: docker.io/ozzuworld/june-stt:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        
+        # ✅ FIXED: Proper resources for large-v3 with GPU
+        resources:
+          requests:
+            cpu: "1"
+            memory: "6Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "2"
+            memory: "10Gi"
+            nvidia.com/gpu: 1
+        
+        env:
+        - name: PORT
+          value: "8080"
+        - name: WHISPER_MODEL
+          value: "large-v3"
+        - name: WHISPER_DEVICE
+          value: "cuda"
+        - name: WHISPER_COMPUTE_TYPE
+          value: "float16"
+        - name: WHISPER_CACHE_DIR
+          value: "/app/models"
+        - name: WHISPER_CPU_THREADS
+          value: "2"
+        - name: WHISPER_NUM_WORKERS
+          value: "1"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /app/models
+        - name: cache
+          mountPath: /app/cache
+        
+        # ✅ FIXED: Extended timeouts for model loading
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          failureThreshold: 90
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          failureThreshold: 3
+      
+      # ✅ FIXED: EmptyDir volumes (no PVC)
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
 
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: june-stt
-          namespace: june-services
-        spec:
-          type: ClusterIP
-          selector:
-            app: june-stt
-          ports:
-          - port: 8080
-            targetPort: 8080
-            name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june-services
+spec:
+  type: ClusterIP
+  selector:
+    app: june-stt
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
 ---
 apiVersion: v1
 kind: Service
