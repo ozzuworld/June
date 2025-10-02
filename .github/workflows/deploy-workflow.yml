@@ -121,42 +121,15 @@ jobs:
           ls -la k8s || true
           test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found; will create namespace with kubectl"
 
-      - name: 🧰 Ensure Helm is available
-        run: |
-          if ! command -v helm >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          fi
-
-      # ⬇️ Inline ingress-nginx install/upgrade (no external script needed)
-      - name: 🌉 Install/Upgrade ingress-nginx (hostNetwork)
+      # ✅ Ingress is installed by the install script — just verify it's healthy
+      - name: ✅ Verify existing ingress-nginx (no install in CI)
         run: |
           set -e
-          kubectl get ns ingress-nginx >/dev/null 2>&1 || kubectl create ns ingress-nginx
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-
-          if [ -f ops/ingress-nginx-values.yaml ]; then
-            echo "Using ops/ingress-nginx-values.yaml"
-            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-              -n ingress-nginx \
-              -f ops/ingress-nginx-values.yaml \
-              --wait --timeout 5m
-          else
-            echo "Installing ingress-nginx with inline values"
-            helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-              -n ingress-nginx \
-              --set controller.kind=DaemonSet \
-              --set controller.hostNetwork=true \
-              --set controller.dnsPolicy=ClusterFirstWithHostNet \
-              --set controller.service.type=ClusterIP \
-              --set controller.metrics.enabled=false \
-              --set controller.ingressClass=nginx \
-              --set controller.ingressClassResource.create=true \
-              --set controller.ingressClassResource.name=nginx \
-              --set controller.ingressClassResource.default=false \
-              --set controller.admissionWebhooks.enabled=false \
-              --wait --timeout 5m
-          fi
+          kubectl get ns ingress-nginx >/dev/null 2>&1 || (echo "❌ ingress-nginx namespace not found. Run your install script on the VM first." && exit 1)
+          echo "🔎 ingress-nginx controller pods:"
+          kubectl -n ingress-nginx get pods -l app.kubernetes.io/component=controller -o wide
+          # Optional: wait until the controller is Ready
+          kubectl -n ingress-nginx wait --for=condition=ready pod -l app.kubernetes.io/component=controller --timeout=180s
 
       - name: 🔍 Verify Kubernetes connection
         run: |
