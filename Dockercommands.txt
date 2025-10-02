@@ -23,7 +23,7 @@ docker login -u ozzuworld
 
 dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
 @@
-
+AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM
 
 # Update the tts-service-url in june-secrets
 kubectl patch secret june-secrets \

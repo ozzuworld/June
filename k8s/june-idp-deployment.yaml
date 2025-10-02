@@ -1,3 +1,5 @@
+# Updated Keycloak Deployment Configuration for June IDP
+# This resolves the proxy header warnings and enables proper access via idp.allsafe.world
 
 ---
 apiVersion: apps/v1
@@ -65,17 +67,17 @@ spec:
         - name: KC_DB_PASSWORD
           value: Pokemon123!
         
-        # Admin Configuration
-        - name: KEYCLOAK_ADMIN
+        # Admin Configuration  
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
           value: admin
-        - name: KEYCLOAK_ADMIN_PASSWORD
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
           value: Pokemon123!
         
         # HTTP Configuration
         - name: KC_HTTP_ENABLED
           value: "true"
         
-        # FIXED: Hostname configuration for proper redirects
+        # UPDATED: Modern hostname configuration (v2)
         - name: KC_HOSTNAME
           value: "idp.allsafe.world"
         - name: KC_HOSTNAME_STRICT
@@ -83,17 +85,27 @@ spec:
         - name: KC_HOSTNAME_STRICT_HTTPS
           value: "false"
         
-        # Proxy configuration (behind ingress)
-        - name: KC_PROXY
-          value: edge
+        # UPDATED: Modern proxy configuration (v2) - REMOVED deprecated KC_PROXY
         - name: KC_PROXY_HEADERS
-          value: xforwarded
+          value: "xforwarded"
+        
+        # Security and CORS
+        - name: KC_HOSTNAME_ADMIN
+          value: "idp.allsafe.world"
+        - name: KC_HOSTNAME_ADMIN_URL
+          value: "https://idp.allsafe.world"
         
         # Health and metrics
         - name: KC_HEALTH_ENABLED
           value: "true"
         - name: KC_METRICS_ENABLED
           value: "true"
+        
+        # Logging
+        - name: KC_LOG_LEVEL
+          value: "INFO"
+        - name: KC_LOG_CONSOLE_OUTPUT
+          value: "default"
         
         startupProbe:
           httpGet:
@@ -128,6 +140,8 @@ kind: Service
 metadata:
   name: june-idp
   namespace: june-services
+  labels:
+    app: june-idp
 spec:
   type: ClusterIP
   selector:
