@@ -329,7 +329,7 @@ jobs:
               june-stt)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP stt=${REGISTRY}/june-stt:${IMAGE_TAG} --record ;;
               june-tts)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP tts=${REGISTRY}/june-tts:${IMAGE_TAG} --record ;;
               june-orchestrator) kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP orchestrator=${REGISTRY}/june-orchestrator:${IMAGE_TAG} --record ;;
-              june-idp)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP idp=${REGISTRY}/june-idp:${IMAGE_TAG} --record ;;
+              june-idp)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP keycloak=${REGISTRY}/june-idp:${IMAGE_TAG} --record ;;
               june-web)          kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP web=${REGISTRY}/june-web:${IMAGE_TAG} --record || true ;;
               june-dark)         kubectl -n "$KUBE_NAMESPACE" set image deploy/$DEP dark=${REGISTRY}/june-dark:${IMAGE_TAG} --record || true ;;
             esac
