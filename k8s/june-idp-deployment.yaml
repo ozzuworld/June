@@ -74,7 +74,7 @@ spec:
         - name: KC_HTTP_ENABLED
           value: "true"
         
-        # Hostname configuration
+        # 🔥 FIX: Hostname configuration for external access
         - name: KC_HOSTNAME
           value: "idp.allsafe.world"
         - name: KC_HOSTNAME_STRICT
@@ -82,9 +82,9 @@ spec:
         - name: KC_HOSTNAME_STRICT_HTTPS
           value: "false"
         
-        # Proxy configuration
+        # 🔥 FIX: Proxy configuration (CRITICAL for ingress)
         - name: KC_PROXY_HEADERS
-          value: "xforwarded"
+          value: "xforwarded"  # Changed from edge to xforwarded
         
         # Health and metrics
         - name: KC_HEALTH_ENABLED

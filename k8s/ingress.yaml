@@ -4,19 +4,27 @@ metadata:
   name: june-ingress
   namespace: june-services
   annotations:
+    # Use production Let's Encrypt issuer
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    
+    # Ingress class
     kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    
+    # 🔥 DISABLE forced HTTPS redirect to fix the loop
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    
+    # CORS support
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    
+    # Upload size limits
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    
+    # Timeout settings
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    # Important for Keycloak
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
 spec:
   ingressClassName: nginx
   tls:
@@ -44,4 +52,4 @@ spec:
           service:
             name: june-idp
             port:
-              number: 8080  # Main HTTP port for admin console and auth
+              number: 8080
