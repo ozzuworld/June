@@ -1,5 +1,5 @@
 #!/bin/bash
-# Keycloak Configuration Automation for June Services (FIXED - No ANSI codes in generated script)
+# Keycloak Configuration Automation for June Services (TRULY FIXED - Clean data capture)
 # This script automates the Keycloak setup using the Admin REST API
 
 set -e
@@ -11,32 +11,32 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
-log_success() { echo -e "${GREEN}✅ $1${NC}"; }
-log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-log_error()   { echo -e "${RED}❌ $1${NC}"; }
+log_info()    { echo -e "${BLUE}ℹ️  $1${NC}" >&2; }
+log_success() { echo -e "${GREEN}✅ $1${NC}" >&2; }
+log_warning() { echo -e "${YELLOW}⚠️  $1${NC}" >&2; }
+log_error()   { echo -e "${RED}❌ $1${NC}" >&2; }
 
-echo "🔐 Keycloak Configuration Automation (FIXED)"
-echo "============================================="
+echo "🔐 Keycloak Configuration Automation (TRULY FIXED)" >&2
+echo "=================================================" >&2
 
 # Configuration
-read -p "Keycloak URL [https://idp.allsafe.world]: " KEYCLOAK_URL
+read -p "Keycloak URL [https://idp.allsafe.world](https://idp.allsafe.world): " KEYCLOAK_URL
 KEYCLOAK_URL=${KEYCLOAK_URL:-https://idp.allsafe.world}
 
 read -p "Admin username [admin]: " ADMIN_USER
 ADMIN_USER=${ADMIN_USER:-admin}
 
 read -sp "Admin password: " ADMIN_PASSWORD
-echo ""
+echo "" >&2
 
 read -p "Realm name [allsafe]: " REALM
 REALM=${REALM:-allsafe}
 
 log_info "Configuration:"
-echo "  Keycloak: $KEYCLOAK_URL"
-echo "  Admin: $ADMIN_USER"
-echo "  Realm: $REALM"
-echo ""
+echo "  Keycloak: $KEYCLOAK_URL" >&2
+echo "  Admin: $ADMIN_USER" >&2
+echo "  Realm: $REALM" >&2
+echo "" >&2
 
 # Verify jq is installed
 if ! command -v jq &> /dev/null; then
@@ -57,7 +57,7 @@ ADMIN_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
 
 if [ -z "$ADMIN_TOKEN" ]; then
   log_error "Failed to get admin token. Check credentials."
-  echo "Response: $TOKEN_RESPONSE"
+  echo "Response: $TOKEN_RESPONSE" >&2
   exit 1
 fi
 
@@ -89,11 +89,11 @@ else
     log_success "Realm '$REALM' created"
   else
     log_error "Failed to create realm (HTTP $HTTP_CODE)"
-    echo "$CREATE_REALM"
+    echo "$CREATE_REALM" >&2
   fi
 fi
 
-# Function to create client and return secret
+# Function to create client and return secret (FIXED - All logging to stderr)
 create_client_with_secret() {
   local CLIENT_ID=$1
   local ROOT_URL=$2
@@ -144,12 +144,12 @@ create_client_with_secret() {
       CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
     else
       log_error "Failed to create client '$CLIENT_ID' (HTTP $HTTP_CODE)"
-      echo "$CREATE_CLIENT"
+      echo "$CREATE_CLIENT" >&2
       return 1
     fi
   fi
   
-  # Get client secret
+  # Get client secret (CRITICAL FIX - Only return clean data to stdout)
   if [ -n "$CLIENT_UUID" ]; then
     log_info "Retrieving secret for '$CLIENT_ID'..."
     SECRET_RESPONSE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -159,10 +159,11 @@ create_client_with_secret() {
     
     if [ -n "$SECRET" ]; then
       log_success "Secret retrieved for '$CLIENT_ID'"
+      # CRITICAL: Only output clean data to stdout, all logs go to stderr
       echo "$CLIENT_UUID|$SECRET"
     else
       log_error "Failed to get secret for '$CLIENT_ID'"
-      echo "Response: $SECRET_RESPONSE"
+      echo "Response: $SECRET_RESPONSE" >&2
       return 1
     fi
   else
@@ -171,7 +172,7 @@ create_client_with_secret() {
   fi
 }
 
-# Create clients
+# Create clients (FIXED - Capture only clean output)
 log_info "Creating service clients..."
 
 # June Orchestrator
@@ -195,10 +196,10 @@ TTS_SECRET=$(echo "$TTS_RESULT" | cut -d'|' -f2)
 # Verify we got all secrets
 if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
   log_error "Failed to retrieve all client secrets!"
-  echo ""
-  echo "Orchestrator: ${ORCH_SECRET:-MISSING}"
-  echo "STT: ${STT_SECRET:-MISSING}"
-  echo "TTS: ${TTS_SECRET:-MISSING}"
+  echo "" >&2
+  echo "Orchestrator: ${ORCH_SECRET:-MISSING}" >&2
+  echo "STT: ${STT_SECRET:-MISSING}" >&2
+  echo "TTS: ${TTS_SECRET:-MISSING}" >&2
   exit 1
 fi
 
@@ -267,15 +268,37 @@ create_role "june-user" "Standard June service user"
 create_role "june-admin" "June service administrator"
 create_role "june-service" "Service-to-service communication"
 
-# Generate kubectl commands (FIXED: Direct variable substitution, no sed needed)
+# Generate kubectl commands with validation
 log_info "Generating Kubernetes secret update commands..."
 
-# Generate the script with direct bash variable substitution
+# Validate secrets before generating script
+if [[ ! "$ORCH_SECRET" =~ ^[A-Za-z0-9_-]+$ ]] || [ ${#ORCH_SECRET} -lt 16 ]; then
+  log_error "Orchestrator secret appears invalid: '$ORCH_SECRET'"
+  exit 1
+fi
+
+if [[ ! "$STT_SECRET" =~ ^[A-Za-z0-9_-]+$ ]] || [ ${#STT_SECRET} -lt 16 ]; then
+  log_error "STT secret appears invalid: '$STT_SECRET'"
+  exit 1
+fi
+
+if [[ ! "$TTS_SECRET" =~ ^[A-Za-z0-9_-]+$ ]] || [ ${#TTS_SECRET} -lt 16 ]; then
+  log_error "TTS secret appears invalid: '$TTS_SECRET'"
+  exit 1
+fi
+
+# Generate the script with clean variable substitution
 cat > update-k8s-secrets.sh << EOF
 #!/bin/bash
-# Generated Keycloak secret update commands
+# Generated Keycloak secret update commands (Clean secrets validated)
 
-echo "🔐 Updating Kubernetes secrets with Keycloak credentials..."
+echo "🔐 Updating Kubernetes secrets with clean Keycloak credentials..."
+
+# Validate secrets exist
+if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
+  echo "❌ Error: Missing secrets in generated script"
+  exit 1
+fi
 
 # Update june-orchestrator secrets
 kubectl create secret generic june-orchestrator-secrets \\
@@ -334,47 +357,47 @@ if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
   log_success "Token generation test PASSED"
 else
   log_warning "Token generation test FAILED"
-  echo "Response: $TEST_TOKEN"
+  echo "Response: $TEST_TOKEN" >&2
 fi
 
 # Summary
-echo ""
-echo "═══════════════════════════════════════════════"
+echo "" >&2
+echo "═══════════════════════════════════════════════" >&2
 log_success "Keycloak Configuration Complete!"
-echo "═══════════════════════════════════════════════"
-echo ""
-echo "📋 Client Credentials:"
-echo ""
-echo "june-orchestrator:"
-echo "  client_id: june-orchestrator"
-echo "  client_secret: $ORCH_SECRET"
-echo "  UUID: $ORCH_UUID"
-echo ""
-echo "june-stt:"
-echo "  client_id: june-stt"
-echo "  client_secret: $STT_SECRET"
-echo "  UUID: $STT_UUID"
-echo ""
-echo "june-tts:"
-echo "  client_id: june-tts"
-echo "  client_secret: $TTS_SECRET"
-echo "  UUID: $TTS_UUID"
-echo ""
-echo "🔍 Verify Configuration:"
-echo "  1. Access Keycloak admin: $KEYCLOAK_URL/admin"
-echo "  2. Check realm: $REALM"
-echo "  3. Test token generation:"
-echo ""
-echo "curl -X POST \"$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token\" \\"
-echo "  -d \"grant_type=client_credentials\" \\"
-echo "  -d \"client_id=june-orchestrator\" \\"
-echo "  -d \"client_secret=$ORCH_SECRET\" | jq"
-echo ""
-echo "📝 Next Steps:"
-echo "  1. ✅ Credentials generated successfully"
-echo "  2. Run: ./update-k8s-secrets.sh"
-echo "  3. Verify services: kubectl get pods -n june-services"
-echo "  4. Test authentication: scripts/keycloak/auth-test.sh"
-echo ""
-echo "💾 Save these credentials securely!"
-echo "═══════════════════════════════════════════════"
+echo "═══════════════════════════════════════════════" >&2
+echo "" >&2
+echo "📋 Client Credentials:" >&2
+echo "" >&2
+echo "june-orchestrator:" >&2
+echo "  client_id: june-orchestrator" >&2
+echo "  client_secret: $ORCH_SECRET" >&2
+echo "  UUID: $ORCH_UUID" >&2
+echo "" >&2
+echo "june-stt:" >&2
+echo "  client_id: june-stt" >&2
+echo "  client_secret: $STT_SECRET" >&2
+echo "  UUID: $STT_UUID" >&2
+echo "" >&2
+echo "june-tts:" >&2
+echo "  client_id: june-tts" >&2
+echo "  client_secret: $TTS_SECRET" >&2
+echo "  UUID: $TTS_UUID" >&2
+echo "" >&2
+echo "🔍 Verify Configuration:" >&2
+echo "  1. Access Keycloak admin: $KEYCLOAK_URL/admin" >&2
+echo "  2. Check realm: $REALM" >&2
+echo "  3. Test token generation:" >&2
+echo "" >&2
+echo "curl -X POST \"$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token\" \\" >&2
+echo "  -d \"grant_type=client_credentials\" \\" >&2
+echo "  -d \"client_id=june-orchestrator\" \\" >&2
+echo "  -d \"client_secret=$ORCH_SECRET\" | jq" >&2
+echo "" >&2
+echo "📝 Next Steps:" >&2
+echo "  1. ✅ Credentials generated successfully" >&2
+echo "  2. Run: ./update-k8s-secrets.sh" >&2
+echo "  3. Verify services: kubectl get pods -n june-services" >&2
+echo "  4. Test authentication: scripts/keycloak/auth-test.sh" >&2
+echo "" >&2
+echo "💾 Save these credentials securely!" >&2
+echo "═══════════════════════════════════════════════" >&2
