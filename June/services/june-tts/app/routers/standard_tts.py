@@ -39,9 +39,11 @@ class VoicesResponse(BaseModel):
 @router.post("/tts")
 async def synthesize_speech(
     request: StandardTTSRequest,
-    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
+    service_auth: dict = Depends(require_service_auth)  # Required!
 ):
-    """Standard TTS endpoint compatible with orchestrator ExternalTTSClient"""
+    # ADD: Check if auth is valid
+    if not service_auth or not service_auth.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     try:
         # Validate input

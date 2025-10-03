@@ -47,7 +47,7 @@ class TTSClient:
                 audio_data = await self._synthesize_standard(
                     text, voice, speed, language
                 )
-            
+
             return {
                 "audio_data": audio_data,
                 "content_type": "audio/wav",

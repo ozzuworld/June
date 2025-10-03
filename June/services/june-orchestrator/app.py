@@ -8,6 +8,10 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
 from service_auth import get_service_auth_client
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -285,14 +289,23 @@ async def health_check():
     }
 
 @app.post("/v1/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)  # ADD THIS
+):
     start_time = time.time()
     
+    # ADD: Verify authentication
     try:
-        if not request.text or not request.text.strip():
-            raise HTTPException(status_code=400, detail="Text cannot be empty")
+        from service_auth import get_service_auth_client
+        auth_client = get_service_auth_client()
+        token_data = await auth_client.test_authentication()
         
-        logger.info(f"📥 Chat request: {request.text[:50]}... (audio: {request.include_audio})")
+        if not token_data.get("authenticated"):
+            raise HTTPException(status_code=401, detail="Invalid authentication")
+    except Exception as e:
+        logger.error(f"Authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication required")
         
         # Generate AI response
         ai_response, provider = await gemini_service.generate_response(
