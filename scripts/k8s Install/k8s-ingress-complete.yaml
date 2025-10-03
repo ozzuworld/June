@@ -1,5 +1,5 @@
 ---
-# Enhanced Ingress with SSL and Wildcard Certificate Support
+# June Services Ingress with Wildcard Certificate Support
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -9,49 +9,42 @@ metadata:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: ingress
   annotations:
-    # NGINX Ingress Controller annotations
+    # NGINX Ingress Controller
     kubernetes.io/ingress.class: "nginx"
     
-    # SSL and certificate configuration - UPDATED for wildcard support
+    # Certificate Management - MATCHES what stage2 creates
     cert-manager.io/cluster-issuer: "letsencrypt-staging"  # Change to letsencrypt-prod when ready
+    
+    # SSL Configuration
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     
-    nginx.ingress.kubernetes.io/use-regex: "true"
-    nginx.ingress.kubernetes.io/rewrite-target: /$1
-    
-    # Rate limiting
-    nginx.ingress.kubernetes.io/rate-limit: "100"
-    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
-    
-    # CORS settings
+    # CORS Settings
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
     
-    # Upload size limits
+    # Upload and Timeout Settings
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    
-    # Timeout settings
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 
 spec:
-  # UPDATED: Wildcard TLS configuration - covers ALL subdomains with one certificate
+  # WILDCARD TLS Configuration - ONE certificate for ALL subdomains
   tls:
   - hosts:
     - "*.allsafe.world"        # Wildcard covers all subdomains
-    - "allsafe.world"          # Include root domain if needed
-    secretName: allsafe-wildcard-tls  # cert-manager will create this automatically
+    - "allsafe.world"          # Include root domain
+    secretName: allsafe-wildcard-tls  # cert-manager creates this automatically
     
   rules:
-  # Main API Gateway (Orchestrator)
+  # API Gateway (Orchestrator)
   - host: api.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -59,11 +52,11 @@ spec:
             port:
               number: 8080
   
-  # Identity Provider Service
+  # Identity Provider (Keycloak)
   - host: idp.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -71,11 +64,11 @@ spec:
             port:
               number: 8080
   
-  # Speech-to-Text Service (direct access)
+  # Speech-to-Text Service
   - host: stt.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -83,11 +76,11 @@ spec:
             port:
               number: 8080
   
-  # Text-to-Speech Service (direct access)
+  # Text-to-Speech Service
   - host: tts.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -95,11 +88,11 @@ spec:
             port:
               number: 8000
   
-  # Web Interface (if you have one)
+  # Web App Interface
   - host: app.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -111,7 +104,7 @@ spec:
   - host: admin.allsafe.world
     http:
       paths:
-      - path: /(.*)
+      - path: /
         pathType: Prefix
         backend:
           service:
@@ -119,5 +112,5 @@ spec:
             port:
               number: 8080
 
-  # Future services can be added here without certificate changes
-  # The wildcard *.allsafe.world automatically covers them!
+  # Future services automatically work with wildcard certificate!
+  # Just add new hosts here - no certificate changes needed

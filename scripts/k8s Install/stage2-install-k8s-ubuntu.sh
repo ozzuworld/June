@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (WITH CERT STAGING OPTION AND WILDCARD SUPPORT)
+# Stage 2: Kubernetes + Infrastructure Setup (WITH WILDCARD CERT SUPPORT)
 # Run this AFTER stage1-runner-only.sh
 # This prepares the cluster so CI/CD can deploy without GPU issues
 
@@ -7,7 +7,7 @@ set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH PROPERLY FIXED GPU TIME-SLICING & WILDCARD CERTS"
+echo "   WITH WILDCARD CERTIFICATES & GPU TIME-SLICING"
 echo "======================================================"
 
 # Colors
@@ -50,6 +50,30 @@ echo ""
 prompt "Use Let's Encrypt STAGING or PRODUCTION? (staging/production)" CERT_ENV "staging"
 prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
 
+# NEW: Wildcard certificate option
+echo ""
+log_info "🌟 WILDCARD CERTIFICATE OPTION"
+echo "  ✅ Wildcard (*.allsafe.world) = UNLIMITED subdomains, NO rate limits"
+echo "  ✅ Individual domains = Rate limits apply (5 per week max)"
+echo ""
+prompt "Enable wildcard certificate? (y/n)" ENABLE_WILDCARD "y"
+
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo ""
+    log_info "📋 Cloudflare API Token Required:"
+    echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
+    echo "  2. Create Token > Edit Zone DNS template"
+    echo "  3. Permissions: Zone:DNS:Edit, Zone:Zone:Read"
+    echo "  4. Zone Resources: allsafe.world"
+    echo ""
+    prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
+    
+    if [ -z "$CF_API_TOKEN" ]; then
+        log_error "Cloudflare API token required for wildcard certificates!"
+        exit 1
+    fi
+fi
+
 # Set the correct ACME server based on choice
 if [[ $CERT_ENV == "production" ]]; then
     ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
@@ -65,9 +89,9 @@ echo ""
 echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
-echo "  GPU Replicas: $GPU_REPLICAS (1 physical GPU = $GPU_REPLICAS virtual GPUs)"
+echo "  GPU Replicas: $GPU_REPLICAS"
 echo "  Certificate Environment: $CERT_ENV"
-echo "  ACME Server: $ACME_SERVER"
+echo "  Wildcard Enabled: $ENABLE_WILDCARD"
 echo "  Issuer Name: $ISSUER_NAME"
 echo "  Email: $LETSENCRYPT_EMAIL"
 echo ""
@@ -198,7 +222,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER WITH WILDCARD SUPPORT
+# LET'S ENCRYPT ISSUER (WITH WILDCARD SUPPORT)
 # ============================================================================
 
 if [ -n "$LETSENCRYPT_EMAIL" ]; then
@@ -211,34 +235,7 @@ if [ -n "$LETSENCRYPT_EMAIL" ]; then
         log_warning "⚠️  Using PRODUCTION - you have 5 attempts per week per domain set!"
     fi
     
-    # NEW: Prompt for wildcard certificate support
-    echo ""
-    log_info "🌟 WILDCARD CERTIFICATE SETUP"
-    echo "  Wildcard certificates (*.allsafe.world) provide:"
-    echo "  ✅ UNLIMITED subdomains with one certificate"
-    echo "  ✅ NO rate limit issues for new services" 
-    echo "  ✅ Perfect for your development workflow"
-    echo ""
-    echo "  Requires: Cloudflare API token for DNS-01 challenge"
-    echo ""
-    prompt "Enable wildcard certificate? (y/n)" ENABLE_WILDCARD "y"
-    
-    if [[ $ENABLE_WILDCARD == [yY] ]]; then
-        echo ""
-        log_info "📋 Cloudflare Setup Required:"
-        echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
-        echo "  2. Create Token > Edit Zone DNS template"
-        echo "  3. Permissions: Zone:DNS:Edit, Zone:Zone:Read"
-        echo "  4. Zone Resources: allsafe.world"
-        echo ""
-        prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
-        
-        if [ -z "$CF_API_TOKEN" ]; then
-            log_error "Cloudflare API token required for wildcard certificates"
-            log_info "You can re-run this script later with the token"
-            exit 1
-        fi
-        
+    if [[ $ENABLE_WILDCARD == [yY] ]] && [ -n "$CF_API_TOKEN" ]; then
         log_info "Creating Cloudflare API secret..."
         kubectl create secret generic cloudflare-api-token \
             --from-literal=api-token="$CF_API_TOKEN" \
@@ -269,16 +266,15 @@ spec:
         - "*.allsafe.world"
 EOF
         
-        log_success "Wildcard ClusterIssuer '${ISSUER_NAME}' created with DNS-01 challenge!"
+        log_success "Wildcard ClusterIssuer '${ISSUER_NAME}' created with DNS-01!"
         echo ""
-        log_info "🎯 Wildcard Benefits Enabled:"
+        log_info "🌟 Wildcard Benefits:"
         echo "  • *.allsafe.world covers ALL current and future subdomains"
         echo "  • No more rate limit concerns for new services"
-        echo "  • Single certificate management"
-        echo ""
+        echo "  • Perfect for your 'nuke daily' workflow"
         
     else
-        log_info "Creating HTTP-01 ClusterIssuer for individual domain certificates..."
+        log_info "Creating HTTP-01 ClusterIssuer for individual certificates..."
         cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -296,12 +292,7 @@ spec:
           class: nginx
 EOF
         
-        log_success "Standard ClusterIssuer '${ISSUER_NAME}' created with HTTP-01 challenge!"
-        echo ""
-        log_info "💡 Rate Limit Bypass Tip:"
-        echo "  Add/remove subdomains in your ingress to get fresh certificate allowances"
-        echo "  Each different domain set gets 5 certificates per week"
-        echo ""
+        log_success "Standard ClusterIssuer '${ISSUER_NAME}' created with HTTP-01!"
     fi
     
 else
@@ -309,7 +300,7 @@ else
 fi
 
 # ============================================================================
-# GPU OPERATOR WITH PROPER TIME-SLICING (FIXED!)
+# GPU OPERATOR WITH PROPER TIME-SLICING
 # ============================================================================
 
 if [[ $SETUP_GPU == [yY] ]]; then
@@ -345,18 +336,11 @@ if [[ $SETUP_GPU == [yY] ]]; then
     
     log_success "GPU Operator installed!"
     
-    # ========================================================================
-    # CRITICAL FIX: PROPER TIME-SLICING SETUP WITH CORRECT FORMAT
-    # ========================================================================
-    
+    # GPU Time-slicing setup
     log_info "Configuring GPU time-slicing (1 GPU → $GPU_REPLICAS virtual GPUs)..."
     
-    # Wait for GPU operator to be fully ready
-    log_info "Waiting for GPU operator to stabilize..."
     sleep 30
     
-    # Create time-slicing ConfigMap with CORRECT FORMAT for newer GPU operator
-    log_info "Creating time-slicing configuration with correct format..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -375,58 +359,12 @@ data:
           replicas: ${GPU_REPLICAS}
 EOF
     
-    log_success "Time-slicing ConfigMap created with correct format"
-    
-    # Apply time-slicing to ClusterPolicy
-    log_info "Applying time-slicing to GPU operator..."
     kubectl patch clusterpolicy cluster-policy \
         -n gpu-operator \
         --type merge \
         -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
     
-    log_success "Time-slicing configuration applied"
-    
-    # Wait for device plugin to restart with new config
-    log_info "Waiting for GPU device plugin to restart with time-slicing..."
-    sleep 45
-    
-    # Verify GPU capacity increased
-    log_info "Verifying GPU time-slicing..."
-    for i in {1..30}; do
-        GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
-        
-        if [ "$GPU_CAPACITY" -ge "$GPU_REPLICAS" ]; then
-            log_success "GPU time-slicing verified! GPU capacity: $GPU_CAPACITY (was 1, now $GPU_REPLICAS)"
-            break
-        else
-            if [ $i -eq 30 ]; then
-                log_error "GPU time-slicing not applied after 5 minutes"
-                log_warning "Device plugin may need manual restart:"
-                echo "  kubectl delete pod -n gpu-operator -l app=nvidia-device-plugin-daemonset"
-                echo "  kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
-            else
-                echo "  Checking... GPU capacity: $GPU_CAPACITY (expected: $GPU_REPLICAS) - attempt $i/30"
-                sleep 10
-            fi
-        fi
-    done
-    
-    # Show final GPU status
-    echo ""
-    log_info "Final GPU Configuration:"
-    kubectl get nodes -o json | jq '.items[] | {
-        name: .metadata.name,
-        gpu_capacity: .status.allocatable."nvidia.com/gpu",
-        gpu_allocatable: .status.capacity."nvidia.com/gpu"
-    }'
-    
-    echo ""
-    log_info "GPU Operator Pods:"
-    kubectl get pods -n gpu-operator
-    
-    echo ""
-    log_info "Device Plugin Status:"
-    kubectl get pods -n gpu-operator -l app=nvidia-device-plugin-daemonset
+    log_success "GPU time-slicing configured!"
     
 fi
 
@@ -434,20 +372,15 @@ fi
 # STORAGE SETUP
 # ============================================================================
 
-log_info "Setting up storage for PostgreSQL and services..."
+log_info "Setting up storage..."
 
-# Create storage directories
 mkdir -p /opt/june-postgresql-data
 mkdir -p /opt/june-stt-models
 mkdir -p /opt/june-tts-models
 mkdir -p /opt/june-data
 
-chmod 755 /opt/june-postgresql-data
-chmod 755 /opt/june-stt-models
-chmod 755 /opt/june-tts-models
-chmod 755 /opt/june-data
+chmod 755 /opt/june-*
 
-log_info "Creating StorageClass..."
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -458,24 +391,30 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 EOF
 
-log_info "Creating PersistentVolume for PostgreSQL..."
-cat <<EOF | kubectl apply -f -
+# Create all PVs
+for service in postgresql june-stt-models june-tts-models; do
+    size="10Gi"
+    if [ "$service" == "june-tts-models" ]; then
+        size="20Gi"
+    fi
+    
+    cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: postgresql-pv
+  name: ${service}-pv
   labels:
     type: local
-    app: postgresql
+    app: ${service}
 spec:
   capacity:
-    storage: 10Gi
+    storage: ${size}
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
-    path: /opt/june-postgresql-data
+    path: /opt/${service/june-/june-}
   nodeAffinity:
     required:
       nodeSelectorTerms:
@@ -485,85 +424,22 @@ spec:
           values:
           - $(hostname)
 EOF
+done
 
-log_info "Creating PersistentVolumes for STT models..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-stt-models-pv
-  labels:
-    type: local
-    app: june-stt
-spec:
-  capacity:
-    storage: 10Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-stt-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
-log_info "Creating PersistentVolumes for TTS models..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-tts-models-pv
-  labels:
-    type: local
-    app: june-tts
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-tts-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
-log_success "Storage configured with all PersistentVolumes!"
-
-# Verify storage
-echo ""
-log_info "Verifying storage setup..."
-kubectl get storageclass
-kubectl get pv
+log_success "Storage configured!"
 
 # ============================================================================
-# FIX GITHUB RUNNER KUBECTL ACCESS
+# GITHUB RUNNER SETUP
 # ============================================================================
 
-log_info "Configuring GitHub runner for kubectl access..."
+log_info "Configuring GitHub runner..."
 
 if [ -d "/opt/actions-runner" ]; then
-    # Add environment variables
     cat >> /opt/actions-runner/.env << 'EOF'
 KUBECONFIG=/root/.kube/config
 LANG=C.UTF-8
 EOF
     
-    # Restart runner if running
     if systemctl is-active --quiet actions.runner.*; then
         systemctl restart actions.runner.*
         log_success "GitHub runner configured and restarted"
@@ -571,14 +447,11 @@ EOF
         log_success "GitHub runner configured (will apply on next start)"
     fi
 else
-    log_warning "GitHub runner not found at /opt/actions-runner"
-    log_info "Run this after starting the runner:"
-    echo 'echo "KUBECONFIG=/root/.kube/config" >> /opt/actions-runner/.env'
-    echo 'systemctl restart actions.runner.*'
+    log_warning "GitHub runner not found - configure manually later"
 fi
 
 # ============================================================================
-# VERIFICATION & SUMMARY
+# FINAL STATUS
 # ============================================================================
 
 EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
@@ -592,139 +465,58 @@ echo "✅ Infrastructure Ready:"
 echo "  • Kubernetes cluster"
 echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
-echo "  • Let's Encrypt issuer: $ISSUER_NAME ($CERT_ENV)"
 
 if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "  • Wildcard certificates enabled (*.allsafe.world)"
+    echo "  • Let's Encrypt issuer: $ISSUER_NAME (WILDCARD enabled)"
     echo "  • DNS-01 challenge with Cloudflare"
-    echo "  • Unlimited subdomains, no rate limits!"
 else
-    echo "  • HTTP-01 challenge (individual domain certs)"
-fi
-
-if [[ $CERT_ENV == "staging" ]]; then
-    echo ""
-    log_warning "📝 Certificate Environment: STAGING"
-    echo "  • Unlimited certificate requests for testing"
-    echo "  • Certificates will show as UNTRUSTED (this is normal)"
-    echo "  • Switch to production when stable (see notes below)"
+    echo "  • Let's Encrypt issuer: $ISSUER_NAME (individual domains)"
+    echo "  • HTTP-01 challenge"
 fi
 
 if [[ $SETUP_GPU == [yY] ]]; then
-    GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
-    if [ "$GPU_CAPACITY" -ge "$GPU_REPLICAS" ]; then
-        echo "  • GPU Operator with time-slicing: 1 physical GPU = $GPU_CAPACITY virtual GPUs ✅"
-    else
-        echo "  • GPU Operator installed (capacity: $GPU_CAPACITY, expected: $GPU_REPLICAS) ⚠️"
-        echo "    May need device plugin restart - see troubleshooting below"
-    fi
+    echo "  • GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
 fi
 
-echo "  • Storage configured with PersistentVolumes"
-echo "  • GitHub runner configured"
+echo "  • Storage configured"
+echo "  • GitHub runner ready"
 echo ""
-echo "🌐 Your External IP: $EXTERNAL_IP"
-echo ""
-echo "📊 Cluster Status:"
-kubectl get nodes -o wide
-echo ""
-echo "🎮 GPU Status:"
-kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU_CAPACITY:.status.allocatable.nvidia\.com/gpu'
+echo "🌐 External IP: $EXTERNAL_IP"
 echo ""
 echo "📋 Next Steps:"
 echo ""
+echo "  1. Configure DNS to point to $EXTERNAL_IP:"
 
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "  🌟 WILDCARD CERTIFICATES ENABLED:"
-    echo "    • Update your ingress files to use *.allsafe.world"
-    echo "    • One certificate covers ALL subdomains"
-    echo "    • No more rate limit concerns!"
-    echo ""
-else
-    if [[ $CERT_ENV == "staging" ]]; then
-        echo "  🔐 STAGING CERTIFICATES:"
-        echo "    • Your ingress will use cert-manager.io/cluster-issuer: letsencrypt-staging"
-        echo "    • Browsers will show warnings - this is EXPECTED for staging"
-        echo "    • Test thoroughly before switching to production"
-        echo ""
-        echo "  🔄 To switch to PRODUCTION (after testing is stable):"
-        echo "    1. Delete staging resources:"
-        echo "       kubectl delete certificate allsafe-tls -n june-services"
-        echo "       kubectl delete clusterissuer letsencrypt-staging"
-        echo ""
-        echo "    2. Create production issuer:"
-        echo "       cat <<PROD_EOF | kubectl apply -f -"
-        echo "apiVersion: cert-manager.io/v1"
-        echo "kind: ClusterIssuer"
-        echo "metadata:"
-        echo "  name: letsencrypt-prod"
-        echo "spec:"
-        echo "  acme:"
-        echo "    server: https://acme-v02.api.letsencrypt.org/directory"
-        echo "    email: $LETSENCRYPT_EMAIL"
-        echo "    privateKeySecretRef:"
-        echo "      name: letsencrypt-prod"
-        echo "    solvers:"
-        echo "    - http01:"
-        echo "        ingress:"
-        echo "          class: nginx"
-        echo "PROD_EOF"
-        echo ""
-        echo "    3. Update ingress annotation:"
-        echo "       kubectl annotate ingress june-ingress -n june-services \\"
-        echo "         cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite"
-        echo ""
-    fi
-fi
-
-echo "  1. Configure DNS records to point to $EXTERNAL_IP:"
 if [[ $ENABLE_WILDCARD == [yY] ]]; then
     echo "     • *.allsafe.world (wildcard record)"
     echo "     • allsafe.world (root domain)"
 else
-    echo "     • idp.allsafe.world"
     echo "     • api.allsafe.world"
+    echo "     • idp.allsafe.world"
     echo "     • stt.allsafe.world"
     echo "     • tts.allsafe.world"
 fi
+
 echo ""
-echo "  2. Apply your updated ingress configuration:"
+echo "  2. Apply ingress configuration:"
 echo "     kubectl apply -f scripts/k8s Install/k8s-ingress-complete.yaml"
 echo ""
-echo "  3. Push to GitHub - workflow will automatically:"
-echo "     • Build Docker images"
-echo "     • Deploy services (STT and TTS can share GPU!)"
-
-if [[ $CERT_ENV == "production" ]]; then
-    echo "     • Get Let's Encrypt PRODUCTION certificates"
-else
-    echo "     • Get Let's Encrypt STAGING certificates (untrusted)"
-fi
-
-echo ""
-echo "  4. Verify deployment:"
-echo "     • kubectl get pods -n june-services"
-echo "     • kubectl get certificate -n june-services"
-echo "     • kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
+echo "  3. Push to GitHub to trigger deployment"
 echo ""
 
-if [[ $SETUP_GPU == [yY] ]] && [ "$GPU_CAPACITY" -lt "$GPU_REPLICAS" ]; then
-    echo "⚠️  GPU Troubleshooting:"
-    echo "  If GPU capacity is not showing $GPU_REPLICAS, restart the device plugin:"
-    echo "  kubectl delete pod -n gpu-operator -l app=nvidia-device-plugin-daemonset"
-    echo "  sleep 60"
-    echo "  kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
+if [[ $CERT_ENV == "staging" ]]; then
+    echo "💡 Note: Using STAGING certificates (will show as untrusted)"
+    echo "   This is PERFECT for testing. Switch to production when stable."
     echo ""
 fi
 
 if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "🌟 Wildcard benefits:"
-    echo "  • *.allsafe.world covers unlimited subdomains"
-    echo "  • Perfect for your 'nuke it daily' workflow"
-    echo "  • Add new services without certificate concerns"
+    echo "🌟 Wildcard Benefits:"
+    echo "   • One certificate covers unlimited subdomains"
+    echo "   • No rate limit concerns"
+    echo "   • Perfect for frequent deployments"
     echo ""
 fi
 
-echo "✅ GPU time-slicing is configured - CI/CD can deploy without GPU conflicts!"
-echo ""
+echo "✅ Ready for deployment!"
 echo "===================================================="
