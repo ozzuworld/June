@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE WITH GPU FIX)
+# Stage 2: Kubernetes + Infrastructure Setup (WITH CERT STAGING OPTION)
 # Run this AFTER stage1-runner-only.sh
 # This prepares the cluster so CI/CD can deploy without GPU issues
 
@@ -41,13 +41,34 @@ log_info "Configuration"
 prompt "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 prompt "Setup GPU Operator? (y/n)" SETUP_GPU "y"
 prompt "GPU time-slicing replicas (2-8)" GPU_REPLICAS "2"
+echo ""
+log_warning "⚠️  IMPORTANT: Let's Encrypt Rate Limits"
+echo "  - Production: 5 certs per domain set per week"
+echo "  - Staging: Unlimited (but shows as untrusted)"
+echo "  - Use STAGING for testing, switch to PRODUCTION when stable"
+echo ""
+prompt "Use Let's Encrypt STAGING or PRODUCTION? (staging/production)" CERT_ENV "staging"
 prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
+
+# Set the correct ACME server based on choice
+if [[ $CERT_ENV == "production" ]]; then
+    ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
+    ISSUER_NAME="letsencrypt-prod"
+    log_warning "⚠️  Using PRODUCTION - counts against rate limits!"
+else
+    ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
+    ISSUER_NAME="letsencrypt-staging"
+    log_success "✅ Using STAGING - unlimited testing, certs show as untrusted"
+fi
 
 echo ""
 echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
 echo "  GPU Replicas: $GPU_REPLICAS (1 physical GPU = $GPU_REPLICAS virtual GPUs)"
+echo "  Certificate Environment: $CERT_ENV"
+echo "  ACME Server: $ACME_SERVER"
+echo "  Issuer Name: $ISSUER_NAME"
 echo "  Email: $LETSENCRYPT_EMAIL"
 echo ""
 
@@ -177,28 +198,47 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER
+# LET'S ENCRYPT ISSUER (STAGING OR PRODUCTION)
 # ============================================================================
 
 if [ -n "$LETSENCRYPT_EMAIL" ]; then
-    log_info "Creating Let's Encrypt issuer..."
+    log_info "Creating Let's Encrypt issuer ($CERT_ENV)..."
+    
+    if [[ $CERT_ENV == "staging" ]]; then
+        log_warning "📝 Note: Staging certificates will show as UNTRUSTED in browsers"
+        log_info "This is NORMAL for testing - switch to production when ready"
+    else
+        log_warning "⚠️  Using PRODUCTION - you have 5 attempts per week per domain set!"
+    fi
+    
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-prod
+  name: ${ISSUER_NAME}
 spec:
   acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
+    server: ${ACME_SERVER}
     email: ${LETSENCRYPT_EMAIL}
     privateKeySecretRef:
-      name: letsencrypt-prod
+      name: ${ISSUER_NAME}
     solvers:
     - http01:
         ingress:
           class: nginx
 EOF
-    log_success "Let's Encrypt issuer ready!"
+    
+    log_success "Let's Encrypt issuer '${ISSUER_NAME}' created!"
+    
+    if [[ $CERT_ENV == "staging" ]]; then
+        echo ""
+        log_info "To switch to production later:"
+        echo "  1. Delete staging issuer: kubectl delete clusterissuer letsencrypt-staging"
+        echo "  2. Delete staging cert: kubectl delete certificate allsafe-tls -n june-services"
+        echo "  3. Create production issuer with email: $LETSENCRYPT_EMAIL"
+        echo "  4. Update ingress annotation: cert-manager.io/cluster-issuer: letsencrypt-prod"
+        echo ""
+    fi
 else
     log_warning "No email provided - skipping Let's Encrypt setup"
 fi
@@ -487,7 +527,15 @@ echo "✅ Infrastructure Ready:"
 echo "  • Kubernetes cluster"
 echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
-echo "  • Let's Encrypt issuer (production)"
+echo "  • Let's Encrypt issuer: $ISSUER_NAME ($CERT_ENV)"
+
+if [[ $CERT_ENV == "staging" ]]; then
+    echo ""
+    log_warning "📝 Certificate Environment: STAGING"
+    echo "  • Unlimited certificate requests for testing"
+    echo "  • Certificates will show as UNTRUSTED (this is normal)"
+    echo "  • Switch to production when stable (see notes below)"
+fi
 
 if [[ $SETUP_GPU == [yY] ]]; then
     GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
@@ -511,6 +559,43 @@ echo "🎮 GPU Status:"
 kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU_CAPACITY:.status.allocatable.nvidia\.com/gpu'
 echo ""
 echo "📋 Next Steps:"
+echo ""
+
+if [[ $CERT_ENV == "staging" ]]; then
+    echo "  🔐 STAGING CERTIFICATES:"
+    echo "    • Your ingress will use cert-manager.io/cluster-issuer: letsencrypt-staging"
+    echo "    • Browsers will show warnings - this is EXPECTED for staging"
+    echo "    • Test thoroughly before switching to production"
+    echo ""
+    echo "  🔄 To switch to PRODUCTION (after testing is stable):"
+    echo "    1. Delete staging resources:"
+    echo "       kubectl delete certificate allsafe-tls -n june-services"
+    echo "       kubectl delete clusterissuer letsencrypt-staging"
+    echo ""
+    echo "    2. Create production issuer:"
+    echo "       cat <<PROD_EOF | kubectl apply -f -"
+    echo "apiVersion: cert-manager.io/v1"
+    echo "kind: ClusterIssuer"
+    echo "metadata:"
+    echo "  name: letsencrypt-prod"
+    echo "spec:"
+    echo "  acme:"
+    echo "    server: https://acme-v02.api.letsencrypt.org/directory"
+    echo "    email: $LETSENCRYPT_EMAIL"
+    echo "    privateKeySecretRef:"
+    echo "      name: letsencrypt-prod"
+    echo "    solvers:"
+    echo "    - http01:"
+    echo "        ingress:"
+    echo "          class: nginx"
+    echo "PROD_EOF"
+    echo ""
+    echo "    3. Update ingress annotation:"
+    echo "       kubectl annotate ingress june-ingress -n june-services \\"
+    echo "         cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite"
+    echo ""
+fi
+
 echo "  1. Configure DNS records to point to $EXTERNAL_IP:"
 echo "     • idp.allsafe.world"
 echo "     • api.allsafe.world"
@@ -520,10 +605,17 @@ echo ""
 echo "  2. Push to GitHub - workflow will automatically:"
 echo "     • Build Docker images"
 echo "     • Deploy services (STT and TTS can share GPU!)"
-echo "     • Get Let's Encrypt certificates"
+
+if [[ $CERT_ENV == "production" ]]; then
+    echo "     • Get Let's Encrypt PRODUCTION certificates"
+else
+    echo "     • Get Let's Encrypt STAGING certificates (untrusted)"
+fi
+
 echo ""
 echo "  3. Verify deployment:"
 echo "     • kubectl get pods -n june-services"
+echo "     • kubectl get certificate -n june-services"
 echo "     • kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
 echo ""
 
