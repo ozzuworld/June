@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (FIXED - Simple Certificates)
+# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE FIX)
 # Run this AFTER stage1-runner-only.sh
 # This prepares the cluster, GitHub Workflow will deploy services
 
@@ -7,7 +7,7 @@ set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   Simple Certificate Configuration"
+echo "   WITH PROPER STORAGE FOR POSTGRESQL"
 echo "======================================================"
 
 # Colors
@@ -262,13 +262,23 @@ EOF
 fi
 
 # ============================================================================
-# STORAGE
+# STORAGE SETUP - THE FIX! Creates PV for PostgreSQL
 # ============================================================================
 
-log_info "Setting up storage..."
+log_info "Setting up storage for PostgreSQL and services..."
+
+# Create storage directories
+mkdir -p /opt/june-postgresql-data
+mkdir -p /opt/june-stt-models
+mkdir -p /opt/june-tts-models
 mkdir -p /opt/june-data
+
+chmod 755 /opt/june-postgresql-data
+chmod 755 /opt/june-stt-models
+chmod 755 /opt/june-tts-models
 chmod 755 /opt/june-data
 
+log_info "Creating StorageClass..."
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -279,7 +289,97 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 EOF
 
-log_success "Storage ready!"
+log_info "Creating PersistentVolume for PostgreSQL..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgresql-pv
+  labels:
+    type: local
+    app: postgresql
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-postgresql-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+log_info "Creating PersistentVolumes for STT models..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-stt-models-pv
+  labels:
+    type: local
+    app: june-stt
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-stt-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+log_info "Creating PersistentVolumes for TTS models..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-tts-models-pv
+  labels:
+    type: local
+    app: june-tts
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-tts-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+log_success "Storage configured with all PersistentVolumes!"
+
+# Verify storage
+echo ""
+log_info "Verifying storage setup..."
+kubectl get storageclass
+kubectl get pv
 
 # ============================================================================
 # FIX GITHUB RUNNER KUBECTL ACCESS
@@ -325,10 +425,16 @@ echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
 echo "  • Let's Encrypt issuer (production)"
 [[ $SETUP_GPU == [yY] ]] && echo "  • GPU Operator with time-slicing"
-echo "  • Storage configured"
+echo "  • Storage configured with PersistentVolumes:"
+echo "    - PostgreSQL: /opt/june-postgresql-data (10Gi)"
+echo "    - STT Models: /opt/june-stt-models (10Gi)"
+echo "    - TTS Models: /opt/june-tts-models (20Gi)"
 echo "  • GitHub runner configured"
 echo ""
 echo "🌐 Your External IP: $EXTERNAL_IP"
+echo ""
+echo "📊 Storage Verification:"
+kubectl get pv
 echo ""
 echo "📋 Next Steps:"
 echo "  1. Configure DNS records to point to $EXTERNAL_IP:"
@@ -340,15 +446,14 @@ echo ""
 echo "  2. Push to GitHub - workflow will automatically:"
 echo "     • Build Docker images"
 echo "     • Deploy services"
+echo "     • PostgreSQL will start immediately (PV ready!)"
 echo "     • Get Let's Encrypt certificates"
 echo ""
 echo "  3. Verify deployment:"
 echo "     • kubectl get pods -n june-services"
+echo "     • kubectl get pvc -n june-services"
 echo "     • kubectl get certificate -n june-services"
 echo ""
-echo "⚠️  IMPORTANT:"
-echo "  • Certificates issue automatically when services deploy"
-echo "  • Takes 2-5 minutes after deployment"
-echo "  • No manual intervention needed!"
+echo "✅ PostgreSQL will NOT be pending anymore!"
 echo ""
 echo "======================================================"
