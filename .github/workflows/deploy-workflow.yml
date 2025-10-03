@@ -1,4 +1,4 @@
-name: 🚀 Complete June Services CI/CD Pipeline (Fixed)
+name: 🚀 June Services CI/CD (Fixed - Simple Certificates)
 
 on:
   push:
@@ -7,46 +7,11 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Image tag to deploy'
-        required: true
-        default: 'latest'
-        type: string
-      environment:
-        description: 'Target environment'
-        required: true
-        default: 'production'
-        type: choice
-        options: 
-          - production
-          - staging
-          - development
-      services:
-        description: 'Services to deploy (comma-separated, empty for all)'
-        required: false
-        default: ''
-        type: string
-      force_restart:
-        description: 'Force restart deployments'
-        required: false
-        default: false
-        type: boolean
-      build_images:
-        description: 'Build and push Docker images'
-        required: false
-        default: true
-        type: boolean
-      promote_to_production_cert:
-        description: '⚠️ Promote staging cert to production (ONLY after staging works!)'
-        required: false
-        default: false
-        type: boolean
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
-  KUBE_NAMESPACE: june-services
-  IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+  NAMESPACE: june-services
+  IMAGE_TAG: ${{ github.sha }}
 
 permissions:
   contents: read
@@ -56,13 +21,12 @@ jobs:
   build-and-push:
     name: 🔨 Build & Push Images
     runs-on: self-hosted
-    if: github.event.inputs.build_images != 'false'
     strategy:
       fail-fast: false
       matrix:
-        service: [june-stt, june-tts, june-orchestrator, june-idp, june-web, june-dark]
+        service: [june-stt, june-tts, june-orchestrator, june-idp]
     steps:
-      - name: 📦 Checkout repository
+      - name: 📦 Checkout
         uses: actions/checkout@v4
 
       - name: 🔐 Login to Docker Hub
@@ -81,10 +45,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ matrix.service }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ env.IMAGE_TAG }}
+            type=raw,value=latest
 
       - name: 🏗️ Build and push
         uses: docker/build-push-action@v5
@@ -105,394 +67,76 @@ jobs:
     if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
 
     steps:
-      - name: 📦 Checkout repository
+      - name: 📦 Checkout
         uses: actions/checkout@v4
 
-      - name: 🔍 Verify k8s manifest files
+      - name: 🔍 Verify Kubernetes
         run: |
-          set -e
-          echo "🔍 Verifying k8s manifest files..."
-          ls -la k8s || true
-          test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found"
-
-      - name: 🔍 Verify Kubernetes connection
-        run: |
-          echo "🔍 Testing Kubernetes connection..."
+          echo "🔍 Checking Kubernetes cluster..."
           kubectl cluster-info
           kubectl get nodes -o wide
 
-      - name: 🎮 Configure GPU Support
-        run: |
-          echo "🎮 Configuring GPU node labels and checking GPU Operator..."
-          
-          echo "🏷️  Labeling nodes for GPU workloads..."
-          for node in $(kubectl get nodes -o name); do
-            kubectl label $node gpu=true --overwrite
-            echo "✅ Labeled: $node"
-          done
-          
-          echo ""
-          echo "🔍 Checking GPU Operator status..."
-          if kubectl get namespace gpu-operator &>/dev/null; then
-            echo "✅ GPU Operator namespace exists"
-            echo "📊 GPU Operator pods:"
-            kubectl get pods -n gpu-operator
-            
-            echo ""
-            echo "⏳ Waiting for GPU Operator components..."
-            
-            if kubectl get daemonset -n gpu-operator nvidia-device-plugin-daemonset &>/dev/null; then
-              echo "⏳ Waiting for device plugin..."
-              kubectl rollout status daemonset/nvidia-device-plugin-daemonset -n gpu-operator --timeout=300s || {
-                echo "⚠️ Device plugin taking longer than expected"
-              }
-            fi
-            
-            if kubectl get daemonset -n gpu-operator nvidia-container-toolkit-daemonset &>/dev/null; then
-              echo "⏳ Waiting for container toolkit..."
-              kubectl rollout status daemonset/nvidia-container-toolkit-daemonset -n gpu-operator --timeout=300s || {
-                echo "⚠️ Container toolkit taking longer than expected"
-              }
-            fi
-          else
-            echo "⚠️ GPU Operator namespace not found"
-          fi
-          
-          echo ""
-          echo "🔍 Checking GPU resources on nodes..."
-          sleep 15
-          
-          GPU_AVAILABLE=false
-          for i in {1..12}; do
-            GPU_COUNT=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' 2>/dev/null | grep -v "null" | head -1)
-            
-            if [ -n "$GPU_COUNT" ] && [ "$GPU_COUNT" != "null" ]; then
-              echo "✅ GPU resources detected: $GPU_COUNT GPU(s) per node"
-              GPU_AVAILABLE=true
-              break
-            fi
-            
-            echo "⏳ Waiting for GPU resources... (attempt $i/12)"
-            sleep 10
-          done
-          
-          if [ "$GPU_AVAILABLE" = false ]; then
-            echo "⚠️ WARNING: No GPU resources detected"
-          fi
-          
-          echo ""
-          echo "📊 Node GPU Status:"
-          kubectl describe nodes | grep -A 10 "Capacity:" | grep -E "(nvidia.com/gpu|Allocatable)" || {
-            echo "❌ No nvidia.com/gpu resources found"
-          }
-          
-          echo ""
-          echo "✅ GPU configuration complete"
-
-      - name: 🔧 Enable GPU Time-Slicing
-        run: |
-          echo "🔧 Enabling GPU time-slicing for shared GPU access..."
-          
-          if ! kubectl get namespace gpu-operator &>/dev/null; then
-            echo "⚠️ GPU Operator not found - skipping time-slicing"
-            exit 0
-          fi
-          
-          echo "📝 Creating time-slicing configuration..."
-          cat <<'EOFCONFIG' | kubectl apply -f -
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: time-slicing-config
-            namespace: gpu-operator
-          data:
-            any: |-
-              version: v1
-              flags:
-                migStrategy: none
-              sharing:
-                timeSlicing:
-                  resources:
-                  - name: nvidia.com/gpu
-                    replicas: 2
-          EOFCONFIG
-          
-          echo "🔧 Patching GPU Operator ClusterPolicy..."
-          kubectl patch clusterpolicy cluster-policy -n gpu-operator --type merge -p '{"spec":{"devicePlugin":{"config":{"name":"time-slicing-config","default":"any"}}}}' || {
-            echo "⚠️ Failed to patch ClusterPolicy"
-          }
-          
-          echo "🔄 Restarting device plugin to apply configuration..."
-          kubectl delete pods -n gpu-operator -l app=nvidia-device-plugin-daemonset || true
-          
-          echo "⏳ Waiting for GPU device plugin to restart..."
-          sleep 60
-          
-          echo "🔍 Verifying GPU time-slicing..."
-          for i in {1..10}; do
-            GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' | head -1)
-            if [ "$GPU_CAPACITY" = "2" ]; then
-              echo "✅ GPU time-slicing enabled successfully - 2 GPU slots available"
-              break
-            fi
-            echo "⏳ Waiting for GPU capacity to update... ($i/10)"
-            sleep 5
-          done
-          
-          echo ""
-          echo "📊 Final GPU Capacity:"
-          kubectl describe nodes | grep "nvidia.com/gpu:" | head -3
-          echo ""
-          echo "✅ GPU time-slicing configuration applied"
-
-      - name: 🔐 Setup cert-manager (FIXED - Rate Limit Protection)
-        run: |
-          echo "🔐 Setting up cert-manager with rate limit protection..."
-          
-          # Check if cert-manager is already installed
-          if ! kubectl get namespace cert-manager &>/dev/null; then
-            echo "📦 Installing cert-manager..."
-            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
-            kubectl create namespace cert-manager
-            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
-            
-            echo "⏳ Waiting for cert-manager..."
-            kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=180s || {
-              echo "⚠️ cert-manager taking longer than expected"
-            }
-            echo "✅ cert-manager installed"
-          else
-            echo "✅ cert-manager already installed"
-            
-            # Verify cert-manager is healthy
-            READY_PODS=$(kubectl get pods -n cert-manager -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -c "True" || echo "0")
-            if [ "$READY_PODS" -ge 3 ]; then
-              echo "✅ cert-manager is healthy ($READY_PODS/3 pods ready)"
-            else
-              echo "⚠️ cert-manager may have issues ($READY_PODS/3 pods ready)"
-              kubectl get pods -n cert-manager
-            fi
-          fi
-
-      - name: 🔐 Setup Let's Encrypt Issuers (Smart Strategy)
-        run: |
-          echo "🔐 Configuring Let's Encrypt with smart rate limit protection..."
-          
-          # Create staging issuer (unlimited)
-          echo "📝 Creating Let's Encrypt STAGING issuer (unlimited for testing)..."
-          cat <<EOF | kubectl apply -f -
-          apiVersion: cert-manager.io/v1
-          kind: ClusterIssuer
-          metadata:
-            name: letsencrypt-staging
-          spec:
-            acme:
-              server: https://acme-staging-v02.api.letsencrypt.org/directory
-              email: ${{ secrets.LETSENCRYPT_EMAIL }}
-              privateKeySecretRef:
-                name: letsencrypt-staging
-              solvers:
-              - http01:
-                  ingress:
-                    class: nginx
-          EOF
-          
-          # Create production issuer
-          echo "📝 Creating Let's Encrypt PRODUCTION issuer..."
-          cat <<EOF | kubectl apply -f -
-          apiVersion: cert-manager.io/v1
-          kind: ClusterIssuer
-          metadata:
-            name: letsencrypt-prod
-          spec:
-            acme:
-              server: https://acme-v02.api.letsencrypt.org/directory
-              email: ${{ secrets.LETSENCRYPT_EMAIL }}
-              privateKeySecretRef:
-                name: letsencrypt-prod
-              solvers:
-              - http01:
-                  ingress:
-                    class: nginx
-          EOF
-          
-          echo "⏳ Waiting for ClusterIssuers to be ready..."
-          sleep 10
-          
-          # Verify issuers
-          STAGING_READY=$(kubectl get clusterissuer letsencrypt-staging -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-          PROD_READY=$(kubectl get clusterissuer letsencrypt-prod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-          
-          echo "ClusterIssuer Status:"
-          echo "  Staging: $STAGING_READY"
-          echo "  Production: $PROD_READY"
-          
-          if [ "$STAGING_READY" = "True" ]; then
-            echo "✅ Staging issuer ready"
-          else
-            echo "⚠️ Staging issuer not ready yet"
-          fi
-          
-          echo "✅ Let's Encrypt issuers configured"
-
-      - name: 🌐 Setup Ingress Controller
-        run: |
-          echo "🌐 Setting up ingress-nginx controller..."
-          
-          detect_cloud() {
-            if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
-              return 0
-            elif curl -s --max-time 2 -H "Metadata-Flavor: Google" http://metadata.google.internal >/dev/null 2>&1; then
-              return 0
-            elif curl -s --max-time 2 -H "Metadata: true" http://169.254.169.254/metadata/instance >/dev/null 2>&1; then
-              return 0
-            else
-              return 1
-            fi
-          }
-          
-          if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
-            echo "📦 Installing ingress-nginx..."
-            
-            if detect_cloud; then
-              echo "☁️  Cloud environment detected"
-              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml
-            else
-              echo "🔧 Bare metal environment detected"
-              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/baremetal/deploy.yaml
-              sleep 15
-              kubectl patch deployment ingress-nginx-controller -n ingress-nginx --type='json' -p='[{"op":"add","path":"/spec/template/spec/hostNetwork","value":true},{"op":"add","path":"/spec/template/spec/dnsPolicy","value":"ClusterFirstWithHostNet"}]'
-            fi
-          else
-            echo "✅ ingress-nginx already exists"
-          fi
-          
-          echo "⏳ Waiting for ingress controller..."
-          kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=300s || {
-            echo "⚠️ Controller taking longer than expected"
-          }
-          echo "✅ Ingress controller ready"
-
       - name: 🏗️ Create Namespace
         run: |
-          if [ -f k8s/namespace.yaml ]; then
-            kubectl apply -f k8s/namespace.yaml
-          else
-            kubectl get ns "$KUBE_NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$KUBE_NAMESPACE"
-          fi
+          kubectl get ns $NAMESPACE || kubectl create ns $NAMESPACE
 
-      - name: 🔐 Create Docker Registry Secret
+      - name: 🔐 Create Secrets
         run: |
+          # Docker Hub secret
           kubectl create secret docker-registry dockerhub-secret \
             --docker-server=docker.io \
             --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
             --docker-password='${{ secrets.DOCKERHUB_TOKEN }}' \
             --docker-email='${{ secrets.DOCKERHUB_EMAIL }}' \
-            --namespace="$KUBE_NAMESPACE" \
+            --namespace=$NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          # June secrets
+          kubectl create secret generic june-secrets \
+            --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
+            --namespace=$NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: 🔧 Prepare manifests
+      - name: 🎮 Label GPU Nodes
         run: |
-          mkdir -p /tmp/k8s-updated
-          cp -r k8s/* /tmp/k8s-updated/ || true
-          for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
-            if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
-              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/${service}-deployment.yaml"
-            elif [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
-              sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/complete-manifests.yaml"
-            fi
+          echo "🏷️  Labeling nodes for GPU workloads..."
+          for node in $(kubectl get nodes -o name); do
+            kubectl label $node gpu=true --overwrite || true
           done
 
       - name: 🗄️ Deploy PostgreSQL
         run: |
           echo "🗄️ Deploying PostgreSQL..."
-          if kubectl get statefulset postgresql -n "$KUBE_NAMESPACE" &>/dev/null; then
-            echo "✅ PostgreSQL already exists"
-          else
+          if ! kubectl get statefulset postgresql -n $NAMESPACE &>/dev/null; then
             kubectl apply -f k8s/postgresql-deployment.yaml
+          else
+            echo "✅ PostgreSQL already exists"
           fi
           
           echo "⏳ Waiting for PostgreSQL..."
-          kubectl wait --for=condition=ready pod -l app=postgresql -n "$KUBE_NAMESPACE" --timeout=180s || {
+          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
             echo "⚠️ PostgreSQL not ready yet"
           }
 
-      - name: 🚀 Deploy services
+      - name: 🚀 Deploy Services
         run: |
-          echo "🚀 Deploying services..."
-          if [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
-            kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/complete-manifests.yaml
-          else
-            for file in /tmp/k8s-updated/june-*-deployment.yaml; do
-              [ -f "$file" ] && kubectl apply -n "$KUBE_NAMESPACE" -f "$file"
-            done
-          fi
+          echo "🚀 Deploying June services..."
+          kubectl apply -f k8s/complete-manifests.yaml
 
-      - name: 🌐 Apply Ingress with Smart Certificate Management (FIXED)
+      - name: 🌐 Apply Ingress (SIMPLE - Let's Encrypt handles the rest)
         run: |
-          echo "🌐 Deploying ingress with smart certificate management..."
+          echo "🌐 Applying ingress with automatic Let's Encrypt..."
           
-          # Determine certificate strategy
-          CERT_ISSUER="letsencrypt-staging"  # Default to staging (safe)
-          CERT_ACTION="keeping_existing"
-          
-          # Check if certificate already exists and is valid
-          if kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" &>/dev/null; then
-            CERT_READY=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
-            CURRENT_ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "")
-            
-            if [ "$CERT_READY" = "True" ]; then
-              echo "✅ Valid certificate already exists"
-              echo "   Current issuer: $CURRENT_ISSUER"
-              CERT_ISSUER="$CURRENT_ISSUER"
-              CERT_ACTION="reusing_valid_cert"
-              
-              # Check if user explicitly wants to promote to production
-              if [ "${{ github.event.inputs.promote_to_production_cert }}" = "true" ] && [ "$CURRENT_ISSUER" != "letsencrypt-prod" ]; then
-                echo "🔄 User requested promotion to production certificate"
-                CERT_ISSUER="letsencrypt-prod"
-                CERT_ACTION="promoting_to_prod"
-              fi
-            else
-              echo "⚠️ Certificate exists but not ready (status: $CERT_READY)"
-              echo "   Will use staging issuer to avoid rate limits"
-              CERT_ISSUER="letsencrypt-staging"
-              CERT_ACTION="recreating_with_staging"
-            fi
-          else
-            echo "ℹ️ No certificate exists yet"
-            echo "   Will create new certificate using staging issuer (safe)"
-            CERT_ISSUER="letsencrypt-staging"
-            CERT_ACTION="creating_new_staging"
-          fi
-          
-          echo ""
-          echo "📋 Certificate Strategy:"
-          echo "   Issuer: $CERT_ISSUER"
-          echo "   Action: $CERT_ACTION"
-          echo ""
-          
-          # If promoting to production, clean up old cert first
-          if [ "$CERT_ACTION" = "promoting_to_prod" ]; then
-            echo "🔄 Cleaning up staging certificate for promotion..."
-            kubectl delete certificate allsafe-tls -n "$KUBE_NAMESPACE" || true
-            kubectl delete certificaterequest --all -n "$KUBE_NAMESPACE" || true
-            kubectl delete secret allsafe-tls -n "$KUBE_NAMESPACE" || true
-            sleep 5
-          fi
-          
-          # Apply ingress with determined issuer
           cat <<EOF | kubectl apply -f -
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
             name: june-ingress
-            namespace: $KUBE_NAMESPACE
+            namespace: $NAMESPACE
             annotations:
-              cert-manager.io/cluster-issuer: $CERT_ISSUER
-              kubernetes.io/ingress.class: nginx
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              kubernetes.io/ingress.class: "nginx"
               nginx.ingress.kubernetes.io/ssl-redirect: "false"
-              nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
               nginx.ingress.kubernetes.io/enable-cors: "true"
               nginx.ingress.kubernetes.io/cors-allow-origin: "*"
               nginx.ingress.kubernetes.io/proxy-body-size: "100m"
@@ -551,125 +195,108 @@ jobs:
                         number: 8000
           EOF
           
-          echo "✅ Ingress applied with issuer: $CERT_ISSUER"
+          echo "✅ Ingress applied - cert-manager will handle certificates"
 
-      - name: ⏳ Monitor Certificate Issuance
+      - name: ⏳ Wait for Deployments
         run: |
-          echo "⏳ Monitoring certificate issuance..."
+          echo "⏳ Waiting for deployments to be ready..."
+          for deployment in $(kubectl get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
+            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
+              echo "⚠️ $deployment taking longer than expected"
+            }
+          done
+
+      - name: 🔐 Monitor Certificate Issuance
+        run: |
+          echo "🔐 Monitoring Let's Encrypt certificate issuance..."
+          echo ""
+          echo "This happens automatically via cert-manager:"
+          echo "1. cert-manager sees the ingress"
+          echo "2. Requests certificate from Let's Encrypt"
+          echo "3. Let's Encrypt validates via HTTP-01 challenge"
+          echo "4. Certificate issued and stored in allsafe-tls secret"
+          echo ""
           
-          # Give cert-manager time to process
+          # Give cert-manager time to start
           sleep 20
           
           # Monitor for up to 5 minutes
           for i in {1..20}; do
-            if ! kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" &>/dev/null; then
-              echo "⏳ Waiting for certificate resource to be created... ($i/20)"
+            if ! kubectl get certificate allsafe-tls -n $NAMESPACE &>/dev/null; then
+              echo "⏳ Waiting for certificate resource... ($i/20)"
               sleep 15
               continue
             fi
             
-            CERT_STATUS=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+            STATUS=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
             
-            if [ "$CERT_STATUS" = "True" ]; then
+            if [ "$STATUS" = "True" ]; then
               echo "✅ Certificate successfully issued!"
-              
-              # Show certificate details
-              ISSUER=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.spec.issuerRef.name}')
-              NOT_AFTER=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.notAfter}')
-              
               echo ""
+              kubectl get certificate allsafe-tls -n $NAMESPACE
+              echo ""
+              
+              ISSUER=$(kubectl get certificate allsafe-tls -n $NAMESPACE -o jsonpath='{.spec.issuerRef.name}')
+              NOT_AFTER=$(kubectl get certificate allsafe-tls -n $NAMESPACE -o jsonpath='{.status.notAfter}')
+              
               echo "📋 Certificate Details:"
               echo "   Issuer: $ISSUER"
               echo "   Valid until: $NOT_AFTER"
-              
-              # Check if it's a staging cert
-              if [ "$ISSUER" = "letsencrypt-staging" ]; then
-                echo ""
-                echo "ℹ️ Using STAGING certificate (browser will show warning)"
-                echo "   This is NORMAL and protects against rate limits"
-                echo ""
-                echo "🎯 To promote to production certificate:"
-                echo "   1. Verify staging certificate works correctly"
-                echo "   2. Use workflow_dispatch with 'promote_to_production_cert: true'"
-                echo "   3. Or manually run:"
-                echo "      kubectl annotate ingress june-ingress -n $KUBE_NAMESPACE --overwrite cert-manager.io/cluster-issuer=letsencrypt-prod"
-                echo "      kubectl delete certificate allsafe-tls -n $KUBE_NAMESPACE"
-              fi
-              
+              echo "   Auto-renews: Yes"
               break
-            elif [ "$CERT_STATUS" = "False" ]; then
-              REASON=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
-              echo "⏳ Certificate not ready: $REASON ($i/20)"
-              
-              # Check for rate limit in cert-manager logs
-              if kubectl logs -n cert-manager -l app=cert-manager --tail=50 2>/dev/null | grep -q "rateLimited"; then
-                echo ""
-                echo "❌ RATE LIMIT DETECTED!"
-                echo "   Switching to staging issuer to avoid further rate limit issues..."
-                
-                kubectl annotate ingress june-ingress -n "$KUBE_NAMESPACE" --overwrite \
-                  cert-manager.io/cluster-issuer=letsencrypt-staging
-                kubectl delete certificate allsafe-tls -n "$KUBE_NAMESPACE" || true
-                kubectl delete certificaterequest --all -n "$KUBE_NAMESPACE" || true
-                
-                echo "   Retrying with staging issuer..."
-                sleep 10
-                i=0  # Reset counter
-              fi
             else
-              echo "⏳ Waiting for certificate... status: $CERT_STATUS ($i/20)"
+              MESSAGE=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
+                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
+              echo "⏳ Certificate status: $MESSAGE ($i/20)"
+              sleep 15
             fi
-            
-            sleep 15
           done
           
-          # Final status
+          # Show final status regardless
           echo ""
           echo "📊 Final Certificate Status:"
-          kubectl get certificate -n "$KUBE_NAMESPACE" || echo "No certificates found"
-          
+          kubectl get certificate -n $NAMESPACE || echo "No certificates yet"
           echo ""
-          echo "📋 Certificate Details:"
-          kubectl describe certificate allsafe-tls -n "$KUBE_NAMESPACE" 2>/dev/null | tail -20 || echo "Certificate not found"
+          echo "🔍 If certificate is pending, check:"
+          echo "   kubectl describe certificate allsafe-tls -n $NAMESPACE"
+          echo "   kubectl get challenge -n $NAMESPACE"
+          echo "   kubectl logs -n cert-manager deploy/cert-manager"
 
-      - name: ⏳ Wait for deployments
-        run: |
-          echo "⏳ Waiting for deployments..."
-          for deployment in $(kubectl get deployments -n "$KUBE_NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
-            kubectl rollout status deployment/"$deployment" -n "$KUBE_NAMESPACE" --timeout=300s || true
-          done
-
-      - name: 📊 Final status
+      - name: 📊 Final Status
         if: always()
         run: |
-          echo "📊 Deployment Status:"
-          kubectl get all -n "$KUBE_NAMESPACE" -o wide || true
           echo ""
-          echo "🎮 GPU Status:"
-          kubectl describe nodes | grep "nvidia.com/gpu" || echo "No GPU info"
+          echo "======================================================"
+          echo "📊 Deployment Summary"
+          echo "======================================================"
           echo ""
-          echo "🔐 Certificate Status:"
-          kubectl get certificate,certificaterequest,order,challenge -n "$KUBE_NAMESPACE" 2>/dev/null || echo "No certificate resources"
+          echo "🚀 Deployments:"
+          kubectl get deployments -n $NAMESPACE -o wide || true
           echo ""
-          echo "✅ Deployment complete"
-          
-          # Show useful next steps
-          CERT_ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "unknown")
-          
-          if [ "$CERT_ISSUER" = "letsencrypt-staging" ]; then
-            echo ""
-            echo "ℹ️ Currently using STAGING certificates"
-            echo ""
-            echo "🎯 To promote to PRODUCTION:"
-            echo "   Run this workflow again with:"
-            echo "   • promote_to_production_cert: true"
-            echo ""
-            echo "⚠️ Only promote when:"
-            echo "   • Staging certificates work correctly"
-            echo "   • You're ready for production"
-            echo "   • You haven't hit rate limits recently"
-          elif [ "$CERT_ISSUER" = "letsencrypt-prod" ]; then
-            echo ""
-            echo "✅ Using PRODUCTION certificates"
-            echo "   No browser warnings expected"
-          fi
+          echo "📦 Pods:"
+          kubectl get pods -n $NAMESPACE -o wide || true
+          echo ""
+          echo "🌐 Services:"
+          kubectl get services -n $NAMESPACE || true
+          echo ""
+          echo "🔐 Ingress:"
+          kubectl get ingress -n $NAMESPACE || true
+          echo ""
+          echo "🔒 Certificates:"
+          kubectl get certificate -n $NAMESPACE || true
+          echo ""
+          echo "======================================================"
+          echo "✅ Deployment Complete!"
+          echo ""
+          echo "🌍 Your services are available at:"
+          echo "   • https://idp.allsafe.world (Keycloak)"
+          echo "   • https://api.allsafe.world (Orchestrator)"
+          echo "   • https://stt.allsafe.world (Speech-to-Text)"
+          echo "   • https://tts.allsafe.world (Text-to-Speech)"
+          echo ""
+          echo "⏳ If certificate is still pending:"
+          echo "   • This is normal, can take 2-5 minutes"
+          echo "   • cert-manager is working automatically"
+          echo "   • Check: kubectl get certificate -n $NAMESPACE -w"
+          echo "======================================================"
