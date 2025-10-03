@@ -121,7 +121,7 @@ spec:
     app: postgresql
 
 ---
-# June STT Deployment
+# June STT Deployment - FIXED STRATEGY
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -131,6 +131,11 @@ metadata:
     app: june-stt
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1  # ✅ FIXED: Allow old pod to terminate first
+      maxSurge: 0        # ✅ FIXED: Don't create new pod until GPU is free
   selector:
     matchLabels:
       app: june-stt
@@ -146,6 +151,8 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+      
+      terminationGracePeriodSeconds: 30  # ✅ ADDED: Graceful shutdown
       
       containers:
       - name: stt
@@ -240,7 +247,7 @@ spec:
     name: http
 
 ---
-# June TTS Deployment
+# June TTS Deployment - FIXED STRATEGY
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -250,6 +257,11 @@ metadata:
     app: june-tts
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1  # ✅ FIXED: Allow old pod to terminate first
+      maxSurge: 0        # ✅ FIXED: Don't create new pod until GPU is free
   selector:
     matchLabels:
       app: june-tts
@@ -265,6 +277,8 @@ spec:
       - key: nvidia.com/gpu
         operator: Exists
         effect: NoSchedule
+      
+      terminationGracePeriodSeconds: 30  # ✅ ADDED: Graceful shutdown
       
       containers:
       - name: tts
@@ -348,7 +362,7 @@ spec:
     name: http
 
 ---
-# June Orchestrator Deployment
+# June Orchestrator Deployment - NON-GPU SERVICE
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -358,6 +372,11 @@ metadata:
     app: june-orchestrator
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # Can keep at 0 since no GPU needed
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-orchestrator
@@ -428,7 +447,7 @@ spec:
     name: http
 
 ---
-# June IDP Deployment
+# June IDP Deployment - NON-GPU SERVICE
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -438,6 +457,11 @@ metadata:
     app: june-idp
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # Can keep at 0 since no GPU needed
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-idp
