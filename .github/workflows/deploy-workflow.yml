@@ -114,7 +114,92 @@ jobs:
           kubectl get nodes -o wide
 
       # ============================================================================
-      # ✅ TLS/Certificate Setup (NEW SECTION - RUNS BEFORE INGRESS)
+      # ✅ GPU SETUP (NEW CRITICAL SECTION)
+      # ============================================================================
+      - name: 🎮 Configure GPU Support
+        run: |
+          echo "🎮 Configuring GPU node labels and checking GPU Operator..."
+          
+          # 1. Label all nodes with gpu=true
+          echo "🏷️  Labeling nodes for GPU workloads..."
+          for node in $(kubectl get nodes -o name); do
+            kubectl label $node gpu=true --overwrite
+            echo "✅ Labeled: $node"
+          done
+          
+          # 2. Check if GPU Operator is installed
+          echo ""
+          echo "🔍 Checking GPU Operator status..."
+          if kubectl get namespace gpu-operator &>/dev/null; then
+            echo "✅ GPU Operator namespace exists"
+            
+            # Show GPU Operator pods
+            echo "📊 GPU Operator pods:"
+            kubectl get pods -n gpu-operator
+            
+            # Wait for critical GPU Operator components
+            echo ""
+            echo "⏳ Waiting for GPU Operator components..."
+            
+            # Wait for device plugin (critical for GPU scheduling)
+            if kubectl get daemonset -n gpu-operator nvidia-device-plugin-daemonset &>/dev/null; then
+              echo "⏳ Waiting for device plugin..."
+              kubectl rollout status daemonset/nvidia-device-plugin-daemonset -n gpu-operator --timeout=300s || {
+                echo "⚠️ Device plugin taking longer than expected"
+              }
+            fi
+            
+            # Wait for container toolkit (critical for GPU runtime)
+            if kubectl get daemonset -n gpu-operator nvidia-container-toolkit-daemonset &>/dev/null; then
+              echo "⏳ Waiting for container toolkit..."
+              kubectl rollout status daemonset/nvidia-container-toolkit-daemonset -n gpu-operator --timeout=300s || {
+                echo "⚠️ Container toolkit taking longer than expected"
+              }
+            fi
+            
+          else
+            echo "⚠️ GPU Operator namespace not found"
+            echo "   GPU Operator should be installed by stage2-install-k8s-ubuntu.sh"
+            echo "   Continuing anyway - GPU pods may fail to schedule"
+          fi
+          
+          # 3. Check for GPU resources on nodes
+          echo ""
+          echo "🔍 Checking GPU resources on nodes..."
+          sleep 15  # Give time for resources to register
+          
+          GPU_AVAILABLE=false
+          for i in {1..12}; do
+            GPU_COUNT=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' 2>/dev/null | grep -v "null" | head -1)
+            
+            if [ -n "$GPU_COUNT" ] && [ "$GPU_COUNT" != "null" ]; then
+              echo "✅ GPU resources detected: $GPU_COUNT GPU(s) per node"
+              GPU_AVAILABLE=true
+              break
+            fi
+            
+            echo "⏳ Waiting for GPU resources to be advertised... (attempt $i/12)"
+            sleep 10
+          done
+          
+          if [ "$GPU_AVAILABLE" = false ]; then
+            echo "⚠️ WARNING: No GPU resources detected after 2 minutes"
+            echo "   GPU pods (june-stt, june-tts) may remain in Pending state"
+            echo "   Check GPU Operator logs: kubectl logs -n gpu-operator -l app=nvidia-device-plugin-daemonset"
+          fi
+          
+          # 4. Show detailed GPU status
+          echo ""
+          echo "📊 Node GPU Status:"
+          kubectl describe nodes | grep -A 10 "Capacity:" | grep -E "(nvidia.com/gpu|Allocatable)" || {
+            echo "❌ No nvidia.com/gpu resources found on nodes"
+          }
+          
+          echo ""
+          echo "✅ GPU configuration complete"
+
+      # ============================================================================
+      # ✅ TLS/Certificate Setup
       # ============================================================================
       - name: 🔐 Setup cert-manager and Let's Encrypt
         run: |
@@ -151,7 +236,7 @@ jobs:
           # Create or update ClusterIssuers
           echo "🔧 Creating/updating Let's Encrypt issuers..."
           
-          # Production issuer (use secrets for email)
+          # Production issuer
           cat <<EOF | kubectl apply -f -
           apiVersion: cert-manager.io/v1
           kind: ClusterIssuer
@@ -188,13 +273,10 @@ jobs:
           EOF
           
           echo "✅ Let's Encrypt issuers configured"
-          
-          # Verify issuers
-          echo "📊 ClusterIssuer status:"
           kubectl get clusterissuer
 
       # ============================================================================
-      # ✅ Ingress Controller Setup (EXISTING - MOVED AFTER CERT-MANAGER)
+      # ✅ Ingress Controller Setup
       # ============================================================================
       - name: 🌐 Setup/Verify Ingress Controller
         run: |
@@ -204,7 +286,6 @@ jobs:
           detect_environment() {
             echo "🔍 Detecting environment..."
             
-            # Check for cloud provider metadata services
             if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
               echo "   ✅ AWS detected"
               return 0  # Cloud
@@ -280,19 +361,19 @@ jobs:
           echo "📊 Ingress status:"
           kubectl get pods,svc -n ingress-nginx
 
-      - name: 🏗️ Create/Apply Namespace FIRST (very important)
+      - name: 🏗️ Create/Apply Namespace FIRST
         run: |
           if [ -f k8s/namespace.yaml ]; then
             echo "🏗️ Applying k8s/namespace.yaml..."
             kubectl apply -f k8s/namespace.yaml
           else
-            echo "🏗️ Creating namespace $KUBE_NAMESPACE (no file present)..."
+            echo "🏗️ Creating namespace $KUBE_NAMESPACE..."
             kubectl get ns "$KUBE_NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$KUBE_NAMESPACE"
           fi
           echo "📊 Namespace status:"
           kubectl get ns "$KUBE_NAMESPACE" -o yaml | sed -n '1,80p'
 
-      - name: 🔐 Create/Update Docker Registry Secret (image pulls)
+      - name: 🔐 Create/Update Docker Registry Secret
         run: |
           kubectl create secret docker-registry dockerhub-secret \
             --docker-server=docker.io \
@@ -305,7 +386,7 @@ jobs:
             -p '{"imagePullSecrets":[{"name":"dockerhub-secret"}]}' \
             --type merge || true
 
-      - name: 🔧 Prepare manifests in /tmp and update image tags
+      - name: 🔧 Prepare manifests and update image tags
         run: |
           set -e
           echo "📁 Copying k8s/* to /tmp/k8s-updated and updating image tags to: $IMAGE_TAG"
@@ -319,18 +400,14 @@ jobs:
             fi
           done
 
-      - name: 🧽 Normalize namespaces in temp manifests (enforce KUBE_NAMESPACE)
+      - name: 🧽 Normalize namespaces in temp manifests
         run: |
           set -e
-          echo "🧹 Normalizing metadata.namespace to '${KUBE_NAMESPACE}' in /tmp/k8s-updated …"
-          # 1) collapse any accidental repeats like june-services-services-...
+          echo "🧹 Normalizing metadata.namespace to '${KUBE_NAMESPACE}'..."
           find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
             | xargs -0 sed -i -E 's/\b(june-services)(-services)+\b/\1/g'
-          # 2) replace legacy 'namespace: june' to target
           find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
             | xargs -0 sed -i -E "s/^( *namespace:\s*)june\b/\\1${KUBE_NAMESPACE}/g"
-          # 3) FIXED: Only match "namespace:" at the start of a line (metadata.namespace in YAML)
-          #    NOT environment variables that contain "namespace" in their name
           find /tmp/k8s-updated -type f -name "*.yaml" -print0 \
             | xargs -0 sed -i -E "s/^( *namespace:\s*)[a-zA-Z0-9_-]+$/\\1${KUBE_NAMESPACE}/"
           echo "🔎 Namespaces after normalization:"
@@ -342,9 +419,8 @@ jobs:
           [ -f "/tmp/k8s-updated/configmap.yaml" ] && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/configmap.yaml || true
           [ -f "/tmp/k8s-updated/secrets.yaml" ]   && kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/secrets.yaml || true
           echo "ℹ️ Storage is owned by the install script; skipping here."
-          [ -f "k8s-base-config-complete.yaml" ] && kubectl apply -f k8s-base-config-complete.yaml || true
 
-      - name: 🗄️ Deploy PostgreSQL first (required for IDP)
+      - name: 🗄️ Deploy PostgreSQL first
         run: |
           echo "🗄️ Deploying PostgreSQL for june-idp..."
           if kubectl get statefulset postgresql -n "$KUBE_NAMESPACE" &>/dev/null; then
@@ -372,7 +448,6 @@ jobs:
           }
           
           echo "✅ PostgreSQL is ready"
-          kubectl get pods -n "$KUBE_NAMESPACE" -l app=postgresql
 
       - name: 🚀 Deploy services
         run: |
@@ -399,7 +474,7 @@ jobs:
             done
           fi
 
-      - name: 🖇️ Enforce images on live deployments (belt & suspenders)
+      - name: 🖇️ Enforce images on live deployments
         run: |
           set -e
           for DEP in $(kubectl -n "$KUBE_NAMESPACE" get deploy -o jsonpath='{.items[*].metadata.name}'); do
@@ -413,19 +488,13 @@ jobs:
             esac
           done
 
-      # ============================================================================
-      # ✅ Apply Ingress WITH TLS (UPDATED SECTION)
-      # ============================================================================
       - name: 🌐 Apply ingress with TLS
         run: |
           echo "🌐 Applying ingress with TLS configuration..."
           
-          # Update ingress to use production Let's Encrypt
           if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
-            # Ensure ingress uses letsencrypt-prod issuer
             if ! grep -q "cert-manager.io/cluster-issuer" /tmp/k8s-updated/ingress.yaml; then
               echo "⚠️ Adding cert-manager annotation to ingress..."
-              # Add annotation if missing
               kubectl annotate ingress june-ingress \
                 -n "$KUBE_NAMESPACE" \
                 cert-manager.io/cluster-issuer=letsencrypt-prod \
@@ -439,7 +508,6 @@ jobs:
             echo "⚠️ No ingress configuration found"
           fi
           
-          # Verify ingress has TLS annotation
           echo "🔍 Verifying ingress TLS configuration..."
           ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "none")
           
@@ -461,7 +529,6 @@ jobs:
           
           kubectl -n "$KUBE_NAMESPACE" get ingress -o wide || true
           
-          # Wait for certificate to be issued
           echo "⏳ Waiting for TLS certificate to be ready..."
           sleep 10
           
@@ -503,6 +570,10 @@ jobs:
           echo ""
           echo "🔐 TLS Certificate Status:"
           kubectl get certificate -n "$KUBE_NAMESPACE" || echo "No certificates found"
+          
+          echo ""
+          echo "🎮 GPU Status:"
+          kubectl describe nodes | grep -A 5 "Capacity:" | grep nvidia.com/gpu || echo "No GPU resources found"
           
           echo ""
           echo "🌐 External Access Information:"
