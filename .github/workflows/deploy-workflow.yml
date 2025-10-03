@@ -303,16 +303,12 @@ jobs:
             echo "⚠️ PostgreSQL not ready yet"
           }
 
-      - name: 🚀 Deploy Services
+      - name: 🚀 Deploy Services with Wildcard Certificate
         run: |
-          echo "🚀 Deploying June services..."
+          echo "🚀 Deploying June services with wildcard certificate support..."
           kubectl apply -f k8s/complete-manifests.yaml
-
-      - name: 🌐 Apply Ingress
-        run: |
-          echo "🌐 Applying ingress with automatic Let's Encrypt..."
-          kubectl apply -f k8s/ingress.yaml
-          echo "✅ Ingress applied"
+          
+          echo "✅ Services deployed with wildcard ingress"
 
       - name: ⏳ Wait for Deployments
         run: |
@@ -356,22 +352,25 @@ jobs:
           echo "🔐 Ingress:"
           kubectl get ingress -n $NAMESPACE
           echo ""
-          echo "🔒 Certificates:"
+          echo "🔒 Certificates (Wildcard):"
           kubectl get certificate -n $NAMESPACE
           echo ""
           
           # Check for issues
-          PENDING=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
-          FAILED=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed --no-headers 2>/dev/null | wc -l)
+          PENDING=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | wc -l)
+          FAILED=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name' | wc -l)
           
           if [ "$PENDING" -gt 0 ]; then
             echo "⚠️ WARNING: $PENDING pod(s) pending"
-            kubectl describe pods -n $NAMESPACE --field-selector=status.phase=Pending | grep -A 5 "Events:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | while read pod; do
+              echo "Describing $pod:"
+              kubectl describe pod $pod -n $NAMESPACE | grep -A 5 "Events:"
+            done
           fi
           
           if [ "$FAILED" -gt 0 ]; then
             echo "❌ ERROR: $FAILED pod(s) failed"
-            kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name'
           fi
           
           echo ""

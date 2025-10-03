@@ -121,7 +121,7 @@ spec:
     app: postgresql
 
 ---
-# June STT Deployment - FIXED STRATEGY
+# June STT Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -134,8 +134,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1  # ✅ FIXED: Allow old pod to terminate first
-      maxSurge: 0        # ✅ FIXED: Don't create new pod until GPU is free
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: june-stt
@@ -152,7 +152,7 @@ spec:
         operator: Exists
         effect: NoSchedule
       
-      terminationGracePeriodSeconds: 30  # ✅ ADDED: Graceful shutdown
+      terminationGracePeriodSeconds: 30
       
       containers:
       - name: stt
@@ -247,7 +247,7 @@ spec:
     name: http
 
 ---
-# June TTS Deployment - FIXED STRATEGY
+# June TTS Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -260,8 +260,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1  # ✅ FIXED: Allow old pod to terminate first
-      maxSurge: 0        # ✅ FIXED: Don't create new pod until GPU is free
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: june-tts
@@ -278,7 +278,7 @@ spec:
         operator: Exists
         effect: NoSchedule
       
-      terminationGracePeriodSeconds: 30  # ✅ ADDED: Graceful shutdown
+      terminationGracePeriodSeconds: 30
       
       containers:
       - name: tts
@@ -362,7 +362,7 @@ spec:
     name: http
 
 ---
-# June Orchestrator Deployment - NON-GPU SERVICE
+# June Orchestrator Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -375,7 +375,7 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0  # Can keep at 0 since no GPU needed
+      maxUnavailable: 0
       maxSurge: 1
   selector:
     matchLabels:
@@ -447,7 +447,7 @@ spec:
     name: http
 
 ---
-# June IDP Deployment - NON-GPU SERVICE
+# June IDP Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -460,7 +460,7 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0  # Can keep at 0 since no GPU needed
+      maxUnavailable: 0
       maxSurge: 1
   selector:
     matchLabels:
@@ -583,14 +583,14 @@ spec:
     name: management
 
 ---
-# Ingress
+# Ingress with WILDCARD Certificate
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: june-ingress
   namespace: june-services
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: letsencrypt-staging
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
@@ -601,11 +601,8 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - api.allsafe.world
-    - idp.allsafe.world
-    - stt.allsafe.world
-    - tts.allsafe.world
-    secretName: allsafe-tls
+    - "*.allsafe.world"
+    secretName: allsafe-wildcard-tls
   rules:
   - host: api.allsafe.world
     http:

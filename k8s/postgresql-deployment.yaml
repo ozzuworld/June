@@ -1,4 +1,29 @@
 ---
+# PostgreSQL PersistentVolume - FIXED PATH
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgresql-pv
+  labels:
+    type: local
+    app: postgresql
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-postgresql-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: Exists
+
+---
 # PostgreSQL StatefulSet for Keycloak
 apiVersion: apps/v1
 kind: StatefulSet
@@ -27,7 +52,7 @@ spec:
         - name: POSTGRES_USER
           value: "keycloak"
         - name: POSTGRES_PASSWORD
-          value: "Pokemon123!"  # Change in production
+          value: "Pokemon123!"
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         ports:
