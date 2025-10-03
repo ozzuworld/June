@@ -32,22 +32,96 @@ stringData:
   keycloak-client-secret: "PLACEHOLDER"
 
 ---
+# PostgreSQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: june-services
+  labels:
+    app: postgresql
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_DB
+          value: "keycloak"
+        - name: POSTGRES_USER
+          value: "keycloak"
+        - name: POSTGRES_PASSWORD
+          value: "Pokemon123!"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+          name: postgres
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 5
+          periodSeconds: 5
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-storage
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# PostgreSQL Service
 apiVersion: v1
 kind: Service
 metadata:
-  name: june-stt
+  name: postgresql
   namespace: june-services
+  labels:
+    app: postgresql
 spec:
   type: ClusterIP
-  selector:
-    app: june-stt
   ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  selector:
+    app: postgresql
 
 ---
-# June STT Deployment - FIXED with GPU support and proper resources
+# June STT Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -81,7 +155,6 @@ spec:
         - containerPort: 8080
           name: http
         
-        # ✅ FIXED: Proper resources for large-v3 with GPU
         resources:
           requests:
             cpu: "1"
@@ -118,7 +191,6 @@ spec:
         - name: cache
           mountPath: /app/cache
         
-        # ✅ FIXED: Extended timeouts for model loading
         startupProbe:
           httpGet:
             path: /healthz
@@ -143,7 +215,6 @@ spec:
           periodSeconds: 30
           failureThreshold: 3
       
-      # ✅ FIXED: EmptyDir volumes (no PVC)
       volumes:
       - name: model-cache
         emptyDir:
@@ -153,6 +224,7 @@ spec:
           sizeLimit: 5Gi
 
 ---
+# June STT Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -166,7 +238,101 @@ spec:
   - port: 8080
     targetPort: 8080
     name: http
+
 ---
+# June TTS Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: june-services
+  labels:
+    app: june-tts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+    spec:
+      nodeSelector:
+        gpu: "true"
+      
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      
+      containers:
+      - name: tts
+        image: docker.io/ozzuworld/june-tts:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+        
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+            nvidia.com/gpu: 1
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+            nvidia.com/gpu: 1
+        
+        env:
+        - name: PORT
+          value: "8000"
+        - name: OPENVOICE_CHECKPOINTS_V2
+          value: "/models/openvoice/checkpoints_v2"
+        - name: OPENVOICE_DEVICE
+          value: "cuda"
+        - name: ENABLE_QUANTIZATION
+          value: "false"
+        - name: PRELOAD_MODELS
+          value: "true"
+        - name: TTS_CACHE_SIZE
+          value: "100"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        - name: cache
+          mountPath: /cache
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 30
+        
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 180
+          periodSeconds: 30
+      
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: cache
+        emptyDir:
+          sizeLimit: 5Gi
+
+---
+# June TTS Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -182,7 +348,7 @@ spec:
     name: http
 
 ---
-# June Orchestrator Deployment - FIXED with consistent docker.io prefix
+# June Orchestrator Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -222,6 +388,16 @@ spec:
             secretKeyRef:
               name: june-secrets
               key: gemini-api-key
+        - name: KEYCLOAK_URL
+          value: "http://june-idp.june-services.svc.cluster.local:8080"
+        - name: KEYCLOAK_REALM
+          value: "allsafe"
+        - name: KEYCLOAK_CLIENT_ID
+          value: "june-orchestrator"
+        - name: TTS_SERVICE_URL
+          value: "http://june-tts.june-services.svc.cluster.local:8000"
+        - name: STT_SERVICE_URL
+          value: "http://june-stt.june-services.svc.cluster.local:8080"
         readinessProbe:
           httpGet:
             path: /healthz
@@ -236,6 +412,7 @@ spec:
           periodSeconds: 15
 
 ---
+# June Orchestrator Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -251,7 +428,7 @@ spec:
     name: http
 
 ---
-# June IDP Deployment - FIXED with consistent docker.io prefix
+# June IDP Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -303,7 +480,6 @@ spec:
             memory: "2Gi"
             cpu: "2"
         env:
-        # Database Configuration
         - name: KC_DB
           value: postgres
         - name: KC_DB_URL
@@ -312,25 +488,27 @@ spec:
           value: keycloak
         - name: KC_DB_PASSWORD
           value: Pokemon123!
-        # Admin Configuration
-        - name: KEYCLOAK_ADMIN
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
           value: admin
-        - name: KEYCLOAK_ADMIN_PASSWORD
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
           value: Pokemon123!
-        # HTTP Configuration
         - name: KC_HTTP_ENABLED
           value: "true"
+        - name: KC_HOSTNAME
+          value: "idp.allsafe.world"
         - name: KC_HOSTNAME_STRICT
           value: "false"
         - name: KC_HOSTNAME_STRICT_HTTPS
           value: "false"
-        - name: KC_PROXY
-          value: edge
+        - name: KC_PROXY_HEADERS
+          value: "xforwarded"
         - name: KC_HEALTH_ENABLED
           value: "true"
         - name: KC_METRICS_ENABLED
           value: "true"
-        # CORRECTED HEALTH CHECKS - Using port 9000 for Keycloak 26.4.0
+        - name: KC_LOG_LEVEL
+          value: "INFO"
+        
         startupProbe:
           httpGet:
             path: /health/started
@@ -340,6 +518,7 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 60
+        
         readinessProbe:
           httpGet:
             path: /health/ready
@@ -349,6 +528,7 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
+        
         livenessProbe:
           httpGet:
             path: /health/live
@@ -360,6 +540,7 @@ spec:
           failureThreshold: 5
 
 ---
+# June IDP Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -385,8 +566,22 @@ metadata:
   name: june-ingress
   namespace: june-services
   annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
 spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.allsafe.world
+    - idp.allsafe.world
+    - stt.allsafe.world
+    - tts.allsafe.world
+    secretName: allsafe-tls
   rules:
   - host: api.allsafe.world
     http:
