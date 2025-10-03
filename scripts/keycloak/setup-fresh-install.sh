@@ -93,7 +93,7 @@ else
   fi
 fi
 
-# Function to create client and return secret (FIXED - All logging to stderr)
+# Function to create client and return secret (MINIMAL FIX - Only clean the return data)
 create_client_with_secret() {
   local CLIENT_ID=$1
   local ROOT_URL=$2
@@ -144,33 +144,37 @@ create_client_with_secret() {
       CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
     else
       log_error "Failed to create client '$CLIENT_ID' (HTTP $HTTP_CODE)"
-      echo "$CREATE_CLIENT" >&2
+      echo "$CREATE_CLIENT"
       return 1
     fi
   fi
   
-  # Get client secret (CRITICAL FIX - Only return clean data to stdout)
+  # Get client secret - ONLY FIX NEEDED: Separate logging from data return
   if [ -n "$CLIENT_UUID" ]; then
-    log_info "Retrieving secret for '$CLIENT_ID'..."
-    SECRET_RESPONSE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-      "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret")
+    {
+      log_info "Retrieving secret for '$CLIENT_ID'..."
+      SECRET_RESPONSE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+        "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret")
+      
+      SECRET=$(echo "$SECRET_RESPONSE" | jq -r '.value // empty')
+      
+      if [ -n "$SECRET" ]; then
+        log_success "Secret retrieved for '$CLIENT_ID'"
+      else
+        log_error "Failed to get secret for '$CLIENT_ID'"
+        echo "Response: $SECRET_RESPONSE"
+        return 1
+      fi
+    } >&2
     
-    SECRET=$(echo "$SECRET_RESPONSE" | jq -r '.value // empty')
-    
-    if [ -n "$SECRET" ]; then
-      log_success "Secret retrieved for '$CLIENT_ID'"
-      # CRITICAL: Only output clean data to stdout, all logs go to stderr
-      echo "$CLIENT_UUID|$SECRET"
-    else
-      log_error "Failed to get secret for '$CLIENT_ID'"
-      echo "Response: $SECRET_RESPONSE" >&2
-      return 1
-    fi
+    # CRITICAL: Only output clean data, no log messages
+    echo "$CLIENT_UUID|$SECRET"
   else
     log_error "Could not find client UUID for '$CLIENT_ID'"
     return 1
   fi
 }
+
 
 # Create clients (FIXED - Capture only clean output)
 log_info "Creating service clients..."
