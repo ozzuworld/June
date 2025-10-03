@@ -333,33 +333,6 @@ jobs:
             }
           done
 
-      - name: 🔐 Monitor Certificate
-        run: |
-          echo "🔐 Monitoring Let's Encrypt certificate..."
-          sleep 20
-          
-          for i in {1..20}; do
-            if ! kubectl get certificate allsafe-tls -n $NAMESPACE &>/dev/null; then
-              echo "⏳ Waiting for certificate resource... ($i/20)"
-              sleep 15
-              continue
-            fi
-            
-            STATUS=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
-              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-            
-            if [ "$STATUS" = "True" ]; then
-              echo "✅ Certificate issued!"
-              kubectl get certificate allsafe-tls -n $NAMESPACE
-              break
-            else
-              MESSAGE=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
-                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
-              echo "⏳ $MESSAGE ($i/20)"
-              sleep 15
-            fi
-          done
-
       - name: 📊 Deployment Summary
         if: always()
         run: |
