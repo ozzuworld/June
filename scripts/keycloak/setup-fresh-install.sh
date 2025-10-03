@@ -1,6 +1,6 @@
 #!/bin/bash
-# Keycloak Configuration Automation for June Services (FIXED)
-# This script automates the Keycloak setup using the Admin REST API
+# Fixed Keycloak Configuration for June Services
+# Handles client creation and secret retrieval properly
 
 set -e
 
@@ -16,8 +16,8 @@ log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; }
 
-echo "🔐 Keycloak Configuration Automation (FIXED)"
-echo "============================================="
+echo "🔐 Fixed Keycloak Configuration Script"
+echo "======================================="
 
 # Configuration
 read -p "Keycloak URL [https://idp.allsafe.world]: " KEYCLOAK_URL
@@ -38,12 +38,6 @@ echo "  Admin: $ADMIN_USER"
 echo "  Realm: $REALM"
 echo ""
 
-# Verify jq is installed
-if ! command -v jq &> /dev/null; then
-    log_error "jq is not installed. Install with: apt-get install jq"
-    exit 1
-fi
-
 # Get admin token
 log_info "Getting admin access token..."
 TOKEN_RESPONSE=$(curl -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
@@ -56,22 +50,22 @@ TOKEN_RESPONSE=$(curl -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-co
 ADMIN_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
 
 if [ -z "$ADMIN_TOKEN" ]; then
-  log_error "Failed to get admin token. Check credentials."
+  log_error "Failed to get admin token"
   echo "Response: $TOKEN_RESPONSE"
   exit 1
 fi
 
 log_success "Admin token obtained"
 
-# Create realm
-log_info "Creating realm '$REALM'..."
-REALM_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+# Check if realm exists
+log_info "Checking realm '$REALM'..."
+REALM_CHECK=$(curl -s -w "%{http_code}" -o /tmp/realm_check.json \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$KEYCLOAK_URL/admin/realms/$REALM")
 
-if echo "$REALM_CHECK" | jq -e '.realm' > /dev/null 2>&1; then
-  log_warning "Realm '$REALM' already exists"
-else
-  CREATE_REALM=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms" \
+if [ "$REALM_CHECK" = "404" ]; then
+  log_info "Creating realm '$REALM'..."
+  curl -s -X POST "$KEYCLOAK_URL/admin/realms" \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
     -d "{
@@ -81,37 +75,56 @@ else
       \"accessTokenLifespan\": 3600,
       \"ssoSessionIdleTimeout\": 1800,
       \"ssoSessionMaxLifespan\": 36000
-    }")
-  
-  HTTP_CODE=$(echo "$CREATE_REALM" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
-  
-  if [ "$HTTP_CODE" = "201" ]; then
-    log_success "Realm '$REALM' created"
-  else
-    log_error "Failed to create realm (HTTP $HTTP_CODE)"
-    echo "$CREATE_REALM"
-  fi
+    }"
+  log_success "Realm '$REALM' created"
+else
+  log_warning "Realm '$REALM' already exists"
 fi
 
-# Function to create client and return secret
-create_client_with_secret() {
+# Function to create or update client
+create_or_update_client() {
   local CLIENT_ID=$1
   local ROOT_URL=$2
   local REDIRECT_URIS=$3
   
-  log_info "Creating client '$CLIENT_ID'..."
+  log_info "Processing client '$CLIENT_ID'..."
   
   # Check if client exists
-  CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  CLIENT_LIST=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
   
-  CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+  CLIENT_UUID=$(echo "$CLIENT_LIST" | jq -r '.[0].id // empty')
   
   if [ -n "$CLIENT_UUID" ]; then
-    log_warning "Client '$CLIENT_ID' already exists (ID: $CLIENT_UUID)"
+    log_warning "Client '$CLIENT_ID' exists (UUID: $CLIENT_UUID)"
+    
+    # Update existing client
+    curl -s -X PUT "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"id\": \"$CLIENT_UUID\",
+        \"clientId\": \"$CLIENT_ID\",
+        \"enabled\": true,
+        \"protocol\": \"openid-connect\",
+        \"publicClient\": false,
+        \"serviceAccountsEnabled\": true,
+        \"directAccessGrantsEnabled\": true,
+        \"standardFlowEnabled\": true,
+        \"rootUrl\": \"$ROOT_URL\",
+        \"redirectUris\": $REDIRECT_URIS,
+        \"webOrigins\": [\"*\"],
+        \"attributes\": {
+          \"access.token.lifespan\": \"3600\"
+        }
+      }"
+    
+    log_success "Client '$CLIENT_ID' updated"
   else
-    # Create client
-    CREATE_CLIENT=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
+    log_info "Creating new client '$CLIENT_ID'..."
+    
+    # Create new client
+    CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
       -H "Authorization: Bearer $ADMIN_TOKEN" \
       -H "Content-Type: application/json" \
       -d "{
@@ -122,83 +135,118 @@ create_client_with_secret() {
         \"serviceAccountsEnabled\": true,
         \"directAccessGrantsEnabled\": true,
         \"standardFlowEnabled\": true,
-        \"implicitFlowEnabled\": false,
         \"rootUrl\": \"$ROOT_URL\",
         \"redirectUris\": $REDIRECT_URIS,
         \"webOrigins\": [\"*\"],
         \"attributes\": {
-          \"access.token.lifespan\": \"3600\",
-          \"client.secret.creation.time\": \"$(date +%s)\"
+          \"access.token.lifespan\": \"3600\"
         }
       }")
     
-    HTTP_CODE=$(echo "$CREATE_CLIENT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+    HTTP_CODE=$(echo "$CREATE_RESPONSE" | tail -n1)
     
     if [ "$HTTP_CODE" = "201" ]; then
       log_success "Client '$CLIENT_ID' created"
       
-      # Get the newly created client UUID
-      sleep 2  # Wait for Keycloak to process
-      CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+      # Get the UUID of newly created client
+      sleep 2
+      CLIENT_LIST=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
         "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
-      CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+      CLIENT_UUID=$(echo "$CLIENT_LIST" | jq -r '.[0].id // empty')
     else
-      log_error "Failed to create client '$CLIENT_ID' (HTTP $HTTP_CODE)"
-      echo "$CREATE_CLIENT"
+      log_error "Failed to create client (HTTP $HTTP_CODE)"
       return 1
     fi
   fi
   
-  # Get client secret
-  if [ -n "$CLIENT_UUID" ]; then
-    log_info "Retrieving secret for '$CLIENT_ID'..."
-    SECRET_RESPONSE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  echo "$CLIENT_UUID"
+}
+
+# Function to get or regenerate client secret
+get_client_secret() {
+  local CLIENT_UUID=$1
+  local CLIENT_NAME=$2
+  
+  log_info "Getting secret for '$CLIENT_NAME'..."
+  
+  # Try to get existing secret
+  SECRET_RESPONSE=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret")
+  
+  SECRET=$(echo "$SECRET_RESPONSE" | jq -r '.value // empty')
+  
+  if [ -z "$SECRET" ]; then
+    log_warning "No secret found, regenerating..."
+    
+    # Regenerate secret
+    SECRET_RESPONSE=$(curl -s -X POST \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
       "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret")
     
     SECRET=$(echo "$SECRET_RESPONSE" | jq -r '.value // empty')
-    
-    if [ -n "$SECRET" ]; then
-      log_success "Secret retrieved for '$CLIENT_ID'"
-      echo "$CLIENT_UUID|$SECRET"
-    else
-      log_error "Failed to get secret for '$CLIENT_ID'"
-      echo "Response: $SECRET_RESPONSE"
-      return 1
-    fi
+  fi
+  
+  if [ -n "$SECRET" ]; then
+    log_success "Secret obtained for '$CLIENT_NAME'"
+    echo "$SECRET"
   else
-    log_error "Could not find client UUID for '$CLIENT_ID'"
+    log_error "Failed to get secret for '$CLIENT_NAME'"
+    echo "Response: $SECRET_RESPONSE" >&2
     return 1
   fi
 }
 
-# Create clients
-log_info "Creating service clients..."
+# Create/update clients and get secrets
+log_info "Setting up service clients..."
+echo ""
 
 # June Orchestrator
-ORCH_RESULT=$(create_client_with_secret "june-orchestrator" "https://api.allsafe.world" \
-  '["https://api.allsafe.world/*", "http://localhost:8080/*", "http://june-orchestrator.june-services.svc.cluster.local:8080/*"]')
-ORCH_UUID=$(echo "$ORCH_RESULT" | cut -d'|' -f1)
-ORCH_SECRET=$(echo "$ORCH_RESULT" | cut -d'|' -f2)
+log_info "=== June Orchestrator ==="
+ORCH_UUID=$(create_or_update_client "june-orchestrator" "https://api.allsafe.world" \
+  '["https://api.allsafe.world/*", "http://localhost:8080/*"]')
+
+if [ -n "$ORCH_UUID" ]; then
+  ORCH_SECRET=$(get_client_secret "$ORCH_UUID" "june-orchestrator")
+else
+  log_error "Failed to get Orchestrator client UUID"
+fi
+
+echo ""
 
 # June STT
-STT_RESULT=$(create_client_with_secret "june-stt" "https://stt.allsafe.world" \
-  '["https://stt.allsafe.world/*", "http://localhost:8000/*", "http://june-stt.june-services.svc.cluster.local:8000/*"]')
-STT_UUID=$(echo "$STT_RESULT" | cut -d'|' -f1)
-STT_SECRET=$(echo "$STT_RESULT" | cut -d'|' -f2)
+log_info "=== June STT ==="
+STT_UUID=$(create_or_update_client "june-stt" "https://stt.allsafe.world" \
+  '["https://stt.allsafe.world/*", "http://localhost:8000/*"]')
+
+if [ -n "$STT_UUID" ]; then
+  STT_SECRET=$(get_client_secret "$STT_UUID" "june-stt")
+else
+  log_error "Failed to get STT client UUID"
+fi
+
+echo ""
 
 # June TTS
-TTS_RESULT=$(create_client_with_secret "june-tts" "https://tts.allsafe.world" \
-  '["https://tts.allsafe.world/*", "http://localhost:8000/*", "http://june-tts.june-services.svc.cluster.local:8000/*"]')
-TTS_UUID=$(echo "$TTS_RESULT" | cut -d'|' -f1)
-TTS_SECRET=$(echo "$TTS_RESULT" | cut -d'|' -f2)
+log_info "=== June TTS ==="
+TTS_UUID=$(create_or_update_client "june-tts" "https://tts.allsafe.world" \
+  '["https://tts.allsafe.world/*", "http://localhost:8000/*"]')
 
-# Verify we got all secrets
+if [ -n "$TTS_UUID" ]; then
+  TTS_SECRET=$(get_client_secret "$TTS_UUID" "june-tts")
+else
+  log_error "Failed to get TTS client UUID"
+fi
+
+echo ""
+
+# Verify all secrets were obtained
 if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
-  log_error "Failed to retrieve all client secrets!"
+  log_error "Failed to obtain all client secrets"
   echo ""
-  echo "Orchestrator: ${ORCH_SECRET:-MISSING}"
-  echo "STT: ${STT_SECRET:-MISSING}"
-  echo "TTS: ${TTS_SECRET:-MISSING}"
+  echo "Partial results:"
+  echo "  Orchestrator: ${ORCH_SECRET:-FAILED}"
+  echo "  STT: ${STT_SECRET:-FAILED}"
+  echo "  TTS: ${TTS_SECRET:-FAILED}"
   exit 1
 fi
 
@@ -209,11 +257,10 @@ create_scope() {
   local SCOPE_NAME=$1
   
   SCOPE_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes")
+    "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes" | \
+    jq -r ".[] | select(.name==\"$SCOPE_NAME\") | .id")
   
-  SCOPE_EXISTS=$(echo "$SCOPE_CHECK" | jq -r ".[] | select(.name==\"$SCOPE_NAME\") | .id")
-  
-  if [ -n "$SCOPE_EXISTS" ]; then
+  if [ -n "$SCOPE_CHECK" ]; then
     log_warning "Scope '$SCOPE_NAME' already exists"
     return
   fi
@@ -228,7 +275,7 @@ create_scope() {
         \"include.in.token.scope\": \"true\",
         \"display.on.consent.screen\": \"true\"
       }
-    }" > /dev/null
+    }"
   
   log_success "Scope '$SCOPE_NAME' created"
 }
@@ -237,17 +284,18 @@ create_scope "tts:synthesize"
 create_scope "stt:transcribe"
 create_scope "orchestrator:webhook"
 
-# Create roles
+# Create realm roles
 log_info "Creating realm roles..."
 
 create_role() {
   local ROLE_NAME=$1
   local DESCRIPTION=$2
   
-  ROLE_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  ROLE_CHECK=$(curl -s -w "%{http_code}" -o /dev/null \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$KEYCLOAK_URL/admin/realms/$REALM/roles/$ROLE_NAME")
   
-  if echo "$ROLE_CHECK" | jq -e '.name' > /dev/null 2>&1; then
+  if [ "$ROLE_CHECK" = "200" ]; then
     log_warning "Role '$ROLE_NAME' already exists"
     return
   fi
@@ -258,7 +306,7 @@ create_role() {
     -d "{
       \"name\": \"$ROLE_NAME\",
       \"description\": \"$DESCRIPTION\"
-    }" > /dev/null
+    }"
   
   log_success "Role '$ROLE_NAME' created"
 }
@@ -267,19 +315,41 @@ create_role "june-user" "Standard June service user"
 create_role "june-admin" "June service administrator"
 create_role "june-service" "Service-to-service communication"
 
-# Generate kubectl commands
-log_info "Generating Kubernetes secret update commands..."
+# Generate Kubernetes update script
+log_info "Generating Kubernetes secret update script..."
 
 cat > update-k8s-secrets.sh << EOF
 #!/bin/bash
-# Generated Keycloak secret update commands
+# Generated Keycloak Secret Update Script
+# Run this to update Kubernetes secrets with Keycloak credentials
 
-echo "🔐 Updating Kubernetes secrets with Keycloak credentials..."
+set -e
+
+echo "🔐 Updating Kubernetes Secrets for June Services"
+echo "================================================"
+
+# Check if we're connected to the cluster
+if ! kubectl cluster-info &> /dev/null; then
+  echo "❌ Cannot connect to Kubernetes cluster"
+  exit 1
+fi
+
+# Check if namespace exists
+if ! kubectl get namespace june-services &> /dev/null; then
+  echo "❌ Namespace 'june-services' not found"
+  exit 1
+fi
+
+echo "✅ Connected to Kubernetes cluster"
+echo ""
 
 # Update june-orchestrator secrets
+echo "Updating june-orchestrator secrets..."
 kubectl create secret generic june-orchestrator-secrets \\
   --from-literal=keycloak-client-id=june-orchestrator \\
-  --from-literal=keycloak-client-secret=$ORCH_SECRET \\
+  --from-literal=keycloak-client-secret='$ORCH_SECRET' \\
+  --from-literal=keycloak-realm=allsafe \\
+  --from-literal=keycloak-url=https://idp.allsafe.world \\
   --from-literal=gemini-api-key=\${GEMINI_API_KEY:-AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM} \\
   -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
@@ -287,93 +357,127 @@ kubectl create secret generic june-orchestrator-secrets \\
 echo "✅ june-orchestrator secrets updated"
 
 # Update june-stt secrets
+echo "Updating june-stt secrets..."
 kubectl create secret generic june-stt-secrets \\
   --from-literal=keycloak-client-id=june-stt \\
-  --from-literal=keycloak-client-secret=$STT_SECRET \\
+  --from-literal=keycloak-client-secret='$STT_SECRET' \\
+  --from-literal=keycloak-realm=allsafe \\
+  --from-literal=keycloak-url=https://idp.allsafe.world \\
   -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-stt secrets updated"
 
 # Update june-tts secrets
+echo "Updating june-tts secrets..."
 kubectl create secret generic june-tts-secrets \\
   --from-literal=keycloak-client-id=june-tts \\
-  --from-literal=keycloak-client-secret=$TTS_SECRET \\
+  --from-literal=keycloak-client-secret='$TTS_SECRET' \\
+  --from-literal=keycloak-realm=allsafe \\
+  --from-literal=keycloak-url=https://idp.allsafe.world \\
   -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-tts secrets updated"
 
 echo ""
-echo "🔄 Restarting services to apply changes..."
+echo "🔄 Restarting services to apply new credentials..."
 kubectl rollout restart deployment/june-orchestrator -n june-services
 kubectl rollout restart deployment/june-stt -n june-services
 kubectl rollout restart deployment/june-tts -n june-services
 
 echo ""
+echo "⏳ Waiting for rollouts to complete..."
+kubectl rollout status deployment/june-orchestrator -n june-services --timeout=120s
+kubectl rollout status deployment/june-stt -n june-services --timeout=120s
+kubectl rollout status deployment/june-tts -n june-services --timeout=120s
+
+echo ""
 echo "✅ All secrets updated and services restarted!"
 echo ""
-echo "🔍 Check status with:"
-echo "  kubectl get pods -n june-services"
-echo "  kubectl logs -l app=june-orchestrator -n june-services --tail=50"
+echo "🧪 Test authentication:"
+echo "  TOKEN=\\\$(curl -s -X POST 'https://idp.allsafe.world/realms/allsafe/protocol/openid-connect/token' \\\\"
+echo "    -d 'grant_type=client_credentials' \\\\"
+echo "    -d 'client_id=june-orchestrator' \\\\"
+echo "    -d 'client_secret=$ORCH_SECRET' | jq -r '.access_token')"
+echo ""
+echo "  curl -H \"Authorization: Bearer \\\$TOKEN\" https://api.allsafe.world/healthz"
 EOF
 
 chmod +x update-k8s-secrets.sh
 
-log_success "Kubernetes update script created: update-k8s-secrets.sh"
+log_success "Script created: update-k8s-secrets.sh"
 
-# Test token generation
-log_info "Testing token generation..."
-TEST_TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
-  -d "grant_type=client_credentials" \
-  -d "client_id=june-orchestrator" \
+# Create verification script
+cat > verify-keycloak.sh << EOF
+#!/bin/bash
+# Verify Keycloak Setup
+
+echo "🧪 Keycloak Configuration Verification"
+echo "======================================"
+
+KEYCLOAK_URL="$KEYCLOAK_URL"
+REALM="$REALM"
+
+echo "Testing OIDC discovery..."
+curl -s "\$KEYCLOAK_URL/realms/\$REALM/.well-known/openid-connect-configuration" | jq '.issuer'
+
+echo ""
+echo "Testing client credentials for june-orchestrator..."
+TOKEN_RESPONSE=\$(curl -s -X POST "\$KEYCLOAK_URL/realms/\$REALM/protocol/openid-connect/token" \\
+  -d "grant_type=client_credentials" \\
+  -d "client_id=june-orchestrator" \\
   -d "client_secret=$ORCH_SECRET")
 
-if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
-  log_success "Token generation test PASSED"
+if echo "\$TOKEN_RESPONSE" | jq -e '.access_token' > /dev/null 2>&1; then
+  echo "✅ Token obtained successfully"
+  echo "\$TOKEN_RESPONSE" | jq .
 else
-  log_warning "Token generation test FAILED"
-  echo "Response: $TEST_TOKEN"
+  echo "❌ Token request failed"
+  echo "\$TOKEN_RESPONSE"
 fi
+EOF
+
+chmod +x verify-keycloak.sh
+
+log_success "Script created: verify-keycloak.sh"
 
 # Summary
 echo ""
-echo "═══════════════════════════════════════════════"
+echo "═══════════════════════════════════════════════════════"
 log_success "Keycloak Configuration Complete!"
-echo "═══════════════════════════════════════════════"
+echo "═══════════════════════════════════════════════════════"
 echo ""
-echo "📋 Client Credentials:"
+echo "📋 Client Credentials Created:"
 echo ""
 echo "june-orchestrator:"
-echo "  client_id: june-orchestrator"
-echo "  client_secret: $ORCH_SECRET"
+echo "  Client ID: june-orchestrator"
+echo "  Client Secret: $ORCH_SECRET"
 echo "  UUID: $ORCH_UUID"
 echo ""
 echo "june-stt:"
-echo "  client_id: june-stt"
-echo "  client_secret: $STT_SECRET"
+echo "  Client ID: june-stt"
+echo "  Client Secret: $STT_SECRET"
 echo "  UUID: $STT_UUID"
 echo ""
 echo "june-tts:"
-echo "  client_id: june-tts"
-echo "  client_secret: $TTS_SECRET"
+echo "  Client ID: june-tts"
+echo "  Client Secret: $TTS_SECRET"
 echo "  UUID: $TTS_UUID"
 echo ""
-echo "🔍 Verify Configuration:"
-echo "  1. Access Keycloak admin: $KEYCLOAK_URL/admin"
-echo "  2. Check realm: $REALM"
-echo "  3. Test token generation:"
-echo ""
-echo "curl -X POST \"$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token\" \\"
-echo "  -d \"grant_type=client_credentials\" \\"
-echo "  -d \"client_id=june-orchestrator\" \\"
-echo "  -d \"client_secret=$ORCH_SECRET\" | jq"
+echo "🔍 OIDC Endpoints:"
+echo "  Discovery: $KEYCLOAK_URL/realms/$REALM/.well-known/openid-configure"
+echo "  Token: $KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token"
+echo "  JWKS: $KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/certs"
 echo ""
 echo "📝 Next Steps:"
-echo "  1. ✅ Credentials generated successfully"
-echo "  2. Run: ./update-k8s-secrets.sh"
-echo "  3. Verify services: kubectl get pods -n june-services"
-echo "  4. Test authentication: scripts/keycloak/auth-test.sh"
+echo "  1. Run: ./update-k8s-secrets.sh"
+echo "     This will update all Kubernetes secrets and restart services"
 echo ""
-echo "💾 Save these credentials securely!"
-echo "═══════════════════════════════════════════════"
+echo "  2. Run: ./verify-keycloak.sh"
+echo "     This will test token generation"
+echo ""
+echo "  3. Check service logs:"
+echo "     kubectl logs -l app=june-orchestrator -n june-services --tail=50"
+echo ""
+echo "═══════════════════════════════════════════════════════"
