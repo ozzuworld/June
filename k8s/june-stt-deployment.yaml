@@ -1,12 +1,18 @@
----
-# June STT Deployment - FIXED VERSION
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-stt
   namespace: june-services
+  labels:
+    app: june-stt
+    version: "3.0.0"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-stt
@@ -14,115 +20,134 @@ spec:
     metadata:
       labels:
         app: june-stt
+        version: "3.0.0"
     spec:
-      nodeSelector:
-        gpu: "true"
-      
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      imagePullSecrets:
-      - name: dockerhub-secret
-      
+      serviceAccountName: june-secret-manager
       containers:
-      - name: stt
-        image: docker.io/ozzuworld/june-stt:latest
-        imagePullPolicy: Always
-        
-        env:
-        - name: WHISPER_MODEL
-          value: "large-v3"
-        - name: WHISPER_DEVICE
-          value: "cuda"
-        - name: WHISPER_COMPUTE_TYPE
-          value: "float16"
-        - name: WHISPER_CACHE_DIR
-          value: "/app/models"
-        - name: WHISPER_CPU_THREADS
-          value: "2"
-        - name: WHISPER_NUM_WORKERS
-          value: "1"
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
-        - name: PORT
-          value: "8080"
-        
-        # Optional Keycloak config
-        - name: KEYCLOAK_URL
-          value: "http://june-idp:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-stt"
-        - name: KEYCLOAK_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: keycloak-stt-secret
-              optional: true
-        
-        ports:
-        - containerPort: 8080
-          name: http
-        
-        # ✅ FIXED: Proper memory allocation for large-v3
-        resources:
-          requests:
-            cpu: "1"
-            memory: "6Gi"
-            nvidia.com/gpu: 1
-          limits:
-            cpu: "2"
-            memory: "10Gi"
-            nvidia.com/gpu: 1
-        
-        # ✅ FIXED: Using emptyDir instead of PVC
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        
-        # ✅ FIXED: Longer startup time for large model
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 90
-          periodSeconds: 10
-          failureThreshold: 90
-          timeoutSeconds: 5
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 30
-          timeoutSeconds: 5
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 180
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+        - name: stt
+          image: ozzuworld/june-stt:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          
+          env:
+            # Service Configuration
+            - name: SERVICE_NAME
+              value: "june-stt"
+            - name: PORT
+              value: "8000"
+            - name: HOST
+              value: "0.0.0.0"
+            
+            # Keycloak Authentication (INTERNAL)
+            - name: KEYCLOAK_URL
+              value: "http://keycloak.june-services.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-stt-secrets
+                  key: keycloak-client-id
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-stt-secrets
+                  key: keycloak-client-secret
+            - name: REQUIRED_AUDIENCE
+              value: "june-stt"
+            
+            # External Keycloak (for public token validation)
+            - name: EXTERNAL_KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: EXTERNAL_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            
+            # Orchestrator Integration (INTERNAL)
+            - name: ORCHESTRATOR_URL
+              value: "http://june-orchestrator.june-services.svc.cluster.local"
+            - name: ENABLE_ORCHESTRATOR_NOTIFICATIONS
+              value: "true"
+            - name: ORCHESTRATOR_WEBHOOK_PATH
+              value: "/v1/stt/webhook"
+            
+            # External URL (for public access)
+            - name: EXTERNAL_STT_URL
+              value: "https://stt.allsafe.world"
+            
+            # Whisper Configuration
+            - name: WHISPER_MODEL
+              value: "large-v3"
+            - name: WHISPER_DEVICE
+              value: "cuda"
+            - name: WHISPER_COMPUTE_TYPE
+              value: "float16"
+            - name: WHISPER_BEAM_SIZE
+              value: "5"
+            - name: WHISPER_BEST_OF
+              value: "5"
+            - name: ENVIRONMENT
+              value: "production"
+            
+            # Performance
+            - name: MAX_FILE_SIZE_MB
+              value: "100"
+            - name: MAX_CONCURRENT_TRANSCRIPTIONS
+              value: "3"
+            - name: TRANSCRIPT_RETENTION_HOURS
+              value: "24"
+            
+            # CORS
+            - name: CORS_ALLOW_ORIGINS
+              value: "*"
+            
+            # Logging
+            - name: LOG_LEVEL
+              value: "INFO"
+          
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "2000m"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+          
+          volumeMounts:
+            - name: whisper-cache
+              mountPath: /app/cache/whisper
+            - name: huggingface-cache
+              mountPath: /app/cache/huggingface
+          
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
       
-      # ✅ FIXED: EmptyDir volumes (no PVC needed)
       volumes:
-      - name: model-cache
-        emptyDir:
-          sizeLimit: 10Gi
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
+        - name: whisper-cache
+          emptyDir:
+            sizeLimit: 10Gi
+        - name: huggingface-cache
+          emptyDir:
+            sizeLimit: 5Gi
 
 ---
 apiVersion: v1
@@ -130,11 +155,14 @@ kind: Service
 metadata:
   name: june-stt
   namespace: june-services
+  labels:
+    app: june-stt
 spec:
   type: ClusterIP
   selector:
     app: june-stt
   ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

@@ -1,14 +1,18 @@
-# June TTS Deployment with GPU Support
-# This file includes all GPU configurations - no separate patching needed
-
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-tts
-  namespace: june-services-services
+  namespace: june-services
+  labels:
+    app: june-tts
+    version: "1.0"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-tts
@@ -16,148 +20,141 @@ spec:
     metadata:
       labels:
         app: june-tts
+        version: "1.0"
     spec:
-      # GPU node selector
-      nodeSelector:
-        gpu: "true"
-      
-      # GPU tolerations
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      # Pod-level security context
-      securityContext:
-        fsGroup: 1001
-        runAsUser: 1001
-        runAsGroup: 1001
-      
-      # Image pull secrets
-      imagePullSecrets:
-      - name: dockerhub-secret
-      
-      # Permission fix init container
-      initContainers:
-      - name: fix-permissions
-        image: busybox
-        command:
-          - sh
-          - -c
-          - |
-            mkdir -p /models /cache /tmp
-            chmod -R 777 /models /cache /tmp
-        volumeMounts:
-        - name: model-cache
-          mountPath: /models
-        - name: cache
-          mountPath: /cache
-        securityContext:
-          runAsUser: 0
-      
+      serviceAccountName: june-secret-manager
       containers:
-      - name: tts
-        image: docker.io/ozzuworld/june-tts:latest
-        imagePullPolicy: Always
-        
-        env:
-        # OpenVoice/TTS Configuration
-        - name: OPENVOICE_CHECKPOINTS_V2
-          value: "/models/openvoice/checkpoints_v2"
-        - name: OPENVOICE_DEVICE
-          value: "cuda"
-        - name: ENABLE_QUANTIZATION
-          value: "false"
-        - name: PRELOAD_MODELS
-          value: "true"
-        - name: TTS_CACHE_SIZE
-          value: "100"
-        
-        # CUDA optimizations for GPU sharing
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
-        
-        # Keycloak (optional)
-        - name: KEYCLOAK_URL
-          value: "http://june-idp:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-tts"
-        - name: KEYCLOAK_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: keycloak-tts-secret
-              optional: true
-        
-        # Config from ConfigMap
-        envFrom:
-        - configMapRef:
-            name: june-config
-        
-        ports:
-        - containerPort: 8000
-          name: http
-        
-        # GPU resource allocation (1 slice of shared GPU)
-        resources:
-          requests:
-            cpu: "1"
-            memory: "2Gi"
-            nvidia.com/gpu: 1
-          limits:
-            cpu: "2"
-            memory: "4Gi"
-            nvidia.com/gpu: 1
-        
-        volumeMounts:
-        - name: model-cache
-          mountPath: /models
-        - name: cache
-          mountPath: /tmp/june_tts_cache
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 30
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180
-          periodSeconds: 30
-        
-        # Container-level security context
-        securityContext:
-          allowPrivilegeEscalation: false
-          runAsNonRoot: true
+        - name: tts
+          image: ozzuworld/june-tts:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          
+          env:
+            # Service Configuration
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8000"
+            - name: WORKERS
+              value: "1"
+            
+            # Keycloak Authentication (INTERNAL)
+            - name: KEYCLOAK_URL
+              value: "http://keycloak.june-services.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "allsafe"
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: june-tts-secrets
+                  key: keycloak-client-id
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: june-tts-secrets
+                  key: keycloak-client-secret
+            - name: REQUIRED_AUDIENCE
+              value: "june-tts"
+            
+            # External Keycloak (for public token validation)
+            - name: EXTERNAL_KEYCLOAK_URL
+              value: "https://idp.allsafe.world"
+            - name: EXTERNAL_ISSUER
+              value: "https://idp.allsafe.world/realms/allsafe"
+            
+            # OpenVoice Configuration
+            - name: OPENVOICE_CHECKPOINTS_V2
+              value: "/models/openvoice/checkpoints_v2"
+            - name: OPENVOICE_DEVICE
+              value: "cuda"
+            
+            # MeloTTS Configuration
+            - name: MELO_LANGUAGE
+              value: "EN"
+            - name: MELO_SPEAKER_ID
+              value: "0"
+            
+            # Performance & Optimization
+            - name: ENABLE_QUANTIZATION
+              value: "false"
+            - name: PRELOAD_MODELS
+              value: "true"
+            - name: TTS_CACHE_SIZE
+              value: "100"
+            
+            # Limits
+            - name: MAX_FILE_SIZE
+              value: "20971520"  # 20MB
+            - name: MAX_TEXT_LEN
+              value: "2000"
+            
+            # CORS
+            - name: CORS_ALLOW_ORIGINS
+              value: "*"
+            
+            # Logging
+            - name: LOG_LEVEL
+              value: "INFO"
+          
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "2000m"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+          
+          volumeMounts:
+            - name: openvoice-models
+              mountPath: /models/openvoice
+            - name: tts-cache
+              mountPath: /tmp/june_tts_cache
+          
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
       
       volumes:
-      - name: model-cache
-        persistentVolumeClaim:
-          claimName: june-tts-models
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
+        - name: openvoice-models
+          emptyDir:
+            sizeLimit: 20Gi
+        - name: tts-cache
+          emptyDir:
+            sizeLimit: 5Gi
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: june-tts
-  namespace: june-services-services
+  namespace: june-services
+  labels:
+    app: june-tts
 spec:
   type: ClusterIP
   selector:
     app: june-tts
   ports:
-  - port: 8000
-    targetPort: 8000
-    name: http
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
