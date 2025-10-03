@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (WITH WILDCARD CERT SUPPORT)
+# Stage 2: Kubernetes + Infrastructure Setup (FIXED WILDCARD CERT SUPPORT)
 # Run this AFTER stage1-runner-only.sh
 # This prepares the cluster so CI/CD can deploy without GPU issues
 
@@ -74,7 +74,7 @@ if [[ $ENABLE_WILDCARD == [yY] ]]; then
     fi
 fi
 
-# Set the correct ACME server based on choice
+# FIXED: Set the correct ACME server AND issuer name based on choice
 if [[ $CERT_ENV == "production" ]]; then
     ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
     ISSUER_NAME="letsencrypt-prod"
@@ -92,8 +92,12 @@ echo "  GPU: $SETUP_GPU"
 echo "  GPU Replicas: $GPU_REPLICAS"
 echo "  Certificate Environment: $CERT_ENV"
 echo "  Wildcard Enabled: $ENABLE_WILDCARD"
+echo "  ACME Server: $ACME_SERVER"
 echo "  Issuer Name: $ISSUER_NAME"
 echo "  Email: $LETSENCRYPT_EMAIL"
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
+fi
 echo ""
 
 read -p "Continue? (y/n): " confirm
@@ -222,7 +226,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER (WITH WILDCARD SUPPORT)
+# LET'S ENCRYPT ISSUER (FIXED - WITH PROPER WILDCARD SUPPORT)
 # ============================================================================
 
 if [ -n "$LETSENCRYPT_EMAIL" ]; then
@@ -242,7 +246,7 @@ if [ -n "$LETSENCRYPT_EMAIL" ]; then
             --namespace=cert-manager \
             --dry-run=client -o yaml | kubectl apply -f -
         
-        log_info "Creating DNS-01 ClusterIssuer for wildcard certificates..."
+        log_info "Creating DNS-01 ClusterIssuer: $ISSUER_NAME (wildcard enabled)..."
         cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -274,7 +278,7 @@ EOF
         echo "  • Perfect for your 'nuke daily' workflow"
         
     else
-        log_info "Creating HTTP-01 ClusterIssuer for individual certificates..."
+        log_info "Creating HTTP-01 ClusterIssuer: $ISSUER_NAME (individual domains)..."
         cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -519,4 +523,9 @@ if [[ $ENABLE_WILDCARD == [yY] ]]; then
 fi
 
 echo "✅ Ready for deployment!"
+echo ""
+echo "🔍 Verify ClusterIssuer was created:"
+echo "   kubectl get clusterissuer"
+echo "   kubectl describe clusterissuer $ISSUER_NAME"
+echo ""
 echo "===================================================="
