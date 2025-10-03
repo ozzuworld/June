@@ -1,5 +1,5 @@
 ---
-# Enhanced Ingress with SSL and Multiple Domains
+# Enhanced Ingress with SSL and Wildcard Certificate Support
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -12,8 +12,8 @@ metadata:
     # NGINX Ingress Controller annotations
     kubernetes.io/ingress.class: "nginx"
     
-    # SSL and certificate configuration
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # SSL and certificate configuration - UPDATED for wildcard support
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"  # Change to letsencrypt-prod when ready
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     
@@ -39,15 +39,12 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 
 spec:
+  # UPDATED: Wildcard TLS configuration - covers ALL subdomains with one certificate
   tls:
   - hosts:
-    - api.allsafe.world
-    - idp.allsafe.world
-    - stt.allsafe.world
-    - tts.allsafe.world
-    - app.allsafe.world
-    - admin.allsafe.world
-    secretName: allsafe-tls
+    - "*.allsafe.world"        # Wildcard covers all subdomains
+    - "allsafe.world"          # Include root domain if needed
+    secretName: allsafe-wildcard-tls  # cert-manager will create this automatically
     
   rules:
   # Main API Gateway (Orchestrator)
@@ -118,6 +115,9 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: june-dark
+            name: june-admin
             port:
               number: 8080
+
+  # Future services can be added here without certificate changes
+  # The wildcard *.allsafe.world automatically covers them!

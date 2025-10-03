@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (WITH CERT STAGING OPTION)
+# Stage 2: Kubernetes + Infrastructure Setup (WITH CERT STAGING OPTION AND WILDCARD SUPPORT)
 # Run this AFTER stage1-runner-only.sh
 # This prepares the cluster so CI/CD can deploy without GPU issues
 
@@ -7,7 +7,7 @@ set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH PROPERLY FIXED GPU TIME-SLICING"
+echo "   WITH PROPERLY FIXED GPU TIME-SLICING & WILDCARD CERTS"
 echo "======================================================"
 
 # Colors
@@ -198,7 +198,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER (STAGING OR PRODUCTION)
+# LET'S ENCRYPT ISSUER WITH WILDCARD SUPPORT
 # ============================================================================
 
 if [ -n "$LETSENCRYPT_EMAIL" ]; then
@@ -211,7 +211,75 @@ if [ -n "$LETSENCRYPT_EMAIL" ]; then
         log_warning "⚠️  Using PRODUCTION - you have 5 attempts per week per domain set!"
     fi
     
-    cat <<EOF | kubectl apply -f -
+    # NEW: Prompt for wildcard certificate support
+    echo ""
+    log_info "🌟 WILDCARD CERTIFICATE SETUP"
+    echo "  Wildcard certificates (*.allsafe.world) provide:"
+    echo "  ✅ UNLIMITED subdomains with one certificate"
+    echo "  ✅ NO rate limit issues for new services" 
+    echo "  ✅ Perfect for your development workflow"
+    echo ""
+    echo "  Requires: Cloudflare API token for DNS-01 challenge"
+    echo ""
+    prompt "Enable wildcard certificate? (y/n)" ENABLE_WILDCARD "y"
+    
+    if [[ $ENABLE_WILDCARD == [yY] ]]; then
+        echo ""
+        log_info "📋 Cloudflare Setup Required:"
+        echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
+        echo "  2. Create Token > Edit Zone DNS template"
+        echo "  3. Permissions: Zone:DNS:Edit, Zone:Zone:Read"
+        echo "  4. Zone Resources: allsafe.world"
+        echo ""
+        prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
+        
+        if [ -z "$CF_API_TOKEN" ]; then
+            log_error "Cloudflare API token required for wildcard certificates"
+            log_info "You can re-run this script later with the token"
+            exit 1
+        fi
+        
+        log_info "Creating Cloudflare API secret..."
+        kubectl create secret generic cloudflare-api-token \
+            --from-literal=api-token="$CF_API_TOKEN" \
+            --namespace=cert-manager \
+            --dry-run=client -o yaml | kubectl apply -f -
+        
+        log_info "Creating DNS-01 ClusterIssuer for wildcard certificates..."
+        cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${ISSUER_NAME}
+spec:
+  acme:
+    server: ${ACME_SERVER}
+    email: ${LETSENCRYPT_EMAIL}
+    privateKeySecretRef:
+      name: ${ISSUER_NAME}
+    solvers:
+    - dns01:
+        cloudflare:
+          apiTokenSecretRef:
+            name: cloudflare-api-token
+            key: api-token
+      selector:
+        dnsNames:
+        - "allsafe.world"
+        - "*.allsafe.world"
+EOF
+        
+        log_success "Wildcard ClusterIssuer '${ISSUER_NAME}' created with DNS-01 challenge!"
+        echo ""
+        log_info "🎯 Wildcard Benefits Enabled:"
+        echo "  • *.allsafe.world covers ALL current and future subdomains"
+        echo "  • No more rate limit concerns for new services"
+        echo "  • Single certificate management"
+        echo ""
+        
+    else
+        log_info "Creating HTTP-01 ClusterIssuer for individual domain certificates..."
+        cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -227,18 +295,15 @@ spec:
         ingress:
           class: nginx
 EOF
-    
-    log_success "Let's Encrypt issuer '${ISSUER_NAME}' created!"
-    
-    if [[ $CERT_ENV == "staging" ]]; then
+        
+        log_success "Standard ClusterIssuer '${ISSUER_NAME}' created with HTTP-01 challenge!"
         echo ""
-        log_info "To switch to production later:"
-        echo "  1. Delete staging issuer: kubectl delete clusterissuer letsencrypt-staging"
-        echo "  2. Delete staging cert: kubectl delete certificate allsafe-tls -n june-services"
-        echo "  3. Create production issuer with email: $LETSENCRYPT_EMAIL"
-        echo "  4. Update ingress annotation: cert-manager.io/cluster-issuer: letsencrypt-prod"
+        log_info "💡 Rate Limit Bypass Tip:"
+        echo "  Add/remove subdomains in your ingress to get fresh certificate allowances"
+        echo "  Each different domain set gets 5 certificates per week"
         echo ""
     fi
+    
 else
     log_warning "No email provided - skipping Let's Encrypt setup"
 fi
@@ -529,6 +594,14 @@ echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
 echo "  • Let's Encrypt issuer: $ISSUER_NAME ($CERT_ENV)"
 
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo "  • Wildcard certificates enabled (*.allsafe.world)"
+    echo "  • DNS-01 challenge with Cloudflare"
+    echo "  • Unlimited subdomains, no rate limits!"
+else
+    echo "  • HTTP-01 challenge (individual domain certs)"
+fi
+
 if [[ $CERT_ENV == "staging" ]]; then
     echo ""
     log_warning "📝 Certificate Environment: STAGING"
@@ -561,48 +634,64 @@ echo ""
 echo "📋 Next Steps:"
 echo ""
 
-if [[ $CERT_ENV == "staging" ]]; then
-    echo "  🔐 STAGING CERTIFICATES:"
-    echo "    • Your ingress will use cert-manager.io/cluster-issuer: letsencrypt-staging"
-    echo "    • Browsers will show warnings - this is EXPECTED for staging"
-    echo "    • Test thoroughly before switching to production"
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo "  🌟 WILDCARD CERTIFICATES ENABLED:"
+    echo "    • Update your ingress files to use *.allsafe.world"
+    echo "    • One certificate covers ALL subdomains"
+    echo "    • No more rate limit concerns!"
     echo ""
-    echo "  🔄 To switch to PRODUCTION (after testing is stable):"
-    echo "    1. Delete staging resources:"
-    echo "       kubectl delete certificate allsafe-tls -n june-services"
-    echo "       kubectl delete clusterissuer letsencrypt-staging"
-    echo ""
-    echo "    2. Create production issuer:"
-    echo "       cat <<PROD_EOF | kubectl apply -f -"
-    echo "apiVersion: cert-manager.io/v1"
-    echo "kind: ClusterIssuer"
-    echo "metadata:"
-    echo "  name: letsencrypt-prod"
-    echo "spec:"
-    echo "  acme:"
-    echo "    server: https://acme-v02.api.letsencrypt.org/directory"
-    echo "    email: $LETSENCRYPT_EMAIL"
-    echo "    privateKeySecretRef:"
-    echo "      name: letsencrypt-prod"
-    echo "    solvers:"
-    echo "    - http01:"
-    echo "        ingress:"
-    echo "          class: nginx"
-    echo "PROD_EOF"
-    echo ""
-    echo "    3. Update ingress annotation:"
-    echo "       kubectl annotate ingress june-ingress -n june-services \\"
-    echo "         cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite"
-    echo ""
+else
+    if [[ $CERT_ENV == "staging" ]]; then
+        echo "  🔐 STAGING CERTIFICATES:"
+        echo "    • Your ingress will use cert-manager.io/cluster-issuer: letsencrypt-staging"
+        echo "    • Browsers will show warnings - this is EXPECTED for staging"
+        echo "    • Test thoroughly before switching to production"
+        echo ""
+        echo "  🔄 To switch to PRODUCTION (after testing is stable):"
+        echo "    1. Delete staging resources:"
+        echo "       kubectl delete certificate allsafe-tls -n june-services"
+        echo "       kubectl delete clusterissuer letsencrypt-staging"
+        echo ""
+        echo "    2. Create production issuer:"
+        echo "       cat <<PROD_EOF | kubectl apply -f -"
+        echo "apiVersion: cert-manager.io/v1"
+        echo "kind: ClusterIssuer"
+        echo "metadata:"
+        echo "  name: letsencrypt-prod"
+        echo "spec:"
+        echo "  acme:"
+        echo "    server: https://acme-v02.api.letsencrypt.org/directory"
+        echo "    email: $LETSENCRYPT_EMAIL"
+        echo "    privateKeySecretRef:"
+        echo "      name: letsencrypt-prod"
+        echo "    solvers:"
+        echo "    - http01:"
+        echo "        ingress:"
+        echo "          class: nginx"
+        echo "PROD_EOF"
+        echo ""
+        echo "    3. Update ingress annotation:"
+        echo "       kubectl annotate ingress june-ingress -n june-services \\"
+        echo "         cert-manager.io/cluster-issuer=letsencrypt-prod --overwrite"
+        echo ""
+    fi
 fi
 
 echo "  1. Configure DNS records to point to $EXTERNAL_IP:"
-echo "     • idp.allsafe.world"
-echo "     • api.allsafe.world"
-echo "     • stt.allsafe.world"
-echo "     • tts.allsafe.world"
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo "     • *.allsafe.world (wildcard record)"
+    echo "     • allsafe.world (root domain)"
+else
+    echo "     • idp.allsafe.world"
+    echo "     • api.allsafe.world"
+    echo "     • stt.allsafe.world"
+    echo "     • tts.allsafe.world"
+fi
 echo ""
-echo "  2. Push to GitHub - workflow will automatically:"
+echo "  2. Apply your updated ingress configuration:"
+echo "     kubectl apply -f scripts/k8s Install/k8s-ingress-complete.yaml"
+echo ""
+echo "  3. Push to GitHub - workflow will automatically:"
 echo "     • Build Docker images"
 echo "     • Deploy services (STT and TTS can share GPU!)"
 
@@ -613,7 +702,7 @@ else
 fi
 
 echo ""
-echo "  3. Verify deployment:"
+echo "  4. Verify deployment:"
 echo "     • kubectl get pods -n june-services"
 echo "     • kubectl get certificate -n june-services"
 echo "     • kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
@@ -625,6 +714,14 @@ if [[ $SETUP_GPU == [yY] ]] && [ "$GPU_CAPACITY" -lt "$GPU_REPLICAS" ]; then
     echo "  kubectl delete pod -n gpu-operator -l app=nvidia-device-plugin-daemonset"
     echo "  sleep 60"
     echo "  kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
+    echo ""
+fi
+
+if [[ $ENABLE_WILDCARD == [yY] ]]; then
+    echo "🌟 Wildcard benefits:"
+    echo "  • *.allsafe.world covers unlimited subdomains"
+    echo "  • Perfect for your 'nuke it daily' workflow"
+    echo "  • Add new services without certificate concerns"
     echo ""
 fi
 

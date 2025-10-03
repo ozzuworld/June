@@ -25,6 +25,8 @@ dckr_pat_IVggHdFCXudTSCfKH41ZVVYIDow
 @@
 AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM
 
+CF> zF0QKWhCk8Sp2CH8KU2Sk7J7sHIXdAOOndNeU57h
+
 # Update the tts-service-url in june-secrets
 kubectl patch secret june-secrets \
   --type='merge' \
