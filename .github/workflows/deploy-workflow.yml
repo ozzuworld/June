@@ -1,4 +1,4 @@
-name: 🚀 Complete June Services CI/CD Pipeline
+name: 🚀 Complete June Services CI/CD Pipeline (Fixed)
 
 on:
   push:
@@ -36,6 +36,11 @@ on:
         description: 'Build and push Docker images'
         required: false
         default: true
+        type: boolean
+      promote_to_production_cert:
+        description: '⚠️ Promote staging cert to production (ONLY after staging works!)'
+        required: false
+        default: false
         type: boolean
 
 env:
@@ -240,10 +245,11 @@ jobs:
           echo ""
           echo "✅ GPU time-slicing configuration applied"
 
-      - name: 🔐 Setup cert-manager and Let's Encrypt
+      - name: 🔐 Setup cert-manager (FIXED - Rate Limit Protection)
         run: |
-          echo "🔐 Setting up TLS certificates with cert-manager..."
+          echo "🔐 Setting up cert-manager with rate limit protection..."
           
+          # Check if cert-manager is already installed
           if ! kubectl get namespace cert-manager &>/dev/null; then
             echo "📦 Installing cert-manager..."
             kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
@@ -257,25 +263,24 @@ jobs:
             echo "✅ cert-manager installed"
           else
             echo "✅ cert-manager already installed"
+            
+            # Verify cert-manager is healthy
+            READY_PODS=$(kubectl get pods -n cert-manager -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -c "True" || echo "0")
+            if [ "$READY_PODS" -ge 3 ]; then
+              echo "✅ cert-manager is healthy ($READY_PODS/3 pods ready)"
+            else
+              echo "⚠️ cert-manager may have issues ($READY_PODS/3 pods ready)"
+              kubectl get pods -n cert-manager
+            fi
           fi
+
+      - name: 🔐 Setup Let's Encrypt Issuers (Smart Strategy)
+        run: |
+          echo "🔐 Configuring Let's Encrypt with smart rate limit protection..."
           
-          echo "🔧 Creating Let's Encrypt issuers..."
-          cat <<'EOFISSUER' | kubectl apply -f -
-          apiVersion: cert-manager.io/v1
-          kind: ClusterIssuer
-          metadata:
-            name: letsencrypt-prod
-          spec:
-            acme:
-              server: https://acme-v02.api.letsencrypt.org/directory
-              email: ${{ secrets.LETSENCRYPT_EMAIL }}
-              privateKeySecretRef:
-                name: letsencrypt-prod
-              solvers:
-              - http01:
-                  ingress:
-                    class: nginx
-          ---
+          # Create staging issuer (unlimited)
+          echo "📝 Creating Let's Encrypt STAGING issuer (unlimited for testing)..."
+          cat <<EOF | kubectl apply -f -
           apiVersion: cert-manager.io/v1
           kind: ClusterIssuer
           metadata:
@@ -290,7 +295,43 @@ jobs:
               - http01:
                   ingress:
                     class: nginx
-          EOFISSUER
+          EOF
+          
+          # Create production issuer
+          echo "📝 Creating Let's Encrypt PRODUCTION issuer..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: ${{ secrets.LETSENCRYPT_EMAIL }}
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+          EOF
+          
+          echo "⏳ Waiting for ClusterIssuers to be ready..."
+          sleep 10
+          
+          # Verify issuers
+          STAGING_READY=$(kubectl get clusterissuer letsencrypt-staging -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+          PROD_READY=$(kubectl get clusterissuer letsencrypt-prod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+          
+          echo "ClusterIssuer Status:"
+          echo "  Staging: $STAGING_READY"
+          echo "  Production: $PROD_READY"
+          
+          if [ "$STAGING_READY" = "True" ]; then
+            echo "✅ Staging issuer ready"
+          else
+            echo "⚠️ Staging issuer not ready yet"
+          fi
           
           echo "✅ Let's Encrypt issuers configured"
 
@@ -387,12 +428,209 @@ jobs:
             done
           fi
 
-      - name: 🌐 Apply ingress
+      - name: 🌐 Apply Ingress with Smart Certificate Management (FIXED)
         run: |
-          echo "🌐 Applying ingress..."
-          if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
-            kubectl apply -f /tmp/k8s-updated/ingress.yaml
+          echo "🌐 Deploying ingress with smart certificate management..."
+          
+          # Determine certificate strategy
+          CERT_ISSUER="letsencrypt-staging"  # Default to staging (safe)
+          CERT_ACTION="keeping_existing"
+          
+          # Check if certificate already exists and is valid
+          if kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" &>/dev/null; then
+            CERT_READY=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+            CURRENT_ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "")
+            
+            if [ "$CERT_READY" = "True" ]; then
+              echo "✅ Valid certificate already exists"
+              echo "   Current issuer: $CURRENT_ISSUER"
+              CERT_ISSUER="$CURRENT_ISSUER"
+              CERT_ACTION="reusing_valid_cert"
+              
+              # Check if user explicitly wants to promote to production
+              if [ "${{ github.event.inputs.promote_to_production_cert }}" = "true" ] && [ "$CURRENT_ISSUER" != "letsencrypt-prod" ]; then
+                echo "🔄 User requested promotion to production certificate"
+                CERT_ISSUER="letsencrypt-prod"
+                CERT_ACTION="promoting_to_prod"
+              fi
+            else
+              echo "⚠️ Certificate exists but not ready (status: $CERT_READY)"
+              echo "   Will use staging issuer to avoid rate limits"
+              CERT_ISSUER="letsencrypt-staging"
+              CERT_ACTION="recreating_with_staging"
+            fi
+          else
+            echo "ℹ️ No certificate exists yet"
+            echo "   Will create new certificate using staging issuer (safe)"
+            CERT_ISSUER="letsencrypt-staging"
+            CERT_ACTION="creating_new_staging"
           fi
+          
+          echo ""
+          echo "📋 Certificate Strategy:"
+          echo "   Issuer: $CERT_ISSUER"
+          echo "   Action: $CERT_ACTION"
+          echo ""
+          
+          # If promoting to production, clean up old cert first
+          if [ "$CERT_ACTION" = "promoting_to_prod" ]; then
+            echo "🔄 Cleaning up staging certificate for promotion..."
+            kubectl delete certificate allsafe-tls -n "$KUBE_NAMESPACE" || true
+            kubectl delete certificaterequest --all -n "$KUBE_NAMESPACE" || true
+            kubectl delete secret allsafe-tls -n "$KUBE_NAMESPACE" || true
+            sleep 5
+          fi
+          
+          # Apply ingress with determined issuer
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: june-ingress
+            namespace: $KUBE_NAMESPACE
+            annotations:
+              cert-manager.io/cluster-issuer: $CERT_ISSUER
+              kubernetes.io/ingress.class: nginx
+              nginx.ingress.kubernetes.io/ssl-redirect: "false"
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+              nginx.ingress.kubernetes.io/enable-cors: "true"
+              nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+              nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+              nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+              nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+              nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+          spec:
+            ingressClassName: nginx
+            tls:
+            - hosts:
+              - api.allsafe.world
+              - idp.allsafe.world
+              - stt.allsafe.world
+              - tts.allsafe.world
+              secretName: allsafe-tls
+            rules:
+            - host: api.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-orchestrator
+                      port:
+                        number: 8080
+            - host: idp.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-idp
+                      port:
+                        number: 8080
+            - host: stt.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-stt
+                      port:
+                        number: 8080
+            - host: tts.allsafe.world
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: june-tts
+                      port:
+                        number: 8000
+          EOF
+          
+          echo "✅ Ingress applied with issuer: $CERT_ISSUER"
+
+      - name: ⏳ Monitor Certificate Issuance
+        run: |
+          echo "⏳ Monitoring certificate issuance..."
+          
+          # Give cert-manager time to process
+          sleep 20
+          
+          # Monitor for up to 5 minutes
+          for i in {1..20}; do
+            if ! kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" &>/dev/null; then
+              echo "⏳ Waiting for certificate resource to be created... ($i/20)"
+              sleep 15
+              continue
+            fi
+            
+            CERT_STATUS=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+            
+            if [ "$CERT_STATUS" = "True" ]; then
+              echo "✅ Certificate successfully issued!"
+              
+              # Show certificate details
+              ISSUER=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.spec.issuerRef.name}')
+              NOT_AFTER=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.notAfter}')
+              
+              echo ""
+              echo "📋 Certificate Details:"
+              echo "   Issuer: $ISSUER"
+              echo "   Valid until: $NOT_AFTER"
+              
+              # Check if it's a staging cert
+              if [ "$ISSUER" = "letsencrypt-staging" ]; then
+                echo ""
+                echo "ℹ️ Using STAGING certificate (browser will show warning)"
+                echo "   This is NORMAL and protects against rate limits"
+                echo ""
+                echo "🎯 To promote to production certificate:"
+                echo "   1. Verify staging certificate works correctly"
+                echo "   2. Use workflow_dispatch with 'promote_to_production_cert: true'"
+                echo "   3. Or manually run:"
+                echo "      kubectl annotate ingress june-ingress -n $KUBE_NAMESPACE --overwrite cert-manager.io/cluster-issuer=letsencrypt-prod"
+                echo "      kubectl delete certificate allsafe-tls -n $KUBE_NAMESPACE"
+              fi
+              
+              break
+            elif [ "$CERT_STATUS" = "False" ]; then
+              REASON=$(kubectl get certificate allsafe-tls -n "$KUBE_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
+              echo "⏳ Certificate not ready: $REASON ($i/20)"
+              
+              # Check for rate limit in cert-manager logs
+              if kubectl logs -n cert-manager -l app=cert-manager --tail=50 2>/dev/null | grep -q "rateLimited"; then
+                echo ""
+                echo "❌ RATE LIMIT DETECTED!"
+                echo "   Switching to staging issuer to avoid further rate limit issues..."
+                
+                kubectl annotate ingress june-ingress -n "$KUBE_NAMESPACE" --overwrite \
+                  cert-manager.io/cluster-issuer=letsencrypt-staging
+                kubectl delete certificate allsafe-tls -n "$KUBE_NAMESPACE" || true
+                kubectl delete certificaterequest --all -n "$KUBE_NAMESPACE" || true
+                
+                echo "   Retrying with staging issuer..."
+                sleep 10
+                i=0  # Reset counter
+              fi
+            else
+              echo "⏳ Waiting for certificate... status: $CERT_STATUS ($i/20)"
+            fi
+            
+            sleep 15
+          done
+          
+          # Final status
+          echo ""
+          echo "📊 Final Certificate Status:"
+          kubectl get certificate -n "$KUBE_NAMESPACE" || echo "No certificates found"
+          
+          echo ""
+          echo "📋 Certificate Details:"
+          kubectl describe certificate allsafe-tls -n "$KUBE_NAMESPACE" 2>/dev/null | tail -20 || echo "Certificate not found"
 
       - name: ⏳ Wait for deployments
         run: |
@@ -410,4 +648,28 @@ jobs:
           echo "🎮 GPU Status:"
           kubectl describe nodes | grep "nvidia.com/gpu" || echo "No GPU info"
           echo ""
+          echo "🔐 Certificate Status:"
+          kubectl get certificate,certificaterequest,order,challenge -n "$KUBE_NAMESPACE" 2>/dev/null || echo "No certificate resources"
+          echo ""
           echo "✅ Deployment complete"
+          
+          # Show useful next steps
+          CERT_ISSUER=$(kubectl get ingress june-ingress -n "$KUBE_NAMESPACE" -o jsonpath='{.metadata.annotations.cert-manager\.io/cluster-issuer}' 2>/dev/null || echo "unknown")
+          
+          if [ "$CERT_ISSUER" = "letsencrypt-staging" ]; then
+            echo ""
+            echo "ℹ️ Currently using STAGING certificates"
+            echo ""
+            echo "🎯 To promote to PRODUCTION:"
+            echo "   Run this workflow again with:"
+            echo "   • promote_to_production_cert: true"
+            echo ""
+            echo "⚠️ Only promote when:"
+            echo "   • Staging certificates work correctly"
+            echo "   • You're ready for production"
+            echo "   • You haven't hit rate limits recently"
+          elif [ "$CERT_ISSUER" = "letsencrypt-prod" ]; then
+            echo ""
+            echo "✅ Using PRODUCTION certificates"
+            echo "   No browser warnings expected"
+          fi
