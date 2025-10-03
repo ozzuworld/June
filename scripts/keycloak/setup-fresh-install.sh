@@ -267,41 +267,40 @@ create_role "june-user" "Standard June service user"
 create_role "june-admin" "June service administrator"
 create_role "june-service" "Service-to-service communication"
 
-# Generate kubectl commands (FIXED: No ANSI codes in generated file)
+# Generate kubectl commands (FIXED: Direct variable substitution, no sed needed)
 log_info "Generating Kubernetes secret update commands..."
 
-# Use cat with EOF (no variable expansion for the script content)
-# Only substitute the actual secret values
-cat > update-k8s-secrets.sh << 'SCRIPT_EOF'
+# Generate the script with direct bash variable substitution
+cat > update-k8s-secrets.sh << EOF
 #!/bin/bash
 # Generated Keycloak secret update commands
 
 echo "🔐 Updating Kubernetes secrets with Keycloak credentials..."
 
 # Update june-orchestrator secrets
-kubectl create secret generic june-orchestrator-secrets \
-  --from-literal=keycloak-client-id=june-orchestrator \
-  --from-literal=keycloak-client-secret=ORCH_SECRET_PLACEHOLDER \
-  --from-literal=gemini-api-key=${GEMINI_API_KEY:-AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM} \
-  -n june-services \
+kubectl create secret generic june-orchestrator-secrets \\
+  --from-literal=keycloak-client-id=june-orchestrator \\
+  --from-literal=keycloak-client-secret='$ORCH_SECRET' \\
+  --from-literal=gemini-api-key=\${GEMINI_API_KEY:-AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM} \\
+  -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-orchestrator secrets updated"
 
 # Update june-stt secrets
-kubectl create secret generic june-stt-secrets \
-  --from-literal=keycloak-client-id=june-stt \
-  --from-literal=keycloak-client-secret=STT_SECRET_PLACEHOLDER \
-  -n june-services \
+kubectl create secret generic june-stt-secrets \\
+  --from-literal=keycloak-client-id=june-stt \\
+  --from-literal=keycloak-client-secret='$STT_SECRET' \\
+  -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-stt secrets updated"
 
 # Update june-tts secrets
-kubectl create secret generic june-tts-secrets \
-  --from-literal=keycloak-client-id=june-tts \
-  --from-literal=keycloak-client-secret=TTS_SECRET_PLACEHOLDER \
-  -n june-services \
+kubectl create secret generic june-tts-secrets \\
+  --from-literal=keycloak-client-id=june-tts \\
+  --from-literal=keycloak-client-secret='$TTS_SECRET' \\
+  -n june-services \\
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-tts secrets updated"
@@ -318,12 +317,7 @@ echo ""
 echo "🔍 Check status with:"
 echo "  kubectl get pods -n june-services"
 echo "  kubectl logs -l app=june-orchestrator -n june-services --tail=50"
-SCRIPT_EOF
-
-# Now replace the placeholders with actual values
-sed -i "s/ORCH_SECRET_PLACEHOLDER/$ORCH_SECRET/g" update-k8s-secrets.sh
-sed -i "s/STT_SECRET_PLACEHOLDER/$STT_SECRET/g" update-k8s-secrets.sh
-sed -i "s/TTS_SECRET_PLACEHOLDER/$TTS_SECRET/g" update-k8s-secrets.sh
+EOF
 
 chmod +x update-k8s-secrets.sh
 
