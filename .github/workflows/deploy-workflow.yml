@@ -1,4 +1,4 @@
-name: 🚀 June Services Deploy
+name: 🚀 June Services Deploy (Simple)
 
 on:
   push:
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   # ============================================================================
-  # DETERMINE WHAT TO BUILD/DEPLOY
+  # SETUP
   # ============================================================================
   
   setup:
@@ -48,7 +48,6 @@ jobs:
       - name: 📝 Configure workflow
         id: config
         run: |
-          # Determine if we should build
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BUILD="${{ github.event.inputs.build_images }}"
             DEPLOY="${{ github.event.inputs.deploy_services }}"
@@ -69,7 +68,7 @@ jobs:
           echo "  Services: $SERVICES"
 
   # ============================================================================
-  # BUILD IMAGES (Separated by service for better visualization)
+  # BUILD IMAGES
   # ============================================================================
 
   build-stt:
@@ -100,7 +99,7 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest
 
-      - name: 🏗️ Build and push june-stt
+      - name: 🏗️ Build and push
         uses: docker/build-push-action@v5
         with:
           context: ./June/services/june-stt
@@ -140,7 +139,7 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest
 
-      - name: 🏗️ Build and push june-tts
+      - name: 🏗️ Build and push
         uses: docker/build-push-action@v5
         with:
           context: ./June/services/june-tts
@@ -180,7 +179,7 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest
 
-      - name: 🏗️ Build and push june-orchestrator
+      - name: 🏗️ Build and push
         uses: docker/build-push-action@v5
         with:
           context: ./June/services/june-orchestrator
@@ -220,7 +219,7 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest
 
-      - name: 🏗️ Build and push june-idp
+      - name: 🏗️ Build and push
         uses: docker/build-push-action@v5
         with:
           context: ./June/services/june-idp
@@ -257,6 +256,10 @@ jobs:
           echo "🔍 Checking Kubernetes cluster..."
           kubectl cluster-info
           kubectl get nodes -o wide
+          
+          echo ""
+          echo "🎮 GPU Status:"
+          kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU_CAPACITY:.status.allocatable.nvidia\.com/gpu'
 
       - name: 🏗️ Create Namespace
         run: |
@@ -281,7 +284,7 @@ jobs:
 
       - name: 🎮 Label GPU Nodes
         run: |
-          echo "🏷️  Labeling nodes for GPU workloads..."
+          echo "🏷️ Labeling nodes for GPU workloads..."
           for node in $(kubectl get nodes -o name); do
             kubectl label $node gpu=true --overwrite || true
           done
@@ -308,83 +311,25 @@ jobs:
       - name: 🌐 Apply Ingress
         run: |
           echo "🌐 Applying ingress with automatic Let's Encrypt..."
-          
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: june-ingress
-            namespace: $NAMESPACE
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              kubernetes.io/ingress.class: "nginx"
-              nginx.ingress.kubernetes.io/ssl-redirect: "false"
-              nginx.ingress.kubernetes.io/enable-cors: "true"
-              nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-              nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-              nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-          spec:
-            ingressClassName: nginx
-            tls:
-            - hosts:
-              - api.allsafe.world
-              - idp.allsafe.world
-              - stt.allsafe.world
-              - tts.allsafe.world
-              secretName: allsafe-tls
-            rules:
-            - host: api.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-orchestrator
-                      port:
-                        number: 8080
-            - host: idp.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-idp
-                      port:
-                        number: 8080
-            - host: stt.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-stt
-                      port:
-                        number: 8080
-            - host: tts.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-tts
-                      port:
-                        number: 8000
-          EOF
-          
+          kubectl apply -f k8s/ingress.yaml
           echo "✅ Ingress applied"
 
       - name: ⏳ Wait for Deployments
         run: |
           echo "⏳ Waiting for deployments..."
-          for deployment in $(kubectl get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
+          
+          # Wait for non-GPU services first
+          for deployment in june-idp june-orchestrator; do
             kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
               echo "⚠️ $deployment taking longer than expected"
+            }
+          done
+          
+          # Wait for GPU services (they may take longer)
+          for deployment in june-stt june-tts; do
+            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=600s || {
+              echo "⚠️ $deployment taking longer than expected"
+              kubectl describe pod -l app=$deployment -n $NAMESPACE | tail -30
             }
           done
 
@@ -429,6 +374,9 @@ jobs:
           echo "📦 Pods:"
           kubectl get pods -n $NAMESPACE -o wide
           echo ""
+          echo "🎮 GPU Allocation:"
+          kubectl describe nodes | grep -A 10 "Allocated resources:" | grep nvidia || echo "No GPU info available"
+          echo ""
           echo "🌐 Services:"
           kubectl get services -n $NAMESPACE
           echo ""
@@ -438,4 +386,25 @@ jobs:
           echo "🔒 Certificates:"
           kubectl get certificate -n $NAMESPACE
           echo ""
+          
+          # Check for issues
+          PENDING=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+          FAILED=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed --no-headers 2>/dev/null | wc -l)
+          
+          if [ "$PENDING" -gt 0 ]; then
+            echo "⚠️ WARNING: $PENDING pod(s) pending"
+            kubectl describe pods -n $NAMESPACE --field-selector=status.phase=Pending | grep -A 5 "Events:"
+          fi
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ ERROR: $FAILED pod(s) failed"
+            kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed
+          fi
+          
+          echo ""
           echo "======================================================"
+          
+          # Exit with error if there are failed pods
+          if [ "$FAILED" -gt 0 ]; then
+            exit 1
+          fi

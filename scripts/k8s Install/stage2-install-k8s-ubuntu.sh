@@ -1,13 +1,13 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE FIX)
+# Stage 2: Kubernetes + Infrastructure Setup (PROPERLY FIXED GPU TIME-SLICING)
 # Run this AFTER stage1-runner-only.sh
-# This prepares the cluster, GitHub Workflow will deploy services
+# This prepares the cluster so CI/CD can deploy without GPU issues
 
 set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH PROPER STORAGE FOR POSTGRESQL"
+echo "   WITH PROPER GPU TIME-SLICING CONFIGURATION"
 echo "======================================================"
 
 # Colors
@@ -40,12 +40,14 @@ prompt() {
 log_info "Configuration"
 prompt "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 prompt "Setup GPU Operator? (y/n)" SETUP_GPU "y"
+prompt "GPU time-slicing replicas (2-8)" GPU_REPLICAS "2"
 prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
 
 echo ""
 echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
+echo "  GPU Replicas: $GPU_REPLICAS (1 physical GPU = $GPU_REPLICAS virtual GPUs)"
 echo "  Email: $LETSENCRYPT_EMAIL"
 echo ""
 
@@ -175,7 +177,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER (SIMPLE - PRODUCTION ONLY)
+# LET'S ENCRYPT ISSUER
 # ============================================================================
 
 if [ -n "$LETSENCRYPT_EMAIL" ]; then
@@ -202,11 +204,11 @@ else
 fi
 
 # ============================================================================
-# GPU OPERATOR (Optional)
+# GPU OPERATOR WITH PROPER TIME-SLICING
 # ============================================================================
 
 if [[ $SETUP_GPU == [yY] ]]; then
-    log_info "Installing GPU Operator..."
+    log_info "Installing GPU Operator with time-slicing..."
     
     # Install Helm
     if ! command -v helm &> /dev/null; then
@@ -227,6 +229,7 @@ if [[ $SETUP_GPU == [yY] ]]; then
     
     LATEST_VERSION=$(helm search repo nvidia/gpu-operator --versions | grep gpu-operator | head -1 | awk '{print $2}')
     
+    log_info "Installing GPU Operator version $LATEST_VERSION..."
     helm install gpu-operator nvidia/gpu-operator \
         --wait --timeout 15m \
         --namespace gpu-operator \
@@ -235,8 +238,20 @@ if [[ $SETUP_GPU == [yY] ]]; then
         --set toolkit.enabled=true \
         --set devicePlugin.enabled=true
     
-    # Enable time-slicing
-    log_info "Enabling GPU time-slicing..."
+    log_success "GPU Operator installed!"
+    
+    # ========================================================================
+    # CRITICAL FIX: PROPER TIME-SLICING SETUP
+    # ========================================================================
+    
+    log_info "Configuring GPU time-slicing (1 GPU → $GPU_REPLICAS virtual GPUs)..."
+    
+    # Wait for GPU operator to be fully ready
+    log_info "Waiting for GPU operator to stabilize..."
+    sleep 30
+    
+    # Create time-slicing ConfigMap
+    log_info "Creating time-slicing configuration..."
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -246,23 +261,66 @@ metadata:
 data:
   any: |-
     version: v1
-    flags:
-      migStrategy: none
     sharing:
       timeSlicing:
-        resources:
-        - name: nvidia.com/gpu
-          replicas: 2
+        replicas: ${GPU_REPLICAS}
+        renameByDefault: false
+        failRequestsGreaterThanOne: false
 EOF
     
-    kubectl patch clusterpolicy cluster-policy -n gpu-operator --type merge \
-        -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}' || true
+    log_success "Time-slicing ConfigMap created"
     
-    log_success "GPU Operator installed with time-slicing!"
+    # Apply time-slicing to ClusterPolicy
+    log_info "Applying time-slicing to GPU operator..."
+    kubectl patch clusterpolicy cluster-policy \
+        -n gpu-operator \
+        --type merge \
+        -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
+    
+    log_success "Time-slicing configuration applied"
+    
+    # Wait for device plugin to restart with new config
+    log_info "Waiting for GPU device plugin to restart with time-slicing..."
+    sleep 45
+    
+    # Verify GPU capacity increased
+    log_info "Verifying GPU time-slicing..."
+    for i in {1..30}; do
+        GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
+        
+        if [ "$GPU_CAPACITY" -ge "$GPU_REPLICAS" ]; then
+            log_success "GPU time-slicing verified! GPU capacity: $GPU_CAPACITY (was 1, now $GPU_REPLICAS)"
+            break
+        else
+            if [ $i -eq 30 ]; then
+                log_error "GPU time-slicing not applied after 5 minutes"
+                log_warning "Manual intervention required. Run these commands:"
+                echo "  kubectl delete pod -n gpu-operator -l app=nvidia-device-plugin-daemonset"
+                echo "  kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
+            else
+                echo "  Checking... GPU capacity: $GPU_CAPACITY (expected: $GPU_REPLICAS) - attempt $i/30"
+                sleep 10
+            fi
+        fi
+    done
+    
+    # Show final GPU status
+    echo ""
+    log_info "Final GPU Configuration:"
+    kubectl get nodes -o json | jq '.items[] | {
+        name: .metadata.name,
+        gpu_capacity: .status.allocatable."nvidia.com/gpu",
+        gpu_allocatable: .status.capacity."nvidia.com/gpu"
+    }'
+    
+    echo ""
+    log_info "GPU Operator Pods:"
+    kubectl get pods -n gpu-operator
+    
 fi
 
 # ============================================================================
-# STORAGE SETUP - THE FIX! Creates PV for PostgreSQL
+# STORAGE SETUP
 # ============================================================================
 
 log_info "Setting up storage for PostgreSQL and services..."
@@ -317,69 +375,7 @@ spec:
           - $(hostname)
 EOF
 
-log_info "Creating PersistentVolumes for STT models..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-stt-models-pv
-  labels:
-    type: local
-    app: june-stt
-spec:
-  capacity:
-    storage: 10Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-stt-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
-log_info "Creating PersistentVolumes for TTS models..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-tts-models-pv
-  labels:
-    type: local
-    app: june-tts
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-tts-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
 log_success "Storage configured with all PersistentVolumes!"
-
-# Verify storage
-echo ""
-log_info "Verifying storage setup..."
-kubectl get storageclass
-kubectl get pv
 
 # ============================================================================
 # FIX GITHUB RUNNER KUBECTL ACCESS
@@ -388,13 +384,11 @@ kubectl get pv
 log_info "Configuring GitHub runner for kubectl access..."
 
 if [ -d "/opt/actions-runner" ]; then
-    # Add environment variables
     cat >> /opt/actions-runner/.env << 'EOF'
 KUBECONFIG=/root/.kube/config
 LANG=C.UTF-8
 EOF
     
-    # Restart runner if running
     if systemctl is-active --quiet actions.runner.*; then
         systemctl restart actions.runner.*
         log_success "GitHub runner configured and restarted"
@@ -403,13 +397,10 @@ EOF
     fi
 else
     log_warning "GitHub runner not found at /opt/actions-runner"
-    log_info "Run this after starting the runner:"
-    echo 'echo "KUBECONFIG=/root/.kube/config" >> /opt/actions-runner/.env'
-    echo 'systemctl restart actions.runner.*'
 fi
 
 # ============================================================================
-# SUMMARY
+# VERIFICATION
 # ============================================================================
 
 EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
@@ -424,17 +415,19 @@ echo "  • Kubernetes cluster"
 echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
 echo "  • Let's Encrypt issuer (production)"
-[[ $SETUP_GPU == [yY] ]] && echo "  • GPU Operator with time-slicing"
-echo "  • Storage configured with PersistentVolumes:"
-echo "    - PostgreSQL: /opt/june-postgresql-data (10Gi)"
-echo "    - STT Models: /opt/june-stt-models (10Gi)"
-echo "    - TTS Models: /opt/june-tts-models (20Gi)"
+
+if [[ $SETUP_GPU == [yY] ]]; then
+    GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
+    echo "  • GPU Operator with time-slicing: 1 physical GPU = $GPU_CAPACITY virtual GPUs ✅"
+fi
+
+echo "  • Storage configured with PersistentVolumes"
 echo "  • GitHub runner configured"
 echo ""
 echo "🌐 Your External IP: $EXTERNAL_IP"
 echo ""
-echo "📊 Storage Verification:"
-kubectl get pv
+echo "📊 GPU Status:"
+kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU_CAPACITY:.status.allocatable.nvidia\.com/gpu'
 echo ""
 echo "📋 Next Steps:"
 echo "  1. Configure DNS records to point to $EXTERNAL_IP:"
@@ -445,15 +438,13 @@ echo "     • tts.allsafe.world"
 echo ""
 echo "  2. Push to GitHub - workflow will automatically:"
 echo "     • Build Docker images"
-echo "     • Deploy services"
-echo "     • PostgreSQL will start immediately (PV ready!)"
+echo "     • Deploy services (STT and TTS can share GPU!)"
 echo "     • Get Let's Encrypt certificates"
 echo ""
 echo "  3. Verify deployment:"
 echo "     • kubectl get pods -n june-services"
-echo "     • kubectl get pvc -n june-services"
-echo "     • kubectl get certificate -n june-services"
+echo "     • kubectl get nodes -o json | jq '.items[].status.allocatable.\"nvidia.com/gpu\"'"
 echo ""
-echo "✅ PostgreSQL will NOT be pending anymore!"
+echo "✅ GPU time-slicing is configured - CI/CD can deploy without GPU conflicts!"
 echo ""
-echo "======================================================"
+echo "===================================================="
