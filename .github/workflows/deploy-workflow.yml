@@ -1,4 +1,4 @@
-name: 🚀 June Services CI/CD (Fixed - Simple Certificates)
+name: 🚀 June Services Deploy
 
 on:
   push:
@@ -7,24 +7,76 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      build_images:
+        description: '🔨 Build Docker images?'
+        required: true
+        default: true
+        type: boolean
+      deploy_services:
+        description: '🚀 Deploy to Kubernetes?'
+        required: true
+        default: true
+        type: boolean
+      services:
+        description: '📦 Services to build/deploy (comma-separated, or "all")'
+        required: false
+        default: 'all'
+        type: string
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
   NAMESPACE: june-services
-  IMAGE_TAG: ${{ github.sha }}
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build-and-push:
-    name: 🔨 Build & Push Images
+  # ============================================================================
+  # DETERMINE WHAT TO BUILD/DEPLOY
+  # ============================================================================
+  
+  setup:
+    name: 📋 Setup Build Matrix
     runs-on: self-hosted
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [june-stt, june-tts, june-orchestrator, june-idp]
+    outputs:
+      build_images: ${{ steps.config.outputs.build_images }}
+      deploy_services: ${{ steps.config.outputs.deploy_services }}
+      services: ${{ steps.config.outputs.services }}
+    steps:
+      - name: 📝 Configure workflow
+        id: config
+        run: |
+          # Determine if we should build
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUILD="${{ github.event.inputs.build_images }}"
+            DEPLOY="${{ github.event.inputs.deploy_services }}"
+            SERVICES="${{ github.event.inputs.services }}"
+          else
+            BUILD="true"
+            DEPLOY="true"
+            SERVICES="all"
+          fi
+          
+          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
+          echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          
+          echo "📋 Configuration:"
+          echo "  Build images: $BUILD"
+          echo "  Deploy services: $DEPLOY"
+          echo "  Services: $SERVICES"
+
+  # ============================================================================
+  # BUILD IMAGES (Separated by service for better visualization)
+  # ============================================================================
+
+  build-stt:
+    name: 🔨 Build june-stt
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'stt'))
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v4
@@ -38,33 +90,163 @@ jobs:
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 📝 Extract metadata
+      - name: 📝 Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          images: ${{ env.REGISTRY }}/june-stt
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
             type=raw,value=latest
 
-      - name: 🏗️ Build and push
+      - name: 🏗️ Build and push june-stt
         uses: docker/build-push-action@v5
         with:
-          context: ./${{ matrix.service }}
-          file: ./${{ matrix.service }}/Dockerfile
+          context: ./June/services/june-stt
+          file: ./June/services/june-stt/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=stt
+          cache-to: type=gha,mode=max,scope=stt
           platforms: linux/amd64
 
-  deploy:
-    name: 🚀 Deploy to K8s
+  build-tts:
+    name: 🔨 Build june-tts
     runs-on: self-hosted
-    needs: build-and-push
-    if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'tts'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-tts
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push june-tts
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-tts
+          file: ./June/services/june-tts/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=tts
+          cache-to: type=gha,mode=max,scope=tts
+          platforms: linux/amd64
+
+  build-orchestrator:
+    name: 🔨 Build june-orchestrator
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'orchestrator'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-orchestrator
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push june-orchestrator
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-orchestrator
+          file: ./June/services/june-orchestrator/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator
+          platforms: linux/amd64
+
+  build-idp:
+    name: 🔨 Build june-idp
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'idp'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-idp
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push june-idp
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-idp
+          file: ./June/services/june-idp/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=idp
+          cache-to: type=gha,mode=max,scope=idp
+          platforms: linux/amd64
+
+  # ============================================================================
+  # DEPLOYMENT
+  # ============================================================================
+
+  deploy:
+    name: 🚀 Deploy to Kubernetes
+    runs-on: self-hosted
+    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    if: |
+      always() && 
+      needs.setup.outputs.deploy_services == 'true' &&
+      (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
+      (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
+      (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
+      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped')
 
     steps:
       - name: 📦 Checkout
@@ -123,7 +305,7 @@ jobs:
           echo "🚀 Deploying June services..."
           kubectl apply -f k8s/complete-manifests.yaml
 
-      - name: 🌐 Apply Ingress (SIMPLE - Let's Encrypt handles the rest)
+      - name: 🌐 Apply Ingress
         run: |
           echo "🌐 Applying ingress with automatic Let's Encrypt..."
           
@@ -195,32 +377,22 @@ jobs:
                         number: 8000
           EOF
           
-          echo "✅ Ingress applied - cert-manager will handle certificates"
+          echo "✅ Ingress applied"
 
       - name: ⏳ Wait for Deployments
         run: |
-          echo "⏳ Waiting for deployments to be ready..."
+          echo "⏳ Waiting for deployments..."
           for deployment in $(kubectl get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
             kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
               echo "⚠️ $deployment taking longer than expected"
             }
           done
 
-      - name: 🔐 Monitor Certificate Issuance
+      - name: 🔐 Monitor Certificate
         run: |
-          echo "🔐 Monitoring Let's Encrypt certificate issuance..."
-          echo ""
-          echo "This happens automatically via cert-manager:"
-          echo "1. cert-manager sees the ingress"
-          echo "2. Requests certificate from Let's Encrypt"
-          echo "3. Let's Encrypt validates via HTTP-01 challenge"
-          echo "4. Certificate issued and stored in allsafe-tls secret"
-          echo ""
-          
-          # Give cert-manager time to start
+          echo "🔐 Monitoring Let's Encrypt certificate..."
           sleep 20
           
-          # Monitor for up to 5 minutes
           for i in {1..20}; do
             if ! kubectl get certificate allsafe-tls -n $NAMESPACE &>/dev/null; then
               echo "⏳ Waiting for certificate resource... ($i/20)"
@@ -232,71 +404,38 @@ jobs:
               -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
             
             if [ "$STATUS" = "True" ]; then
-              echo "✅ Certificate successfully issued!"
-              echo ""
+              echo "✅ Certificate issued!"
               kubectl get certificate allsafe-tls -n $NAMESPACE
-              echo ""
-              
-              ISSUER=$(kubectl get certificate allsafe-tls -n $NAMESPACE -o jsonpath='{.spec.issuerRef.name}')
-              NOT_AFTER=$(kubectl get certificate allsafe-tls -n $NAMESPACE -o jsonpath='{.status.notAfter}')
-              
-              echo "📋 Certificate Details:"
-              echo "   Issuer: $ISSUER"
-              echo "   Valid until: $NOT_AFTER"
-              echo "   Auto-renews: Yes"
               break
             else
               MESSAGE=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
                 -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
-              echo "⏳ Certificate status: $MESSAGE ($i/20)"
+              echo "⏳ $MESSAGE ($i/20)"
               sleep 15
             fi
           done
-          
-          # Show final status regardless
-          echo ""
-          echo "📊 Final Certificate Status:"
-          kubectl get certificate -n $NAMESPACE || echo "No certificates yet"
-          echo ""
-          echo "🔍 If certificate is pending, check:"
-          echo "   kubectl describe certificate allsafe-tls -n $NAMESPACE"
-          echo "   kubectl get challenge -n $NAMESPACE"
-          echo "   kubectl logs -n cert-manager deploy/cert-manager"
 
-      - name: 📊 Final Status
+      - name: 📊 Deployment Summary
         if: always()
         run: |
           echo ""
           echo "======================================================"
-          echo "📊 Deployment Summary"
+          echo "📊 Deployment Status"
           echo "======================================================"
           echo ""
           echo "🚀 Deployments:"
-          kubectl get deployments -n $NAMESPACE -o wide || true
+          kubectl get deployments -n $NAMESPACE -o wide
           echo ""
           echo "📦 Pods:"
-          kubectl get pods -n $NAMESPACE -o wide || true
+          kubectl get pods -n $NAMESPACE -o wide
           echo ""
           echo "🌐 Services:"
-          kubectl get services -n $NAMESPACE || true
+          kubectl get services -n $NAMESPACE
           echo ""
           echo "🔐 Ingress:"
-          kubectl get ingress -n $NAMESPACE || true
+          kubectl get ingress -n $NAMESPACE
           echo ""
           echo "🔒 Certificates:"
-          kubectl get certificate -n $NAMESPACE || true
+          kubectl get certificate -n $NAMESPACE
           echo ""
-          echo "======================================================"
-          echo "✅ Deployment Complete!"
-          echo ""
-          echo "🌍 Your services are available at:"
-          echo "   • https://idp.allsafe.world (Keycloak)"
-          echo "   • https://api.allsafe.world (Orchestrator)"
-          echo "   • https://stt.allsafe.world (Speech-to-Text)"
-          echo "   • https://tts.allsafe.world (Text-to-Speech)"
-          echo ""
-          echo "⏳ If certificate is still pending:"
-          echo "   • This is normal, can take 2-5 minutes"
-          echo "   • cert-manager is working automatically"
-          echo "   • Check: kubectl get certificate -n $NAMESPACE -w"
           echo "======================================================"
