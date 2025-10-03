@@ -1,13 +1,13 @@
 #!/bin/bash
 # Enhanced Kubernetes Setup Script for GPU-enabled June AI services
 # Complete bootstrap solution with NVIDIA GPU Operator via Helm
-# Version 6.0 - NO NGC API KEY REQUIRED for public GPU Operator
+# Version 6.1 - WITH GPU TIME-SLICING ENABLED BY DEFAULT
 
 set -e
 
 echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script v6.0"
-echo "   GPU Support with Public NVIDIA GPU Operator"
+echo "🚀 Enhanced Kubernetes Setup Script v6.1"
+echo "   GPU Support with Time-Slicing Enabled"
 echo "   NO NGC API KEY REQUIRED!"
 echo "======================================================"
 
@@ -205,6 +205,79 @@ install_gpu_operator() {
         echo "ℹ️  Note: Driver installation was disabled because host drivers are present"
         echo "   This is the correct configuration and prevents unnecessary errors."
     fi
+
+    # ============================================================================
+    # 🔧 ENABLE GPU TIME-SLICING IMMEDIATELY AFTER INSTALLATION
+    # ============================================================================
+    echo ""
+    echo "🔧 Enabling GPU Time-Slicing (allows multiple pods to share GPU)..."
+    
+    # Create time-slicing ConfigMap with CORRECT format
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: time-slicing-config
+  namespace: gpu-operator
+data:
+  any: |-
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        resources:
+        - name: nvidia.com/gpu
+          replicas: 2
+EOF
+
+    echo "✅ Time-slicing ConfigMap created"
+
+    # Patch ClusterPolicy to enable time-slicing
+    echo "🔧 Patching ClusterPolicy to enable time-slicing..."
+    kubectl patch clusterpolicy cluster-policy \
+        -n gpu-operator \
+        --type merge \
+        -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}' || {
+        echo "⚠️  ClusterPolicy patch failed - this is normal if it doesn't exist yet"
+    }
+
+    # Force device plugin restart to apply configuration
+    echo "🔄 Restarting device plugin to apply time-slicing configuration..."
+    kubectl delete pods -n gpu-operator -l app=nvidia-device-plugin-daemonset || true
+
+    # Wait for device plugin to restart with new configuration
+    echo "⏳ Waiting for device plugin to restart with time-slicing enabled..."
+    sleep 60
+
+    # Verify time-slicing is working
+    echo "🔍 Verifying GPU time-slicing configuration..."
+    for i in {1..10}; do
+        GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' 2>/dev/null | head -1)
+        
+        if [ "$GPU_CAPACITY" = "2" ]; then
+            echo "✅ GPU time-slicing enabled successfully!"
+            echo "   Your single GPU now appears as 2 GPU slots for scheduling"
+            break
+        fi
+        
+        echo "⏳ Waiting for GPU capacity to update... ($i/10)"
+        sleep 5
+    done
+    
+    if [ "$GPU_CAPACITY" != "2" ]; then
+        echo "⚠️  GPU capacity is $GPU_CAPACITY (expected 2)"
+        echo "   Time-slicing may need more time to activate"
+        echo "   Check device plugin logs: kubectl logs -n gpu-operator -l app=nvidia-device-plugin-daemonset"
+    fi
+
+    # Show GPU capacity
+    echo ""
+    echo "📊 GPU Capacity on nodes:"
+    kubectl describe nodes | grep "nvidia.com/gpu:" | head -3 || echo "GPU resources not yet visible"
+    
+    echo ""
+    echo "✅ GPU Time-Slicing setup complete!"
 }
 
 # Function to verify GPU support
@@ -219,7 +292,7 @@ verify_gpu_support() {
     gpu_count=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' | tr ' ' '+' | bc 2>/dev/null || echo "0")
 
     if [ "$gpu_count" -gt 0 ]; then
-        echo "✅ GPU support verified! $gpu_count GPU(s) available in cluster"
+        echo "✅ GPU support verified! $gpu_count GPU slot(s) available in cluster"
 
         echo "📊 GPU Status:"
         kubectl get nodes -o wide
@@ -368,11 +441,11 @@ setup_secrets() {
     prompt_input "Enter your Chatterbox API key (optional)" CHATTERBOX_API_KEY ""
 
     # Create Kubernetes secrets
-    kubectl create namespace june || true
+    kubectl create namespace june-services || true
     kubectl create secret generic june-secrets \
         --from-literal=gemini-api-key="$GEMINI_API_KEY" \
         --from-literal=chatterbox-api-key="$CHATTERBOX_API_KEY" \
-        --namespace=june \
+        --namespace=june-services \
         --dry-run=client -o yaml | kubectl apply -f -
 
     # Create Docker Hub secret
@@ -381,7 +454,7 @@ setup_secrets() {
         --docker-username=$DOCKERHUB_USERNAME \
         --docker-password=$DOCKERHUB_TOKEN \
         --docker-email=$DOCKERHUB_EMAIL \
-        --namespace=june \
+        --namespace=june-services \
         --dry-run=client -o yaml | kubectl apply -f -
 
     echo "✅ Kubernetes secrets created"
@@ -454,7 +527,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: \${LETSENCRYPT_EMAIL}
+    email: ${LETSENCRYPT_EMAIL}
     privateKeySecretRef:
       name: letsencrypt-prod
     solvers:
@@ -472,7 +545,7 @@ metadata:
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: \${LETSENCRYPT_EMAIL}
+    email: ${LETSENCRYPT_EMAIL}
     privateKeySecretRef:
       name: letsencrypt-staging
     solvers:
@@ -484,7 +557,7 @@ EOFINNER
     echo "✅ Let's Encrypt issuers created!"
     kubectl get clusterissuer
 
-    echo "\$LETSENCRYPT_EMAIL" > /root/.letsencrypt-email
+    echo "${LETSENCRYPT_EMAIL}" > /root/.letsencrypt-email
     echo "🔐 Email saved to /root/.letsencrypt-email"
 }
 
@@ -574,6 +647,7 @@ echo ""
 echo "🔍 Configuration Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU Operator: $SETUP_GPU"
+echo "  GPU Time-Slicing: Enabled (2 replicas per GPU)"
 echo "  GPU Test: $CREATE_GPU_TEST"
 if [ "$HAS_HOST_DRIVERS" = true ]; then
     echo "  Host Drivers: Detected (will use pre-installed drivers)"
@@ -662,7 +736,7 @@ kubectl taint nodes --all node-role.kubernetes.io/master- || true
 echo "⏳ Waiting for cluster to be ready..."
 kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
-# Install GPU Operator if requested
+# Install GPU Operator if requested (includes time-slicing)
 if [[ $SETUP_GPU == [yY] ]]; then
     install_gpu_operator
 fi
@@ -700,6 +774,7 @@ echo "  • Persistent storage configured"
 echo "  • Secrets management setup"
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  • 🚀 NVIDIA GPU Operator installed (PUBLIC - No API Key)"
+    echo "  • 🔧 GPU Time-Slicing ENABLED (2 pods can share 1 GPU)"
     if [ "$HAS_HOST_DRIVERS" = true ]; then
         echo "  • 🎮 GPU support configured (using pre-installed host drivers)"
     else
@@ -715,8 +790,9 @@ echo "  3. Deploy your June services using GitHub Actions"
 echo ""
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "🎮 GPU Commands:"
+    echo "  • Check GPU capacity: kubectl describe nodes | grep nvidia.com/gpu"
     echo "  • Check GPU Operator: kubectl get pods -n gpu-operator"
-    echo "  • Check GPU availability: kubectl describe nodes | grep nvidia.com/gpu"
+    echo "  • Verify time-slicing: Should show 'nvidia.com/gpu: 2' for 1 physical GPU"
     if [ "$CREATE_GPU_TEST" == [yY] ] && [ "$HAS_HOST_DRIVERS" != true ]; then
         echo "  • View test pod logs: kubectl logs gpu-test -f"
     fi
@@ -731,7 +807,7 @@ fi
 echo "🔍 Useful Commands:"
 echo "  • View cluster: kubectl get all -A"
 echo "  • Check ingress: kubectl get ingress -A"
-echo "  • Monitor deployments: kubectl get pods -n june -w"
+echo "  • Monitor deployments: kubectl get pods -n june-services -w"
 echo "  • Fix runner: /root/fix-github-runner.sh"
 echo ""
 echo "🌐 Your external IP: $EXTERNAL_IP"

@@ -203,9 +203,13 @@ jobs:
           data:
             any: |-
               version: v1
+              flags:
+                migStrategy: none
               sharing:
                 timeSlicing:
-                  replicas: 2
+                  resources:
+                  - name: nvidia.com/gpu
+                    replicas: 2
           EOFCONFIG
           
           echo "🔧 Patching GPU Operator ClusterPolicy..."
@@ -213,21 +217,26 @@ jobs:
             echo "⚠️ Failed to patch ClusterPolicy"
           }
           
+          echo "🔄 Restarting device plugin to apply configuration..."
+          kubectl delete pods -n gpu-operator -l app=nvidia-device-plugin-daemonset || true
+          
           echo "⏳ Waiting for GPU device plugin to restart..."
-          sleep 45
+          sleep 60
           
           echo "🔍 Verifying GPU time-slicing..."
-          REPLICAS=$(kubectl get nodes -o json | jq -r '.items[].metadata.labels."nvidia.com/gpu.replicas"' | head -1)
-          
-          if [ "$REPLICAS" = "2" ]; then
-            echo "✅ GPU time-slicing enabled - 2 replicas available"
-          else
-            echo "⚠️ Time-slicing may still be applying, replicas: $REPLICAS"
-          fi
+          for i in {1..10}; do
+            GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' | head -1)
+            if [ "$GPU_CAPACITY" = "2" ]; then
+              echo "✅ GPU time-slicing enabled successfully - 2 GPU slots available"
+              break
+            fi
+            echo "⏳ Waiting for GPU capacity to update... ($i/10)"
+            sleep 5
+          done
           
           echo ""
-          echo "📊 GPU Capacity:"
-          kubectl describe nodes | grep "nvidia.com/gpu" | head -5
+          echo "📊 Final GPU Capacity:"
+          kubectl describe nodes | grep "nvidia.com/gpu:" | head -3
           echo ""
           echo "✅ GPU time-slicing configuration applied"
 
