@@ -1,5 +1,5 @@
 ---
-# June Services Ingress with Wildcard Certificate Support
+# June Services Ingress with Working Wildcard Certificate
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -9,38 +9,26 @@ metadata:
     app.kubernetes.io/name: june
     app.kubernetes.io/component: ingress
   annotations:
-    # NGINX Ingress Controller
     kubernetes.io/ingress.class: "nginx"
-    
-    # Certificate Management - MATCHES what stage2 creates
-    cert-manager.io/cluster-issuer: "letsencrypt-staging"  # Change to letsencrypt-prod when ready
-    
-    # SSL Configuration
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # FIXED: Use prod for working certs
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    
-    # CORS Settings
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
-    
-    # Upload and Timeout Settings
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 
 spec:
-  # WILDCARD TLS Configuration - ONE certificate for ALL subdomains
   tls:
   - hosts:
-    - "*.allsafe.world"        # Wildcard covers all subdomains
-    - "allsafe.world"          # Include root domain
-    secretName: allsafe-wildcard-tls  # cert-manager creates this automatically
+    - "*.allsafe.world"      # FIXED: Only wildcard (no root domain)
+    secretName: allsafe-wildcard-tls
     
   rules:
-  # API Gateway (Orchestrator)
   - host: api.allsafe.world
     http:
       paths:
@@ -52,7 +40,6 @@ spec:
             port:
               number: 8080
   
-  # Identity Provider (Keycloak)
   - host: idp.allsafe.world
     http:
       paths:
@@ -64,7 +51,6 @@ spec:
             port:
               number: 8080
   
-  # Speech-to-Text Service
   - host: stt.allsafe.world
     http:
       paths:
@@ -76,7 +62,6 @@ spec:
             port:
               number: 8080
   
-  # Text-to-Speech Service
   - host: tts.allsafe.world
     http:
       paths:
@@ -88,7 +73,6 @@ spec:
             port:
               number: 8000
   
-  # Web App Interface
   - host: app.allsafe.world
     http:
       paths:
@@ -100,7 +84,6 @@ spec:
             port:
               number: 3000
   
-  # Admin Interface
   - host: admin.allsafe.world
     http:
       paths:
@@ -113,4 +96,3 @@ spec:
               number: 8080
 
   # Future services automatically work with wildcard certificate!
-  # Just add new hosts here - no certificate changes needed
