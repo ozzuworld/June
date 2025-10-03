@@ -1,441 +1,495 @@
-name: 🚀 June Services Deploy
+# .github/workflows/deploy-workflow.yml
+name: 🚀 Deploy June Services
 
 on:
   push:
-    branches: [ main, develop ]
-    paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
+    branches: [master, main]
+    paths:
+      - 'services/**'
+      - '.github/workflows/**'
   pull_request:
-    branches: [ main ]
+    branches: [master, main]
+    paths:
+      - 'services/**'
   workflow_dispatch:
     inputs:
-      build_images:
-        description: '🔨 Build Docker images?'
-        required: true
-        default: true
-        type: boolean
-      deploy_services:
-        description: '🚀 Deploy to Kubernetes?'
-        required: true
-        default: true
-        type: boolean
-      services:
-        description: '📦 Services to build/deploy (comma-separated, or "all")'
+      service:
+        description: 'Service to deploy (orchestrator, stt, tts, or all)'
         required: false
         default: 'all'
-        type: string
+        type: choice
+        options:
+          - all
+          - orchestrator
+          - stt
+          - tts
 
 env:
-  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
-  NAMESPACE: june-services
-
-permissions:
-  contents: read
-  packages: write
+  GCP_PROJECT_ID: main-buffer-469817-v7
+  GCP_REGION: us-central1
+  GKE_CLUSTER: autopilot-cluster-1
+  GKE_NAMESPACE: june-services
 
 jobs:
-  # ============================================================================
-  # DETERMINE WHAT TO BUILD/DEPLOY
-  # ============================================================================
-  
-  setup:
-    name: 📋 Setup Build Matrix
-    runs-on: self-hosted
+  # 🔍 Detect which services changed
+  detect-changes:
+    name: 🔍 Detect Changes
+    runs-on: ubuntu-latest
     outputs:
-      build_images: ${{ steps.config.outputs.build_images }}
-      deploy_services: ${{ steps.config.outputs.deploy_services }}
-      services: ${{ steps.config.outputs.services }}
+      orchestrator: ${{ steps.filter.outputs.orchestrator }}
+      stt: ${{ steps.filter.outputs.stt }}
+      tts: ${{ steps.filter.outputs.tts }}
+      deploy_orchestrator: ${{ steps.should-deploy.outputs.orchestrator }}
+      deploy_stt: ${{ steps.should-deploy.outputs.stt }}
+      deploy_tts: ${{ steps.should-deploy.outputs.tts }}
     steps:
-      - name: 📝 Configure workflow
-        id: config
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check path filters
+        uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            orchestrator:
+              - 'services/june-orchestrator/**'
+              - '.github/workflows/deploy-workflow.yml'
+            stt:
+              - 'services/june-stt/**'
+              - 'services/shared/**'
+              - '.github/workflows/deploy-workflow.yml'
+            tts:
+              - 'services/june-tts/**'
+              - 'services/shared/**'
+              - '.github/workflows/deploy-workflow.yml'
+
+      - name: 🎯 Determine deployment targets
+        id: should-deploy
         run: |
-          # Determine if we should build
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BUILD="${{ github.event.inputs.build_images }}"
-            DEPLOY="${{ github.event.inputs.deploy_services }}"
-            SERVICES="${{ github.event.inputs.services }}"
+          # Manual dispatch - deploy specified service(s)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            SERVICE="${{ github.event.inputs.service }}"
+            if [ "$SERVICE" == "all" ]; then
+              echo "orchestrator=true" >> $GITHUB_OUTPUT
+              echo "stt=true" >> $GITHUB_OUTPUT
+              echo "tts=true" >> $GITHUB_OUTPUT
+            else
+              echo "orchestrator=$( [ '$SERVICE' == 'orchestrator' ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+              echo "stt=$( [ '$SERVICE' == 'stt' ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+              echo "tts=$( [ '$SERVICE' == 'tts' ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+            fi
           else
-            BUILD="true"
-            DEPLOY="true"
-            SERVICES="all"
+            # Automatic - deploy only changed services
+            echo "orchestrator=${{ steps.filter.outputs.orchestrator }}" >> $GITHUB_OUTPUT
+            echo "stt=${{ steps.filter.outputs.stt }}" >> $GITHUB_OUTPUT
+            echo "tts=${{ steps.filter.outputs.tts }}" >> $GITHUB_OUTPUT
           fi
-          
-          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
-          echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
-          
-          echo "📋 Configuration:"
-          echo "  Build images: $BUILD"
-          echo "  Deploy services: $DEPLOY"
-          echo "  Services: $SERVICES"
 
-  # ============================================================================
-  # BUILD IMAGES (Separated by service for better visualization)
-  # ============================================================================
+      - name: 📊 Summary
+        run: |
+          echo "### 🔍 Change Detection Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Changed | Will Deploy |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|---------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎯 Orchestrator | ${{ steps.filter.outputs.orchestrator }} | ${{ steps.should-deploy.outputs.orchestrator }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎤 STT | ${{ steps.filter.outputs.stt }} | ${{ steps.should-deploy.outputs.stt }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔊 TTS | ${{ steps.filter.outputs.tts }} | ${{ steps.should-deploy.outputs.tts }} |" >> $GITHUB_STEP_SUMMARY
 
-  build-stt:
-    name: 🔨 Build june-stt
-    runs-on: self-hosted
-    needs: setup
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'stt'))
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-stt
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push june-stt
-        uses: docker/build-push-action@v5
-        with:
-          context: ./June/services/june-stt
-          file: ./June/services/june-stt/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=stt
-          cache-to: type=gha,mode=max,scope=stt
-          platforms: linux/amd64
-
-  build-tts:
-    name: 🔨 Build june-tts
-    runs-on: self-hosted
-    needs: setup
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'tts'))
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-tts
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push june-tts
-        uses: docker/build-push-action@v5
-        with:
-          context: ./June/services/june-tts
-          file: ./June/services/june-tts/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tts
-          cache-to: type=gha,mode=max,scope=tts
-          platforms: linux/amd64
-
+  # 🎯 Build and Push Orchestrator
   build-orchestrator:
-    name: 🔨 Build june-orchestrator
-    runs-on: self-hosted
-    needs: setup
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'orchestrator'))
+    name: 🎯 Build Orchestrator
+    needs: detect-changes
+    if: needs.detect-changes.outputs.deploy_orchestrator == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
     steps:
-      - name: 📦 Checkout
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🔐 Login to Docker Hub
+      - name: 🏷️ Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ozzuworld/june-orchestrator
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-orchestrator
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push june-orchestrator
+      - name: 🏗️ Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
-          context: ./June/services/june-orchestrator
-          file: ./June/services/june-orchestrator/Dockerfile
+          context: ./services/june-orchestrator
+          file: ./services/june-orchestrator/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=orchestrator
-          cache-to: type=gha,mode=max,scope=orchestrator
-          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
-  build-idp:
-    name: 🔨 Build june-idp
-    runs-on: self-hosted
-    needs: setup
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'idp'))
+      - name: ✅ Build summary
+        run: |
+          echo "### 🎯 Orchestrator Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # 🎤 Build and Push STT
+  build-stt:
+    name: 🎤 Build STT
+    needs: detect-changes
+    if: needs.detect-changes.outputs.deploy_stt == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
     steps:
-      - name: 📦 Checkout
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🔐 Login to Docker Hub
+      - name: 🏷️ Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ozzuworld/june-stt
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-idp
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push june-idp
+      - name: 🏗️ Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
-          context: ./June/services/june-idp
-          file: ./June/services/june-idp/Dockerfile
+          context: ./services/june-stt
+          file: ./services/june-stt/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=idp
-          cache-to: type=gha,mode=max,scope=idp
-          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
-  # ============================================================================
-  # DEPLOYMENT
-  # ============================================================================
+      - name: ✅ Build summary
+        run: |
+          echo "### 🎤 STT Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
 
-  deploy:
-    name: 🚀 Deploy to Kubernetes
-    runs-on: self-hosted
-    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+  # 🔊 Build and Push TTS
+  build-tts:
+    name: 🔊 Build TTS
+    needs: detect-changes
+    if: needs.detect-changes.outputs.deploy_tts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # TTS build takes longer
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ozzuworld/june-tts
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🏗️ Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/june-tts
+          file: ./services/june-tts/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: ✅ Build summary
+        run: |
+          echo "### 🔊 TTS Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # 🚀 Deploy to GKE
+  deploy-to-gke:
+    name: 🚀 Deploy to GKE
+    needs: [detect-changes, build-orchestrator, build-stt, build-tts]
     if: |
       always() && 
-      needs.setup.outputs.deploy_services == 'true' &&
-      (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
-      (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
-      (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
-      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped')
-
+      github.ref == 'refs/heads/master' &&
+      (needs.build-orchestrator.result == 'success' ||
+       needs.build-stt.result == 'success' ||
+       needs.build-tts.result == 'success')
+    runs-on: ubuntu-latest
     steps:
-      - name: 📦 Checkout
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🔍 Verify Kubernetes
-        run: |
-          echo "🔍 Checking Kubernetes cluster..."
-          kubectl cluster-info
-          kubectl get nodes -o wide
+      - name: 🔐 Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: 🏗️ Create Namespace
-        run: |
-          kubectl get ns $NAMESPACE || kubectl create ns $NAMESPACE
+      - name: ☁️ Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: 🔐 Create Secrets
+      - name: 🔧 Install gke-gcloud-auth-plugin
         run: |
-          # Docker Hub secret
-          kubectl create secret docker-registry dockerhub-secret \
-            --docker-server=docker.io \
-            --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
-            --docker-password='${{ secrets.DOCKERHUB_TOKEN }}' \
-            --docker-email='${{ secrets.DOCKERHUB_EMAIL }}' \
-            --namespace=$NAMESPACE \
-            --dry-run=client -o yaml | kubectl apply -f -
+          gcloud components install gke-gcloud-auth-plugin
+
+      - name: 🎯 Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: 🔄 Update image tags in deployments
+        run: |
+          echo "### 🚀 Deployment Updates" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
-          # June secrets
-          kubectl create secret generic june-secrets \
-            --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
-            --namespace=$NAMESPACE \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: 🎮 Label GPU Nodes
-        run: |
-          echo "🏷️  Labeling nodes for GPU workloads..."
-          for node in $(kubectl get nodes -o name); do
-            kubectl label $node gpu=true --overwrite || true
-          done
-
-      - name: 🗄️ Deploy PostgreSQL
-        run: |
-          echo "🗄️ Deploying PostgreSQL..."
-          if ! kubectl get statefulset postgresql -n $NAMESPACE &>/dev/null; then
-            kubectl apply -f k8s/postgresql-deployment.yaml
-          else
-            echo "✅ PostgreSQL already exists"
+          # Update Orchestrator
+          if [ "${{ needs.build-orchestrator.result }}" == "success" ]; then
+            echo "🎯 Updating Orchestrator deployment..." | tee -a $GITHUB_STEP_SUMMARY
+            kubectl set image deployment/june-orchestrator \
+              orchestrator=ozzuworld/june-orchestrator:${{ github.sha }} \
+              -n ${{ env.GKE_NAMESPACE }}
+            echo "✅ Orchestrator image updated" >> $GITHUB_STEP_SUMMARY
           fi
           
-          echo "⏳ Waiting for PostgreSQL..."
-          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
-            echo "⚠️ PostgreSQL not ready yet"
-          }
-
-      - name: 🚀 Deploy Services
-        run: |
-          echo "🚀 Deploying June services..."
-          kubectl apply -f k8s/complete-manifests.yaml
-
-      - name: 🌐 Apply Ingress
-        run: |
-          echo "🌐 Applying ingress with automatic Let's Encrypt..."
+          # Update STT
+          if [ "${{ needs.build-stt.result }}" == "success" ]; then
+            echo "🎤 Updating STT deployment..." | tee -a $GITHUB_STEP_SUMMARY
+            kubectl set image deployment/june-stt \
+              stt=ozzuworld/june-stt:${{ github.sha }} \
+              -n ${{ env.GKE_NAMESPACE }}
+            echo "✅ STT image updated" >> $GITHUB_STEP_SUMMARY
+          fi
           
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: june-ingress
-            namespace: $NAMESPACE
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              kubernetes.io/ingress.class: "nginx"
-              nginx.ingress.kubernetes.io/ssl-redirect: "false"
-              nginx.ingress.kubernetes.io/enable-cors: "true"
-              nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-              nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-              nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-          spec:
-            ingressClassName: nginx
-            tls:
-            - hosts:
-              - api.allsafe.world
-              - idp.allsafe.world
-              - stt.allsafe.world
-              - tts.allsafe.world
-              secretName: allsafe-tls
-            rules:
-            - host: api.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-orchestrator
-                      port:
-                        number: 8080
-            - host: idp.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-idp
-                      port:
-                        number: 8080
-            - host: stt.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-stt
-                      port:
-                        number: 8080
-            - host: tts.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-tts
-                      port:
-                        number: 8000
-          EOF
-          
-          echo "✅ Ingress applied"
+          # Update TTS
+          if [ "${{ needs.build-tts.result }}" == "success" ]; then
+            echo "🔊 Updating TTS deployment..." | tee -a $GITHUB_STEP_SUMMARY
+            kubectl set image deployment/june-tts \
+              tts=ozzuworld/june-tts:${{ github.sha }} \
+              -n ${{ env.GKE_NAMESPACE }}
+            echo "✅ TTS image updated" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: ⏳ Wait for Deployments
+      - name: ⏳ Wait for rollouts
         run: |
-          echo "⏳ Waiting for deployments..."
-          for deployment in $(kubectl get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
-            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
-              echo "⚠️ $deployment taking longer than expected"
-            }
-          done
-
-      - name: 🔐 Monitor Certificate
-        run: |
-          echo "🔐 Monitoring Let's Encrypt certificate..."
-          sleep 20
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⏳ Waiting for Rollouts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
-          for i in {1..20}; do
-            if ! kubectl get certificate allsafe-tls -n $NAMESPACE &>/dev/null; then
-              echo "⏳ Waiting for certificate resource... ($i/20)"
-              sleep 15
-              continue
-            fi
-            
-            STATUS=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
-              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-            
-            if [ "$STATUS" = "True" ]; then
-              echo "✅ Certificate issued!"
-              kubectl get certificate allsafe-tls -n $NAMESPACE
-              break
+          # Wait for Orchestrator
+          if [ "${{ needs.build-orchestrator.result }}" == "success" ]; then
+            echo "🎯 Waiting for Orchestrator rollout..."
+            if kubectl rollout status deployment/june-orchestrator -n ${{ env.GKE_NAMESPACE }} --timeout=5m; then
+              echo "✅ Orchestrator deployed successfully" >> $GITHUB_STEP_SUMMARY
             else
-              MESSAGE=$(kubectl get certificate allsafe-tls -n $NAMESPACE \
-                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "Processing")
-              echo "⏳ $MESSAGE ($i/20)"
-              sleep 15
+              echo "❌ Orchestrator deployment failed" >> $GITHUB_STEP_SUMMARY
+              exit 1
             fi
-          done
+          fi
+          
+          # Wait for STT
+          if [ "${{ needs.build-stt.result }}" == "success" ]; then
+            echo "🎤 Waiting for STT rollout..."
+            if kubectl rollout status deployment/june-stt -n ${{ env.GKE_NAMESPACE }} --timeout=10m; then
+              echo "✅ STT deployed successfully" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ STT deployment failed" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+          fi
+          
+          # Wait for TTS
+          if [ "${{ needs.build-tts.result }}" == "success" ]; then
+            echo "🔊 Waiting for TTS rollout..."
+            if kubectl rollout status deployment/june-tts -n ${{ env.GKE_NAMESPACE }} --timeout=10m; then
+              echo "✅ TTS deployed successfully" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ TTS deployment failed" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            fi
+          fi
 
-      - name: 📊 Deployment Summary
+      - name: 🏥 Health checks
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏥 Health Check Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Get pod status
+          echo "#### Pod Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n ${{ env.GKE_NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # Check services
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Service Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n ${{ env.GKE_NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: 📊 Deployment summary
         if: always()
         run: |
-          echo ""
-          echo "======================================================"
-          echo "📊 Deployment Status"
-          echo "======================================================"
-          echo ""
-          echo "🚀 Deployments:"
-          kubectl get deployments -n $NAMESPACE -o wide
-          echo ""
-          echo "📦 Pods:"
-          kubectl get pods -n $NAMESPACE -o wide
-          echo ""
-          echo "🌐 Services:"
-          kubectl get services -n $NAMESPACE
-          echo ""
-          echo "🔐 Ingress:"
-          kubectl get ingress -n $NAMESPACE
-          echo ""
-          echo "🔒 Certificates:"
-          kubectl get certificate -n $NAMESPACE
-          echo ""
-          echo "======================================================"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Final Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Build | Deploy |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎯 Orchestrator | ${{ needs.build-orchestrator.result }} | $([ '${{ needs.build-orchestrator.result }}' == 'success' ] && echo '✅' || echo '⏭️') |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎤 STT | ${{ needs.build-stt.result }} | $([ '${{ needs.build-stt.result }}' == 'success' ] && echo '✅' || echo '⏭️') |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔊 TTS | ${{ needs.build-tts.result }} | $([ '${{ needs.build-tts.result }}' == 'success' ] && echo '✅' || echo '⏭️') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Time:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Git SHA:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+
+  # 🧪 Integration Tests (Optional)
+  integration-tests:
+    name: 🧪 Integration Tests
+    needs: [deploy-to-gke]
+    if: |
+      always() &&
+      needs.deploy-to-gke.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: ☁️ Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: 🎯 Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: 🧪 Run health checks
+        run: |
+          echo "### 🧪 Service Health Checks" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Test Orchestrator
+          echo "Testing Orchestrator..."
+          if kubectl exec -n ${{ env.GKE_NAMESPACE }} deployment/june-orchestrator -- \
+            curl -sf http://localhost:8080/healthz > /dev/null; then
+            echo "✅ Orchestrator: Healthy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Orchestrator: Unhealthy" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test STT
+          echo "Testing STT..."
+          if kubectl exec -n ${{ env.GKE_NAMESPACE }} deployment/june-stt -- \
+            curl -sf http://localhost:8080/healthz > /dev/null; then
+            echo "✅ STT: Healthy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ STT: Unhealthy" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test TTS
+          echo "Testing TTS..."
+          if kubectl exec -n ${{ env.GKE_NAMESPACE }} deployment/june-tts -- \
+            curl -sf http://localhost:8000/healthz > /dev/null; then
+            echo "✅ TTS: Healthy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ TTS: Unhealthy" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # 🔔 Notify on failure
+  notify-failure:
+    name: 🔔 Notify Failure
+    needs: [build-orchestrator, build-stt, build-tts, deploy-to-gke]
+    if: |
+      always() &&
+      (needs.build-orchestrator.result == 'failure' ||
+       needs.build-stt.result == 'failure' ||
+       needs.build-tts.result == 'failure' ||
+       needs.deploy-to-gke.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📧 Create failure summary
+        run: |
+          echo "# ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "One or more jobs failed. Please check the workflow logs." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Failed Jobs:**" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.build-orchestrator.result }}" == "failure" ] && echo "- 🎯 Orchestrator Build" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.build-stt.result }}" == "failure" ] && echo "- 🎤 STT Build" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.build-tts.result }}" == "failure" ] && echo "- 🔊 TTS Build" >> $GITHUB_STEP_SUMMARY
+          [ "${{ needs.deploy-to-gke.result }}" == "failure" ] && echo "- 🚀 GKE Deployment" >> $GITHUB_STEP_SUMMARY
