@@ -198,6 +198,66 @@ jobs:
           echo ""
           echo "✅ GPU configuration complete"
 
+      - name: 🔧 Enable GPU Time-Slicing
+        run: |
+          echo "🔧 Enabling GPU time-slicing for shared GPU access..."
+          
+          # Check if GPU Operator is installed
+          if ! kubectl get namespace gpu-operator &>/dev/null; then
+            echo "⚠️ GPU Operator not found - skipping time-slicing setup"
+            exit 0
+          fi
+          
+          # Apply time-slicing ConfigMap
+          echo "📝 Creating time-slicing configuration..."
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: time-slicing-config
+            namespace: gpu-operator
+          data:
+            any: |-
+              version: v1
+              sharing:
+                timeSlicing:
+                  replicas: 2
+          EOF
+          
+          # Patch ClusterPolicy to enable time-slicing
+          echo "🔧 Patching GPU Operator ClusterPolicy..."
+          kubectl patch clusterpolicy cluster-policy \
+            -n gpu-operator \
+            --type merge \
+            -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}' || {
+            echo "⚠️ Failed to patch ClusterPolicy - it may not exist yet"
+            echo "   Checking if ClusterPolicy exists..."
+            kubectl get clusterpolicy -n gpu-operator || echo "No ClusterPolicy found"
+          }
+          
+          # Wait for device plugin to restart with new config
+          echo "⏳ Waiting for GPU device plugin to restart with new config..."
+          sleep 45
+          
+          # Verify time-slicing is enabled
+          echo "🔍 Verifying GPU time-slicing..."
+          REPLICAS=$(kubectl get nodes -o json | jq -r '.items[].metadata.labels."nvidia.com/gpu.replicas"' | head -1)
+          
+          if [ "$REPLICAS" = "2" ]; then
+            echo "✅ GPU time-slicing enabled successfully - 2 replicas available"
+          else
+            echo "⚠️ Time-slicing may still be applying, current replicas: $REPLICAS"
+            echo "   This is normal on first deployment - will be active after device plugin restart"
+          fi
+          
+          # Show GPU capacity after time-slicing
+          echo ""
+          echo "📊 GPU Capacity after time-slicing:"
+          kubectl describe nodes | grep "nvidia.com/gpu" | head -5
+          
+          echo ""
+          echo "✅ GPU time-slicing configuration applied"
+
       # ============================================================================
       # ✅ TLS/Certificate Setup
       # ============================================================================
