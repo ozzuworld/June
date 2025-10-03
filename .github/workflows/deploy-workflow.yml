@@ -1,799 +1,404 @@
-#!/bin/bash
-# Enhanced Kubernetes Setup Script for GPU-enabled June AI services
-# Complete bootstrap solution with NVIDIA GPU Operator via Helm
-# Version 6.1 - WITH GPU TIME-SLICING ENABLED BY DEFAULT
-
-set -e
-
-echo "======================================================"
-echo "🚀 Enhanced Kubernetes Setup Script v6.1"
-echo "   GPU Support with Time-Slicing Enabled"
-echo "   NO NGC API KEY REQUIRED!"
-echo "======================================================"
-
-# Global variable to track if host has drivers
-HAS_HOST_DRIVERS=false
-
-# Function to prompt for user input
-prompt_input() {
-    local prompt_text="$1"
-    local var_name="$2"
-    local default_value="$3"
-
-    if [ -n "$default_value" ]; then
-        read -p "$prompt_text [$default_value]: " user_input
-        eval "$var_name="\${user_input:-$default_value}""
-    else
-        read -p "$prompt_text: " user_input
-        eval "$var_name="$user_input""
-    fi
-}
-
-# Function to check GPU availability
-check_gpu_availability() {
-    echo "🎮 Checking GPU availability..."
-
-    if command -v nvidia-smi &> /dev/null; then
-        echo "✅ NVIDIA GPU detected:"
-        nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits
-        HAS_HOST_DRIVERS=true
-        return 0
-    else
-        echo "ℹ️  No NVIDIA GPU drivers detected on host"
-        echo "   GPU Operator will install drivers if GPU hardware is present"
-        HAS_HOST_DRIVERS=false
-        return 1
-    fi
-}
-
-# Function to install Helm (using snap - proven method)
-install_helm() {
-    echo "⎈ Installing Helm..."
-
-    if command -v helm &> /dev/null; then
-        echo "✅ Helm already installed: $(helm version --short)"
-        return 0
-    fi
-
-    echo "📦 Installing Helm via snap (most reliable method)..."
-    snap install helm --classic
-
-    if command -v helm &> /dev/null; then
-        echo "✅ Helm installed successfully: $(helm version --short)"
-        return 0
-    else
-        echo "❌ Helm installation via snap failed, trying alternative method..."
-
-        # Fallback: direct binary download
-        echo "📦 Downloading Helm binary directly..."
-        cd /tmp
-        wget --timeout=30 --tries=3 https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz || {
-            echo "❌ Helm installation failed completely"
-            return 1
-        }
-
-        tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-        mv linux-amd64/helm /usr/local/bin/helm
-        chmod +x /usr/local/bin/helm
-        rm -rf linux-amd64 helm-v3.14.0-linux-amd64.tar.gz
-
-        if command -v helm &> /dev/null; then
-            echo "✅ Helm installed via binary: $(helm version --short)"
-            return 0
-        else
-            echo "❌ All Helm installation methods failed"
-            return 1
-        fi
-    fi
-}
-
-# Function to check if NFD is already running
-check_nfd_running() {
-    echo "🔍 Checking if Node Feature Discovery (NFD) is already running..."
-
-    local nfd_exists
-    nfd_exists=$(kubectl get nodes -o json | jq '.items[].metadata.labels | keys | any(startswith("feature.node.kubernetes.io"))' 2>/dev/null || echo "false")
-
-    if [ "$nfd_exists" = "true" ]; then
-        echo "✅ NFD is already running in the cluster"
-        return 0
-    else
-        echo "ℹ️  NFD is not running, GPU Operator will deploy it"
-        return 1
-    fi
-}
-
-# Function to install NVIDIA GPU Operator using PUBLIC Helm repository
-install_gpu_operator() {
-    echo "🚀 Installing NVIDIA GPU Operator (Public - No API Key Required)..."
-
-    # Ensure Helm is installed
-    install_helm
-
-    # Add PUBLIC NVIDIA Helm repository (NO AUTHENTICATION REQUIRED)
-    echo "📦 Adding NVIDIA public Helm repository..."
-    helm repo add nvidia https://nvidia.github.io/gpu-operator
-    helm repo update
-
-    echo "✅ Repository added successfully (no authentication required)"
-
-    # Create namespace with privileged PSA policy
-    echo "📂 Creating gpu-operator namespace..."
-    kubectl create namespace gpu-operator || true
-    kubectl label --overwrite namespace gpu-operator pod-security.kubernetes.io/enforce=privileged
-
-    # Check if NFD is already running
-    local nfd_disable=""
-    if check_nfd_running; then
-        nfd_disable="--set nfd.enabled=false"
-        echo "⚠️  Disabling NFD deployment in GPU Operator since it's already running"
-    fi
-
-    # Determine if we should disable driver installation (if host has drivers)
-    local driver_setting="--set driver.enabled=true"
-    if [ "$HAS_HOST_DRIVERS" = true ]; then
-        echo "⚠️  Host drivers detected - configuring GPU Operator for pre-installed drivers"
-        driver_setting="--set driver.enabled=false"
-    fi
-
-    # Get latest GPU Operator version
-    LATEST_VERSION=$(helm search repo nvidia/gpu-operator --versions | grep gpu-operator | head -1 | awk '{print $2}')
-    echo "📦 Latest GPU Operator version: $LATEST_VERSION"
-
-    # Install GPU Operator from PUBLIC repository
-    echo "🎮 Installing NVIDIA GPU Operator $LATEST_VERSION..."
-    helm install gpu-operator \
-        --wait \
-        --timeout 15m \
-        --namespace gpu-operator \
-        nvidia/gpu-operator \
-        --version=$LATEST_VERSION \
-        $driver_setting \
-        --set toolkit.enabled=true \
-        --set devicePlugin.enabled=true \
-        --set dcgmExporter.enabled=true \
-        --set gfd.enabled=true \
-        --set migManager.enabled=true \
-        --set nodeStatusExporter.enabled=true \
-        --set gds.enabled=false \
-        --set vfioManager.enabled=true \
-        --set sandboxWorkloads.enabled=false \
-        --set vgpuManager.enabled=false \
-        --set vgpuDeviceManager.enabled=false \
-        --set ccManager.enabled=false \
-        --set operator.defaultRuntime=containerd \
-        $nfd_disable
-
-    echo "✅ NVIDIA GPU Operator installed successfully!"
-
-    # Wait for GPU Operator components to be ready
-    echo "⏳ Waiting for GPU Operator components to be ready..."
-
-    # Only wait for driver if it's enabled
-    if [ "$HAS_HOST_DRIVERS" != true ]; then
-        echo "⏳ Waiting for driver pods..."
-        kubectl wait --for=condition=ready pods \
-            --selector=app=nvidia-driver-daemonset \
-            --namespace=gpu-operator \
-            --timeout=600s || {
-            echo "⚠️  Driver pods taking longer than expected, continuing..."
-        }
-    fi
-
-    # Wait for device plugin
-    echo "⏳ Waiting for device plugin..."
-    kubectl wait --for=condition=ready pods \
-        --selector=app=nvidia-device-plugin-daemonset \
-        --namespace=gpu-operator \
-        --timeout=300s || {
-        echo "⚠️  Device plugin pods taking longer than expected, continuing..."
-    }
-
-    # Wait for container toolkit
-    echo "⏳ Waiting for container toolkit..."
-    kubectl wait --for=condition=ready pods \
-        --selector=app=nvidia-container-toolkit-daemonset \
-        --namespace=gpu-operator \
-        --timeout=300s || {
-        echo "⚠️  Container toolkit pods taking longer than expected, continuing..."
-    }
-
-    echo "✅ GPU Operator components are ready!"
-
-    if [ "$HAS_HOST_DRIVERS" = true ]; then
-        echo ""
-        echo "ℹ️  Note: Driver installation was disabled because host drivers are present"
-        echo "   This is the correct configuration and prevents unnecessary errors."
-    fi
-
-    # ============================================================================
-    # 🔧 ENABLE GPU TIME-SLICING IMMEDIATELY AFTER INSTALLATION
-    # ============================================================================
-    echo ""
-    echo "🔧 Enabling GPU Time-Slicing (allows multiple pods to share GPU)..."
-    
-    # Create time-slicing ConfigMap
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: time-slicing-config
-  namespace: gpu-operator
-data:
-  any: |-
-    version: v1
-    sharing:
-      timeSlicing:
-        replicas: 2
-EOF
-
-    echo "✅ Time-slicing ConfigMap created"
-
-    # Patch ClusterPolicy to enable time-slicing
-    echo "🔧 Patching ClusterPolicy to enable time-slicing..."
-    kubectl patch clusterpolicy cluster-policy \
-        -n gpu-operator \
-        --type merge \
-        -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}' || {
-        echo "⚠️  ClusterPolicy patch failed - this is normal if it doesn't exist yet"
-    }
-
-    # Wait for device plugin to restart with new configuration
-    echo "⏳ Waiting for device plugin to restart with time-slicing enabled..."
-    sleep 60
-
-    # Verify time-slicing is working
-    echo "🔍 Verifying GPU time-slicing configuration..."
-    REPLICAS=$(kubectl get nodes -o json | jq -r '.items[].metadata.labels."nvidia.com/gpu.replicas"' 2>/dev/null | head -1)
-    
-    if [ "$REPLICAS" = "2" ]; then
-        echo "✅ GPU time-slicing enabled successfully!"
-        echo "   Your single GPU now appears as 2 GPU slots for scheduling"
-    else
-        echo "⚠️  Time-slicing configuration applied but may need more time"
-        echo "   Current replicas: $REPLICAS"
-        echo "   Device plugin may still be restarting"
-    fi
-
-    # Show GPU capacity
-    echo ""
-    echo "📊 GPU Capacity on nodes:"
-    kubectl describe nodes | grep "nvidia.com/gpu" | head -5 || echo "GPU resources not yet visible"
-    
-    echo ""
-    echo "✅ GPU Time-Slicing setup complete!"
-}
-
-# Function to verify GPU support
-verify_gpu_support() {
-    echo "🔍 Verifying GPU support..."
-
-    # Check GPU resources in nodes
-    echo "🎮 Checking GPU resources in nodes..."
-    sleep 30  # Give some time for resources to be registered
-
-    local gpu_count
-    gpu_count=$(kubectl get nodes -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' | tr ' ' '+' | bc 2>/dev/null || echo "0")
-
-    if [ "$gpu_count" -gt 0 ]; then
-        echo "✅ GPU support verified! $gpu_count GPU slot(s) available in cluster"
-
-        echo "📊 GPU Status:"
-        kubectl get nodes -o wide
-        echo ""
-        kubectl describe nodes | grep -A 5 "Capacity:" | grep "nvidia.com/gpu" || echo "GPU capacity information not yet available"
-
-        # Create verification test pod
-        echo ""
-        echo "🧪 Creating GPU verification test..."
-        cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: gpu-verification
-  namespace: default
-spec:
-  restartPolicy: Never
-  containers:
-  - name: cuda-test
-    image: nvidia/cuda:12.2.2-base-ubuntu22.04
-    command: ["nvidia-smi"]
-    resources:
-      limits:
-        nvidia.com/gpu: 1
-EOF
-
-        echo "⏳ Waiting for verification test to complete..."
-        sleep 20
-
-        echo ""
-        echo "✅ GPU Verification Test Results:"
-        echo "=================================="
-        kubectl logs gpu-verification 2>/dev/null || echo "Test pod still initializing..."
-
-        return 0
-    else
-        echo "⚠️  GPU resources not yet visible. Checking GPU Operator status..."
-        kubectl get pods -n gpu-operator
-        echo ""
-        echo "💡 If pods are still initializing, GPU resources will appear once all pods are ready."
-        echo "   You can check later with: kubectl describe nodes | grep nvidia.com/gpu"
-        return 1
-    fi
-}
-
-# Function to create GPU test pod
-create_gpu_test_pod() {
-    echo "🧪 Creating GPU test workload..."
-
-    cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: gpu-test
-  namespace: default
-spec:
-  restartPolicy: Never
-  containers:
-    - name: cuda-container
-      image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0
-      resources:
-        limits:
-          nvidia.com/gpu: 1
-  tolerations:
-  - key: nvidia.com/gpu
-    operator: Exists
-    effect: NoSchedule
-EOF
-
-    echo "✅ GPU test pod created. Monitor with: kubectl logs gpu-test -f"
-    echo "   The test should show 'Test PASSED' when GPU is working properly"
-}
-
-# Function to prepare for GitHub Actions runner (future-proof)
-prepare_github_runner() {
-    echo "🔧 Preparing environment for GitHub Actions runner..."
-
-    # Create runner directories structure
-    mkdir -p /root/actions-runner
-
-    # Create .env file template for when runner is installed
-    cat > /root/actions-runner/.env.template << 'EOF'
-# GitHub Actions Runner Environment Variables
-KUBECONFIG=/root/.kube/config
-LANG=C.UTF-8
-EOF
-
-    # Create script to fix runner after installation
-    cat > /root/fix-github-runner.sh << 'EOF'
-#!/bin/bash
-# Auto-fix script for GitHub Actions runner kubectl access
-
-echo "🔧 Configuring GitHub Actions runner for kubectl access..."
-
-# Check if runner is installed
-if [ ! -f "/root/actions-runner/.runner" ]; then
-    echo "⚠️  GitHub Actions runner not found. Install it first with stage1-runner-only.sh"
-    exit 1
-fi
-
-# Setup environment file
-if [ -f "/root/actions-runner/.env.template" ]; then
-    cp /root/actions-runner/.env.template /root/actions-runner/.env
-    echo "✅ Environment variables configured"
-else
-    echo "KUBECONFIG=/root/.kube/config" > /root/actions-runner/.env
-    echo "LANG=C.UTF-8" >> /root/actions-runner/.env
-fi
-
-# Restart runner service if it exists
-if systemctl is-active --quiet actions.runner.*; then
-    echo "🔄 Restarting GitHub Actions runner..."
-    systemctl restart actions.runner.*
-    echo "✅ Runner restarted with new configuration"
-fi
-
-echo "✅ GitHub Actions runner configured for kubectl access!"
-EOF
-
-    chmod +x /root/fix-github-runner.sh
-
-    echo "✅ GitHub Actions runner environment prepared"
-    echo "ℹ️  When you install the runner later, run: /root/fix-github-runner.sh"
-}
-
-# Function to install GitHub CLI
-install_github_cli() {
-    echo "📱 Installing GitHub CLI..."
-    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-    apt update && apt install gh -y
-
-    echo "✅ GitHub CLI installed"
-    echo "ℹ️  Authenticate later with: gh auth login"
-}
-
-# Function to setup secrets and environment variables
-setup_secrets() {
-    echo "🔐 Setting up secrets and environment variables..."
-
-    prompt_input "Enter your Docker Hub username" DOCKERHUB_USERNAME
-    prompt_input "Enter your Docker Hub token" DOCKERHUB_TOKEN
-    prompt_input "Enter your Docker Hub email" DOCKERHUB_EMAIL
-    prompt_input "Enter your Gemini API key" GEMINI_API_KEY
-    prompt_input "Enter your Chatterbox API key (optional)" CHATTERBOX_API_KEY ""
-
-    # Create Kubernetes secrets
-    kubectl create namespace june-services || true
-    kubectl create secret generic june-secrets \
-        --from-literal=gemini-api-key="$GEMINI_API_KEY" \
-        --from-literal=chatterbox-api-key="$CHATTERBOX_API_KEY" \
-        --namespace=june-services \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    # Create Docker Hub secret
-    kubectl create secret docker-registry dockerhub-secret \
-        --docker-server=docker.io \
-        --docker-username=$DOCKERHUB_USERNAME \
-        --docker-password=$DOCKERHUB_TOKEN \
-        --docker-email=$DOCKERHUB_EMAIL \
-        --namespace=june-services \
-        --dry-run=client -o yaml | kubectl apply -f -
-
-    echo "✅ Kubernetes secrets created"
-}
-
-# Function to install ingress controller
-install_ingress_controller() {
-    echo "🌐 Installing NGINX Ingress Controller..."
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.2/deploy/static/provider/cloud/deploy.yaml
-
-    # Wait for ingress controller to be ready
-    echo "⏳ Waiting for ingress controller..."
-    kubectl wait --namespace ingress-nginx \
-        --for=condition=ready pod \
-        --selector=app.kubernetes.io/component=controller \
-        --timeout=120s || {
-        echo "⚠️  Ingress controller taking longer than expected, continuing..."
-    }
-
-    echo "✅ Ingress controller installed!"
-}
-
-# Function to install cert-manager for TLS certificates
-install_cert_manager() {
-    echo "🏗️ Installing cert-manager for TLS certificate management..."
-
-    if kubectl get namespace cert-manager &>/dev/null; then
-        echo "✅ cert-manager already installed"
-        return 0
-    fi
-
-    echo "🏗️ Installing cert-manager CRDs..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
-
-    echo "🏗️ Creating cert-manager namespace..."
-    kubectl create namespace cert-manager
-
-    echo "🏗️ Installing cert-manager..."
-    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
-
-    echo "⏳ Waiting for cert-manager to be ready..."
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/instance=cert-manager \
-        -n cert-manager \
-        --timeout=180s || {
-        echo "⚠️ cert-manager taking longer than expected..."
-        kubectl get pods -n cert-manager
-    }
-
-    echo "✅ cert-manager installed!"
-}
-
-# Function to setup Let's Encrypt issuers
-setup_letsencrypt() {
-    echo "🔐 Setting up Let's Encrypt certificate issuers..."
-
-    prompt_input "Enter email for Let's Encrypt notifications" LETSENCRYPT_EMAIL ""
-
-    if [ -z "$LETSENCRYPT_EMAIL" ]; then
-        echo "⚠️ No email provided, skipping Let's Encrypt setup"
-        return 0
-    fi
-
-    echo "🔐 Creating Let's Encrypt Production issuer..."
-    cat <<EOFINNER | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: ${LETSENCRYPT_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOFINNER
-
-    echo "🔐 Creating Let's Encrypt Staging issuer..."
-    cat <<EOFINNER | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-staging
-spec:
-  acme:
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: ${LETSENCRYPT_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-staging
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOFINNER
-
-    echo "✅ Let's Encrypt issuers created!"
-    kubectl get clusterissuer
-
-    echo "${LETSENCRYPT_EMAIL}" > /root/.letsencrypt-email
-    echo "🔐 Email saved to /root/.letsencrypt-email"
-}
-
-# Function to setup persistent storage
-setup_storage() {
-    echo "💾 Setting up persistent storage..."
-
-    # Create directory
-    mkdir -p /opt/june-data
-    chmod 755 /opt/june-data
-
-    # Create StorageClass for local storage
-    cat <<EOF | kubectl apply -f -
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: local-storage
-provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-storage
-spec:
-  capacity:
-    storage: 50Gi
-  accessModes:
-  - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-data
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
-    echo "✅ Storage configured"
-}
-
-# Function to cleanup on failure
-cleanup_on_failure() {
-    echo "🧹 Cleaning up failed installation..."
-
-    # Remove GPU Operator if installed
-    helm uninstall gpu-operator -n gpu-operator 2>/dev/null || true
-    kubectl delete namespace gpu-operator 2>/dev/null || true
-
-    # Stop and remove containers
-    docker stop $(docker ps -aq) 2>/dev/null || true
-    docker rm $(docker ps -aq) 2>/dev/null || true
-
-    # Reset kubeadm
-    kubeadm reset -f 2>/dev/null || true
-
-    # Remove directories
-    rm -rf /root/.kube 2>/dev/null || true
-
-    echo "🗑️  Cleanup completed"
-}
-
-# Trap cleanup on script failure
-trap cleanup_on_failure ERR
-
-# Get configuration from user
-echo "📝 Configuration Setup"
-echo "----------------------"
-
-prompt_input "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
-
-# Check GPU availability and ask for setup
-if check_gpu_availability; then
-    prompt_input "Setup GPU Operator? (y/n)" SETUP_GPU "y"
-else
-    prompt_input "Setup GPU Operator anyway? (GPU hardware might be present) (y/n)" SETUP_GPU "n"
-fi
-
-prompt_input "Create GPU test workload? (y/n)" CREATE_GPU_TEST "y"
-
-echo ""
-echo "🔍 Configuration Summary:"
-echo "  Pod Network: $POD_NETWORK_CIDR"
-echo "  GPU Operator: $SETUP_GPU"
-echo "  GPU Time-Slicing: Enabled (2 replicas per GPU)"
-echo "  GPU Test: $CREATE_GPU_TEST"
-if [ "$HAS_HOST_DRIVERS" = true ]; then
-    echo "  Host Drivers: Detected (will use pre-installed drivers)"
-fi
-echo ""
-echo "💡 Note: PUBLIC GPU Operator - No NGC API key required!"
-echo ""
-
-read -p "Continue with installation? (y/n): " confirm
-if [[ $confirm != [yY] ]]; then
-    echo "Installation cancelled."
-    exit 0
-fi
-
-echo ""
-echo "🚀 Starting installation..."
-
-# Update system
-echo "📦 Updating system packages..."
-apt-get update && apt-get upgrade -y
-
-# Install dependencies
-echo "📦 Installing dependencies..."
-apt-get install -y curl wget apt-transport-https ca-certificates gnupg lsb-release jq bc
-
-# Install Docker
-echo "🐳 Installing Docker..."
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
-
-# Configure containerd
-echo "🔧 Configuring containerd..."
-systemctl stop containerd
-containerd config default | tee /etc/containerd/config.toml > /dev/null
-sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-systemctl start containerd
-systemctl enable containerd
-
-# Enable required kernel modules
-echo "🔧 Setting up kernel modules..."
-modprobe br_netfilter
-echo 'br_netfilter' >> /etc/modules-load.d/k8s.conf
-echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.d/k8s.conf
-echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.d/k8s.conf
-echo 'net.ipv4.ip_forward = 1' >> /etc/sysctl.d/k8s.conf
-sysctl --system
-
-# Install Kubernetes
-echo "☸️  Installing Kubernetes..."
-rm -f /etc/apt/sources.list.d/kubernetes.list
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
-apt-get update && apt-get install -y kubelet kubeadm kubectl
-apt-mark hold kubelet kubeadm kubectl
-
-# Get external IP for API server
-EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/)
-INTERNAL_IP=$(hostname -I | awk '{print $1}')
-
-echo "🌐 Detected IPs:"
-echo "  External IP: $EXTERNAL_IP"
-echo "  Internal IP: $INTERNAL_IP"
-
-# Initialize Kubernetes
-echo "☸️  Initializing Kubernetes cluster..."
-kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR --apiserver-advertise-address=$INTERNAL_IP --cri-socket=unix:///var/run/containerd/containerd.sock
-
-# Setup kubeconfig
-echo "⚙️  Setting up kubeconfig..."
-mkdir -p /root/.kube
-cp -i /etc/kubernetes/admin.conf /root/.kube/config
-chown root:root /root/.kube/config
-
-# Install Flannel network plugin
-echo "🌐 Installing Flannel network plugin..."
-kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
-
-# Remove control plane taints
-echo "🔧 Configuring single-node cluster..."
-kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
-kubectl taint nodes --all node-role.kubernetes.io/master- || true
-
-# Wait for cluster to be ready
-echo "⏳ Waiting for cluster to be ready..."
-kubectl wait --for=condition=Ready nodes --all --timeout=300s
-
-# Install GPU Operator if requested (includes time-slicing)
-if [[ $SETUP_GPU == [yY] ]]; then
-    install_gpu_operator
-fi
-
-# Install enhanced components
-install_github_cli
-prepare_github_runner
-setup_secrets
-install_ingress_controller
-install_cert_manager
-setup_letsencrypt
-setup_storage
-
-# Create GPU test workload if requested
-if [[ $SETUP_GPU == [yY] && $CREATE_GPU_TEST == [yY] ]]; then
-    if [ "$HAS_HOST_DRIVERS" != true ]; then
-        echo "⏳ Waiting for GPU Operator to be fully ready..."
-        sleep 60
-        create_gpu_test_pod
-    fi
-fi
-
-# Print final information
-echo ""
-echo "🎉======================================================"
-echo "✅ Kubernetes Installation Complete!"
-echo "======================================================"
-echo ""
-echo "📋 Summary:"
-echo "  • Kubernetes cluster initialized and ready"
-echo "  • NGINX Ingress Controller installed"
-echo "  • 🏗️ cert-manager installed (TLS certificate automation)"
-echo "  • 🔐 Let's Encrypt configured for automatic HTTPS"
-echo "  • Persistent storage configured"
-echo "  • Secrets management setup"
-if [[ $SETUP_GPU == [yY] ]]; then
-    echo "  • 🚀 NVIDIA GPU Operator installed (PUBLIC - No API Key)"
-    echo "  • 🔧 GPU Time-Slicing ENABLED (2 pods can share 1 GPU)"
-    if [ "$HAS_HOST_DRIVERS" = true ]; then
-        echo "  • 🎮 GPU support configured (using pre-installed host drivers)"
-    else
-        echo "  • 🎮 GPU support configured with full operator stack"
-    fi
-fi
-echo "  • 🔧 GitHub Actions runner environment prepared"
-echo ""
-echo "🔧 Next Steps:"
-echo "  1. Install GitHub Actions runner: ./stage1-runner-only.sh"
-echo "  2. Auto-fix runner access: /root/fix-github-runner.sh"
-echo "  3. Deploy your June services using GitHub Actions"
-echo ""
-if [[ $SETUP_GPU == [yY] ]]; then
-    echo "🎮 GPU Commands:"
-    echo "  • Check GPU capacity: kubectl describe nodes | grep nvidia.com/gpu"
-    echo "  • Check GPU Operator: kubectl get pods -n gpu-operator"
-    echo "  • Verify time-slicing: Should show 'nvidia.com/gpu: 2' for 1 physical GPU"
-    if [ "$CREATE_GPU_TEST" == [yY] ] && [ "$HAS_HOST_DRIVERS" != true ]; then
-        echo "  • View test pod logs: kubectl logs gpu-test -f"
-    fi
-    if [ "$HAS_HOST_DRIVERS" = true ]; then
-        echo "  • View verification logs: kubectl logs gpu-verification"
-    fi
-    echo "  • Run GPU workload:"
-    echo "    kubectl run gpu-example --image=nvidia/cuda:12.2.2-base-ubuntu22.04 \\"
-    echo "    --rm -it --restart=Never --limits nvidia.com/gpu=1 -- nvidia-smi"
-    echo ""
-fi
-echo "🔍 Useful Commands:"
-echo "  • View cluster: kubectl get all -A"
-echo "  • Check ingress: kubectl get ingress -A"
-echo "  • Monitor deployments: kubectl get pods -n june-services -w"
-echo "  • Fix runner: /root/fix-github-runner.sh"
-echo ""
-echo "🌐 Your external IP: $EXTERNAL_IP"
-echo ""
-echo "======================================================"
+name: 🚀 Complete June Services CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: true
+        default: 'latest'
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options: 
+          - production
+          - staging
+          - development
+      services:
+        description: 'Services to deploy (comma-separated, empty for all)'
+        required: false
+        default: ''
+        type: string
+      force_restart:
+        description: 'Force restart deployments'
+        required: false
+        default: false
+        type: boolean
+      build_images:
+        description: 'Build and push Docker images'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+  KUBE_NAMESPACE: june-services
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: 🔨 Build & Push Images
+    runs-on: self-hosted
+    if: github.event.inputs.build_images != 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [june-stt, june-tts, june-orchestrator, june-idp, june-web, june-dark]
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ env.IMAGE_TAG }}
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+  deploy:
+    name: 🚀 Deploy to K8s
+    runs-on: self-hosted
+    needs: build-and-push
+    if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Verify k8s manifest files
+        run: |
+          set -e
+          echo "🔍 Verifying k8s manifest files..."
+          ls -la k8s || true
+          test -f k8s/namespace.yaml || echo "⚠️ k8s/namespace.yaml not found"
+
+      - name: 🔍 Verify Kubernetes connection
+        run: |
+          echo "🔍 Testing Kubernetes connection..."
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: 🎮 Configure GPU Support
+        run: |
+          echo "🎮 Configuring GPU node labels and checking GPU Operator..."
+          
+          echo "🏷️  Labeling nodes for GPU workloads..."
+          for node in $(kubectl get nodes -o name); do
+            kubectl label $node gpu=true --overwrite
+            echo "✅ Labeled: $node"
+          done
+          
+          echo ""
+          echo "🔍 Checking GPU Operator status..."
+          if kubectl get namespace gpu-operator &>/dev/null; then
+            echo "✅ GPU Operator namespace exists"
+            echo "📊 GPU Operator pods:"
+            kubectl get pods -n gpu-operator
+            
+            echo ""
+            echo "⏳ Waiting for GPU Operator components..."
+            
+            if kubectl get daemonset -n gpu-operator nvidia-device-plugin-daemonset &>/dev/null; then
+              echo "⏳ Waiting for device plugin..."
+              kubectl rollout status daemonset/nvidia-device-plugin-daemonset -n gpu-operator --timeout=300s || {
+                echo "⚠️ Device plugin taking longer than expected"
+              }
+            fi
+            
+            if kubectl get daemonset -n gpu-operator nvidia-container-toolkit-daemonset &>/dev/null; then
+              echo "⏳ Waiting for container toolkit..."
+              kubectl rollout status daemonset/nvidia-container-toolkit-daemonset -n gpu-operator --timeout=300s || {
+                echo "⚠️ Container toolkit taking longer than expected"
+              }
+            fi
+          else
+            echo "⚠️ GPU Operator namespace not found"
+          fi
+          
+          echo ""
+          echo "🔍 Checking GPU resources on nodes..."
+          sleep 15
+          
+          GPU_AVAILABLE=false
+          for i in {1..12}; do
+            GPU_COUNT=$(kubectl get nodes -o json | jq -r '.items[].status.capacity."nvidia.com/gpu"' 2>/dev/null | grep -v "null" | head -1)
+            
+            if [ -n "$GPU_COUNT" ] && [ "$GPU_COUNT" != "null" ]; then
+              echo "✅ GPU resources detected: $GPU_COUNT GPU(s) per node"
+              GPU_AVAILABLE=true
+              break
+            fi
+            
+            echo "⏳ Waiting for GPU resources... (attempt $i/12)"
+            sleep 10
+          done
+          
+          if [ "$GPU_AVAILABLE" = false ]; then
+            echo "⚠️ WARNING: No GPU resources detected"
+          fi
+          
+          echo ""
+          echo "📊 Node GPU Status:"
+          kubectl describe nodes | grep -A 10 "Capacity:" | grep -E "(nvidia.com/gpu|Allocatable)" || {
+            echo "❌ No nvidia.com/gpu resources found"
+          }
+          
+          echo ""
+          echo "✅ GPU configuration complete"
+
+      - name: 🔧 Enable GPU Time-Slicing
+        run: |
+          echo "🔧 Enabling GPU time-slicing for shared GPU access..."
+          
+          if ! kubectl get namespace gpu-operator &>/dev/null; then
+            echo "⚠️ GPU Operator not found - skipping time-slicing"
+            exit 0
+          fi
+          
+          echo "📝 Creating time-slicing configuration..."
+          cat <<'EOFCONFIG' | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: time-slicing-config
+            namespace: gpu-operator
+          data:
+            any: |-
+              version: v1
+              sharing:
+                timeSlicing:
+                  replicas: 2
+          EOFCONFIG
+          
+          echo "🔧 Patching GPU Operator ClusterPolicy..."
+          kubectl patch clusterpolicy cluster-policy -n gpu-operator --type merge -p '{"spec":{"devicePlugin":{"config":{"name":"time-slicing-config","default":"any"}}}}' || {
+            echo "⚠️ Failed to patch ClusterPolicy"
+          }
+          
+          echo "⏳ Waiting for GPU device plugin to restart..."
+          sleep 45
+          
+          echo "🔍 Verifying GPU time-slicing..."
+          REPLICAS=$(kubectl get nodes -o json | jq -r '.items[].metadata.labels."nvidia.com/gpu.replicas"' | head -1)
+          
+          if [ "$REPLICAS" = "2" ]; then
+            echo "✅ GPU time-slicing enabled - 2 replicas available"
+          else
+            echo "⚠️ Time-slicing may still be applying, replicas: $REPLICAS"
+          fi
+          
+          echo ""
+          echo "📊 GPU Capacity:"
+          kubectl describe nodes | grep "nvidia.com/gpu" | head -5
+          echo ""
+          echo "✅ GPU time-slicing configuration applied"
+
+      - name: 🔐 Setup cert-manager and Let's Encrypt
+        run: |
+          echo "🔐 Setting up TLS certificates with cert-manager..."
+          
+          if ! kubectl get namespace cert-manager &>/dev/null; then
+            echo "📦 Installing cert-manager..."
+            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
+            kubectl create namespace cert-manager
+            kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
+            
+            echo "⏳ Waiting for cert-manager..."
+            kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=180s || {
+              echo "⚠️ cert-manager taking longer than expected"
+            }
+            echo "✅ cert-manager installed"
+          else
+            echo "✅ cert-manager already installed"
+          fi
+          
+          echo "🔧 Creating Let's Encrypt issuers..."
+          cat <<'EOFISSUER' | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: ${{ secrets.LETSENCRYPT_EMAIL }}
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+          ---
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-staging
+          spec:
+            acme:
+              server: https://acme-staging-v02.api.letsencrypt.org/directory
+              email: ${{ secrets.LETSENCRYPT_EMAIL }}
+              privateKeySecretRef:
+                name: letsencrypt-staging
+              solvers:
+              - http01:
+                  ingress:
+                    class: nginx
+          EOFISSUER
+          
+          echo "✅ Let's Encrypt issuers configured"
+
+      - name: 🌐 Setup Ingress Controller
+        run: |
+          echo "🌐 Setting up ingress-nginx controller..."
+          
+          detect_cloud() {
+            if curl -s --max-time 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1; then
+              return 0
+            elif curl -s --max-time 2 -H "Metadata-Flavor: Google" http://metadata.google.internal >/dev/null 2>&1; then
+              return 0
+            elif curl -s --max-time 2 -H "Metadata: true" http://169.254.169.254/metadata/instance >/dev/null 2>&1; then
+              return 0
+            else
+              return 1
+            fi
+          }
+          
+          if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
+            echo "📦 Installing ingress-nginx..."
+            
+            if detect_cloud; then
+              echo "☁️  Cloud environment detected"
+              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/cloud/deploy.yaml
+            else
+              echo "🔧 Bare metal environment detected"
+              kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/baremetal/deploy.yaml
+              sleep 15
+              kubectl patch deployment ingress-nginx-controller -n ingress-nginx --type='json' -p='[{"op":"add","path":"/spec/template/spec/hostNetwork","value":true},{"op":"add","path":"/spec/template/spec/dnsPolicy","value":"ClusterFirstWithHostNet"}]'
+            fi
+          else
+            echo "✅ ingress-nginx already exists"
+          fi
+          
+          echo "⏳ Waiting for ingress controller..."
+          kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=300s || {
+            echo "⚠️ Controller taking longer than expected"
+          }
+          echo "✅ Ingress controller ready"
+
+      - name: 🏗️ Create Namespace
+        run: |
+          if [ -f k8s/namespace.yaml ]; then
+            kubectl apply -f k8s/namespace.yaml
+          else
+            kubectl get ns "$KUBE_NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$KUBE_NAMESPACE"
+          fi
+
+      - name: 🔐 Create Docker Registry Secret
+        run: |
+          kubectl create secret docker-registry dockerhub-secret \
+            --docker-server=docker.io \
+            --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
+            --docker-password='${{ secrets.DOCKERHUB_TOKEN }}' \
+            --docker-email='${{ secrets.DOCKERHUB_EMAIL }}' \
+            --namespace="$KUBE_NAMESPACE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: 🔧 Prepare manifests
+        run: |
+          mkdir -p /tmp/k8s-updated
+          cp -r k8s/* /tmp/k8s-updated/ || true
+          for service in june-stt june-tts june-orchestrator june-idp june-web june-dark; do
+            if [ -f "/tmp/k8s-updated/${service}-deployment.yaml" ]; then
+              sed -i "s|image: $REGISTRY/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/${service}-deployment.yaml"
+            elif [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
+              sed -i "s|image: ozzuworld/${service}:.*|image: $REGISTRY/${service}:$IMAGE_TAG|g" "/tmp/k8s-updated/complete-manifests.yaml"
+            fi
+          done
+
+      - name: 🗄️ Deploy PostgreSQL
+        run: |
+          echo "🗄️ Deploying PostgreSQL..."
+          if kubectl get statefulset postgresql -n "$KUBE_NAMESPACE" &>/dev/null; then
+            echo "✅ PostgreSQL already exists"
+          else
+            kubectl apply -f k8s/postgresql-deployment.yaml
+          fi
+          
+          echo "⏳ Waiting for PostgreSQL..."
+          kubectl wait --for=condition=ready pod -l app=postgresql -n "$KUBE_NAMESPACE" --timeout=180s || {
+            echo "⚠️ PostgreSQL not ready yet"
+          }
+
+      - name: 🚀 Deploy services
+        run: |
+          echo "🚀 Deploying services..."
+          if [ -f "/tmp/k8s-updated/complete-manifests.yaml" ]; then
+            kubectl apply -n "$KUBE_NAMESPACE" -f /tmp/k8s-updated/complete-manifests.yaml
+          else
+            for file in /tmp/k8s-updated/june-*-deployment.yaml; do
+              [ -f "$file" ] && kubectl apply -n "$KUBE_NAMESPACE" -f "$file"
+            done
+          fi
+
+      - name: 🌐 Apply ingress
+        run: |
+          echo "🌐 Applying ingress..."
+          if [ -f "/tmp/k8s-updated/ingress.yaml" ]; then
+            kubectl apply -f /tmp/k8s-updated/ingress.yaml
+          fi
+
+      - name: ⏳ Wait for deployments
+        run: |
+          echo "⏳ Waiting for deployments..."
+          for deployment in $(kubectl get deployments -n "$KUBE_NAMESPACE" -o jsonpath='{.items[*].metadata.name}'); do
+            kubectl rollout status deployment/"$deployment" -n "$KUBE_NAMESPACE" --timeout=300s || true
+          done
+
+      - name: 📊 Final status
+        if: always()
+        run: |
+          echo "📊 Deployment Status:"
+          kubectl get all -n "$KUBE_NAMESPACE" -o wide || true
+          echo ""
+          echo "🎮 GPU Status:"
+          kubectl describe nodes | grep "nvidia.com/gpu" || echo "No GPU info"
+          echo ""
+          echo "✅ Deployment complete"
