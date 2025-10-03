@@ -1,4 +1,4 @@
-name: 🚀 June Services Deploy
+name: 🚀 June Services Deploy (GPU-Aware)
 
 on:
   push:
@@ -23,6 +23,11 @@ on:
         required: false
         default: 'all'
         type: string
+      force_gpu_restart:
+        description: '🔄 Force restart GPU services (clears GPU slots)?'
+        required: false
+        default: false
+        type: boolean
 
 env:
   REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
@@ -44,32 +49,36 @@ jobs:
       build_images: ${{ steps.config.outputs.build_images }}
       deploy_services: ${{ steps.config.outputs.deploy_services }}
       services: ${{ steps.config.outputs.services }}
+      force_gpu_restart: ${{ steps.config.outputs.force_gpu_restart }}
     steps:
       - name: 📝 Configure workflow
         id: config
         run: |
-          # Determine if we should build
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BUILD="${{ github.event.inputs.build_images }}"
             DEPLOY="${{ github.event.inputs.deploy_services }}"
             SERVICES="${{ github.event.inputs.services }}"
+            FORCE_GPU="${{ github.event.inputs.force_gpu_restart }}"
           else
             BUILD="true"
             DEPLOY="true"
             SERVICES="all"
+            FORCE_GPU="false"
           fi
           
           echo "build_images=$BUILD" >> $GITHUB_OUTPUT
           echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
           echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "force_gpu_restart=$FORCE_GPU" >> $GITHUB_OUTPUT
           
           echo "📋 Configuration:"
           echo "  Build images: $BUILD"
           echo "  Deploy services: $DEPLOY"
           echo "  Services: $SERVICES"
+          echo "  Force GPU restart: $FORCE_GPU"
 
   # ============================================================================
-  # BUILD IMAGES (Separated by service for better visualization)
+  # BUILD IMAGES (Separated by service)
   # ============================================================================
 
   build-stt:
@@ -233,13 +242,87 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT
+  # GPU RESOURCE MANAGEMENT (NEW!)
+  # ============================================================================
+  
+  manage-gpu-resources:
+    name: 🎮 Manage GPU Resources
+    runs-on: self-hosted
+    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    if: |
+      always() && 
+      needs.setup.outputs.deploy_services == 'true' &&
+      (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
+      (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped')
+    outputs:
+      gpu_available: ${{ steps.check_gpu.outputs.available }}
+      
+    steps:
+      - name: 📊 Check GPU Availability
+        id: check_gpu
+        run: |
+          echo "🔍 Checking GPU resources..."
+          
+          # Get GPU capacity and allocation
+          GPU_CAPACITY=$(kubectl get nodes -o json | jq -r '.items[0].status.allocatable."nvidia.com/gpu" // "0"')
+          GPU_ALLOCATED=$(kubectl get pods -n $NAMESPACE -o json | \
+            jq '[.items[] | select(.spec.containers[].resources.requests."nvidia.com/gpu" != null) | 
+            .spec.containers[].resources.requests."nvidia.com/gpu" // "0" | tonumber] | add // 0')
+          
+          GPU_AVAILABLE=$((GPU_CAPACITY - GPU_ALLOCATED))
+          
+          echo "📊 GPU Status:"
+          echo "  Capacity: $GPU_CAPACITY"
+          echo "  Allocated: $GPU_ALLOCATED"
+          echo "  Available: $GPU_AVAILABLE"
+          
+          # Check if we have enough GPUs for deployment (need 2: one for STT, one for TTS)
+          if [ "$GPU_AVAILABLE" -ge 2 ]; then
+            echo "✅ Sufficient GPU resources available"
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Insufficient GPU resources (need 2, have $GPU_AVAILABLE)"
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: 🔄 Free GPU Resources (if needed)
+        if: steps.check_gpu.outputs.available == 'false' || needs.setup.outputs.force_gpu_restart == 'true'
+        run: |
+          echo "🔄 Freeing GPU resources by scaling down GPU services..."
+          
+          # Scale down GPU services to 0
+          for service in june-stt june-tts; do
+            if kubectl get deployment $service -n $NAMESPACE &>/dev/null; then
+              echo "⬇️ Scaling down $service..."
+              kubectl scale deployment $service -n $NAMESPACE --replicas=0
+            fi
+          done
+          
+          # Wait for pods to terminate and GPU to be freed
+          echo "⏳ Waiting for GPU pods to terminate..."
+          kubectl wait --for=delete pod \
+            -l 'app in (june-stt,june-tts)' \
+            -n $NAMESPACE \
+            --timeout=120s || echo "⚠️ Some pods taking longer to terminate"
+          
+          # Give extra time for GPU to be completely freed
+          sleep 15
+          
+          # Verify GPU is free
+          GPU_ALLOCATED=$(kubectl get pods -n $NAMESPACE -o json | \
+            jq '[.items[] | select(.spec.containers[].resources.requests."nvidia.com/gpu" != null) | 
+            .spec.containers[].resources.requests."nvidia.com/gpu" // "0" | tonumber] | add // 0')
+          
+          echo "✅ GPU freed. Currently allocated: $GPU_ALLOCATED"
+
+  # ============================================================================
+  # DEPLOYMENT WITH GPU-AWARE ORDERING
   # ============================================================================
 
   deploy:
     name: 🚀 Deploy to Kubernetes
     runs-on: self-hosted
-    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp, manage-gpu-resources]
     if: |
       always() && 
       needs.setup.outputs.deploy_services == 'true' &&
@@ -281,7 +364,7 @@ jobs:
 
       - name: 🎮 Label GPU Nodes
         run: |
-          echo "🏷️  Labeling nodes for GPU workloads..."
+          echo "🏷️ Labeling nodes for GPU workloads..."
           for node in $(kubectl get nodes -o name); do
             kubectl label $node gpu=true --overwrite || true
           done
@@ -300,93 +383,52 @@ jobs:
             echo "⚠️ PostgreSQL not ready yet"
           }
 
-      - name: 🚀 Deploy Services
+      - name: 🚀 Deploy Non-GPU Services First
         run: |
-          echo "🚀 Deploying June services..."
-          kubectl apply -f k8s/complete-manifests.yaml
+          echo "🚀 Deploying non-GPU services (IDP, Orchestrator)..."
+          
+          # Deploy IDP
+          kubectl apply -f k8s/june-idp-deployment.yaml || echo "⚠️ IDP deployment had issues"
+          
+          # Deploy Orchestrator
+          kubectl apply -f k8s/june-orchestrator-deployment.yaml || echo "⚠️ Orchestrator deployment had issues"
+          
+          echo "⏳ Waiting for non-GPU services to be ready..."
+          kubectl wait --for=condition=available deployment/june-idp -n $NAMESPACE --timeout=300s || echo "⚠️ IDP taking longer"
+          kubectl wait --for=condition=available deployment/june-orchestrator -n $NAMESPACE --timeout=300s || echo "⚠️ Orchestrator taking longer"
+
+      - name: 🎮 Deploy GPU Services Sequentially
+        run: |
+          echo "🎮 Deploying GPU services one at a time..."
+          
+          # Deploy STT first
+          echo "📥 Deploying june-stt..."
+          kubectl apply -f k8s/june-stt-deployment.yaml
+          
+          echo "⏳ Waiting for STT to acquire GPU and be ready..."
+          kubectl wait --for=condition=available deployment/june-stt -n $NAMESPACE --timeout=300s || {
+            echo "⚠️ STT deployment taking longer than expected"
+            kubectl describe pod -l app=june-stt -n $NAMESPACE | tail -20
+          }
+          
+          # Small delay to ensure GPU is properly allocated
+          sleep 10
+          
+          # Deploy TTS second
+          echo "🔊 Deploying june-tts..."
+          kubectl apply -f k8s/june-tts-deployment.yaml
+          
+          echo "⏳ Waiting for TTS to acquire GPU and be ready..."
+          kubectl wait --for=condition=available deployment/june-tts -n $NAMESPACE --timeout=300s || {
+            echo "⚠️ TTS deployment taking longer than expected"
+            kubectl describe pod -l app=june-tts -n $NAMESPACE | tail -20
+          }
 
       - name: 🌐 Apply Ingress
         run: |
-          echo "🌐 Applying ingress with automatic Let's Encrypt..."
-          
-          cat <<EOF | kubectl apply -f -
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: june-ingress
-            namespace: $NAMESPACE
-            annotations:
-              cert-manager.io/cluster-issuer: "letsencrypt-prod"
-              kubernetes.io/ingress.class: "nginx"
-              nginx.ingress.kubernetes.io/ssl-redirect: "false"
-              nginx.ingress.kubernetes.io/enable-cors: "true"
-              nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-              nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-              nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-              nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-          spec:
-            ingressClassName: nginx
-            tls:
-            - hosts:
-              - api.allsafe.world
-              - idp.allsafe.world
-              - stt.allsafe.world
-              - tts.allsafe.world
-              secretName: allsafe-tls
-            rules:
-            - host: api.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-orchestrator
-                      port:
-                        number: 8080
-            - host: idp.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-idp
-                      port:
-                        number: 8080
-            - host: stt.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-stt
-                      port:
-                        number: 8080
-            - host: tts.allsafe.world
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: june-tts
-                      port:
-                        number: 8000
-          EOF
-          
+          echo "🌐 Applying ingress..."
+          kubectl apply -f k8s/ingress.yaml
           echo "✅ Ingress applied"
-
-      - name: ⏳ Wait for Deployments
-        run: |
-          echo "⏳ Waiting for deployments..."
-          for deployment in $(kubectl get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
-            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
-              echo "⚠️ $deployment taking longer than expected"
-            }
-          done
 
       - name: 🔐 Monitor Certificate
         run: |
@@ -429,6 +471,9 @@ jobs:
           echo "📦 Pods:"
           kubectl get pods -n $NAMESPACE -o wide
           echo ""
+          echo "🎮 GPU Allocation:"
+          kubectl describe nodes | grep -A 10 "Allocated resources:" | grep nvidia || echo "No GPU info"
+          echo ""
           echo "🌐 Services:"
           kubectl get services -n $NAMESPACE
           echo ""
@@ -439,3 +484,13 @@ jobs:
           kubectl get certificate -n $NAMESPACE
           echo ""
           echo "======================================================"
+          
+          # Check for pending pods
+          PENDING=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+          if [ "$PENDING" -gt 0 ]; then
+            echo "⚠️ WARNING: $PENDING pod(s) still pending"
+            kubectl get pods -n $NAMESPACE --field-selector=status.phase=Pending
+            echo ""
+            echo "Describing pending pods:"
+            kubectl describe pods -n $NAMESPACE --field-selector=status.phase=Pending | grep -A 10 "Events:"
+          fi
