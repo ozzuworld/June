@@ -1,146 +1,50 @@
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-idp 
-  namespace: june-services
-  labels:
-    app: june-idp
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: june-idp
-  template:
-    metadata:
-      labels:
-        app: june-idp
-    spec:
-      initContainers:
-      - name: wait-for-postgres
-        image: postgres:15-alpine
-        command: ['sh', '-c']
-        args:
-        - |
-          echo "⏳ Waiting for PostgreSQL..."
-          until pg_isready -h postgresql.june-services.svc.cluster.local -p 5432 -U keycloak; do
-            sleep 3
-          done
-          echo "✅ PostgreSQL ready!"
-          export PGPASSWORD=Pokemon123!
-          until psql -h postgresql.june-services.svc.cluster.local -U keycloak -d keycloak -c "SELECT 1" > /dev/null 2>&1; do
-            sleep 3
-          done
-          echo "✅ Database ready!"
-      
-      containers:
-      - name: keycloak
-        image: docker.io/ozzuworld/june-idp:latest
-        command: ["/opt/keycloak/bin/kc.sh"]
-        args: ["start", "--optimized"]
-        
-        ports:
-        - containerPort: 8080
-          name: http
-        - containerPort: 9000
-          name: management
-        
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "2Gi"
-            cpu: "1"
-        
-        env:
-        # Database Configuration
-        - name: KC_DB
-          value: postgres
-        - name: KC_DB_URL
-          value: jdbc:postgresql://postgresql.june-services.svc.cluster.local:5432/keycloak
-        - name: KC_DB_USERNAME
-          value: keycloak
-        - name: KC_DB_PASSWORD
-          value: Pokemon123!
-        
-        # Admin Configuration  
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: admin
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          value: Pokemon123!
-        
-        # HTTP Configuration
-        - name: KC_HTTP_ENABLED
-          value: "true"
-        
-        # 🔥 FIX: Hostname configuration for external access
-        - name: KC_HOSTNAME
-          value: "idp.allsafe.world"
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
-        - name: KC_HOSTNAME_STRICT_HTTPS
-          value: "false"
-        
-        # 🔥 FIX: Proxy configuration (CRITICAL for ingress)
-        - name: KC_PROXY_HEADERS
-          value: "xforwarded"  # Changed from edge to xforwarded
-        
-        # Health and metrics
-        - name: KC_HEALTH_ENABLED
-          value: "true"
-        - name: KC_METRICS_ENABLED
-          value: "true"
-        
-        # Logging
-        - name: KC_LOG_LEVEL
-          value: "INFO"
-        - name: KC_LOG_CONSOLE_OUTPUT
-          value: "default"
-        
-        startupProbe:
-          httpGet:
-            path: /health/started
-            port: 9000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 60
-        
-        readinessProbe:
-          httpGet:
-            path: /health/ready
-            port: 9000
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        
-        livenessProbe:
-          httpGet:
-            path: /health/live
-            port: 9000
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          timeoutSeconds: 5
-          failureThreshold: 5
+env:
+# Database Configuration
+- name: KC_DB
+  value: postgres
+- name: KC_DB_URL
+  value: jdbc:postgresql://postgresql.june-services.svc.cluster.local:5432/keycloak
+- name: KC_DB_USERNAME
+  value: keycloak
+- name: KC_DB_PASSWORD
+  value: Pokemon123!
 
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-idp
-  namespace: june-services
-  labels:
-    app: june-idp
-spec:
-  type: ClusterIP
-  selector:
-    app: june-idp
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-  - name: management
-    port: 9000
-    targetPort: 9000
+# Admin Configuration  
+- name: KC_BOOTSTRAP_ADMIN_USERNAME
+  value: admin
+- name: KC_BOOTSTRAP_ADMIN_PASSWORD
+  value: Pokemon123!
+
+# HTTP Configuration
+- name: KC_HTTP_ENABLED
+  value: "true"
+- name: KC_HTTP_PORT
+  value: "8080"
+
+# 🔥 FIX: Proper hostname and proxy configuration
+- name: KC_HOSTNAME
+  value: "idp.allsafe.world"
+- name: KC_HOSTNAME_STRICT
+  value: "true"  # Changed to true
+- name: KC_HOSTNAME_STRICT_HTTPS
+  value: "false"  # Keep false since ingress handles HTTPS
+- name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+  value: "true"  # Allow dynamic backchannel URLs
+
+# 🔥 FIX: Critical proxy settings for ingress
+- name: KC_PROXY
+  value: "edge"  # Changed back to edge - correct for reverse proxy
+- name: KC_HTTP_RELATIVE_PATH
+  value: "/"
+
+# Health and metrics
+- name: KC_HEALTH_ENABLED
+  value: "true"
+- name: KC_METRICS_ENABLED
+  value: "true"
+
+# Logging
+- name: KC_LOG_LEVEL
+  value: "INFO"
+- name: KC_LOG_CONSOLE_OUTPUT
+  value: "default"
