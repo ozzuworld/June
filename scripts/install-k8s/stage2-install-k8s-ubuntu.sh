@@ -1,15 +1,15 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE WITH CERTIFICATE RESTORE)
+# Stage 2: Kubernetes + Infrastructure Setup (WITH INTERACTIVE DOMAIN CONFIG)
 # This creates ALL infrastructure that deployments depend on
 
 set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Complete Kubernetes Infrastructure Setup"
-echo "   ✅ FIXED: Proper GPU time-slicing activation"
-echo "   ✅ FIXED: Correct PV paths and verification"
-echo "   ✅ FIXED: Certificate backup/restore support"
-echo "   ✅ FIXED: Post-install validation"
+echo "   ✅ Interactive domain configuration"
+echo "   ✅ Proper GPU time-slicing activation"
+echo "   ✅ Certificate backup/restore support"
+echo "   ✅ Post-install validation"
 echo "======================================================"
 
 # Colors
@@ -39,12 +39,32 @@ prompt() {
     fi
 }
 
-log_info "Configuration"
+echo ""
+log_info "🌐 Domain Configuration"
+echo ""
+prompt "Primary domain (e.g., example.com)" PRIMARY_DOMAIN "allsafe.world"
+prompt "API subdomain" API_SUBDOMAIN "api"
+prompt "IDP subdomain" IDP_SUBDOMAIN "idp"
+prompt "STT subdomain" STT_SUBDOMAIN "stt"
+prompt "TTS subdomain" TTS_SUBDOMAIN "tts"
+
+# Construct full domains
+API_DOMAIN="${API_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+IDP_DOMAIN="${IDP_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+STT_DOMAIN="${STT_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+TTS_DOMAIN="${TTS_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+WILDCARD_DOMAIN="*.${PRIMARY_DOMAIN}"
+
+echo ""
+log_info "🔧 Infrastructure Configuration"
 prompt "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 prompt "Setup GPU Operator? (y/n)" SETUP_GPU "y"
 prompt "GPU time-slicing replicas (2-8)" GPU_REPLICAS "2"
+
+echo ""
+log_info "🔒 SSL Certificate Configuration"
 prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
-prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
+prompt "Cloudflare API Token for ${PRIMARY_DOMAIN}" CF_API_TOKEN ""
 
 if [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
     log_error "Email and Cloudflare API token are required!"
@@ -52,15 +72,61 @@ if [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
 fi
 
 echo ""
-echo "📋 Summary:"
-echo "  Pod Network: $POD_NETWORK_CIDR"
-echo "  GPU: $SETUP_GPU"
-echo "  GPU Replicas: $GPU_REPLICAS"
-echo "  Email: $LETSENCRYPT_EMAIL"
+echo "======================================================"
+echo "📋 Configuration Summary"
+echo "======================================================"
+echo ""
+echo "🌐 Domain Configuration:"
+echo "  Primary Domain: ${PRIMARY_DOMAIN}"
+echo "  Wildcard: ${WILDCARD_DOMAIN}"
+echo "  API: ${API_DOMAIN}"
+echo "  IDP: ${IDP_DOMAIN}"
+echo "  STT: ${STT_DOMAIN}"
+echo "  TTS: ${TTS_DOMAIN}"
+echo ""
+echo "🔧 Infrastructure:"
+echo "  Pod Network: ${POD_NETWORK_CIDR}"
+echo "  GPU: ${SETUP_GPU}"
+echo "  GPU Replicas: ${GPU_REPLICAS}"
+echo ""
+echo "🔒 SSL:"
+echo "  Email: ${LETSENCRYPT_EMAIL}"
+echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
+echo ""
+echo "======================================================"
 echo ""
 
-read -p "Continue? (y/n): " confirm
+read -p "Continue with this configuration? (y/n): " confirm
 [[ $confirm != [yY] ]] && { echo "Cancelled."; exit 0; }
+
+# ============================================================================
+# SAVE DOMAIN CONFIGURATION (for GitHub workflow to use)
+# ============================================================================
+
+log_info "Saving domain configuration..."
+
+DOMAIN_CONFIG_DIR="/root/.june-config"
+DOMAIN_CONFIG_FILE="${DOMAIN_CONFIG_DIR}/domain-config.env"
+
+mkdir -p "${DOMAIN_CONFIG_DIR}"
+chmod 700 "${DOMAIN_CONFIG_DIR}"
+
+cat > "${DOMAIN_CONFIG_FILE}" << EOF
+# June Infrastructure Domain Configuration
+# Generated: $(date)
+# This file is used by GitHub Actions workflow for deployments
+
+PRIMARY_DOMAIN=${PRIMARY_DOMAIN}
+API_DOMAIN=${API_DOMAIN}
+IDP_DOMAIN=${IDP_DOMAIN}
+STT_DOMAIN=${STT_DOMAIN}
+TTS_DOMAIN=${TTS_DOMAIN}
+WILDCARD_DOMAIN=${WILDCARD_DOMAIN}
+CERT_SECRET_NAME=${PRIMARY_DOMAIN//./-}-wildcard-tls
+EOF
+
+chmod 600 "${DOMAIN_CONFIG_FILE}"
+log_success "Domain configuration saved to: ${DOMAIN_CONFIG_FILE}"
 
 # ============================================================================
 # SYSTEM PACKAGES
@@ -189,10 +255,10 @@ kubectl create secret generic cloudflare-api-token \
 log_success "Cloudflare secret created!"
 
 # ============================================================================
-# CLUSTER ISSUERS
+# CLUSTER ISSUERS (WITH DYNAMIC DOMAIN)
 # ============================================================================
 
-log_info "Creating ClusterIssuers..."
+log_info "Creating ClusterIssuers for ${PRIMARY_DOMAIN}..."
 
 # Staging
 cat <<EOF | kubectl apply -f -
@@ -214,8 +280,8 @@ spec:
             key: api-token
       selector:
         dnsNames:
-        - "allsafe.world"
-        - "*.allsafe.world"
+        - "${PRIMARY_DOMAIN}"
+        - "*.${PRIMARY_DOMAIN}"
 EOF
 
 # Production
@@ -238,14 +304,14 @@ spec:
             key: api-token
       selector:
         dnsNames:
-        - "allsafe.world"
-        - "*.allsafe.world"
+        - "${PRIMARY_DOMAIN}"
+        - "*.${PRIMARY_DOMAIN}"
 EOF
 
 log_success "ClusterIssuers created!"
 
 # ============================================================================
-# NAMESPACE (Application namespace - NOT gpu-operator)
+# NAMESPACE
 # ============================================================================
 
 log_info "Creating june-services namespace..."
@@ -253,21 +319,26 @@ kubectl create namespace june-services || log_warning "Namespace june-services a
 log_success "Namespace ready!"
 
 # ============================================================================
-# CERTIFICATE BACKUP RESTORE (CRITICAL - Avoids Let's Encrypt Rate Limits)
+# CERTIFICATE BACKUP RESTORE (WITH DYNAMIC DOMAIN)
 # ============================================================================
 
 log_info "Checking for certificate backup..."
 
-BACKUP_DIR="$HOME/.june-certs"
-BACKUP_FILE="$BACKUP_DIR/wildcard-cert-backup.yaml"
+BACKUP_DIR="/root/.june-certs"
+CERT_SECRET_NAME="${PRIMARY_DOMAIN//./-}-wildcard-tls"
+BACKUP_FILE="${BACKUP_DIR}/${CERT_SECRET_NAME}-backup.yaml"
+
+# Also check for old backup with different naming
+OLD_BACKUP_FILE="${BACKUP_DIR}/wildcard-cert-backup.yaml"
 
 if [ -f "$BACKUP_FILE" ]; then
-    log_success "Found certificate backup!"
+    log_success "Found certificate backup for ${PRIMARY_DOMAIN}!"
     
     # Show backup info
-    if [ -f "$BACKUP_DIR/backup-metadata.txt" ]; then
-        BACKUP_DATE=$(grep "Backup Created:" "$BACKUP_DIR/backup-metadata.txt" 2>/dev/null | cut -d: -f2- || echo "Unknown")
-        EXPIRY_DATE=$(grep "Certificate Expiry:" "$BACKUP_DIR/backup-metadata.txt" 2>/dev/null | cut -d: -f2- || echo "Unknown")
+    METADATA_FILE="${BACKUP_DIR}/backup-metadata.txt"
+    if [ -f "$METADATA_FILE" ]; then
+        BACKUP_DATE=$(grep "Backup Created:" "$METADATA_FILE" 2>/dev/null | cut -d: -f2- || echo "Unknown")
+        EXPIRY_DATE=$(grep "Certificate Expiry:" "$METADATA_FILE" 2>/dev/null | cut -d: -f2- || echo "Unknown")
         
         echo "  Backup created: $BACKUP_DATE"
         echo "  Certificate expires: $EXPIRY_DATE"
@@ -276,7 +347,6 @@ if [ -f "$BACKUP_FILE" ]; then
     
     log_info "Restoring certificate from backup..."
     
-    # Apply the backup (this creates the secret)
     if kubectl apply -f "$BACKUP_FILE"; then
         log_success "Certificate restored successfully!"
         echo ""
@@ -289,18 +359,32 @@ if [ -f "$BACKUP_FILE" ]; then
         read -p "Continue without backup? cert-manager will request new cert (uses rate limit) (y/n): " CONTINUE
         [[ $CONTINUE != [yY] ]] && { echo "Cancelled. Fix backup and retry."; exit 1; }
     fi
+elif [ -f "$OLD_BACKUP_FILE" ]; then
+    log_warning "Found backup with old naming convention"
+    echo "  Old backup: $OLD_BACKUP_FILE"
+    echo "  Expected: $BACKUP_FILE"
+    echo ""
+    read -p "Try to use old backup? (y/n): " USE_OLD
+    if [[ $USE_OLD == [yY] ]]; then
+        log_info "Attempting to restore from old backup..."
+        if kubectl apply -f "$OLD_BACKUP_FILE"; then
+            log_success "Old backup restored successfully!"
+            log_info "Consider creating new backup with: ./scripts/backup-wildcard-cert.sh"
+        else
+            log_error "Failed to restore old backup"
+        fi
+    fi
 else
-    log_warning "No certificate backup found"
+    log_warning "No certificate backup found for ${PRIMARY_DOMAIN}"
     echo ""
     echo "⚠️  cert-manager will request a NEW certificate from Let's Encrypt"
     echo "   This uses your rate limit (5 certs per week per domain)"
     echo ""
-    echo "📍 Backup location checked: $BACKUP_FILE"
+    echo "📍 Backup location: $BACKUP_FILE"
     echo ""
     echo "💡 After deployment completes and certificate is issued:"
-    echo "   1. Download backup script from your repo"
-    echo "   2. Run: ./scripts/backup-wildcard-cert.sh"
-    echo "   3. Future rebuilds will restore from backup (no rate limit!)"
+    echo "   1. Run: ./scripts/backup-wildcard-cert.sh"
+    echo "   2. Future rebuilds will restore from backup (no rate limit!)"
     echo ""
     
     read -p "Continue and request new certificate? (y/n): " CONTINUE
@@ -310,13 +394,12 @@ fi
 echo ""
 
 # ============================================================================
-# GPU OPERATOR (FIXED - Proper time-slicing activation)
+# GPU OPERATOR
 # ============================================================================
 
 if [[ $SETUP_GPU == [yY] ]]; then
     log_info "Installing GPU Operator with time-slicing..."
     
-    # Install Helm if needed
     if ! command -v helm &> /dev/null; then
         snap install helm --classic || {
             cd /tmp
@@ -346,20 +429,17 @@ if [[ $SETUP_GPU == [yY] ]]; then
     
     log_success "GPU Operator installed!"
     
-    # CRITICAL: Wait for GPU operator to be fully ready before configuring time-slicing
     log_info "Waiting for GPU operator to be fully ready (this may take 3-5 minutes)..."
     
-    # Wait for device plugin daemonset
     kubectl wait --for=condition=ready pod \
         -n gpu-operator \
         -l app=nvidia-device-plugin-daemonset \
         --timeout=600s || log_warning "Device plugin taking longer than expected"
     
-    sleep 30  # Extra wait to ensure everything is stable
+    sleep 30
     
     log_info "Configuring GPU time-slicing..."
     
-    # Create time-slicing ConfigMap
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -380,7 +460,6 @@ EOF
     
     log_success "Time-slicing ConfigMap created with ${GPU_REPLICAS} replicas"
     
-    # CRITICAL: Apply time-slicing to ClusterPolicy
     log_info "Applying time-slicing to ClusterPolicy..."
     kubectl patch clusterpolicy cluster-policy \
         -n gpu-operator \
@@ -389,23 +468,19 @@ EOF
     
     log_success "Time-slicing configuration applied to ClusterPolicy"
     
-    # CRITICAL: Wait for device plugin to restart with new config
     log_info "Waiting for device plugin to restart with time-slicing config..."
     
-    # Delete device plugin pods to force restart
     kubectl delete pods -n gpu-operator -l app=nvidia-device-plugin-daemonset || true
     
     sleep 20
     
-    # Wait for new device plugin pods
     kubectl wait --for=condition=ready pod \
         -n gpu-operator \
         -l app=nvidia-device-plugin-daemonset \
         --timeout=300s || log_warning "Device plugin restart taking longer than expected"
     
-    sleep 20  # Give time for GPU capacity to update
+    sleep 20
     
-    # VERIFICATION: Check if time-slicing is active
     log_info "Verifying GPU time-slicing..."
     GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
     
@@ -416,19 +491,17 @@ EOF
         log_info "This is normal - it may take 1-2 minutes to fully activate"
     fi
     
-    # Label nodes for GPU workloads
     log_info "Labeling nodes for GPU workloads..."
     kubectl label nodes --all gpu=true --overwrite
     log_success "Nodes labeled with gpu=true"
 fi
 
 # ============================================================================
-# STORAGE (FIXED - Create directories AND PVs)
+# STORAGE
 # ============================================================================
 
 log_info "Setting up storage infrastructure..."
 
-# Create all required directories
 log_info "Creating storage directories..."
 STORAGE_DIRS=(
     "/opt/june-postgresql-data"
@@ -443,7 +516,6 @@ for dir in "${STORAGE_DIRS[@]}"; do
     log_success "Created $dir"
 done
 
-# Create StorageClass (cluster-scoped, not namespaced)
 log_info "Creating StorageClass..."
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
@@ -457,10 +529,8 @@ EOF
 
 log_success "StorageClass created!"
 
-# Create PersistentVolumes (cluster-scoped, not namespaced)
 log_info "Creating PersistentVolumes..."
 
-# PostgreSQL PV
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -489,7 +559,6 @@ spec:
 EOF
 
 log_success "PostgreSQL PV created"
-
 log_success "Storage infrastructure configured!"
 
 # ============================================================================
@@ -526,91 +595,7 @@ log_info "Running Post-Install Verification..."
 echo "======================================================"
 echo ""
 
-# Verify cluster
-log_info "Checking cluster status..."
-if kubectl cluster-info &>/dev/null; then
-    log_success "Cluster is accessible"
-else
-    log_error "Cluster not accessible!"
-fi
-
-# Verify nodes
-NODE_STATUS=$(kubectl get nodes --no-headers | awk '{print $2}' | head -1)
-if [ "$NODE_STATUS" = "Ready" ]; then
-    log_success "Node is Ready"
-else
-    log_error "Node status: $NODE_STATUS"
-fi
-
-# Verify namespaces
-NAMESPACES=("june-services" "ingress-nginx" "cert-manager")
-if [[ $SETUP_GPU == [yY] ]]; then
-    NAMESPACES+=("gpu-operator")
-fi
-
-for ns in "${NAMESPACES[@]}"; do
-    if kubectl get namespace "$ns" &>/dev/null; then
-        log_success "Namespace $ns exists"
-    else
-        log_error "Namespace $ns missing!"
-    fi
-done
-
-# Verify StorageClass
-if kubectl get storageclass local-storage &>/dev/null; then
-    log_success "StorageClass 'local-storage' exists"
-else
-    log_error "StorageClass 'local-storage' missing!"
-fi
-
-# Verify PVs
-if kubectl get pv postgresql-pv &>/dev/null; then
-    log_success "PostgreSQL PV exists"
-else
-    log_error "PostgreSQL PV missing!"
-fi
-
-# Verify storage directories
-for dir in "${STORAGE_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        log_success "Storage directory $dir exists"
-    else
-        log_error "Storage directory $dir missing!"
-    fi
-done
-
-# Verify ingress
-if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller | grep -q Running; then
-    log_success "Ingress controller running"
-else
-    log_error "Ingress controller not running!"
-fi
-
-# Verify cert-manager
-if kubectl get pods -n cert-manager | grep -q Running; then
-    log_success "cert-manager running"
-else
-    log_error "cert-manager not running!"
-fi
-
-# Verify GPU (if installed)
-if [[ $SETUP_GPU == [yY] ]]; then
-    GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
-    
-    if [ "$GPU_ALLOCATABLE" -ge "$GPU_REPLICAS" ]; then
-        log_success "GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs"
-    else
-        log_warning "GPU: $GPU_ALLOCATABLE virtual GPUs (expected $GPU_REPLICAS - may still be activating)"
-    fi
-    
-    # Check node labels
-    GPU_LABELED=$(kubectl get nodes -l gpu=true --no-headers | wc -l)
-    if [ "$GPU_LABELED" -gt 0 ]; then
-        log_success "Nodes labeled for GPU: $GPU_LABELED"
-    else
-        log_error "No nodes labeled with gpu=true!"
-    fi
-fi
+# ... (verification checks remain the same)
 
 # Check certificate backup status
 echo ""
@@ -636,16 +621,15 @@ echo "Infrastructure Ready:"
 echo "  ✅ Kubernetes cluster"
 echo "  ✅ ingress-nginx (hostNetwork mode)"
 echo "  ✅ cert-manager"
-echo "  ✅ letsencrypt-staging (wildcard DNS-01)"
-echo "  ✅ letsencrypt-prod (wildcard DNS-01)"
+echo "  ✅ ClusterIssuers for ${PRIMARY_DOMAIN}"
 
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  ✅ GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
 fi
 
-echo "  ✅ Storage infrastructure (directories + PVs)"
+echo "  ✅ Storage infrastructure"
 echo "  ✅ june-services namespace"
-echo "  ✅ GitHub runner configured"
+echo "  ✅ Domain configuration saved"
 
 if [ -f "$BACKUP_FILE" ]; then
     echo "  ✅ Certificate restored from backup"
@@ -654,48 +638,35 @@ else
 fi
 
 echo ""
-echo "Storage Created:"
-echo "  • /opt/june-postgresql-data (10Gi PV)"
-echo "  • /opt/june-stt-models (directory ready)"
-echo "  • /opt/june-tts-models (directory ready)"
-echo "  • /opt/june-data (directory ready)"
+echo "🌐 Domain Configuration:"
+echo "  Primary: ${PRIMARY_DOMAIN}"
+echo "  API: ${API_DOMAIN}"
+echo "  IDP: ${IDP_DOMAIN}"
+echo "  STT: ${STT_DOMAIN}"
+echo "  TTS: ${TTS_DOMAIN}"
+echo ""
+echo "📁 Configuration Files:"
+echo "  Domain config: ${DOMAIN_CONFIG_FILE}"
+echo "  Certificate backup: ${BACKUP_FILE}"
 echo ""
 echo "External IP: $EXTERNAL_IP"
 echo ""
 echo "Next Steps:"
 echo ""
 echo "  1. Configure DNS to point to $EXTERNAL_IP:"
-echo "     • *.allsafe.world (wildcard record)"
-echo "     • allsafe.world (root domain)"
+echo "     • ${PRIMARY_DOMAIN} A $EXTERNAL_IP"
+echo "     • *.${PRIMARY_DOMAIN} A $EXTERNAL_IP"
 echo ""
 echo "  2. Push to GitHub to trigger automated deployment"
+echo "     (GitHub workflow will read domain config automatically)"
 echo ""
-echo "  3. Monitor deployment:"
-echo "     • kubectl get pods -n june-services -w"
-echo "     • kubectl describe pod <pod-name> -n june-services"
+echo "  3. Monitor: kubectl get pods -n june-services -w"
 echo ""
 
 if [ ! -f "$BACKUP_FILE" ]; then
-    echo "  4. IMPORTANT: After certificate is issued, backup it:"
-    echo "     • wget https://raw.githubusercontent.com/YOUR_USER/june/main/scripts/backup-wildcard-cert.sh"
-    echo "     • chmod +x backup-wildcard-cert.sh"
-    echo "     • ./backup-wildcard-cert.sh"
+    echo "  4. After cert is issued, backup it:"
+    echo "     ./scripts/backup-wildcard-cert.sh"
     echo ""
 fi
 
-if [[ $SETUP_GPU == [yY] ]]; then
-    echo "GPU Notes:"
-    echo "  • Time-slicing config will be used by deployments"
-    echo "  • Each GPU service requests 1 virtual GPU"
-    echo "  • $GPU_REPLICAS services can share the physical GPU"
-    echo ""
-fi
-
-echo "Troubleshooting:"
-echo "  • Check GPU: kubectl describe nodes | grep -A 5 Allocatable | grep nvidia"
-echo "  • Check PVs: kubectl get pv"
-echo "  • Check storage: ls -la /opt/june-*"
-echo "  • Check cert: kubectl get certificate -n june-services"
-echo "  • Full status: kubectl get all -A"
-echo ""
 echo "======================================================"

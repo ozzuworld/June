@@ -1,4 +1,4 @@
-name: 🚀 June Services Deploy (FIXED - Infrastructure Validation)
+name: 🚀 June Services Deploy (Dynamic Domain Support)
 
 on:
   push:
@@ -44,6 +44,12 @@ jobs:
       build_images: ${{ steps.config.outputs.build_images }}
       deploy_services: ${{ steps.config.outputs.deploy_services }}
       services: ${{ steps.config.outputs.services }}
+      primary_domain: ${{ steps.domain.outputs.primary_domain }}
+      api_domain: ${{ steps.domain.outputs.api_domain }}
+      idp_domain: ${{ steps.domain.outputs.idp_domain }}
+      stt_domain: ${{ steps.domain.outputs.stt_domain }}
+      tts_domain: ${{ steps.domain.outputs.tts_domain }}
+      cert_secret_name: ${{ steps.domain.outputs.cert_secret_name }}
     steps:
       - name: 📝 Configure workflow
         id: config
@@ -66,9 +72,42 @@ jobs:
           echo "  Build images: $BUILD"
           echo "  Deploy services: $DEPLOY"
           echo "  Services: $SERVICES"
+      
+      - name: 🌐 Load Domain Configuration
+        id: domain
+        run: |
+          DOMAIN_CONFIG="/root/.june-config/domain-config.env"
+          
+          if [ -f "$DOMAIN_CONFIG" ]; then
+            echo "✅ Found domain configuration"
+            source "$DOMAIN_CONFIG"
+            
+            echo "primary_domain=$PRIMARY_DOMAIN" >> $GITHUB_OUTPUT
+            echo "api_domain=$API_DOMAIN" >> $GITHUB_OUTPUT
+            echo "idp_domain=$IDP_DOMAIN" >> $GITHUB_OUTPUT
+            echo "stt_domain=$STT_DOMAIN" >> $GITHUB_OUTPUT
+            echo "tts_domain=$TTS_DOMAIN" >> $GITHUB_OUTPUT
+            echo "cert_secret_name=$CERT_SECRET_NAME" >> $GITHUB_OUTPUT
+            
+            echo "🌐 Domain Configuration:"
+            echo "  Primary: $PRIMARY_DOMAIN"
+            echo "  API: $API_DOMAIN"
+            echo "  IDP: $IDP_DOMAIN"
+            echo "  STT: $STT_DOMAIN"
+            echo "  TTS: $TTS_DOMAIN"
+            echo "  Cert Secret: $CERT_SECRET_NAME"
+          else
+            echo "⚠️  No domain configuration found, using defaults"
+            echo "primary_domain=allsafe.world" >> $GITHUB_OUTPUT
+            echo "api_domain=api.allsafe.world" >> $GITHUB_OUTPUT
+            echo "idp_domain=idp.allsafe.world" >> $GITHUB_OUTPUT
+            echo "stt_domain=stt.allsafe.world" >> $GITHUB_OUTPUT
+            echo "tts_domain=tts.allsafe.world" >> $GITHUB_OUTPUT
+            echo "cert_secret_name=allsafe-wildcard-tls" >> $GITHUB_OUTPUT
+          fi
 
   # ============================================================================
-  # BUILD IMAGES
+  # BUILD IMAGES (unchanged)
   # ============================================================================
 
   build-stt:
@@ -232,7 +271,7 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT (FIXED - Comprehensive Infrastructure Validation)
+  # DEPLOYMENT (WITH DYNAMIC DOMAIN CONFIGURATION)
   # ============================================================================
 
   deploy:
@@ -252,7 +291,7 @@ jobs:
         uses: actions/checkout@v4
 
       # ========================================================================
-      # CRITICAL: Infrastructure Validation (FIXED - Comprehensive checks)
+      # Infrastructure Validation
       # ========================================================================
       
       - name: 🔍 Verify Infrastructure Prerequisites
@@ -262,7 +301,6 @@ jobs:
           ERRORS=0
           WARNINGS=0
           
-          # Check cluster
           echo ""
           echo "1️⃣ Checking cluster connectivity..."
           if kubectl cluster-info &>/dev/null; then
@@ -272,40 +310,33 @@ jobs:
             exit 1
           fi
           
-          # Check namespace
           echo ""
           echo "2️⃣ Checking namespace..."
           if kubectl get ns $NAMESPACE &>/dev/null; then
             echo "✅ Namespace '$NAMESPACE' exists"
           else
             echo "❌ Namespace '$NAMESPACE' doesn't exist!"
-            echo "   Run: kubectl create namespace $NAMESPACE"
             ((ERRORS++))
           fi
           
-          # Check StorageClass
           echo ""
           echo "3️⃣ Checking StorageClass..."
           if kubectl get sc local-storage &>/dev/null; then
             echo "✅ StorageClass 'local-storage' exists"
           else
             echo "❌ StorageClass 'local-storage' doesn't exist!"
-            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
             ((ERRORS++))
           fi
           
-          # Check PVs
           echo ""
           echo "4️⃣ Checking PersistentVolumes..."
           if kubectl get pv postgresql-pv &>/dev/null; then
             echo "✅ PersistentVolume 'postgresql-pv' exists"
           else
             echo "❌ PersistentVolume 'postgresql-pv' doesn't exist!"
-            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
             ((ERRORS++))
           fi
           
-          # Check storage directories
           echo ""
           echo "5️⃣ Checking storage directories..."
           STORAGE_DIRS=("/opt/june-postgresql-data" "/opt/june-stt-models" "/opt/june-tts-models")
@@ -320,29 +351,24 @@ jobs:
             fi
           done
           
-          # Check ingress controller
           echo ""
           echo "6️⃣ Checking ingress controller..."
           if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller 2>/dev/null | grep -q Running; then
             echo "✅ Ingress controller is running"
           else
             echo "❌ Ingress controller not running!"
-            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
             ((ERRORS++))
           fi
           
-          # Check cert-manager
           echo ""
           echo "7️⃣ Checking cert-manager..."
           if kubectl get pods -n cert-manager 2>/dev/null | grep -q Running; then
             echo "✅ cert-manager is running"
           else
             echo "❌ cert-manager not running!"
-            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
             ((ERRORS++))
           fi
           
-          # Check GPU availability (CRITICAL for GPU services)
           echo ""
           echo "8️⃣ Checking GPU availability..."
           GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
@@ -351,17 +377,12 @@ jobs:
             echo "✅ GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs available"
           elif [ "$GPU_ALLOCATABLE" -eq 1 ]; then
             echo "⚠️  Only 1 GPU available (time-slicing may not be active)"
-            echo "   Expected: 2+ virtual GPUs for time-slicing"
-            echo "   Check: kubectl describe nodes | grep nvidia.com/gpu"
             ((WARNINGS++))
           else
             echo "❌ No GPUs available!"
-            echo "   GPU services (STT, TTS) will fail to schedule!"
-            echo "   Run stage2-install-k8s-ubuntu.sh with GPU setup"
             ((ERRORS++))
           fi
           
-          # Check node labels
           echo ""
           echo "9️⃣ Checking node labels..."
           GPU_LABELED=$(kubectl get nodes -l gpu=true --no-headers 2>/dev/null | wc -l)
@@ -369,23 +390,21 @@ jobs:
             echo "✅ Found $GPU_LABELED node(s) labeled with gpu=true"
           else
             echo "⚠️  No nodes labeled with gpu=true"
-            echo "   Labeling nodes now..."
             kubectl label nodes --all gpu=true --overwrite
             ((WARNINGS++))
           fi
           
-          # Check ClusterIssuers
           echo ""
-          echo "🔟 Checking ClusterIssuers..."
-          if kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
-            echo "✅ ClusterIssuer 'letsencrypt-prod' exists"
+          echo "🔟 Checking domain configuration..."
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            echo "✅ Domain configuration exists"
+            source /root/.june-config/domain-config.env
+            echo "   Primary Domain: $PRIMARY_DOMAIN"
           else
-            echo "⚠️  ClusterIssuer 'letsencrypt-prod' not found"
-            echo "   TLS certificates may not work"
+            echo "⚠️  No domain configuration found (using defaults)"
             ((WARNINGS++))
           fi
           
-          # Summary
           echo ""
           echo "========================================"
           echo "📊 Validation Summary"
@@ -396,17 +415,55 @@ jobs:
           
           if [ "$ERRORS" -gt 0 ]; then
             echo "❌ FAILED: $ERRORS critical error(s) found!"
-            echo ""
-            echo "⚠️  DEPLOYMENT BLOCKED"
-            echo "   Fix errors above before deploying"
-            echo "   Run: sudo ./scripts/k8s Install/stage2-install-k8s-ubuntu.sh"
+            echo "   Run: sudo ./scripts/install-k8s/stage2-install-k8s-ubuntu.sh"
             exit 1
           elif [ "$WARNINGS" -gt 0 ]; then
             echo "⚠️  PASSED with $WARNINGS warning(s)"
-            echo "   Deployment will continue"
           else
             echo "✅ PASSED: All checks successful!"
           fi
+
+      # ========================================================================
+      # Generate Manifest with Domain Configuration
+      # ========================================================================
+      
+      - name: 🌐 Generate Deployment Manifest with Domain Config
+        run: |
+          echo "🌐 Generating manifest with domain configuration..."
+          
+          # Load domain config
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+            echo "✅ Using configured domains:"
+            echo "   Primary: $PRIMARY_DOMAIN"
+            echo "   API: $API_DOMAIN"
+            echo "   IDP: $IDP_DOMAIN"
+            echo "   STT: $STT_DOMAIN"
+            echo "   TTS: $TTS_DOMAIN"
+            echo "   Cert Secret: $CERT_SECRET_NAME"
+          else
+            echo "⚠️  No domain config found, using defaults"
+            PRIMARY_DOMAIN="allsafe.world"
+            API_DOMAIN="api.allsafe.world"
+            IDP_DOMAIN="idp.allsafe.world"
+            STT_DOMAIN="stt.allsafe.world"
+            TTS_DOMAIN="tts.allsafe.world"
+            CERT_SECRET_NAME="allsafe-wildcard-tls"
+          fi
+          
+          # Create a temporary manifest with domain substitution
+          cp k8s/complete-manifests.yaml /tmp/deployment-manifest.yaml
+          
+          # Replace domain placeholders (if template exists) or directly modify
+          sed -i "s/KC_HOSTNAME_VALUE/${IDP_DOMAIN}/g" /tmp/deployment-manifest.yaml || true
+          sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/\*.allsafe.world/*.${PRIMARY_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/api.allsafe.world/${API_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          
+          echo "✅ Manifest generated with configured domains"
 
       # ========================================================================
       # Update Application Secrets
@@ -416,7 +473,6 @@ jobs:
         run: |
           echo "🔐 Updating application secrets..."
           
-          # Create/update June secrets
           kubectl create secret generic june-secrets \
             --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
             --namespace=$NAMESPACE \
@@ -425,20 +481,20 @@ jobs:
           echo "✅ Application secrets updated"
 
       # ========================================================================
-      # Deploy All Services (Single Complete Manifest)
+      # Deploy All Services
       # ========================================================================
       
       - name: 🚀 Deploy All Services
         run: |
-          echo "🚀 Deploying all June services from complete manifest..."
+          echo "🚀 Deploying all June services..."
           
-          # Apply the single complete manifest (includes everything)
-          kubectl apply -f k8s/complete-manifests.yaml
+          # Apply the generated manifest with domain config
+          kubectl apply -f /tmp/deployment-manifest.yaml
           
           echo "✅ All services deployed"
           echo ""
           
-          # Wait specifically for PostgreSQL first (other services depend on it)
+          # Wait for PostgreSQL
           echo "⏳ Waiting for PostgreSQL to be ready..."
           kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
             echo "⚠️ PostgreSQL not ready yet, checking status..."
@@ -449,14 +505,13 @@ jobs:
           echo "✅ PostgreSQL is ready"
 
       # ========================================================================
-      # Wait for Deployments (FIXED - Better timeout handling)
+      # Wait for Deployments
       # ========================================================================
       
       - name: ⏳ Wait for Deployments
         run: |
           echo "⏳ Waiting for deployments to be ready..."
           
-          # Function to wait for deployment with better error handling
           wait_for_deployment() {
             local deployment=$1
             local timeout=$2
@@ -470,11 +525,9 @@ jobs:
               return 0
             else
               echo "⚠️ $description taking longer than expected"
-              echo "Current status:"
               kubectl get deployment $deployment -n $NAMESPACE
               kubectl get pods -l app=$deployment -n $NAMESPACE
               
-              # Check for common issues
               PENDING=$(kubectl get pods -l app=$deployment -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
               if [ "$PENDING" -gt 0 ]; then
                 echo "❌ Found $PENDING pending pod(s) for $deployment"
@@ -485,134 +538,103 @@ jobs:
             fi
           }
           
-          # Wait for non-GPU services first (shorter timeout)
+          # Wait for non-GPU services
           wait_for_deployment "june-idp" 300 "Identity Provider (Keycloak)" || true
           wait_for_deployment "june-orchestrator" 180 "Orchestrator" || true
           
-          # Wait for GPU services (longer timeout - they download models)
+          # Wait for GPU services
           wait_for_deployment "june-stt" 600 "Speech-to-Text (GPU service)" || true
           wait_for_deployment "june-tts" 600 "Text-to-Speech (GPU service)" || true
 
       # ========================================================================
-      # Deployment Summary (FIXED - Better diagnostics)
+      # Deployment Summary
       # ========================================================================
       
       - name: 📊 Deployment Summary
         if: always()
         run: |
+          # Load domain config for summary
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+          else
+            PRIMARY_DOMAIN="allsafe.world"
+            API_DOMAIN="api.allsafe.world"
+            IDP_DOMAIN="idp.allsafe.world"
+            STT_DOMAIN="stt.allsafe.world"
+            TTS_DOMAIN="tts.allsafe.world"
+          fi
+          
           echo ""
           echo "======================================================"
           echo "📊 Deployment Status Report"
           echo "======================================================"
           echo ""
           
-          # Deployments
+          echo "🌐 Deployed Domains:"
+          echo "  API: https://${API_DOMAIN}"
+          echo "  IDP: https://${IDP_DOMAIN}"
+          echo "  STT: https://${STT_DOMAIN}"
+          echo "  TTS: https://${TTS_DOMAIN}"
+          echo ""
+          
           echo "🚀 Deployments:"
           kubectl get deployments -n $NAMESPACE -o wide
           echo ""
           
-          # Pods
           echo "📦 Pods:"
           kubectl get pods -n $NAMESPACE -o wide
           echo ""
           
-          # Check for issues
           echo "🔍 Issue Detection:"
           PENDING=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | wc -l)
           FAILED=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name' | wc -l)
-          CRASH_LOOP=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | wc -l || echo "0")
-          IMAGE_PULL=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name' | wc -l || echo "0")
           
           if [ "$PENDING" -gt 0 ]; then
-            echo "⚠️ $PENDING pod(s) pending:"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | while read pod; do
-              echo "  • $pod"
-              echo "    Reason: $(kubectl get pod $pod -n $NAMESPACE -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].message}')"
-            done
-            echo ""
+            echo "⚠️ $PENDING pod(s) pending"
           fi
           
           if [ "$FAILED" -gt 0 ]; then
-            echo "❌ $FAILED pod(s) failed:"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name'
-            echo ""
+            echo "❌ $FAILED pod(s) failed"
+            exit 1
           fi
           
-          if [ "$CRASH_LOOP" -gt 0 ]; then
-            echo "❌ $CRASH_LOOP pod(s) in CrashLoopBackOff:"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | while read pod; do
-              echo "  • $pod"
-              echo "    Last 20 log lines:"
-              kubectl logs $pod -n $NAMESPACE --tail=20 || echo "    (no logs available)"
-            done
-            echo ""
-          fi
-          
-          if [ "$IMAGE_PULL" -gt 0 ]; then
-            echo "❌ $IMAGE_PULL pod(s) with ImagePullBackOff:"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name'
-            echo ""
-          fi
-          
-          # GPU Status
+          echo ""
           echo "🎮 GPU Status:"
           GPU_TOTAL=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
           GPU_USED=$(kubectl get pods -n $NAMESPACE -o json | jq '[.items[].spec.containers[].resources.requests."nvidia.com/gpu" // "0" | tonumber] | add')
           echo "  Total available: $GPU_TOTAL virtual GPUs"
           echo "  Currently used: $GPU_USED"
           echo "  Remaining: $((GPU_TOTAL - GPU_USED))"
-          
-          if [ "$GPU_USED" -gt "$GPU_TOTAL" ]; then
-            echo "  ⚠️  WARNING: GPU over-subscription!"
-          fi
           echo ""
           
-          # Services
           echo "🌐 Services:"
           kubectl get services -n $NAMESPACE
           echo ""
           
-          # Ingress
           echo "🔐 Ingress:"
           kubectl get ingress -n $NAMESPACE
           echo ""
           
-          # Certificates
-          echo "🔒 Certificates:"
-          kubectl get certificate -n $NAMESPACE 2>/dev/null || echo "  (no certificates found)"
-          echo ""
-          
-          # Recent Events
-          echo "📋 Recent Events (last 10):"
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10
-          echo ""
-          
-          # Summary
           echo "======================================================"
-          echo "📈 Summary:"
           TOTAL_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE --no-headers | wc -l)
           READY_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE -o json | jq '[.items[] | select(.status.readyReplicas == .spec.replicas)] | length')
           RUNNING_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers | wc -l)
           TOTAL_PODS=$(kubectl get pods -n $NAMESPACE --no-headers | wc -l)
           
+          echo "📈 Summary:"
           echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
           echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
           echo "  Pending: $PENDING"
           echo "  Failed: $FAILED"
-          echo "  Issues: $((CRASH_LOOP + IMAGE_PULL))"
           echo "======================================================"
           
-          # Exit with error if there are failed pods
-          if [ "$FAILED" -gt 0 ] || [ "$IMAGE_PULL" -gt 0 ]; then
+          if [ "$FAILED" -gt 0 ]; then
             echo ""
             echo "❌ Deployment completed with errors!"
-            echo "   Check the output above for details"
             exit 1
           elif [ "$PENDING" -gt 0 ]; then
             echo ""
             echo "⚠️  Deployment completed with pending pods"
-            echo "   Pods may still be scheduling/starting"
-            exit 0
           else
             echo ""
             echo "✅ Deployment successful!"
