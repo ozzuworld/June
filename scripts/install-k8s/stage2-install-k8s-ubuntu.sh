@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE FIX)
+# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE WITH CERTIFICATE RESTORE)
 # This creates ALL infrastructure that deployments depend on
 
 set -e
@@ -8,6 +8,7 @@ echo "======================================================"
 echo "🚀 Stage 2: Complete Kubernetes Infrastructure Setup"
 echo "   ✅ FIXED: Proper GPU time-slicing activation"
 echo "   ✅ FIXED: Correct PV paths and verification"
+echo "   ✅ FIXED: Certificate backup/restore support"
 echo "   ✅ FIXED: Post-install validation"
 echo "======================================================"
 
@@ -244,6 +245,71 @@ EOF
 log_success "ClusterIssuers created!"
 
 # ============================================================================
+# NAMESPACE (Application namespace - NOT gpu-operator)
+# ============================================================================
+
+log_info "Creating june-services namespace..."
+kubectl create namespace june-services || log_warning "Namespace june-services already exists"
+log_success "Namespace ready!"
+
+# ============================================================================
+# CERTIFICATE BACKUP RESTORE (CRITICAL - Avoids Let's Encrypt Rate Limits)
+# ============================================================================
+
+log_info "Checking for certificate backup..."
+
+BACKUP_DIR="$HOME/.june-certs"
+BACKUP_FILE="$BACKUP_DIR/wildcard-cert-backup.yaml"
+
+if [ -f "$BACKUP_FILE" ]; then
+    log_success "Found certificate backup!"
+    
+    # Show backup info
+    if [ -f "$BACKUP_DIR/backup-metadata.txt" ]; then
+        BACKUP_DATE=$(grep "Backup Created:" "$BACKUP_DIR/backup-metadata.txt" 2>/dev/null | cut -d: -f2- || echo "Unknown")
+        EXPIRY_DATE=$(grep "Certificate Expiry:" "$BACKUP_DIR/backup-metadata.txt" 2>/dev/null | cut -d: -f2- || echo "Unknown")
+        
+        echo "  Backup created: $BACKUP_DATE"
+        echo "  Certificate expires: $EXPIRY_DATE"
+    fi
+    echo ""
+    
+    log_info "Restoring certificate from backup..."
+    
+    # Apply the backup (this creates the secret)
+    if kubectl apply -f "$BACKUP_FILE"; then
+        log_success "Certificate restored successfully!"
+        echo ""
+        echo "✅ Using existing certificate - NO rate limit used!"
+        echo "   Ingress will use this certificate automatically"
+        echo ""
+    else
+        log_error "Failed to restore certificate backup!"
+        echo ""
+        read -p "Continue without backup? cert-manager will request new cert (uses rate limit) (y/n): " CONTINUE
+        [[ $CONTINUE != [yY] ]] && { echo "Cancelled. Fix backup and retry."; exit 1; }
+    fi
+else
+    log_warning "No certificate backup found"
+    echo ""
+    echo "⚠️  cert-manager will request a NEW certificate from Let's Encrypt"
+    echo "   This uses your rate limit (5 certs per week per domain)"
+    echo ""
+    echo "📍 Backup location checked: $BACKUP_FILE"
+    echo ""
+    echo "💡 After deployment completes and certificate is issued:"
+    echo "   1. Download backup script from your repo"
+    echo "   2. Run: ./scripts/backup-wildcard-cert.sh"
+    echo "   3. Future rebuilds will restore from backup (no rate limit!)"
+    echo ""
+    
+    read -p "Continue and request new certificate? (y/n): " CONTINUE
+    [[ $CONTINUE != [yY] ]] && { echo "Cancelled."; exit 1; }
+fi
+
+echo ""
+
+# ============================================================================
 # GPU OPERATOR (FIXED - Proper time-slicing activation)
 # ============================================================================
 
@@ -355,14 +421,6 @@ EOF
     kubectl label nodes --all gpu=true --overwrite
     log_success "Nodes labeled with gpu=true"
 fi
-
-# ============================================================================
-# NAMESPACE (Application namespace - NOT gpu-operator)
-# ============================================================================
-
-log_info "Creating june-services namespace..."
-kubectl create namespace june-services || log_warning "Namespace june-services already exists"
-log_success "Namespace ready!"
 
 # ============================================================================
 # STORAGE (FIXED - Create directories AND PVs)
@@ -554,6 +612,17 @@ if [[ $SETUP_GPU == [yY] ]]; then
     fi
 fi
 
+# Check certificate backup status
+echo ""
+log_info "Certificate backup status:"
+if [ -f "$BACKUP_FILE" ]; then
+    log_success "Certificate backup exists at $BACKUP_FILE"
+    echo "  Future rebuilds will restore from backup automatically"
+else
+    log_warning "No certificate backup found"
+    echo "  Run './scripts/backup-wildcard-cert.sh' after cert is issued"
+fi
+
 # ============================================================================
 # FINAL STATUS
 # ============================================================================
@@ -577,6 +646,13 @@ fi
 echo "  ✅ Storage infrastructure (directories + PVs)"
 echo "  ✅ june-services namespace"
 echo "  ✅ GitHub runner configured"
+
+if [ -f "$BACKUP_FILE" ]; then
+    echo "  ✅ Certificate restored from backup"
+else
+    echo "  ⚠️  Certificate will be requested from Let's Encrypt"
+fi
+
 echo ""
 echo "Storage Created:"
 echo "  • /opt/june-postgresql-data (10Gi PV)"
@@ -599,6 +675,14 @@ echo "     • kubectl get pods -n june-services -w"
 echo "     • kubectl describe pod <pod-name> -n june-services"
 echo ""
 
+if [ ! -f "$BACKUP_FILE" ]; then
+    echo "  4. IMPORTANT: After certificate is issued, backup it:"
+    echo "     • wget https://raw.githubusercontent.com/YOUR_USER/june/main/scripts/backup-wildcard-cert.sh"
+    echo "     • chmod +x backup-wildcard-cert.sh"
+    echo "     • ./backup-wildcard-cert.sh"
+    echo ""
+fi
+
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "GPU Notes:"
     echo "  • Time-slicing config will be used by deployments"
@@ -611,6 +695,7 @@ echo "Troubleshooting:"
 echo "  • Check GPU: kubectl describe nodes | grep -A 5 Allocatable | grep nvidia"
 echo "  • Check PVs: kubectl get pv"
 echo "  • Check storage: ls -la /opt/june-*"
+echo "  • Check cert: kubectl get certificate -n june-services"
 echo "  • Full status: kubectl get all -A"
 echo ""
 echo "======================================================"
