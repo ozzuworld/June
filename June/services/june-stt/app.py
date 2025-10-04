@@ -1,5 +1,5 @@
 # June/services/june-stt/app.py
-# Simple, Correct Faster-Whisper Implementation
+# Simple, Correct Faster-Whisper Implementation with Fixed Orchestrator Integration
 
 import os
 import time
@@ -47,6 +47,9 @@ except ImportError:
     def extract_client_id(auth_data: Dict[str, Any]) -> str:
         return auth_data.get("client_id", "fallback")
 
+# FIXED: Import the new orchestrator client
+from orchestrator_client import get_orchestrator_client
+
 # Logging setup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -62,10 +65,6 @@ processing_semaphore = None
 class Config:
     # Environment
     ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
-    
-    # Orchestrator
-    ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:8080")
-    ORCHESTRATOR_API_KEY = os.getenv("ORCHESTRATOR_API_KEY", "")
     
     # Faster-Whisper Configuration (Official Documentation)
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
@@ -102,13 +101,6 @@ class TranscriptionResult(BaseModel):
     user_id: str
     segments: Optional[List[Dict[str, Any]]] = None
     performance_metrics: Optional[Dict[str, Any]] = None
-
-class TranscriptNotification(BaseModel):
-    transcript_id: str
-    user_id: str
-    text: str
-    timestamp: datetime
-    metadata: Dict[str, Any] = {}
 
 # Simple Faster-Whisper Service (Following Official Docs)
 class WhisperService:
@@ -205,7 +197,7 @@ class WhisperService:
             if use_vad:
                 vad_parameters = {
                     "threshold": 0.5,
-                    "min_silence_duration_ms": 2000,  # Conservative: 2 seconds
+                    "min_silence_duration_ms": 2000,
                     "speech_pad_ms": 400,
                     "window_size_samples": 1024
                 }
@@ -261,7 +253,7 @@ class WhisperService:
             }
             
         except Exception as e:
-            processing_time = int((time.time() - start_time) * 1000)
+            processing_time = int((time.time() - start_time) * 1000) if 'start_time' in locals() else 0
             logger.error(f"❌ Transcription failed after {processing_time}ms: {e}")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
         finally:
@@ -278,39 +270,6 @@ class WhisperService:
         logger.info("✅ Whisper service cleanup completed")
 
 whisper_service = WhisperService()
-
-# Orchestrator Client
-class OrchestratorClient:
-    def __init__(self):
-        self.base_url = config.ORCHESTRATOR_URL
-        self.api_key = config.ORCHESTRATOR_API_KEY
-    
-    async def notify_transcript(self, notification: TranscriptNotification):
-        try:
-            headers = {"Content-Type": "application/json"}
-            if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-                
-            # Fix datetime serialization
-            notification_data = notification.model_dump()
-            notification_data["timestamp"] = notification.timestamp.isoformat()
-                
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/v1/transcripts",
-                    json=notification_data,
-                    headers=headers
-                )
-                
-                if response.status_code == 200:
-                    logger.info(f"✅ Notified orchestrator about transcript {notification.transcript_id}")
-                else:
-                    logger.warning(f"⚠️ Orchestrator notification failed: {response.status_code}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Failed to notify orchestrator: {e}")
-
-orchestrator_client = OrchestratorClient()
 
 # Background Tasks
 async def cleanup_old_transcripts():
@@ -345,7 +304,7 @@ async def periodic_cleanup():
 async def lifespan(app: FastAPI):
     global cleanup_task, processing_semaphore
     
-    logger.info("🚀 Starting June STT Service v3.1.0 (Simple Faster-Whisper)")
+    logger.info("🚀 Starting June STT Service v3.1.1 (Fixed Orchestrator Integration)")
     logger.info(f"🔧 Config: Model={config.WHISPER_MODEL}, Device={config.WHISPER_DEVICE}, Compute={config.WHISPER_COMPUTE_TYPE}")
     
     processing_semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_REQUESTS)
@@ -376,9 +335,9 @@ async def lifespan(app: FastAPI):
 
 # FastAPI app
 app = FastAPI(
-    title="June STT Service (Simple Faster-Whisper)", 
-    version="3.1.0", 
-    description="Simple, reliable Speech-to-Text microservice using Faster-Whisper",
+    title="June STT Service (Fixed Orchestrator)", 
+    version="3.1.1", 
+    description="Speech-to-Text with proper orchestrator integration",
     lifespan=lifespan
 )
 
@@ -406,14 +365,15 @@ async def validate_audio_file(audio_file: UploadFile) -> None:
 @app.get("/")
 async def root():
     return {
-        "service": "June STT Service (Simple Faster-Whisper)",
-        "version": "3.1.0", 
+        "service": "June STT Service (Fixed Orchestrator)",
+        "version": "3.1.1", 
         "status": "healthy" if whisper_service.is_model_ready() else "initializing",
         "whisper_model": config.WHISPER_MODEL,
         "device": config.WHISPER_DEVICE,
         "compute_type": config.WHISPER_COMPUTE_TYPE,
         "auth_available": AUTH_AVAILABLE,
         "beam_size": config.WHISPER_BEAM_SIZE,
+        "orchestrator_integration": "enabled",
         "endpoints": {
             "transcribe": "/v1/transcribe",
             "health": "/healthz",
@@ -426,7 +386,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "june-stt",
-        "version": "3.1.0",
+        "version": "3.1.1",
         "timestamp": datetime.utcnow().isoformat(),
         "model_ready": whisper_service.is_model_ready(),
         "active_requests": whisper_service.active_requests
@@ -452,20 +412,14 @@ async def transcribe_audio(
     task: Optional[str] = Form("transcribe"),
     temperature: Optional[float] = Form(0.0),
     beam_size: Optional[int] = Form(None),
-    use_vad: Optional[bool] = Form(False),  # Default to False for quiet audio
+    use_vad: Optional[bool] = Form(False),
     notify_orchestrator: Optional[bool] = Form(True),
     auth_data: dict = Depends(require_user_auth)
 ):
     """
-    Simple, reliable transcription using Faster-Whisper
+    Transcribe audio and send to orchestrator
     
-    - **audio_file**: Audio file (wav, mp3, m4a, etc.)
-    - **language**: Source language (optional, auto-detected if not provided)  
-    - **task**: 'transcribe' or 'translate' (to English)
-    - **temperature**: Sampling temperature (0.0 = deterministic)
-    - **beam_size**: Beam search size (default from config)
-    - **use_vad**: Enable Voice Activity Detection (False = more sensitive)
-    - **notify_orchestrator**: Whether to notify orchestrator service
+    FIXED: Now properly uses the new orchestrator_client.py
     """
     async with processing_semaphore:
         user_id = extract_user_id(auth_data)
@@ -511,6 +465,7 @@ async def transcribe_audio(
                     transcript_id=transcript_id,
                     text=result["text"],
                     language=result.get("language"),
+                    confidence=result.get("language_probability"),
                     processing_time_ms=result["processing_time_ms"],
                     timestamp=datetime.utcnow(),
                     status="completed",
@@ -522,23 +477,39 @@ async def transcribe_audio(
                 # Store transcript in memory
                 transcript_storage[transcript_id] = transcript_result
                 
-                # Notify orchestrator in background
+                # FIXED: Notify orchestrator using the new client
                 if notify_orchestrator:
-                    notification = TranscriptNotification(
-                        transcript_id=transcript_id,
-                        user_id=user_id,
-                        text=result["text"],
-                        timestamp=transcript_result.timestamp,
-                        metadata={
+                    try:
+                        orchestrator_client = get_orchestrator_client()
+                        
+                        notification_data = {
+                            "transcript_id": transcript_id,
+                            "user_id": user_id,
+                            "text": result["text"],  # THIS IS WHAT USER SAID
                             "language": result.get("language"),
+                            "confidence": result.get("language_probability"),
                             "processing_time_ms": result["processing_time_ms"],
-                            "task": task,
-                            "filename": audio_file.filename,
-                            "engine": "faster-whisper-simple",
-                            "model": config.WHISPER_MODEL
+                            "metadata": {
+                                "task": task,
+                                "filename": audio_file.filename,
+                                "engine": "faster-whisper",
+                                "model": config.WHISPER_MODEL,
+                                "beam_size": result["performance_metrics"].get("beam_size"),
+                                "vad_enabled": use_vad
+                            }
                         }
-                    )
-                    background_tasks.add_task(orchestrator_client.notify_transcript, notification)
+                        
+                        # Send to orchestrator in background
+                        background_tasks.add_task(
+                            orchestrator_client.notify_transcript,
+                            notification_data
+                        )
+                        
+                        logger.info(f"📤 Queued orchestrator notification for transcript {transcript_id}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Failed to queue orchestrator notification: {e}")
+                        # Don't fail the request if orchestrator notification fails
                 
                 logger.info(f"✅ Transcription completed: {transcript_id} for user {user_id} ({result['processing_time_ms']}ms)")
                 
