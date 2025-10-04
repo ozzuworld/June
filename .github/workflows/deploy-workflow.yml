@@ -1,4 +1,4 @@
-name: 🚀 June Services Deploy (Application Only)
+name: 🚀 June Services Deploy (FIXED - Infrastructure Validation)
 
 on:
   push:
@@ -232,7 +232,7 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT (Application Services Only - No Infrastructure)
+  # DEPLOYMENT (FIXED - Comprehensive Infrastructure Validation)
   # ============================================================================
 
   deploy:
@@ -251,55 +251,172 @@ jobs:
       - name: 📦 Checkout
         uses: actions/checkout@v4
 
+      # ========================================================================
+      # CRITICAL: Infrastructure Validation (FIXED - Comprehensive checks)
+      # ========================================================================
+      
       - name: 🔍 Verify Infrastructure Prerequisites
         run: |
-          echo "🔍 Checking infrastructure prerequisites..."
+          echo "🔍 Running comprehensive infrastructure validation..."
+          
+          ERRORS=0
+          WARNINGS=0
           
           # Check cluster
-          kubectl cluster-info
+          echo ""
+          echo "1️⃣ Checking cluster connectivity..."
+          if kubectl cluster-info &>/dev/null; then
+            echo "✅ Cluster is accessible"
+          else
+            echo "❌ Cannot connect to Kubernetes cluster!"
+            exit 1
+          fi
           
           # Check namespace
-          if ! kubectl get ns $NAMESPACE &>/dev/null; then
-            echo "❌ Namespace $NAMESPACE doesn't exist!"
-            echo "   Run stage2-install-k8s-ubuntu.sh first"
-            exit 1
+          echo ""
+          echo "2️⃣ Checking namespace..."
+          if kubectl get ns $NAMESPACE &>/dev/null; then
+            echo "✅ Namespace '$NAMESPACE' exists"
+          else
+            echo "❌ Namespace '$NAMESPACE' doesn't exist!"
+            echo "   Run: kubectl create namespace $NAMESPACE"
+            ((ERRORS++))
           fi
           
           # Check StorageClass
-          if ! kubectl get sc local-storage &>/dev/null; then
+          echo ""
+          echo "3️⃣ Checking StorageClass..."
+          if kubectl get sc local-storage &>/dev/null; then
+            echo "✅ StorageClass 'local-storage' exists"
+          else
             echo "❌ StorageClass 'local-storage' doesn't exist!"
-            echo "   Run stage2-install-k8s-ubuntu.sh first"
-            exit 1
+            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
+            ((ERRORS++))
           fi
           
           # Check PVs
-          if ! kubectl get pv postgresql-pv &>/dev/null; then
+          echo ""
+          echo "4️⃣ Checking PersistentVolumes..."
+          if kubectl get pv postgresql-pv &>/dev/null; then
+            echo "✅ PersistentVolume 'postgresql-pv' exists"
+          else
             echo "❌ PersistentVolume 'postgresql-pv' doesn't exist!"
-            echo "   Run stage2-install-k8s-ubuntu.sh first"
-            exit 1
+            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
+            ((ERRORS++))
           fi
           
+          # Check storage directories
+          echo ""
+          echo "5️⃣ Checking storage directories..."
+          STORAGE_DIRS=("/opt/june-postgresql-data" "/opt/june-stt-models" "/opt/june-tts-models")
+          for dir in "${STORAGE_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ Storage directory $dir exists"
+            else
+              echo "⚠️  Storage directory $dir doesn't exist (will be created)"
+              mkdir -p "$dir"
+              chmod 755 "$dir"
+              ((WARNINGS++))
+            fi
+          done
+          
           # Check ingress controller
-          if ! kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller | grep -q Running; then
+          echo ""
+          echo "6️⃣ Checking ingress controller..."
+          if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller 2>/dev/null | grep -q Running; then
+            echo "✅ Ingress controller is running"
+          else
             echo "❌ Ingress controller not running!"
-            echo "   Run stage2-install-k8s-ubuntu.sh first"
-            exit 1
+            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
+            ((ERRORS++))
           fi
           
           # Check cert-manager
-          if ! kubectl get pods -n cert-manager | grep -q Running; then
+          echo ""
+          echo "7️⃣ Checking cert-manager..."
+          if kubectl get pods -n cert-manager 2>/dev/null | grep -q Running; then
+            echo "✅ cert-manager is running"
+          else
             echo "❌ cert-manager not running!"
-            echo "   Run stage2-install-k8s-ubuntu.sh first"
-            exit 1
+            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
+            ((ERRORS++))
           fi
           
-          echo "✅ All infrastructure prerequisites met!"
+          # Check GPU availability (CRITICAL for GPU services)
+          echo ""
+          echo "8️⃣ Checking GPU availability..."
+          GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+          
+          if [ "$GPU_ALLOCATABLE" -ge 2 ]; then
+            echo "✅ GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs available"
+          elif [ "$GPU_ALLOCATABLE" -eq 1 ]; then
+            echo "⚠️  Only 1 GPU available (time-slicing may not be active)"
+            echo "   Expected: 2+ virtual GPUs for time-slicing"
+            echo "   Check: kubectl describe nodes | grep nvidia.com/gpu"
+            ((WARNINGS++))
+          else
+            echo "❌ No GPUs available!"
+            echo "   GPU services (STT, TTS) will fail to schedule!"
+            echo "   Run stage2-install-k8s-ubuntu.sh with GPU setup"
+            ((ERRORS++))
+          fi
+          
+          # Check node labels
+          echo ""
+          echo "9️⃣ Checking node labels..."
+          GPU_LABELED=$(kubectl get nodes -l gpu=true --no-headers 2>/dev/null | wc -l)
+          if [ "$GPU_LABELED" -gt 0 ]; then
+            echo "✅ Found $GPU_LABELED node(s) labeled with gpu=true"
+          else
+            echo "⚠️  No nodes labeled with gpu=true"
+            echo "   Labeling nodes now..."
+            kubectl label nodes --all gpu=true --overwrite
+            ((WARNINGS++))
+          fi
+          
+          # Check ClusterIssuers
+          echo ""
+          echo "🔟 Checking ClusterIssuers..."
+          if kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
+            echo "✅ ClusterIssuer 'letsencrypt-prod' exists"
+          else
+            echo "⚠️  ClusterIssuer 'letsencrypt-prod' not found"
+            echo "   TLS certificates may not work"
+            ((WARNINGS++))
+          fi
+          
+          # Summary
+          echo ""
+          echo "========================================"
+          echo "📊 Validation Summary"
+          echo "========================================"
+          echo "Errors: $ERRORS"
+          echo "Warnings: $WARNINGS"
+          echo ""
+          
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "❌ FAILED: $ERRORS critical error(s) found!"
+            echo ""
+            echo "⚠️  DEPLOYMENT BLOCKED"
+            echo "   Fix errors above before deploying"
+            echo "   Run: sudo ./scripts/k8s Install/stage2-install-k8s-ubuntu.sh"
+            exit 1
+          elif [ "$WARNINGS" -gt 0 ]; then
+            echo "⚠️  PASSED with $WARNINGS warning(s)"
+            echo "   Deployment will continue"
+          else
+            echo "✅ PASSED: All checks successful!"
+          fi
 
+      # ========================================================================
+      # Update Application Secrets
+      # ========================================================================
+      
       - name: 🔐 Update Application Secrets
         run: |
           echo "🔐 Updating application secrets..."
           
-          # Create/update June secrets (application-level only)
+          # Create/update June secrets
           kubectl create secret generic june-secrets \
             --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
             --namespace=$NAMESPACE \
@@ -307,11 +424,15 @@ jobs:
           
           echo "✅ Application secrets updated"
 
-      - name: 🗄️ Deploy PostgreSQL (StatefulSet Only)
+      # ========================================================================
+      # Deploy PostgreSQL (StatefulSet Only)
+      # ========================================================================
+      
+      - name: 🗄️ Deploy PostgreSQL
         run: |
           echo "🗄️ Deploying PostgreSQL..."
           
-          # Only deploy the StatefulSet and Service (PV already exists from stage2)
+          # Deploy StatefulSet (PV already exists from stage2)
           if ! kubectl get statefulset postgresql -n $NAMESPACE &>/dev/null; then
             echo "Creating PostgreSQL StatefulSet..."
             kubectl apply -f k8s/postgresql-deployment.yaml
@@ -320,87 +441,192 @@ jobs:
             kubectl apply -f k8s/postgresql-deployment.yaml
           fi
           
-          echo "⏳ Waiting for PostgreSQL..."
+          echo "⏳ Waiting for PostgreSQL (max 3 minutes)..."
           kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
-            echo "⚠️ PostgreSQL not ready yet"
+            echo "⚠️ PostgreSQL not ready yet, checking status..."
+            kubectl get pods -l app=postgresql -n $NAMESPACE
+            kubectl describe pod -l app=postgresql -n $NAMESPACE | tail -20
           }
 
+      # ========================================================================
+      # Deploy Application Services (FIXED - No duplicate PVs)
+      # ========================================================================
+      
       - name: 🚀 Deploy Application Services
         run: |
           echo "🚀 Deploying June application services..."
           
-          # Deploy services (these reference the PVs created by stage2)
+          # Use complete manifests (which references existing PVs)
           kubectl apply -f k8s/complete-manifests.yaml
           
           echo "✅ Application services deployed"
 
+      # ========================================================================
+      # Wait for Deployments (FIXED - Better timeout handling)
+      # ========================================================================
+      
       - name: ⏳ Wait for Deployments
         run: |
-          echo "⏳ Waiting for deployments..."
+          echo "⏳ Waiting for deployments to be ready..."
           
-          # Wait for non-GPU services first
-          for deployment in june-idp june-orchestrator; do
-            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=300s || {
-              echo "⚠️ $deployment taking longer than expected"
-            }
-          done
+          # Function to wait for deployment with better error handling
+          wait_for_deployment() {
+            local deployment=$1
+            local timeout=$2
+            local description=$3
+            
+            echo ""
+            echo "Waiting for $description ($deployment)..."
+            
+            if kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=${timeout}s; then
+              echo "✅ $description is ready"
+              return 0
+            else
+              echo "⚠️ $description taking longer than expected"
+              echo "Current status:"
+              kubectl get deployment $deployment -n $NAMESPACE
+              kubectl get pods -l app=$deployment -n $NAMESPACE
+              
+              # Check for common issues
+              PENDING=$(kubectl get pods -l app=$deployment -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+              if [ "$PENDING" -gt 0 ]; then
+                echo "❌ Found $PENDING pending pod(s) for $deployment"
+                kubectl describe pods -l app=$deployment -n $NAMESPACE | grep -A 10 "Events:"
+              fi
+              
+              return 1
+            fi
+          }
           
-          # Wait for GPU services (they may take longer)
-          for deployment in june-stt june-tts; do
-            kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=600s || {
-              echo "⚠️ $deployment taking longer than expected"
-              kubectl describe pod -l app=$deployment -n $NAMESPACE | tail -30
-            }
-          done
+          # Wait for non-GPU services first (shorter timeout)
+          wait_for_deployment "june-idp" 300 "Identity Provider (Keycloak)" || true
+          wait_for_deployment "june-orchestrator" 180 "Orchestrator" || true
+          
+          # Wait for GPU services (longer timeout - they download models)
+          wait_for_deployment "june-stt" 600 "Speech-to-Text (GPU service)" || true
+          wait_for_deployment "june-tts" 600 "Text-to-Speech (GPU service)" || true
 
+      # ========================================================================
+      # Deployment Summary (FIXED - Better diagnostics)
+      # ========================================================================
+      
       - name: 📊 Deployment Summary
         if: always()
         run: |
           echo ""
           echo "======================================================"
-          echo "📊 Deployment Status"
+          echo "📊 Deployment Status Report"
           echo "======================================================"
           echo ""
+          
+          # Deployments
           echo "🚀 Deployments:"
           kubectl get deployments -n $NAMESPACE -o wide
           echo ""
+          
+          # Pods
           echo "📦 Pods:"
           kubectl get pods -n $NAMESPACE -o wide
           echo ""
-          echo "🎮 GPU Allocation:"
-          kubectl describe nodes | grep -A 10 "Allocated resources:" | grep nvidia || echo "No GPU info available"
+          
+          # Check for issues
+          echo "🔍 Issue Detection:"
+          PENDING=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | wc -l)
+          FAILED=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name' | wc -l)
+          CRASH_LOOP=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | wc -l || echo "0")
+          IMAGE_PULL=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name' | wc -l || echo "0")
+          
+          if [ "$PENDING" -gt 0 ]; then
+            echo "⚠️ $PENDING pod(s) pending:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | while read pod; do
+              echo "  • $pod"
+              echo "    Reason: $(kubectl get pod $pod -n $NAMESPACE -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].message}')"
+            done
+            echo ""
+          fi
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ $FAILED pod(s) failed:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name'
+            echo ""
+          fi
+          
+          if [ "$CRASH_LOOP" -gt 0 ]; then
+            echo "❌ $CRASH_LOOP pod(s) in CrashLoopBackOff:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | while read pod; do
+              echo "  • $pod"
+              echo "    Last 20 log lines:"
+              kubectl logs $pod -n $NAMESPACE --tail=20 || echo "    (no logs available)"
+            done
+            echo ""
+          fi
+          
+          if [ "$IMAGE_PULL" -gt 0 ]; then
+            echo "❌ $IMAGE_PULL pod(s) with ImagePullBackOff:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name'
+            echo ""
+          fi
+          
+          # GPU Status
+          echo "🎮 GPU Status:"
+          GPU_TOTAL=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+          GPU_USED=$(kubectl get pods -n $NAMESPACE -o json | jq '[.items[].spec.containers[].resources.requests."nvidia.com/gpu" // "0" | tonumber] | add')
+          echo "  Total available: $GPU_TOTAL virtual GPUs"
+          echo "  Currently used: $GPU_USED"
+          echo "  Remaining: $((GPU_TOTAL - GPU_USED))"
+          
+          if [ "$GPU_USED" -gt "$GPU_TOTAL" ]; then
+            echo "  ⚠️  WARNING: GPU over-subscription!"
+          fi
           echo ""
+          
+          # Services
           echo "🌐 Services:"
           kubectl get services -n $NAMESPACE
           echo ""
+          
+          # Ingress
           echo "🔐 Ingress:"
           kubectl get ingress -n $NAMESPACE
           echo ""
+          
+          # Certificates
           echo "🔒 Certificates:"
-          kubectl get certificate -n $NAMESPACE
+          kubectl get certificate -n $NAMESPACE 2>/dev/null || echo "  (no certificates found)"
           echo ""
           
-          # Check for issues
-          PENDING=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | wc -l)
-          FAILED=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name' | wc -l)
-          
-          if [ "$PENDING" -gt 0 ]; then
-            echo "⚠️ WARNING: $PENDING pod(s) pending"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | while read pod; do
-              echo "Describing $pod:"
-              kubectl describe pod $pod -n $NAMESPACE | grep -A 5 "Events:"
-            done
-          fi
-          
-          if [ "$FAILED" -gt 0 ]; then
-            echo "❌ ERROR: $FAILED pod(s) failed"
-            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name'
-          fi
-          
+          # Recent Events
+          echo "📋 Recent Events (last 10):"
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10
           echo ""
+          
+          # Summary
+          echo "======================================================"
+          echo "📈 Summary:"
+          TOTAL_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE --no-headers | wc -l)
+          READY_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE -o json | jq '[.items[] | select(.status.readyReplicas == .spec.replicas)] | length')
+          RUNNING_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers | wc -l)
+          TOTAL_PODS=$(kubectl get pods -n $NAMESPACE --no-headers | wc -l)
+          
+          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
+          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
+          echo "  Pending: $PENDING"
+          echo "  Failed: $FAILED"
+          echo "  Issues: $((CRASH_LOOP + IMAGE_PULL))"
           echo "======================================================"
           
           # Exit with error if there are failed pods
-          if [ "$FAILED" -gt 0 ]; then
+          if [ "$FAILED" -gt 0 ] || [ "$IMAGE_PULL" -gt 0 ]; then
+            echo ""
+            echo "❌ Deployment completed with errors!"
+            echo "   Check the output above for details"
             exit 1
+          elif [ "$PENDING" -gt 0 ]; then
+            echo ""
+            echo "⚠️  Deployment completed with pending pods"
+            echo "   Pods may still be scheduling/starting"
+            exit 0
+          else
+            echo ""
+            echo "✅ Deployment successful!"
           fi

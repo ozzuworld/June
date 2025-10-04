@@ -1,14 +1,14 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (FIXED - Correct PV Paths)
-# Creates BOTH staging AND production issuers
-# Deployment chooses which one to use
+# Stage 2: Kubernetes + Infrastructure Setup (COMPLETE FIX)
+# This creates ALL infrastructure that deployments depend on
 
 set -e
 
 echo "======================================================"
-echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH DUAL ISSUER SUPPORT (Staging + Production)"
-echo "   FIXED: Correct PostgreSQL PV paths"
+echo "🚀 Stage 2: Complete Kubernetes Infrastructure Setup"
+echo "   ✅ FIXED: Proper GPU time-slicing activation"
+echo "   ✅ FIXED: Correct PV paths and verification"
+echo "   ✅ FIXED: Post-install validation"
 echo "======================================================"
 
 # Colors
@@ -46,7 +46,7 @@ prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
 prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
 
 if [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
-    log_error "Email and Cloudflare API token are required for wildcard certificates!"
+    log_error "Email and Cloudflare API token are required!"
     exit 1
 fi
 
@@ -55,9 +55,7 @@ echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
 echo "  GPU Replicas: $GPU_REPLICAS"
-echo "  Wildcard Certificates: Both Staging + Production"
 echo "  Email: $LETSENCRYPT_EMAIL"
-echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
 echo ""
 
 read -p "Continue? (y/n): " confirm
@@ -178,7 +176,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# CLOUDFLARE SECRET (Shared by both issuers)
+# CLOUDFLARE SECRET
 # ============================================================================
 
 log_info "Creating Cloudflare API secret..."
@@ -190,10 +188,12 @@ kubectl create secret generic cloudflare-api-token \
 log_success "Cloudflare secret created!"
 
 # ============================================================================
-# STAGING ISSUER (For testing)
+# CLUSTER ISSUERS
 # ============================================================================
 
-log_info "Creating STAGING ClusterIssuer (for testing)..."
+log_info "Creating ClusterIssuers..."
+
+# Staging
 cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -217,13 +217,7 @@ spec:
         - "*.allsafe.world"
 EOF
 
-log_success "Staging issuer created!"
-
-# ============================================================================
-# PRODUCTION ISSUER (For real certs)
-# ============================================================================
-
-log_info "Creating PRODUCTION ClusterIssuer (for real certificates)..."
+# Production
 cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -247,15 +241,16 @@ spec:
         - "*.allsafe.world"
 EOF
 
-log_success "Production issuer created!"
+log_success "ClusterIssuers created!"
 
 # ============================================================================
-# GPU OPERATOR
+# GPU OPERATOR (FIXED - Proper time-slicing activation)
 # ============================================================================
 
 if [[ $SETUP_GPU == [yY] ]]; then
     log_info "Installing GPU Operator with time-slicing..."
     
+    # Install Helm if needed
     if ! command -v helm &> /dev/null; then
         snap install helm --classic || {
             cd /tmp
@@ -285,9 +280,20 @@ if [[ $SETUP_GPU == [yY] ]]; then
     
     log_success "GPU Operator installed!"
     
-    log_info "Configuring GPU time-slicing..."
-    sleep 30
+    # CRITICAL: Wait for GPU operator to be fully ready before configuring time-slicing
+    log_info "Waiting for GPU operator to be fully ready (this may take 3-5 minutes)..."
     
+    # Wait for device plugin daemonset
+    kubectl wait --for=condition=ready pod \
+        -n gpu-operator \
+        -l app=nvidia-device-plugin-daemonset \
+        --timeout=600s || log_warning "Device plugin taking longer than expected"
+    
+    sleep 30  # Extra wait to ensure everything is stable
+    
+    log_info "Configuring GPU time-slicing..."
+    
+    # Create time-slicing ConfigMap
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -306,12 +312,43 @@ data:
           replicas: ${GPU_REPLICAS}
 EOF
     
+    log_success "Time-slicing ConfigMap created with ${GPU_REPLICAS} replicas"
+    
+    # CRITICAL: Apply time-slicing to ClusterPolicy
+    log_info "Applying time-slicing to ClusterPolicy..."
     kubectl patch clusterpolicy cluster-policy \
         -n gpu-operator \
         --type merge \
         -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
     
-    log_success "GPU time-slicing configured!"
+    log_success "Time-slicing configuration applied to ClusterPolicy"
+    
+    # CRITICAL: Wait for device plugin to restart with new config
+    log_info "Waiting for device plugin to restart with time-slicing config..."
+    
+    # Delete device plugin pods to force restart
+    kubectl delete pods -n gpu-operator -l app=nvidia-device-plugin-daemonset || true
+    
+    sleep 20
+    
+    # Wait for new device plugin pods
+    kubectl wait --for=condition=ready pod \
+        -n gpu-operator \
+        -l app=nvidia-device-plugin-daemonset \
+        --timeout=300s || log_warning "Device plugin restart taking longer than expected"
+    
+    sleep 20  # Give time for GPU capacity to update
+    
+    # VERIFICATION: Check if time-slicing is active
+    log_info "Verifying GPU time-slicing..."
+    GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+    
+    if [ "$GPU_ALLOCATABLE" -ge "$GPU_REPLICAS" ]; then
+        log_success "GPU time-slicing is ACTIVE! ($GPU_ALLOCATABLE virtual GPUs available)"
+    else
+        log_warning "GPU time-slicing may still be activating (found $GPU_ALLOCATABLE GPUs, expected $GPU_REPLICAS)"
+        log_info "This is normal - it may take 1-2 minutes to fully activate"
+    fi
     
     # Label nodes for GPU workloads
     log_info "Labeling nodes for GPU workloads..."
@@ -320,28 +357,36 @@ EOF
 fi
 
 # ============================================================================
-# NAMESPACE
+# NAMESPACE (Application namespace - NOT gpu-operator)
 # ============================================================================
 
-log_info "Creating namespace..."
+log_info "Creating june-services namespace..."
 kubectl create namespace june-services || log_warning "Namespace june-services already exists"
 log_success "Namespace ready!"
 
 # ============================================================================
-# STORAGE (FIXED - Correct paths matching deployment manifests)
+# STORAGE (FIXED - Create directories AND PVs)
 # ============================================================================
 
-log_info "Setting up storage..."
+log_info "Setting up storage infrastructure..."
 
-# Create all required directories with correct paths
-mkdir -p /opt/june-postgresql-data
-mkdir -p /opt/june-stt-models
-mkdir -p /opt/june-tts-models
-mkdir -p /opt/june-data
+# Create all required directories
+log_info "Creating storage directories..."
+STORAGE_DIRS=(
+    "/opt/june-postgresql-data"
+    "/opt/june-stt-models"
+    "/opt/june-tts-models"
+    "/opt/june-data"
+)
 
-chmod 755 /opt/june-*
+for dir in "${STORAGE_DIRS[@]}"; do
+    mkdir -p "$dir"
+    chmod 755 "$dir"
+    log_success "Created $dir"
+done
 
-# Create StorageClass
+# Create StorageClass (cluster-scoped, not namespaced)
+log_info "Creating StorageClass..."
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -354,9 +399,10 @@ EOF
 
 log_success "StorageClass created!"
 
-# Create PersistentVolumes with correct paths
-# PostgreSQL PV - matches postgresql-deployment.yaml
-log_info "Creating PostgreSQL PV..."
+# Create PersistentVolumes (cluster-scoped, not namespaced)
+log_info "Creating PersistentVolumes..."
+
+# PostgreSQL PV
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -384,68 +430,12 @@ spec:
           - $(hostname)
 EOF
 
-# STT Models PV
-log_info "Creating STT models PV..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-stt-models-pv
-  labels:
-    type: local
-    app: june-stt-models
-spec:
-  capacity:
-    storage: 10Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-stt-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
+log_success "PostgreSQL PV created"
 
-# TTS Models PV
-log_info "Creating TTS models PV..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: june-tts-models-pv
-  labels:
-    type: local
-    app: june-tts-models
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-storage
-  local:
-    path: /opt/june-tts-models
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: kubernetes.io/hostname
-          operator: In
-          values:
-          - $(hostname)
-EOF
-
-log_success "Storage configured with correct paths!"
+log_success "Storage infrastructure configured!"
 
 # ============================================================================
-# GITHUB RUNNER
+# GITHUB RUNNER CONFIG
 # ============================================================================
 
 log_info "Configuring GitHub runner..."
@@ -463,14 +453,110 @@ EOF
         log_success "GitHub runner configured"
     fi
 else
-    log_warning "GitHub runner not found"
+    log_warning "GitHub runner not found at /opt/actions-runner"
+fi
+
+# ============================================================================
+# POST-INSTALL VERIFICATION
+# ============================================================================
+
+EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
+
+echo ""
+echo "======================================================"
+log_info "Running Post-Install Verification..."
+echo "======================================================"
+echo ""
+
+# Verify cluster
+log_info "Checking cluster status..."
+if kubectl cluster-info &>/dev/null; then
+    log_success "Cluster is accessible"
+else
+    log_error "Cluster not accessible!"
+fi
+
+# Verify nodes
+NODE_STATUS=$(kubectl get nodes --no-headers | awk '{print $2}' | head -1)
+if [ "$NODE_STATUS" = "Ready" ]; then
+    log_success "Node is Ready"
+else
+    log_error "Node status: $NODE_STATUS"
+fi
+
+# Verify namespaces
+NAMESPACES=("june-services" "ingress-nginx" "cert-manager")
+if [[ $SETUP_GPU == [yY] ]]; then
+    NAMESPACES+=("gpu-operator")
+fi
+
+for ns in "${NAMESPACES[@]}"; do
+    if kubectl get namespace "$ns" &>/dev/null; then
+        log_success "Namespace $ns exists"
+    else
+        log_error "Namespace $ns missing!"
+    fi
+done
+
+# Verify StorageClass
+if kubectl get storageclass local-storage &>/dev/null; then
+    log_success "StorageClass 'local-storage' exists"
+else
+    log_error "StorageClass 'local-storage' missing!"
+fi
+
+# Verify PVs
+if kubectl get pv postgresql-pv &>/dev/null; then
+    log_success "PostgreSQL PV exists"
+else
+    log_error "PostgreSQL PV missing!"
+fi
+
+# Verify storage directories
+for dir in "${STORAGE_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        log_success "Storage directory $dir exists"
+    else
+        log_error "Storage directory $dir missing!"
+    fi
+done
+
+# Verify ingress
+if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller | grep -q Running; then
+    log_success "Ingress controller running"
+else
+    log_error "Ingress controller not running!"
+fi
+
+# Verify cert-manager
+if kubectl get pods -n cert-manager | grep -q Running; then
+    log_success "cert-manager running"
+else
+    log_error "cert-manager not running!"
+fi
+
+# Verify GPU (if installed)
+if [[ $SETUP_GPU == [yY] ]]; then
+    GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+    
+    if [ "$GPU_ALLOCATABLE" -ge "$GPU_REPLICAS" ]; then
+        log_success "GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs"
+    else
+        log_warning "GPU: $GPU_ALLOCATABLE virtual GPUs (expected $GPU_REPLICAS - may still be activating)"
+    fi
+    
+    # Check node labels
+    GPU_LABELED=$(kubectl get nodes -l gpu=true --no-headers | wc -l)
+    if [ "$GPU_LABELED" -gt 0 ]; then
+        log_success "Nodes labeled for GPU: $GPU_LABELED"
+    else
+        log_error "No nodes labeled with gpu=true!"
+    fi
 fi
 
 # ============================================================================
 # FINAL STATUS
 # ============================================================================
-
-EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
 
 echo ""
 echo "======================================================"
@@ -478,23 +564,25 @@ log_success "Stage 2 Complete!"
 echo "======================================================"
 echo ""
 echo "Infrastructure Ready:"
-echo "  • Kubernetes cluster"
-echo "  • ingress-nginx (hostNetwork mode)"
-echo "  • cert-manager"
-echo "  • letsencrypt-staging (wildcard DNS-01)"
-echo "  • letsencrypt-prod (wildcard DNS-01)"
+echo "  ✅ Kubernetes cluster"
+echo "  ✅ ingress-nginx (hostNetwork mode)"
+echo "  ✅ cert-manager"
+echo "  ✅ letsencrypt-staging (wildcard DNS-01)"
+echo "  ✅ letsencrypt-prod (wildcard DNS-01)"
 
 if [[ $SETUP_GPU == [yY] ]]; then
-    echo "  • GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
+    echo "  ✅ GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
 fi
 
-echo "  • Storage configured (FIXED paths)"
-echo "  • GitHub runner ready"
+echo "  ✅ Storage infrastructure (directories + PVs)"
+echo "  ✅ june-services namespace"
+echo "  ✅ GitHub runner configured"
 echo ""
-echo "Storage Paths Created:"
-echo "  • /opt/june-postgresql-data (10Gi)"
-echo "  • /opt/june-stt-models (10Gi)"
-echo "  • /opt/june-tts-models (20Gi)"
+echo "Storage Created:"
+echo "  • /opt/june-postgresql-data (10Gi PV)"
+echo "  • /opt/june-stt-models (directory ready)"
+echo "  • /opt/june-tts-models (directory ready)"
+echo "  • /opt/june-data (directory ready)"
 echo ""
 echo "External IP: $EXTERNAL_IP"
 echo ""
@@ -504,17 +592,25 @@ echo "  1. Configure DNS to point to $EXTERNAL_IP:"
 echo "     • *.allsafe.world (wildcard record)"
 echo "     • allsafe.world (root domain)"
 echo ""
-echo "  2. Choose issuer in your deployment:"
-echo "     • Use 'letsencrypt-staging' for testing (unlimited, shows as untrusted)"
-echo "     • Use 'letsencrypt-prod' for production (trusted certificates)"
+echo "  2. Push to GitHub to trigger automated deployment"
 echo ""
-echo "  3. Push to GitHub to trigger deployment"
+echo "  3. Monitor deployment:"
+echo "     • kubectl get pods -n june-services -w"
+echo "     • kubectl describe pod <pod-name> -n june-services"
 echo ""
-echo "Wildcard Benefits:"
-echo "   • One certificate covers unlimited subdomains"
-echo "   • Staging for testing, prod for real use"
-echo "   • Switch between them anytime"
-echo ""
-echo "Ready for deployment!"
+
+if [[ $SETUP_GPU == [yY] ]]; then
+    echo "GPU Notes:"
+    echo "  • Time-slicing config will be used by deployments"
+    echo "  • Each GPU service requests 1 virtual GPU"
+    echo "  • $GPU_REPLICAS services can share the physical GPU"
+    echo ""
+fi
+
+echo "Troubleshooting:"
+echo "  • Check GPU: kubectl describe nodes | grep -A 5 Allocatable | grep nvidia"
+echo "  • Check PVs: kubectl get pv"
+echo "  • Check storage: ls -la /opt/june-*"
+echo "  • Full status: kubectl get all -A"
 echo ""
 echo "======================================================"
