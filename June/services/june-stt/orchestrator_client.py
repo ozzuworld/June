@@ -38,7 +38,9 @@ class ExternalOrchestratorClient:
         # Connection settings
         self.timeout = httpx.Timeout(
             connect=5.0,
-            read=float(os.getenv("ORCHESTRATOR_TIMEOUT_SECONDS", "10"))
+            read=float(os.getenv("ORCHESTRATOR_TIMEOUT_SECONDS", "10")),
+            write=5.0,
+            pool=5.0
         )
         
         # Feature flag
