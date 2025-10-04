@@ -315,6 +315,14 @@ EOF
 fi
 
 # ============================================================================
+# NAMESPACE
+# ============================================================================
+
+log_info "Creating namespace..."
+kubectl create namespace june-services || log_warning "Namespace june-services already exists"
+log_success "Namespace ready!"
+
+# ============================================================================
 # STORAGE (FIXED - Correct paths matching deployment manifests)
 # ============================================================================
 
