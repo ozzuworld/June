@@ -1,5 +1,5 @@
 # June/services/june-orchestrator/app.py
-# Enhanced orchestrator with external TTS integration - FIXED FOR REAL AI
+# Enhanced orchestrator with FIXED AUTHENTICATION
 
 import os
 import time
@@ -7,9 +7,20 @@ import base64
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
-from service_auth import get_service_auth_client
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# FIXED: Import the correct auth service for USER authentication
+try:
+    from shared.auth import get_auth_service, AuthError
+    SHARED_AUTH_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Shared auth module loaded")
+except ImportError:
+    # Fallback if shared auth not available
+    SHARED_AUTH_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("⚠️ Shared auth module not available, authentication will be disabled")
 
 security = HTTPBearer()
 
@@ -37,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from tts_client import get_tts_client
 
-app = FastAPI(title="June Orchestrator", version="3.1.0", description="June AI Platform Orchestrator with TTS integration")
+app = FastAPI(title="June Orchestrator", version="3.1.1", description="June AI Platform Orchestrator with FIXED authentication")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -260,6 +271,36 @@ class GeminiService:
 
 gemini_service = GeminiService()
 
+# FIXED: Proper user authentication dependency
+async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+    """
+    Verify user authentication token from frontend
+    This is the CORRECT way to handle user authentication
+    """
+    if not SHARED_AUTH_AVAILABLE:
+        logger.warning("⚠️ Authentication disabled - shared auth not available")
+        return {"sub": "anonymous", "authenticated": False, "reason": "auth_disabled"}
+    
+    try:
+        # Get the token from the Authorization header
+        token = credentials.credentials
+        logger.debug(f"🔍 Verifying token: {token[:20]}...")
+        
+        # Validate the user token using the shared auth service
+        auth_service = get_auth_service()
+        token_data = await auth_service.verify_bearer(token)
+        
+        user_id = token_data.get('sub', 'unknown')
+        logger.info(f"✅ User authenticated: {user_id}")
+        return token_data
+        
+    except AuthError as e:
+        logger.error(f"❌ Authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication required")
+    except Exception as e:
+        logger.error(f"❌ Authentication error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication required")
+
 @app.get("/")
 async def root():
     tts_client = get_tts_client()
@@ -267,15 +308,25 @@ async def root():
     
     return {
         "service": "June Orchestrator",
-        "version": "3.1.0",
+        "version": "3.1.1",
         "status": "healthy",
+        "authentication": {
+            "enabled": SHARED_AUTH_AVAILABLE,
+            "type": "user_token_validation"
+        },
         "features": {
             "ai_chat": gemini_service.is_available, 
             "text_to_speech": tts_status.get("available", False)
         },
         "ai_provider": "gemini" if gemini_service.is_available else "fallback",
         "tts_service_url": os.getenv("TTS_SERVICE_URL", "not_configured"),
-        "endpoints": {"health": "/healthz", "chat": "/v1/chat", "tts_status": "/v1/tts/status"}
+        "endpoints": {
+            "health": "/healthz", 
+            "chat": "/v1/chat", 
+            "tts_status": "/v1/tts/status",
+            "auth_test": "/v1/auth/test",
+            "auth_debug": "/v1/auth/debug"
+        }
     }
 
 @app.get("/healthz")
@@ -283,29 +334,23 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "june-orchestrator", 
-        "version": "3.1.0", 
+        "version": "3.1.1", 
         "timestamp": time.time(),
-        "ai_available": gemini_service.is_available
+        "ai_available": gemini_service.is_available,
+        "auth_available": SHARED_AUTH_AVAILABLE
     }
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security)  # ADD THIS
+    user_auth: Dict[str, Any] = Depends(verify_user_token)  # FIXED: Use proper user auth
 ):
     start_time = time.time()
     
-    # ADD: Verify authentication
     try:
-        from service_auth import get_service_auth_client
-        auth_client = get_service_auth_client()
-        token_data = await auth_client.test_authentication()
-        
-        if not token_data.get("authenticated"):
-            raise HTTPException(status_code=401, detail="Invalid authentication")
-    except Exception as e:
-        logger.error(f"Authentication failed: {e}")
-        raise HTTPException(status_code=401, detail="Authentication required")
+        # Log successful authentication
+        user_id = user_auth.get("sub", "unknown")
+        logger.info(f"🔐 Processing chat request for user: {user_id}")
         
         # Generate AI response
         ai_response, provider = await gemini_service.generate_response(
@@ -374,19 +419,58 @@ async def chat(
 
 # Legacy endpoint for backward compatibility
 @app.post("/v1/conversation", response_model=ChatResponse)
-async def conversation(request: ChatRequest):
-    """Legacy endpoint - redirects to /v1/chat"""
-    return await chat(request)
+async def conversation(
+    request: ChatRequest,
+    user_auth: Dict[str, Any] = Depends(verify_user_token)  # FIXED: Add auth here too
+):
+    """Legacy endpoint - redirects to /v1/chat with authentication"""
+    return await chat(request, user_auth)
 
 @app.get("/v1/tts/status")
 async def tts_status():
     tts_client = get_tts_client()
     return await tts_client.get_status()
 
+# ADDED: Authentication test endpoints
+@app.get("/v1/auth/test")
+async def test_auth(user_auth: Dict[str, Any] = Depends(verify_user_token)):
+    """Test endpoint to verify user authentication"""
+    return {
+        "authenticated": True,
+        "user_id": user_auth.get("sub"),
+        "client_id": user_auth.get("azp", user_auth.get("client_id")),
+        "scopes": user_auth.get("scope", "").split(),
+        "expires_at": user_auth.get("exp"),
+        "issued_at": user_auth.get("iat"),
+        "timestamp": time.time()
+    }
+
+@app.get("/v1/auth/debug")
+async def debug_auth():
+    """Debug endpoint to test Keycloak connectivity"""
+    if not SHARED_AUTH_AVAILABLE:
+        return {
+            "error": "Shared auth module not available",
+            "shared_auth_available": False
+        }
+    
+    try:
+        from shared.auth import test_keycloak_connection
+        result = await test_keycloak_connection()
+        result["shared_auth_available"] = True
+        return result
+    except Exception as e:
+        return {
+            "error": str(e),
+            "shared_auth_available": True,
+            "connection_test_failed": True
+        }
+
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Starting June Orchestrator v3.1.0 with external TTS integration")
+    logger.info("🚀 Starting June Orchestrator v3.1.1 with FIXED authentication")
     logger.info(f"TTS Service URL: {os.getenv('TTS_SERVICE_URL', 'not_configured')}")
+    logger.info(f"Authentication: {'ENABLED' if SHARED_AUTH_AVAILABLE else 'DISABLED'}")
     
     if gemini_service.is_available:
         logger.info("✅ Gemini AI service ready")
@@ -400,16 +484,25 @@ async def startup_event():
     else:
         logger.warning("⚠️ External TTS service not reachable")
 
+# OPTIONAL: Keep service auth endpoint for debugging
 @app.get("/v1/service-auth/status")
 async def service_auth_status():
-    """Test service-to-service authentication"""
-    client = get_service_auth_client()
-    auth_status = await client.test_authentication()
-    
-    return {
-        "service_auth": auth_status,
-        "timestamp": time.time()
-    }
+    """Test service-to-service authentication (for debugging only)"""
+    try:
+        from service_auth import get_service_auth_client
+        client = get_service_auth_client()
+        auth_status = await client.test_authentication()
+        
+        return {
+            "service_auth": auth_status,
+            "timestamp": time.time(),
+            "note": "This is for service-to-service auth, not user auth"
+        }
+    except Exception as e:
+        return {
+            "service_auth": {"error": str(e)},
+            "timestamp": time.time()
+        }
 
 if __name__ == "__main__":
     import uvicorn
