@@ -1,6 +1,7 @@
 #!/bin/bash
 # Keycloak Configuration Automation for June Services (TRULY FIXED - Clean data capture)
 # This script automates the Keycloak setup using the Admin REST API
+# Includes: Frontend "june-mobile-app" public PKCE client + orchestrator-aud scope
 
 set -e
 
@@ -20,7 +21,7 @@ echo "🔐 Keycloak Configuration Automation (TRULY FIXED)" >&2
 echo "=================================================" >&2
 
 # Configuration
-read -p "Keycloak URL [https://idp.allsafe.world](https://idp.allsafe.world): " KEYCLOAK_URL
+read -p "Keycloak URL [https://idp.allsafe.world]: " KEYCLOAK_URL
 KEYCLOAK_URL=${KEYCLOAK_URL:-https://idp.allsafe.world}
 
 read -p "Admin username [admin]: " ADMIN_USER
@@ -32,10 +33,36 @@ echo "" >&2
 read -p "Realm name [allsafe]: " REALM
 REALM=${REALM:-allsafe}
 
+# Frontend (mobile) client config
+FRONTEND_CLIENT_ID_DEFAULT="june-mobile-app"
+read -p "Frontend clientId [${FRONTEND_CLIENT_ID_DEFAULT}]: " FRONTEND_CLIENT_ID
+FRONTEND_CLIENT_ID=${FRONTEND_CLIENT_ID:-$FRONTEND_CLIENT_ID_DEFAULT}
+
+# Native / Expo redirect URIs (comma-separated if multiple)
+# Your app.json shows scheme 'june' and path 'auth/callback' -> june://auth/callback
+read -p "Frontend redirect URIs (comma-separated) [june://auth/callback]: " FRONTEND_REDIRECTS_CSV
+FRONTEND_REDIRECTS_CSV=${FRONTEND_REDIRECTS_CSV:-june://auth/callback}
+
+# Optionally allow Expo web preview (set to 'y' to include https://auth.expo.io/*)
+read -p "Include Expo web preview origin? [y/N]: " INCLUDE_EXPO
+INCLUDE_EXPO=${INCLUDE_EXPO:-N}
+
+# API audience name to include in access tokens for the app to call orchestrator
+API_AUDIENCE_DEFAULT="june-orchestrator"
+read -p "API audience to include in tokens [${API_AUDIENCE_DEFAULT}]: " API_AUDIENCE
+API_AUDIENCE=${API_AUDIENCE:-$API_AUDIENCE_DEFAULT}
+
+AUD_SCOPE_DEFAULT="orchestrator-aud"
+read -p "Audience client-scope name [${AUD_SCOPE_DEFAULT}]: " AUD_SCOPE
+AUD_SCOPE=${AUD_SCOPE:-$AUD_SCOPE_DEFAULT}
+
 log_info "Configuration:"
 echo "  Keycloak: $KEYCLOAK_URL" >&2
 echo "  Admin: $ADMIN_USER" >&2
 echo "  Realm: $REALM" >&2
+echo "  Frontend clientId: $FRONTEND_CLIENT_ID" >&2
+echo "  Frontend redirects: $FRONTEND_REDIRECTS_CSV" >&2
+echo "  Audience scope: $AUD_SCOPE (aud: $API_AUDIENCE)" >&2
 echo "" >&2
 
 # Verify jq is installed
@@ -93,7 +120,7 @@ else
   fi
 fi
 
-# Function to create client and return secret (MINIMAL FIX - Only clean the return data)
+# Function to create confidential client and return secret (unchanged)
 create_client_with_secret() {
   local CLIENT_ID=$1
   local ROOT_URL=$2
@@ -175,8 +202,147 @@ create_client_with_secret() {
   fi
 }
 
+# === NEW: Create Public PKCE Frontend Client (no secret) ===
+create_public_pkce_client() {
+  local CLIENT_ID="$1"
+  local REDIRECTS_CSV="$2"
+  local INCLUDE_EXPO="$3"
 
-# Create clients (FIXED - Capture only clean output)
+  # Build JSON array for redirectUris from comma-separated input
+  IFS=',' read -ra ARR <<< "$REDIRECTS_CSV"
+  local REDIRECTS_JSON="["
+  for i in "${!ARR[@]}"; do
+    uri="$(echo "${ARR[$i]}" | xargs)"
+    [ -z "$uri" ] && continue
+    REDIRECTS_JSON+="\"$uri\""
+    if [ $i -lt $((${#ARR[@]}-1)) ]; then
+      REDIRECTS_JSON+=","
+    fi
+  done
+  REDIRECTS_JSON+="]"
+
+  log_info "Creating public PKCE client '$CLIENT_ID' with redirects: $REDIRECTS_JSON"
+
+  # Check if client exists
+  CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
+  CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+
+  if [ -n "$CLIENT_UUID" ]; then
+    log_warning "Client '$CLIENT_ID' already exists (ID: $CLIENT_UUID)"
+  else
+    # Construct webOrigins
+    WEB_ORIGINS="[]"
+    if [[ "$INCLUDE_EXPO" =~ ^[Yy]$ ]]; then
+      WEB_ORIGINS="[\"https://auth.expo.io\"]"
+    fi
+
+    CREATE_CLIENT=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"clientId\": \"$CLIENT_ID\",
+        \"enabled\": true,
+        \"protocol\": \"openid-connect\",
+        \"publicClient\": true,
+        \"standardFlowEnabled\": true,
+        \"directAccessGrantsEnabled\": false,
+        \"serviceAccountsEnabled\": false,
+        \"redirectUris\": $REDIRECTS_JSON,
+        \"webOrigins\": $WEB_ORIGINS,
+        \"attributes\": {
+          \"pkce.code.challenge.method\": \"S256\"
+        }
+      }")
+
+    HTTP_CODE=$(echo "$CREATE_CLIENT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+    if [ "$HTTP_CODE" = "201" ]; then
+      log_success "Public PKCE client '$CLIENT_ID' created"
+      sleep 1
+      CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+        "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
+      CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+    else
+      log_error "Failed to create public client '$CLIENT_ID' (HTTP $HTTP_CODE)"
+      echo "$CREATE_CLIENT" >&2
+      return 1
+    fi
+  fi
+
+  if [ -z "$CLIENT_UUID" ]; then
+    log_error "Unable to resolve client UUID for '$CLIENT_ID'"
+    return 1
+  fi
+
+  echo "$CLIENT_UUID"
+}
+
+# === NEW: Create audience client-scope (adds aud: API_AUDIENCE) ===
+create_audience_scope() {
+  local SCOPE_NAME="$1"
+  local AUDIENCE="$2"
+
+  # Find or create scope
+  SCOPE_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes" | jq -r ".[] | select(.name==\"$SCOPE_NAME\") | .id")
+
+  if [ -n "$SCOPE_ID" ]; then
+    log_warning "Scope '$SCOPE_NAME' already exists"
+  else
+    SCOPE_CREATE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+      -d "{
+        \"name\": \"$SCOPE_NAME\",
+        \"protocol\": \"openid-connect\",
+        \"attributes\": {
+          \"include.in.token.scope\": \"true\",
+          \"display.on.consent.screen\": \"true\"
+        }
+      }")
+    HTTP_CODE=$(echo "$SCOPE_CREATE" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+    if [ "$HTTP_CODE" != "201" ]; then
+      log_error "Failed to create scope '$SCOPE_NAME' (HTTP $HTTP_CODE)"
+      echo "$SCOPE_CREATE" >&2
+      return 1
+    fi
+    log_success "Scope '$SCOPE_NAME' created"
+    SCOPE_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+      "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes" | jq -r ".[] | select(.name==\"$SCOPE_NAME\") | .id")
+  fi
+
+  # Ensure Audience mapper exists
+  MAPPERS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes/$SCOPE_ID/protocol-mappers/models")
+
+  HAS_AUD=$(echo "$MAPPERS" | jq -r ".[] | select(.protocolMapper==\"oidc-audience-mapper\") | .config.\"included.client.audience\" | select(.==\"$AUDIENCE\")")
+  if [ -n "$HAS_AUD" ]; then
+    log_warning "Audience mapper for '$AUDIENCE' already present in scope '$SCOPE_NAME'"
+  else
+    ADD_MAP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/client-scopes/$SCOPE_ID/protocol-mappers/models" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+      -d "{
+        \"name\": \"aud-$AUDIENCE\",
+        \"protocol\": \"openid-connect\",
+        \"protocolMapper\": \"oidc-audience-mapper\",
+        \"config\": {
+          \"included.client.audience\": \"$AUDIENCE\",
+          \"id.token.claim\": \"true\",
+          \"access.token.claim\": \"true\"
+        }
+      }")
+    HTTP_CODE=$(echo "$ADD_MAP" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+    if [ "$HTTP_CODE" != "201" ]; then
+      log_error "Failed to add audience mapper (HTTP $HTTP_CODE)"
+      echo "$ADD_MAP" >&2
+      return 1
+    fi
+    log_success "Audience mapper added to scope '$SCOPE_NAME' (aud: $AUDIENCE)"
+  fi
+
+  echo "$SCOPE_ID"
+}
+
+# === ORIGINAL: Create service clients (confidential) ===
 log_info "Creating service clients..."
 
 # June Orchestrator
@@ -207,7 +373,7 @@ if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
   exit 1
 fi
 
-# Create client scopes
+# ORIGINAL: Create simple scopes (still kept)
 log_info "Creating client scopes..."
 
 create_scope() {
@@ -242,7 +408,7 @@ create_scope "tts:synthesize"
 create_scope "stt:transcribe"
 create_scope "orchestrator:webhook"
 
-# Create roles
+# ORIGINAL: Create roles
 log_info "Creating realm roles..."
 
 create_role() {
@@ -272,7 +438,26 @@ create_role "june-user" "Standard June service user"
 create_role "june-admin" "June service administrator"
 create_role "june-service" "Service-to-service communication"
 
-# Generate kubectl commands with validation
+# === NEW: Create audience scope & Frontend public client, then assign scope ===
+log_info "Ensuring audience scope '$AUD_SCOPE' (aud: $API_AUDIENCE) exists..."
+AUD_SCOPE_ID=$(create_audience_scope "$AUD_SCOPE" "$API_AUDIENCE")
+
+log_info "Creating/ensuring frontend public PKCE client '$FRONTEND_CLIENT_ID'..."
+FRONTEND_UUID=$(create_public_pkce_client "$FRONTEND_CLIENT_ID" "$FRONTEND_REDIRECTS_CSV" "$INCLUDE_EXPO")
+
+# Assign the audience scope as OPTIONAL so the app can request it
+log_info "Assigning scope '$AUD_SCOPE' to client '$FRONTEND_CLIENT_ID' (optional)..."
+ASSIGN_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  "$KEYCLOAK_URL/admin/realms/$REALM/clients/$FRONTEND_UUID/optional-client-scopes/$AUD_SCOPE_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN")
+
+if [ "$ASSIGN_RESULT" = "204" ] || [ "$ASSIGN_RESULT" = "201" ]; then
+  log_success "Scope assigned to client (optional)"
+else
+  log_warning "Scope assignment may already exist or failed (HTTP $ASSIGN_RESULT)"
+fi
+
+# === ORIGINAL: Generate Kubernetes secret update script for confidential clients ===
 log_info "Generating Kubernetes secret update commands..."
 
 # Validate secrets before generating script
@@ -305,29 +490,29 @@ if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
 fi
 
 # Update june-orchestrator secrets
-kubectl create secret generic june-orchestrator-secrets \\
-  --from-literal=keycloak-client-id=june-orchestrator \\
-  --from-literal=keycloak-client-secret='$ORCH_SECRET' \\
-  --from-literal=gemini-api-key=\${GEMINI_API_KEY:-AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM} \\
-  -n june-services \\
+kubectl create secret generic june-orchestrator-secrets \
+  --from-literal=keycloak-client-id=june-orchestrator \
+  --from-literal=keycloak-client-secret='$ORCH_SECRET' \
+  --from-literal=gemini-api-key=\${GEMINI_API_KEY:-CHANGEME} \
+  -n june-services \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-orchestrator secrets updated"
 
 # Update june-stt secrets
-kubectl create secret generic june-stt-secrets \\
-  --from-literal=keycloak-client-id=june-stt \\
-  --from-literal=keycloak-client-secret='$STT_SECRET' \\
-  -n june-services \\
+kubectl create secret generic june-stt-secrets \
+  --from-literal=keycloak-client-id=june-stt \
+  --from-literal=keycloak-client-secret='$STT_SECRET' \
+  -n june-services \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-stt secrets updated"
 
 # Update june-tts secrets
-kubectl create secret generic june-tts-secrets \\
-  --from-literal=keycloak-client-id=june-tts \\
-  --from-literal=keycloak-client-secret='$TTS_SECRET' \\
-  -n june-services \\
+kubectl create secret generic june-tts-secrets \
+  --from-literal=keycloak-client-id=june-tts \
+  --from-literal=keycloak-client-secret='$TTS_SECRET' \
+  -n june-services \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ june-tts secrets updated"
@@ -347,11 +532,10 @@ echo "  kubectl logs -l app=june-orchestrator -n june-services --tail=50"
 EOF
 
 chmod +x update-k8s-secrets.sh
-
 log_success "Kubernetes update script created: update-k8s-secrets.sh"
 
-# Test token generation
-log_info "Testing token generation..."
+# Test token generation for orchestrator (client credentials)
+log_info "Testing token generation (client_credentials) for 'june-orchestrator'..."
 TEST_TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
   -d "grant_type=client_credentials" \
   -d "client_id=june-orchestrator" \
@@ -364,13 +548,13 @@ else
   echo "Response: $TEST_TOKEN" >&2
 fi
 
-# Summary
+# Show frontend summary (no secret)
 echo "" >&2
 echo "═══════════════════════════════════════════════" >&2
 log_success "Keycloak Configuration Complete!"
 echo "═══════════════════════════════════════════════" >&2
 echo "" >&2
-echo "📋 Client Credentials:" >&2
+echo "📋 Service Client Credentials:" >&2
 echo "" >&2
 echo "june-orchestrator:" >&2
 echo "  client_id: june-orchestrator" >&2
@@ -387,21 +571,23 @@ echo "  client_id: june-tts" >&2
 echo "  client_secret: $TTS_SECRET" >&2
 echo "  UUID: $TTS_UUID" >&2
 echo "" >&2
-echo "🔍 Verify Configuration:" >&2
-echo "  1. Access Keycloak admin: $KEYCLOAK_URL/admin" >&2
-echo "  2. Check realm: $REALM" >&2
-echo "  3. Test token generation:" >&2
+echo "📱 Frontend Client (Public PKCE):" >&2
+echo "  client_id: $FRONTEND_CLIENT_ID" >&2
+echo "  UUID: $FRONTEND_UUID" >&2
+echo "  Redirect URIs: $FRONTEND_REDIRECTS_CSV" >&2
+echo "  Optional scope assigned: $AUD_SCOPE (aud: $API_AUDIENCE)" >&2
 echo "" >&2
-echo "curl -X POST \"$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token\" \\" >&2
-echo "  -d \"grant_type=client_credentials\" \\" >&2
-echo "  -d \"client_id=june-orchestrator\" \\" >&2
-echo "  -d \"client_secret=$ORCH_SECRET\" | jq" >&2
+echo "🔍 Verify Configuration:" >&2
+echo "  1. Admin: $KEYCLOAK_URL/admin" >&2
+echo "  2. Discovery: $KEYCLOAK_URL/realms/$REALM/.well-known/openid-configuration" >&2
 echo "" >&2
 echo "📝 Next Steps:" >&2
-echo "  1. ✅ Credentials generated successfully" >&2
-echo "  2. Run: ./update-k8s-secrets.sh" >&2
-echo "  3. Verify services: kubectl get pods -n june-services" >&2
-echo "  4. Test authentication: scripts/keycloak/auth-test.sh" >&2
+echo "  1. Run: ./update-k8s-secrets.sh" >&2
+echo "  2. In your app, ensure:" >&2
+echo "     - REALM='${REALM}'" >&2
+echo "     - CLIENT_ID='${FRONTEND_CLIENT_ID}'" >&2
+echo "     - redirectUri scheme matches (e.g., june://auth/callback)" >&2
+echo "     - request scopes include: openid profile email ${AUD_SCOPE}" >&2
 echo "" >&2
-echo "💾 Save these credentials securely!" >&2
+echo "💾 Save credentials securely." >&2
 echo "═══════════════════════════════════════════════" >&2
