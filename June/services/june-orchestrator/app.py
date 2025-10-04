@@ -1,5 +1,5 @@
 # June/services/june-orchestrator/app.py
-# Enhanced orchestrator with Service-to-Service Authentication
+# SIMPLIFIED AND CLEAR VERSION
 
 import os
 import time
@@ -7,22 +7,20 @@ import base64
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-# FIXED: Import the correct auth service for USER authentication
+# Authentication
 try:
     from shared.auth import get_auth_service, AuthError
     SHARED_AUTH_AVAILABLE = True
     logger = logging.getLogger(__name__)
     logger.info("✅ Shared auth module loaded")
 except ImportError:
-    # Fallback if shared auth not available
     SHARED_AUTH_AVAILABLE = False
     logger = logging.getLogger(__name__)
     logger.warning("⚠️ Shared auth module not available, authentication will be disabled")
-
-security = HTTPBearer()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,70 +41,70 @@ except ImportError:
         logger.error("❌ No Gemini library found")
         genai = None
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from tts_client import get_tts_client
 
-app = FastAPI(title="June Orchestrator", version="3.3.0", description="June AI Platform Orchestrator with Service-to-Service Auth")
+app = FastAPI(
+    title="June Orchestrator", 
+    version="4.0.0", 
+    description="June AI Platform Orchestrator - Clear Logic"
+)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=["*"], 
+    allow_credentials=True, 
+    allow_methods=["*"], 
+    allow_headers=["*"]
+)
 
-# Storage for transcript notifications (in-memory for now)
-transcript_storage = {}
-
-# Service-to-Service Authentication Configuration
-SERVICE_TO_SERVICE_TOKENS = {
-    "june-stt": os.getenv("STT_SERVICE_TOKEN", "stt-service-secret-token-2025"),
-    "june-tts": os.getenv("TTS_SERVICE_TOKEN", "tts-service-secret-token-2025"),
-    "internal": os.getenv("INTERNAL_SERVICE_TOKEN", "internal-service-secret-2025")
-}
+# ==========================================
+# DATA MODELS - CLEAR AND SIMPLE
+# ==========================================
 
 class AudioConfig(BaseModel):
+    """Audio configuration for TTS"""
     voice: Optional[str] = Field(default="default")
     speed: Optional[float] = Field(default=1.0, ge=0.5, le=2.0)
     language: Optional[str] = Field(default="EN")
-    reference_audio_b64: Optional[str] = Field(default=None)
 
 class ChatRequest(BaseModel):
+    """Direct chat request from frontend (user types text)"""
     text: str = Field(..., min_length=1, max_length=10000)
     language: Optional[str] = "en"
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=1000, ge=1, le=4000)
     include_audio: Optional[bool] = Field(default=False)
     audio_config: Optional[AudioConfig] = Field(default=None)
-    metadata: Optional[Dict[str, Any]] = Field(default={})
 
-class AudioData(BaseModel):
-    data: str = Field(...)
-    content_type: str = Field(default="audio/wav")
-    size_bytes: int = Field(...)
-    voice: str = Field(...)
-    speed: float = Field(...)
-    language: str = Field(...)
+class TranscriptFromSTT(BaseModel):
+    """What STT sends to orchestrator after transcribing user's speech"""
+    transcript_id: str
+    user_id: str
+    text: str  # THIS IS WHAT THE USER SAID
+    language: Optional[str] = None
+    confidence: Optional[float] = None
+    timestamp: str
+    metadata: Dict[str, Any] = {}
 
 class ChatResponse(BaseModel):
+    """AI response sent back to frontend"""
     ok: bool
-    message: Dict[str, str]
+    message: Dict[str, str]  # {"text": "AI's response", "role": "assistant"}
     response_time_ms: int
     conversation_id: Optional[str] = None
     ai_provider: str = "gemini"
-    audio: Optional[AudioData] = Field(default=None)
+    audio: Optional[Dict] = Field(default=None)
 
-# NEW: Transcript notification models
-class TranscriptNotification(BaseModel):
-    transcript_id: str
-    user_id: str
-    text: str
-    timestamp: str  # ISO format datetime string
-    metadata: Dict[str, Any] = {}
+# ==========================================
+# STORAGE
+# ==========================================
 
-class TranscriptResponse(BaseModel):
-    status: str
-    transcript_id: str
-    timestamp: str
-    message: str
-    user_id: str
+# Store transcripts we receive from STT
+user_conversations = {}  # user_id -> list of messages
+
+# ==========================================
+# GEMINI SERVICE
+# ==========================================
 
 class GeminiService:
     def __init__(self):
@@ -135,44 +133,26 @@ class GeminiService:
                 logger.info(f"✅ New GenAI SDK configured")
                 
                 try:
-                    # Test with a simple message to verify setup
                     response = self.client.models.generate_content(
                         model='gemini-1.5-flash', 
                         contents='Hello, are you working?'
                     )
                     if response and response.text:
-                        logger.info(f"✅ Gemini test successful: {response.text[:50]}...")
+                        logger.info(f"✅ Gemini test successful")
                         self.is_available = True
                         return True
-                    else:
-                        logger.warning("❌ Gemini test returned empty response")
-                        return False
                 except Exception as e:
-                    logger.warning(f"❌ New SDK test failed: {e}")
-                    try:
-                        response = self.client.models.generate_content(
-                            model='gemini-2.0-flash-exp', 
-                            contents='Hello, are you working?'
-                        )
-                        if response and response.text:
-                            logger.info(f"✅ Gemini 2.0 test successful: {response.text[:50]}...")
-                            self.is_available = True
-                            return True
-                    except Exception as e2:
-                        logger.warning(f"❌ Gemini 2.0 also failed: {e2}")
-                        return False
+                    logger.warning(f"❌ Gemini test failed: {e}")
+                    return False
             else:
                 genai.configure(api_key=self.api_key)
                 try:
                     self.model = genai.GenerativeModel('gemini-1.5-flash')
-                    test_response = self.model.generate_content("Hello, are you working?")
+                    test_response = self.model.generate_content("Hello")
                     if test_response and test_response.text:
-                        logger.info(f"✅ Legacy SDK test successful: {test_response.text[:50]}...")
+                        logger.info(f"✅ Legacy SDK test successful")
                         self.is_available = True
                         return True
-                    else:
-                        logger.warning("❌ Legacy SDK test returned empty response")
-                        return False
                 except Exception as e:
                     logger.error(f"❌ Legacy SDK test failed: {e}")
                     return False
@@ -181,63 +161,85 @@ class GeminiService:
             logger.error(f"❌ Gemini initialization failed: {e}")
             return False
     
-    async def generate_response(self, text: str, language: str = "en", temperature: float = 0.7) -> tuple[str, str]:
+    async def process_user_message(self, text: str, language: str = "en", user_id: str = "unknown") -> str:
+        """
+        CORE FUNCTION: Process what the user said and generate AI response
+        
+        Args:
+            text: What the user said (from STT or typed)
+            language: Language of conversation
+            user_id: Who is speaking
+            
+        Returns:
+            AI's response text
+        """
         if not self.is_available:
             logger.warning("❌ Gemini not available, using fallback")
-            return self._get_fallback_response(text, language), "fallback"
+            return self._get_fallback_response(text, language)
         
         try:
+            # Get conversation history for context
+            history = user_conversations.get(user_id, [])
+            
+            # Build context-aware prompt
             system_prompts = {
-                "en": "You are JUNE, a helpful AI assistant. Provide clear, accurate, and helpful responses. Be conversational and engaging.",
-                "es": "Eres JUNE, un asistente de IA útil. Proporciona respuestas claras, precisas y útiles en español. Sé conversacional y atractivo.",
-                "fr": "Vous êtes JUNE, un assistant IA utile. Fournissez des réponses claires, précises et utiles en français. Soyez conversationnel et engageant."
+                "en": "You are JUNE, a helpful AI assistant. You're having a natural conversation with a user who is speaking to you.",
+                "es": "Eres JUNE, un asistente de IA útil. Estás teniendo una conversación natural con un usuario que te está hablando.",
             }
             
             system_prompt = system_prompts.get(language, system_prompts["en"])
-            full_prompt = f"{system_prompt}\n\nUser: {text}\n\nAssistant:"
             
-            logger.info(f"🤖 Generating AI response for: {text[:50]}...")
+            # Include recent history for context (last 5 messages)
+            context = ""
+            if history:
+                recent = history[-5:]
+                context = "\n".join([f"{msg['role']}: {msg['text']}" for msg in recent])
+                context += f"\n\nUser: {text}\n\nAssistant:"
+            else:
+                context = f"User: {text}\n\nAssistant:"
+            
+            full_prompt = f"{system_prompt}\n\n{context}"
+            
+            logger.info(f"🤖 Processing message from user {user_id}: {text[:50]}...")
             
             if USING_NEW_SDK and self.client:
-                try:
-                    response = self.client.models.generate_content(
-                        model='gemini-1.5-flash',
-                        contents=full_prompt,
-                        config=types.GenerateContentConfig(
-                            temperature=temperature, 
-                            max_output_tokens=1000
-                        )
+                response = self.client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.7, 
+                        max_output_tokens=1000
                     )
+                )
+                
+                if response and response.text:
+                    ai_text = response.text.strip()
+                    logger.info(f"✅ AI response generated: {ai_text[:100]}...")
                     
-                    if response and response.text:
-                        ai_text = response.text.strip()
-                        logger.info(f"✅ Gemini 1.5 response: {ai_text[:100]}...")
-                        return ai_text, "gemini-new-sdk"
-                    else:
-                        logger.warning("❌ Empty response from Gemini 1.5")
-                        
-                except Exception as e:
-                    logger.warning(f"❌ Gemini 1.5 failed: {e}, trying 2.0...")
-                    try:
-                        response = self.client.models.generate_content(
-                            model='gemini-2.0-flash-exp',
-                            contents=full_prompt,
-                            config=types.GenerateContentConfig(
-                                temperature=temperature, 
-                                max_output_tokens=1000
-                            )
-                        )
-                        
-                        if response and response.text:
-                            ai_text = response.text.strip()
-                            logger.info(f"✅ Gemini 2.0 response: {ai_text[:100]}...")
-                            return ai_text, "gemini-2.0-exp"
-                    except Exception as e2:
-                        logger.error(f"❌ Both Gemini models failed: {e2}")
+                    # Store in conversation history
+                    if user_id not in user_conversations:
+                        user_conversations[user_id] = []
+                    
+                    user_conversations[user_id].append({
+                        "role": "user",
+                        "text": text,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    user_conversations[user_id].append({
+                        "role": "assistant",
+                        "text": ai_text,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+                    # Keep only last 20 messages
+                    if len(user_conversations[user_id]) > 20:
+                        user_conversations[user_id] = user_conversations[user_id][-20:]
+                    
+                    return ai_text
             else:
                 if self.model:
                     generation_config = genai.types.GenerationConfig(
-                        temperature=temperature, 
+                        temperature=0.7, 
                         max_output_tokens=1000
                     )
                     response = self.model.generate_content(
@@ -247,65 +249,65 @@ class GeminiService:
                     
                     if response and response.text:
                         ai_text = response.text.strip()
-                        logger.info(f"✅ Legacy Gemini response: {ai_text[:100]}...")
-                        return ai_text, "gemini-legacy"
+                        logger.info(f"✅ AI response: {ai_text[:100]}...")
+                        return ai_text
             
-            # If we get here, all attempts failed
-            logger.error("❌ All Gemini attempts failed, using fallback")
-            return self._get_fallback_response(text, language), "fallback"
+            logger.error("❌ No response from Gemini")
+            return self._get_fallback_response(text, language)
                 
         except Exception as e:
             logger.error(f"❌ Gemini generation failed: {e}")
-            return self._get_fallback_response(text, language), "fallback"
+            return self._get_fallback_response(text, language)
     
     def _get_fallback_response(self, text: str, language: str) -> str:
-        """IMPROVED fallback responses that are more helpful"""
-        
-        # Check for common questions first
+        """Fallback response when AI is unavailable"""
         text_lower = text.lower()
         
-        # Math questions
-        if any(word in text_lower for word in ["what is", "calculate", "math", "plus", "minus", "times", "divided"]):
-            if "2+2" in text_lower or "2 + 2" in text_lower:
-                return "2 + 2 = 4. This is basic arithmetic."
-            elif "pi" in text_lower:
-                return "Pi (π) is approximately 3.14159. It's the ratio of a circle's circumference to its diameter."
-            return "I can help with math questions, but I need a clear mathematical expression to calculate."
+        if any(word in text_lower for word in ["hello", "hi", "hey"]):
+            return "Hello! I'm JUNE, your AI assistant. How can I help you today?"
         
-        # Weather questions  
-        if any(word in text_lower for word in ["weather", "temperature", "rain", "sunny", "cloudy"]):
-            return "I don't have access to real-time weather data. Please check a weather app or website for current conditions in your area."
+        if any(word in text_lower for word in ["thank", "thanks"]):
+            return "You're welcome! Is there anything else I can help you with?"
         
-        # Greetings
-        if any(word in text_lower for word in ["hello", "hi", "hey", "good morning", "good afternoon"]):
-            greetings = {
-                "en": "Hello! I'm JUNE, your AI assistant. How can I help you today?",
-                "es": "¡Hola! Soy JUNE, tu asistente de IA. ¿Cómo puedo ayudarte hoy?",
-                "fr": "Bonjour! Je suis JUNE, votre assistant IA. Comment puis-je vous aider aujourd'hui?"
-            }
-            return greetings.get(language, greetings["en"])
-        
-        # Default helpful response
-        defaults = {
-            "en": f"I understand you're asking about '{text}'. While I'm currently in basic mode, I'm here to help with general questions, math, and conversation. What specific information do you need?",
-            "es": f"Entiendo que preguntas sobre '{text}'. Aunque estoy en modo básico, estoy aquí para ayudarte con preguntas generales, matemáticas y conversación. ¿Qué información específica necesitas?",
-            "fr": f"Je comprends que vous demandez à propos de '{text}'. Bien que je sois en mode de base, je suis là pour vous aider avec des questions générales, des mathématiques et la conversation. Quelles informations spécifiques avez-vous besoin?"
-        }
-        
-        return defaults.get(language, defaults["en"])
+        return f"I heard you say: '{text}'. I'm currently in basic mode, but I'm here to help!"
 
 gemini_service = GeminiService()
 
-# Authentication dependencies
-async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+# ==========================================
+# AUTHENTICATION
+# ==========================================
+
+async def verify_service_token(authorization: str = None) -> Dict[str, Any]:
+    """Verify service-to-service token (for STT calling orchestrator)"""
+    # Simple token check for service-to-service
+    SERVICE_TOKEN = os.getenv("STT_SERVICE_TOKEN", "stt-service-secret-token-2025")
+    
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    
+    token = authorization.replace("Bearer ", "").strip()
+    
+    if token == SERVICE_TOKEN:
+        logger.info("✅ Service authenticated: june-stt")
+        return {
+            "service": "june-stt",
+            "authenticated": True,
+            "type": "service_to_service"
+        }
+    
+    raise HTTPException(status_code=401, detail="Invalid service token")
+
+async def verify_user_token(authorization: str = None) -> Dict[str, Any]:
     """Verify user authentication token from frontend"""
     if not SHARED_AUTH_AVAILABLE:
         logger.warning("⚠️ Authentication disabled - shared auth not available")
-        return {"sub": "anonymous", "authenticated": False, "reason": "auth_disabled"}
+        return {"sub": "anonymous", "authenticated": False}
     
     try:
-        token = credentials.credentials
-        logger.debug(f"🔍 Verifying user token: {token[:20]}...")
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Missing authorization")
+        
+        token = authorization.replace("Bearer ", "").strip()
         
         auth_service = get_auth_service()
         token_data = await auth_service.verify_bearer(token)
@@ -317,65 +319,38 @@ async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(
     except AuthError as e:
         logger.error(f"❌ User authentication failed: {e}")
         raise HTTPException(status_code=401, detail="Authentication required")
-    except Exception as e:
-        logger.error(f"❌ User authentication error: {e}")
-        raise HTTPException(status_code=401, detail="Authentication required")
 
-async def verify_service_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Verify service-to-service authentication token"""
-    try:
-        token = credentials.credentials
-        logger.debug(f"🔍 Verifying service token: {token[:20]}...")
-        
-        # Check against known service tokens
-        for service_name, service_token in SERVICE_TO_SERVICE_TOKENS.items():
-            if token == service_token:
-                logger.info(f"✅ Service authenticated: {service_name}")
-                return {
-                    "service": service_name,
-                    "authenticated": True,
-                    "type": "service_to_service"
-                }
-        
-        # If not a service token, could be a user token - let fallback handle it
-        logger.warning(f"❌ Unknown service token: {token[:20]}...")
-        raise HTTPException(status_code=401, detail="Invalid service token")
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Service authentication error: {e}")
-        raise HTTPException(status_code=401, detail="Service authentication failed")
+# ==========================================
+# ENDPOINTS - CLEAR LOGIC
+# ==========================================
 
 @app.get("/")
 async def root():
+    """Service info"""
     tts_client = get_tts_client()
     tts_status = await tts_client.get_status()
     
     return {
         "service": "June Orchestrator",
-        "version": "3.3.0",
+        "version": "4.0.0 - Clear Logic",
         "status": "healthy",
-        "authentication": {
-            "user_auth_enabled": SHARED_AUTH_AVAILABLE,
-            "service_auth_enabled": True,
-            "supported_services": list(SERVICE_TO_SERVICE_TOKENS.keys())
-        },
         "features": {
             "ai_chat": gemini_service.is_available, 
             "text_to_speech": tts_status.get("available", False),
-            "transcript_notifications": True,
-            "service_to_service_auth": True  # NEW
+            "speech_to_text_integration": True,
+            "conversation_memory": True
         },
-        "ai_provider": "gemini" if gemini_service.is_available else "fallback",
-        "tts_service_url": os.getenv("TTS_SERVICE_URL", "not_configured"),
+        "flow": {
+            "1": "User speaks → STT transcribes",
+            "2": "STT sends transcript → Orchestrator (this service)",
+            "3": "Orchestrator processes with AI",
+            "4": "Orchestrator responds → Frontend"
+        },
         "endpoints": {
-            "health": "/healthz", 
-            "chat": "/v1/chat", 
-            "transcripts": "/v1/transcripts",
-            "service_transcripts": "/v1/service/transcripts",  # NEW
-            "tts_status": "/v1/tts/status",
-            "auth_test": "/v1/auth/test"
+            "health": "/healthz",
+            "user_chat_typed": "/v1/chat",
+            "stt_webhook": "/v1/stt/webhook",
+            "conversation_history": "/v1/conversations/{user_id}"
         }
     }
 
@@ -384,179 +359,48 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "june-orchestrator", 
-        "version": "3.3.0", 
+        "version": "4.0.0",
         "timestamp": time.time(),
-        "ai_available": gemini_service.is_available,
-        "user_auth_available": SHARED_AUTH_AVAILABLE,
-        "service_auth_available": True,
-        "transcripts_stored": len(transcript_storage)
+        "ai_available": gemini_service.is_available
     }
 
-# NEW: Service-to-Service transcript notification endpoint
-@app.post("/v1/service/transcripts", response_model=TranscriptResponse)
-async def receive_service_transcript_notification(
-    notification: TranscriptNotification,
-    service_auth: Dict[str, Any] = Depends(verify_service_token)
-):
-    """
-    Service-to-Service transcript notification endpoint
-    
-    Used by STT service to notify orchestrator without user authentication.
-    Requires valid service token in Authorization header.
-    """
-    try:
-        service_name = service_auth.get("service", "unknown")
-        
-        logger.info(f"📝 Received service transcript notification from {service_name}")
-        logger.info(f"📋 Transcript ID: {notification.transcript_id}")
-        logger.info(f"👤 User: {notification.user_id}")
-        logger.info(f"📄 Text: {notification.text[:100]}..." if len(notification.text) > 100 else f"📄 Text: {notification.text}")
-        logger.info(f"📊 Metadata: {notification.metadata}")
-        
-        # Store transcript in memory with service info
-        transcript_data = {
-            "transcript_id": notification.transcript_id,
-            "user_id": notification.user_id,
-            "text": notification.text,
-            "timestamp": notification.timestamp,
-            "metadata": notification.metadata,
-            "received_at": datetime.utcnow().isoformat(),
-            "source_service": service_name,
-            "auth_type": "service_to_service"
-        }
-        
-        transcript_storage[notification.transcript_id] = transcript_data
-        
-        # Enhanced processing based on content
-        text_lower = notification.text.lower()
-        if any(keyword in text_lower for keyword in ["urgent", "help", "emergency", "issue"]):
-            logger.info(f"🚨 Urgent transcript detected: {notification.transcript_id}")
-            transcript_data["priority"] = "high"
-        
-        if any(keyword in text_lower for keyword in ["thank you", "thanks", "appreciate"]):
-            logger.info(f"😊 Positive sentiment detected: {notification.transcript_id}")
-            transcript_data["sentiment"] = "positive"
-        
-        # Mark as processed
-        transcript_data["processed"] = True
-        
-        response = TranscriptResponse(
-            status="received",
-            transcript_id=notification.transcript_id,
-            timestamp=datetime.utcnow().isoformat(),
-            message=f"Service transcript notification received from {service_name}",
-            user_id=notification.user_id
-        )
-        
-        logger.info(f"✅ Processed service transcript notification: {notification.transcript_id} from {service_name}")
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error processing service transcript notification: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to process service transcript notification: {str(e)}"
-        )
-
-# Original user transcript notification endpoint (unchanged)
-@app.post("/v1/transcripts", response_model=TranscriptResponse)
-async def receive_transcript_notification(
-    notification: TranscriptNotification,
-    user_auth: Dict[str, Any] = Depends(verify_user_token)
-):
-    """
-    User transcript notification endpoint (requires user authentication)
-    """
-    try:
-        authenticated_user_id = user_auth.get("sub", "unknown")
-        
-        if notification.user_id != authenticated_user_id:
-            logger.warning(f"❌ User mismatch: authenticated={authenticated_user_id}, notification={notification.user_id}")
-            raise HTTPException(status_code=403, detail="Access denied - user mismatch")
-        
-        logger.info(f"📝 Received user transcript notification: {notification.transcript_id}")
-        logger.info(f"👤 User: {authenticated_user_id}")
-        logger.info(f"📄 Text: {notification.text[:100]}..." if len(notification.text) > 100 else f"📄 Text: {notification.text}")
-        
-        transcript_data = {
-            "transcript_id": notification.transcript_id,
-            "user_id": notification.user_id,
-            "text": notification.text,
-            "timestamp": notification.timestamp,
-            "metadata": notification.metadata,
-            "received_at": datetime.utcnow().isoformat(),
-            "auth_type": "user_authenticated"
-        }
-        
-        transcript_storage[notification.transcript_id] = transcript_data
-        
-        response = TranscriptResponse(
-            status="received",
-            transcript_id=notification.transcript_id,
-            timestamp=datetime.utcnow().isoformat(),
-            message="User transcript notification received successfully",
-            user_id=authenticated_user_id
-        )
-        
-        logger.info(f"✅ Processed user transcript notification: {notification.transcript_id}")
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error processing user transcript notification: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to process user transcript notification: {str(e)}"
-        )
-
-# Get transcript history endpoint
-@app.get("/v1/transcripts")
-async def get_transcripts(
-    user_auth: Dict[str, Any] = Depends(verify_user_token),
-    limit: int = 50
-):
-    """Get transcript history for the authenticated user"""
-    try:
-        authenticated_user_id = user_auth.get("sub", "unknown")
-        
-        user_transcripts = [
-            transcript for transcript in transcript_storage.values()
-            if transcript["user_id"] == authenticated_user_id
-        ]
-        
-        user_transcripts.sort(key=lambda x: x["timestamp"], reverse=True)
-        limited_transcripts = user_transcripts[:limit]
-        
-        return {
-            "transcripts": limited_transcripts,
-            "total": len(user_transcripts),
-            "showing": len(limited_transcripts),
-            "user_id": authenticated_user_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error retrieving transcripts: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve transcripts: {str(e)}")
+# ==========================================
+# ENDPOINT 1: USER TYPES TEXT (Direct chat)
+# ==========================================
 
 @app.post("/v1/chat", response_model=ChatResponse)
-async def chat(
+async def chat_typed(
     request: ChatRequest,
-    user_auth: Dict[str, Any] = Depends(verify_user_token)
+    authorization: str = None
 ):
+    """
+    USER TYPES TEXT directly in the app
+    
+    Flow:
+    1. User types message in frontend
+    2. Frontend sends text here
+    3. We process with AI
+    4. Return response (+ optional TTS audio)
+    """
     start_time = time.time()
     
     try:
-        user_id = user_auth.get("sub", "unknown")
-        logger.info(f"🔐 Processing chat request for user: {user_id}")
+        # Authenticate user (optional for now)
+        user_id = "anonymous"
+        if authorization:
+            try:
+                user_auth = await verify_user_token(authorization)
+                user_id = user_auth.get("sub", "anonymous")
+            except:
+                pass
         
-        ai_response, provider = await gemini_service.generate_response(
-            request.text.strip(), 
-            request.language, 
-            request.temperature
+        logger.info(f"💬 User {user_id} typed: {request.text[:50]}...")
+        
+        # Process with AI
+        ai_response = await gemini_service.process_user_message(
+            text=request.text.strip(),
+            language=request.language,
+            user_id=user_id
         )
         
         response_time = int((time.time() - start_time) * 1000)
@@ -565,14 +409,14 @@ async def chat(
             ok=True,
             message={"text": ai_response, "role": "assistant"},
             response_time_ms=response_time,
-            conversation_id=f"conv-{int(time.time())}",
-            ai_provider=provider
+            conversation_id=f"conv-{user_id}-{int(time.time())}",
+            ai_provider="gemini" if gemini_service.is_available else "fallback"
         )
         
         # Add TTS audio if requested
         if request.include_audio:
             try:
-                logger.info("🔊 Generating TTS audio...")
+                logger.info("🔊 Generating TTS audio for response...")
                 tts_client = get_tts_client()
                 audio_config = request.audio_config or AudioConfig()
                 
@@ -581,30 +425,28 @@ async def chat(
                     voice=audio_config.voice,
                     speed=audio_config.speed,
                     language=audio_config.language,
-                    reference_audio_b64=audio_config.reference_audio_b64
+                    reference_audio_b64=None
                 )
                 
                 audio_b64 = base64.b64encode(audio_result["audio_data"]).decode('utf-8')
                 
-                chat_response.audio = AudioData(
-                    data=audio_b64,
-                    content_type=audio_result["content_type"],
-                    size_bytes=audio_result["size_bytes"],
-                    voice=audio_result["voice"],
-                    speed=audio_result["speed"],
-                    language=audio_result["language"]
-                )
+                chat_response.audio = {
+                    "data": audio_b64,
+                    "content_type": audio_result["content_type"],
+                    "size_bytes": audio_result["size_bytes"],
+                    "voice": audio_result["voice"],
+                    "speed": audio_result["speed"],
+                    "language": audio_result["language"]
+                }
                 
                 logger.info(f"✅ TTS audio generated: {audio_result['size_bytes']} bytes")
                 
             except Exception as e:
                 logger.error(f"❌ TTS generation failed: {e}")
         
-        logger.info(f"✅ Chat response completed: {provider} ({response_time}ms)")
+        logger.info(f"✅ Response sent to user {user_id} ({response_time}ms)")
         return chat_response
         
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"❌ Chat error: {e}")
         response_time = int((time.time() - start_time) * 1000)
@@ -616,43 +458,147 @@ async def chat(
             ai_provider="error"
         )
 
+# ==========================================
+# ENDPOINT 2: STT SENDS TRANSCRIPT (User spoke)
+# ==========================================
+
+@app.post("/v1/stt/webhook")
+async def receive_transcript_from_stt(
+    transcript: TranscriptFromSTT,
+    background_tasks: BackgroundTasks,
+    authorization: str = None
+):
+    """
+    STT SERVICE SENDS TRANSCRIPT here after user speaks
+    
+    Flow:
+    1. User speaks into app
+    2. Frontend sends audio to STT
+    3. STT transcribes audio → text
+    4. STT calls THIS endpoint with the text
+    5. We process with AI and send response back
+    
+    This is the KEY endpoint for voice interaction!
+    """
+    start_time = time.time()
+    
+    try:
+        # Verify this is really STT calling us
+        service_auth = await verify_service_token(authorization)
+        
+        logger.info("="*70)
+        logger.info(f"🎙️ RECEIVED TRANSCRIPT FROM STT")
+        logger.info(f"   Transcript ID: {transcript.transcript_id}")
+        logger.info(f"   User ID: {transcript.user_id}")
+        logger.info(f"   User said: '{transcript.text}'")
+        logger.info(f"   Language: {transcript.language}")
+        logger.info(f"   Confidence: {transcript.confidence}")
+        logger.info("="*70)
+        
+        # THIS IS WHAT THE USER SAID - Now process with AI
+        user_message = transcript.text
+        user_id = transcript.user_id
+        language = transcript.language or "en"
+        
+        # Process with AI
+        ai_response = await gemini_service.process_user_message(
+            text=user_message,
+            language=language,
+            user_id=user_id
+        )
+        
+        logger.info(f"🤖 AI Response: '{ai_response[:100]}...'")
+        
+        # TODO: Send AI response back to frontend via WebSocket or push notification
+        # For now, just store it - frontend will poll /v1/conversations/{user_id}
+        
+        response_time = int((time.time() - start_time) * 1000)
+        
+        return {
+            "status": "success",
+            "transcript_id": transcript.transcript_id,
+            "user_id": user_id,
+            "user_said": user_message,
+            "ai_response": ai_response,
+            "processing_time_ms": response_time,
+            "message": "Transcript received and processed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing STT transcript: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# ENDPOINT 3: GET CONVERSATION HISTORY
+# ==========================================
+
+@app.get("/v1/conversations/{user_id}")
+async def get_conversation(
+    user_id: str,
+    authorization: str = None,
+    limit: int = 20
+):
+    """
+    Get conversation history for a user
+    
+    Frontend can poll this to get latest messages
+    """
+    try:
+        # Authenticate
+        if authorization:
+            user_auth = await verify_user_token(authorization)
+            authenticated_user_id = user_auth.get("sub")
+            
+            # Users can only see their own conversations
+            if authenticated_user_id != user_id:
+                raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get conversation
+        messages = user_conversations.get(user_id, [])
+        
+        # Return latest messages
+        latest = messages[-limit:] if len(messages) > limit else messages
+        
+        return {
+            "user_id": user_id,
+            "total_messages": len(messages),
+            "messages": latest,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# TTS STATUS
+# ==========================================
+
 @app.get("/v1/tts/status")
 async def tts_status():
+    """Check if TTS is available"""
     tts_client = get_tts_client()
     return await tts_client.get_status()
 
-@app.get("/v1/auth/test")
-async def test_auth(user_auth: Dict[str, Any] = Depends(verify_user_token)):
-    """Test endpoint to verify user authentication"""
-    return {
-        "authenticated": True,
-        "user_id": user_auth.get("sub"),
-        "client_id": user_auth.get("azp", user_auth.get("client_id")),
-        "scopes": user_auth.get("scope", "").split(),
-        "expires_at": user_auth.get("exp"),
-        "issued_at": user_auth.get("iat"),
-        "timestamp": time.time()
-    }
-
-# NEW: Service authentication test endpoint
-@app.get("/v1/service/auth/test")
-async def test_service_auth(service_auth: Dict[str, Any] = Depends(verify_service_token)):
-    """Test endpoint to verify service authentication"""
-    return {
-        "authenticated": True,
-        "service": service_auth.get("service"),
-        "auth_type": service_auth.get("type"),
-        "timestamp": time.time(),
-        "message": f"Service {service_auth.get('service')} authenticated successfully"
-    }
+# ==========================================
+# STARTUP
+# ==========================================
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Starting June Orchestrator v3.3.0 with Service-to-Service Auth")
-    logger.info(f"TTS Service URL: {os.getenv('TTS_SERVICE_URL', 'not_configured')}")
-    logger.info(f"User Authentication: {'ENABLED' if SHARED_AUTH_AVAILABLE else 'DISABLED'}")
-    logger.info(f"Service Authentication: ENABLED")
-    logger.info(f"Supported Services: {list(SERVICE_TO_SERVICE_TOKENS.keys())}")
+    logger.info("🚀 Starting June Orchestrator v4.0.0 - Clear Logic")
+    logger.info("="*70)
+    logger.info("FLOW:")
+    logger.info("1. User speaks → STT transcribes")
+    logger.info("2. STT sends transcript → /v1/stt/webhook")
+    logger.info("3. Orchestrator processes with AI")
+    logger.info("4. Orchestrator stores response")
+    logger.info("5. Frontend polls /v1/conversations/{user_id} for response")
+    logger.info("="*70)
     
     if gemini_service.is_available:
         logger.info("✅ Gemini AI service ready")
@@ -662,9 +608,9 @@ async def startup_event():
     tts_client = get_tts_client()
     tts_status = await tts_client.get_status()
     if tts_status.get("available", False):
-        logger.info("✅ External TTS service ready")
+        logger.info("✅ TTS service ready")
     else:
-        logger.warning("⚠️ External TTS service not reachable")
+        logger.warning("⚠️ TTS service not reachable")
 
 if __name__ == "__main__":
     import uvicorn
