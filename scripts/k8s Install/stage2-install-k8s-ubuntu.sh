@@ -312,6 +312,11 @@ EOF
         -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
     
     log_success "GPU time-slicing configured!"
+    
+    # Label nodes for GPU workloads
+    log_info "Labeling nodes for GPU workloads..."
+    kubectl label nodes --all gpu=true --overwrite
+    log_success "Nodes labeled with gpu=true"
 fi
 
 # ============================================================================

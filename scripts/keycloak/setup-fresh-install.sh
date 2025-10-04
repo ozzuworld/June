@@ -20,7 +20,7 @@ echo "🔐 Keycloak Configuration Automation (TRULY FIXED)" >&2
 echo "=================================================" >&2
 
 # Configuration
-read -p "Keycloak URL [https://idp.allsafe.world]: " KEYCLOAK_URL
+read -p "Keycloak URL [https://idp.allsafe.world](https://idp.allsafe.world): " KEYCLOAK_URL
 KEYCLOAK_URL=${KEYCLOAK_URL:-https://idp.allsafe.world}
 
 read -p "Admin username [admin]: " ADMIN_USER
@@ -32,14 +32,10 @@ echo "" >&2
 read -p "Realm name [allsafe]: " REALM
 REALM=${REALM:-allsafe}
 
-read -p "Frontend URL [http://localhost:3000]: " FRONTEND_URL
-FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
-
 log_info "Configuration:"
 echo "  Keycloak: $KEYCLOAK_URL" >&2
 echo "  Admin: $ADMIN_USER" >&2
 echo "  Realm: $REALM" >&2
-echo "  Frontend: $FRONTEND_URL" >&2
 echo "" >&2
 
 # Verify jq is installed
@@ -179,69 +175,6 @@ create_client_with_secret() {
   fi
 }
 
-# Function to create public client (for frontend)
-create_public_client() {
-  local CLIENT_ID=$1
-  local ROOT_URL=$2
-  local REDIRECT_URIS=$3
-  
-  log_info "Creating public client '$CLIENT_ID'..."
-  
-  # Check if client exists
-  CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
-  
-  CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
-  
-  if [ -n "$CLIENT_UUID" ]; then
-    log_warning "Client '$CLIENT_ID' already exists (ID: $CLIENT_UUID)"
-  else
-    # Create public client (no secret needed)
-    CREATE_CLIENT=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
-      -H "Authorization: Bearer $ADMIN_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"clientId\": \"$CLIENT_ID\",
-        \"enabled\": true,
-        \"protocol\": \"openid-connect\",
-        \"publicClient\": true,
-        \"directAccessGrantsEnabled\": true,
-        \"standardFlowEnabled\": true,
-        \"implicitFlowEnabled\": false,
-        \"rootUrl\": \"$ROOT_URL\",
-        \"redirectUris\": $REDIRECT_URIS,
-        \"webOrigins\": [\"*\"],
-        \"attributes\": {
-          \"access.token.lifespan\": \"3600\",
-          \"pkce.code.challenge.method\": \"S256\"
-        }
-      }")
-    
-    HTTP_CODE=$(echo "$CREATE_CLIENT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
-    
-    if [ "$HTTP_CODE" = "201" ]; then
-      log_success "Public client '$CLIENT_ID' created"
-      
-      # Get the newly created client UUID
-      sleep 2
-      CLIENT_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-        "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
-      CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
-    else
-      log_error "Failed to create client '$CLIENT_ID' (HTTP $HTTP_CODE)"
-      echo "$CREATE_CLIENT"
-      return 1
-    fi
-  fi
-  
-  # Return only UUID (public clients don't have secrets)
-  if [ -n "$CLIENT_UUID" ]; then
-    echo "$CLIENT_UUID"
-  else
-    log_error "Could not find client UUID for '$CLIENT_ID'"
-    return 1
-  fi
-}
 
 # Create clients (FIXED - Capture only clean output)
 log_info "Creating service clients..."
@@ -264,10 +197,6 @@ TTS_RESULT=$(create_client_with_secret "june-tts" "https://tts.allsafe.world" \
 TTS_UUID=$(echo "$TTS_RESULT" | cut -d'|' -f1)
 TTS_SECRET=$(echo "$TTS_RESULT" | cut -d'|' -f2)
 
-# June Frontend (Public Client)
-FRONTEND_UUID=$(create_public_client "june-frontend" "$FRONTEND_URL" \
-  "[\"$FRONTEND_URL/*\", \"https://app.allsafe.world/*\"]")
-
 # Verify we got all secrets
 if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
   log_error "Failed to retrieve all client secrets!"
@@ -275,11 +204,6 @@ if [ -z "$ORCH_SECRET" ] || [ -z "$STT_SECRET" ] || [ -z "$TTS_SECRET" ]; then
   echo "Orchestrator: ${ORCH_SECRET:-MISSING}" >&2
   echo "STT: ${STT_SECRET:-MISSING}" >&2
   echo "TTS: ${TTS_SECRET:-MISSING}" >&2
-  exit 1
-fi
-
-if [ -z "$FRONTEND_UUID" ]; then
-  log_error "Failed to create frontend client!"
   exit 1
 fi
 
@@ -426,25 +350,6 @@ chmod +x update-k8s-secrets.sh
 
 log_success "Kubernetes update script created: update-k8s-secrets.sh"
 
-# Generate React environment file
-log_info "Generating React environment configuration..."
-
-cat > .env.keycloak << EOF
-# Keycloak Configuration for React App
-# Add this to your .env.local or .env file
-
-REACT_APP_KEYCLOAK_URL=$KEYCLOAK_URL
-REACT_APP_KEYCLOAK_REALM=$REALM
-REACT_APP_KEYCLOAK_CLIENT_ID=june-frontend
-
-# API Endpoints
-REACT_APP_API_URL=https://api.allsafe.world
-REACT_APP_STT_URL=https://stt.allsafe.world
-REACT_APP_TTS_URL=https://tts.allsafe.world
-EOF
-
-log_success "React environment file created: .env.keycloak"
-
 # Test token generation
 log_info "Testing token generation..."
 TEST_TOKEN=$(curl -s -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
@@ -482,12 +387,6 @@ echo "  client_id: june-tts" >&2
 echo "  client_secret: $TTS_SECRET" >&2
 echo "  UUID: $TTS_UUID" >&2
 echo "" >&2
-echo "june-frontend (PUBLIC CLIENT):" >&2
-echo "  client_id: june-frontend" >&2
-echo "  type: Public (no secret needed)" >&2
-echo "  UUID: $FRONTEND_UUID" >&2
-echo "  redirect_uris: $FRONTEND_URL/*, https://app.allsafe.world/*" >&2
-echo "" >&2
 echo "🔍 Verify Configuration:" >&2
 echo "  1. Access Keycloak admin: $KEYCLOAK_URL/admin" >&2
 echo "  2. Check realm: $REALM" >&2
@@ -498,18 +397,11 @@ echo "  -d \"grant_type=client_credentials\" \\" >&2
 echo "  -d \"client_id=june-orchestrator\" \\" >&2
 echo "  -d \"client_secret=$ORCH_SECRET\" | jq" >&2
 echo "" >&2
-echo "🌐 React App Setup:" >&2
-echo "  1. Copy .env.keycloak to your React project as .env.local" >&2
-echo "  2. Install keycloak-js: npm install keycloak-js" >&2
-echo "  3. Initialize Keycloak with client_id: june-frontend" >&2
-echo "  4. Use PKCE flow for authentication" >&2
-echo "" >&2
 echo "📝 Next Steps:" >&2
 echo "  1. ✅ Credentials generated successfully" >&2
 echo "  2. Run: ./update-k8s-secrets.sh" >&2
 echo "  3. Verify services: kubectl get pods -n june-services" >&2
-echo "  4. Configure React app with .env.keycloak" >&2
-echo "  5. Test authentication: scripts/keycloak/auth-test.sh" >&2
+echo "  4. Test authentication: scripts/keycloak/auth-test.sh" >&2
 echo "" >&2
 echo "💾 Save these credentials securely!" >&2
 echo "═══════════════════════════════════════════════" >&2
