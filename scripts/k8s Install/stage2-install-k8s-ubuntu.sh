@@ -1,12 +1,13 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup with PRODUCTION WILDCARD CERTS
-# Run this AFTER stage1-runner-only.sh
+# Stage 2: Kubernetes + Infrastructure Setup
+# Creates BOTH staging AND production issuers
+# Deployment chooses which one to use
 
 set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH PRODUCTION WILDCARD CERTIFICATES"
+echo "   WITH DUAL ISSUER SUPPORT (Staging + Production)"
 echo "======================================================"
 
 # Colors
@@ -44,7 +45,7 @@ prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
 prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
 
 if [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
-    log_error "Email and Cloudflare API token are required!"
+    log_error "Email and Cloudflare API token are required for wildcard certificates!"
     exit 1
 fi
 
@@ -53,7 +54,7 @@ echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
 echo "  GPU Replicas: $GPU_REPLICAS"
-echo "  Certificate: PRODUCTION WILDCARD"
+echo "  Wildcard Certificates: Both Staging + Production"
 echo "  Email: $LETSENCRYPT_EMAIL"
 echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
 echo ""
@@ -176,7 +177,7 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# PRODUCTION WILDCARD CERTIFICATE ISSUER
+# CLOUDFLARE SECRET (Shared by both issuers)
 # ============================================================================
 
 log_info "Creating Cloudflare API secret..."
@@ -185,7 +186,43 @@ kubectl create secret generic cloudflare-api-token \
     --namespace=cert-manager \
     --dry-run=client -o yaml | kubectl apply -f -
 
-log_info "Creating PRODUCTION ClusterIssuer with DNS-01 wildcard support..."
+log_success "Cloudflare secret created!"
+
+# ============================================================================
+# STAGING ISSUER (For testing)
+# ============================================================================
+
+log_info "Creating STAGING ClusterIssuer (for testing)..."
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: $LETSENCRYPT_EMAIL
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+    - dns01:
+        cloudflare:
+          apiTokenSecretRef:
+            name: cloudflare-api-token
+            key: api-token
+      selector:
+        dnsNames:
+        - "allsafe.world"
+        - "*.allsafe.world"
+EOF
+
+log_success "Staging issuer created!"
+
+# ============================================================================
+# PRODUCTION ISSUER (For real certs)
+# ============================================================================
+
+log_info "Creating PRODUCTION ClusterIssuer (for real certificates)..."
 cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -209,7 +246,7 @@ spec:
         - "*.allsafe.world"
 EOF
 
-log_success "PRODUCTION wildcard ClusterIssuer created!"
+log_success "Production issuer created!"
 
 # ============================================================================
 # GPU OPERATOR
@@ -364,15 +401,16 @@ fi
 EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
 
 echo ""
-echo "🎉======================================================"
+echo "======================================================"
 log_success "Stage 2 Complete!"
 echo "======================================================"
 echo ""
-echo "✅ Infrastructure Ready:"
+echo "Infrastructure Ready:"
 echo "  • Kubernetes cluster"
 echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
-echo "  • letsencrypt-prod ClusterIssuer (WILDCARD DNS-01)"
+echo "  • letsencrypt-staging (wildcard DNS-01)"
+echo "  • letsencrypt-prod (wildcard DNS-01)"
 
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  • GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
@@ -381,21 +419,25 @@ fi
 echo "  • Storage configured"
 echo "  • GitHub runner ready"
 echo ""
-echo "🌐 External IP: $EXTERNAL_IP"
+echo "External IP: $EXTERNAL_IP"
 echo ""
-echo "📋 Next Steps:"
+echo "Next Steps:"
 echo ""
 echo "  1. Configure DNS to point to $EXTERNAL_IP:"
 echo "     • *.allsafe.world (wildcard record)"
 echo "     • allsafe.world (root domain)"
 echo ""
-echo "  2. Push to GitHub to trigger deployment"
+echo "  2. Choose issuer in your deployment:"
+echo "     • Use 'letsencrypt-staging' for testing (unlimited, shows as untrusted)"
+echo "     • Use 'letsencrypt-prod' for production (trusted certificates)"
 echo ""
-echo "🌟 Wildcard Benefits:"
+echo "  3. Push to GitHub to trigger deployment"
+echo ""
+echo "Wildcard Benefits:"
 echo "   • One certificate covers unlimited subdomains"
-echo "   • No rate limit concerns"
-echo "   • Production-ready certificates"
+echo "   • Staging for testing, prod for real use"
+echo "   • Switch between them anytime"
 echo ""
-echo "✅ Ready for deployment!"
+echo "Ready for deployment!"
 echo ""
-echo "===================================================="
+echo "======================================================"
