@@ -1,5 +1,5 @@
 # June/services/june-orchestrator/app.py
-# Enhanced orchestrator with FIXED AUTHENTICATION and Transcript Notifications
+# Enhanced orchestrator with Service-to-Service Authentication
 
 import os
 import time
@@ -48,12 +48,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from tts_client import get_tts_client
 
-app = FastAPI(title="June Orchestrator", version="3.2.0", description="June AI Platform Orchestrator with transcript notifications")
+app = FastAPI(title="June Orchestrator", version="3.3.0", description="June AI Platform Orchestrator with Service-to-Service Auth")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Storage for transcript notifications (in-memory for now)
 transcript_storage = {}
+
+# Service-to-Service Authentication Configuration
+SERVICE_TO_SERVICE_TOKENS = {
+    "june-stt": os.getenv("STT_SERVICE_TOKEN", "stt-service-secret-token-2025"),
+    "june-tts": os.getenv("TTS_SERVICE_TOKEN", "tts-service-secret-token-2025"),
+    "internal": os.getenv("INTERNAL_SERVICE_TOKEN", "internal-service-secret-2025")
+}
 
 class AudioConfig(BaseModel):
     voice: Optional[str] = Field(default="default")
@@ -289,22 +296,17 @@ class GeminiService:
 
 gemini_service = GeminiService()
 
-# FIXED: Proper user authentication dependency
+# Authentication dependencies
 async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """
-    Verify user authentication token from frontend
-    This is the CORRECT way to handle user authentication
-    """
+    """Verify user authentication token from frontend"""
     if not SHARED_AUTH_AVAILABLE:
         logger.warning("⚠️ Authentication disabled - shared auth not available")
         return {"sub": "anonymous", "authenticated": False, "reason": "auth_disabled"}
     
     try:
-        # Get the token from the Authorization header
         token = credentials.credentials
-        logger.debug(f"🔍 Verifying token: {token[:20]}...")
+        logger.debug(f"🔍 Verifying user token: {token[:20]}...")
         
-        # Validate the user token using the shared auth service
         auth_service = get_auth_service()
         token_data = await auth_service.verify_bearer(token)
         
@@ -313,11 +315,37 @@ async def verify_user_token(credentials: HTTPAuthorizationCredentials = Depends(
         return token_data
         
     except AuthError as e:
-        logger.error(f"❌ Authentication failed: {e}")
+        logger.error(f"❌ User authentication failed: {e}")
         raise HTTPException(status_code=401, detail="Authentication required")
     except Exception as e:
-        logger.error(f"❌ Authentication error: {e}")
+        logger.error(f"❌ User authentication error: {e}")
         raise HTTPException(status_code=401, detail="Authentication required")
+
+async def verify_service_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+    """Verify service-to-service authentication token"""
+    try:
+        token = credentials.credentials
+        logger.debug(f"🔍 Verifying service token: {token[:20]}...")
+        
+        # Check against known service tokens
+        for service_name, service_token in SERVICE_TO_SERVICE_TOKENS.items():
+            if token == service_token:
+                logger.info(f"✅ Service authenticated: {service_name}")
+                return {
+                    "service": service_name,
+                    "authenticated": True,
+                    "type": "service_to_service"
+                }
+        
+        # If not a service token, could be a user token - let fallback handle it
+        logger.warning(f"❌ Unknown service token: {token[:20]}...")
+        raise HTTPException(status_code=401, detail="Invalid service token")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Service authentication error: {e}")
+        raise HTTPException(status_code=401, detail="Service authentication failed")
 
 @app.get("/")
 async def root():
@@ -326,26 +354,28 @@ async def root():
     
     return {
         "service": "June Orchestrator",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "status": "healthy",
         "authentication": {
-            "enabled": SHARED_AUTH_AVAILABLE,
-            "type": "user_token_validation"
+            "user_auth_enabled": SHARED_AUTH_AVAILABLE,
+            "service_auth_enabled": True,
+            "supported_services": list(SERVICE_TO_SERVICE_TOKENS.keys())
         },
         "features": {
             "ai_chat": gemini_service.is_available, 
             "text_to_speech": tts_status.get("available", False),
-            "transcript_notifications": True  # NEW
+            "transcript_notifications": True,
+            "service_to_service_auth": True  # NEW
         },
         "ai_provider": "gemini" if gemini_service.is_available else "fallback",
         "tts_service_url": os.getenv("TTS_SERVICE_URL", "not_configured"),
         "endpoints": {
             "health": "/healthz", 
             "chat": "/v1/chat", 
-            "transcripts": "/v1/transcripts",  # NEW
+            "transcripts": "/v1/transcripts",
+            "service_transcripts": "/v1/service/transcripts",  # NEW
             "tts_status": "/v1/tts/status",
-            "auth_test": "/v1/auth/test",
-            "auth_debug": "/v1/auth/debug"
+            "auth_test": "/v1/auth/test"
         }
     }
 
@@ -354,42 +384,36 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "june-orchestrator", 
-        "version": "3.2.0", 
+        "version": "3.3.0", 
         "timestamp": time.time(),
         "ai_available": gemini_service.is_available,
-        "auth_available": SHARED_AUTH_AVAILABLE,
+        "user_auth_available": SHARED_AUTH_AVAILABLE,
+        "service_auth_available": True,
         "transcripts_stored": len(transcript_storage)
     }
 
-# NEW: Transcript notification endpoint
-@app.post("/v1/transcripts", response_model=TranscriptResponse)
-async def receive_transcript_notification(
+# NEW: Service-to-Service transcript notification endpoint
+@app.post("/v1/service/transcripts", response_model=TranscriptResponse)
+async def receive_service_transcript_notification(
     notification: TranscriptNotification,
-    user_auth: Dict[str, Any] = Depends(verify_user_token)
+    service_auth: Dict[str, Any] = Depends(verify_service_token)
 ):
     """
-    Receive transcript notification from STT service
+    Service-to-Service transcript notification endpoint
     
-    This endpoint allows the orchestrator to:
-    - Track all transcriptions
-    - Trigger additional AI workflows
-    - Store transcripts for analytics
-    - Maintain conversation history
+    Used by STT service to notify orchestrator without user authentication.
+    Requires valid service token in Authorization header.
     """
     try:
-        authenticated_user_id = user_auth.get("sub", "unknown")
+        service_name = service_auth.get("service", "unknown")
         
-        # Verify the transcript belongs to the authenticated user
-        if notification.user_id != authenticated_user_id:
-            logger.warning(f"❌ User mismatch: authenticated={authenticated_user_id}, notification={notification.user_id}")
-            raise HTTPException(status_code=403, detail="Access denied - user mismatch")
-        
-        logger.info(f"📝 Received transcript notification: {notification.transcript_id}")
-        logger.info(f"👤 User: {authenticated_user_id}")
+        logger.info(f"📝 Received service transcript notification from {service_name}")
+        logger.info(f"📋 Transcript ID: {notification.transcript_id}")
+        logger.info(f"👤 User: {notification.user_id}")
         logger.info(f"📄 Text: {notification.text[:100]}..." if len(notification.text) > 100 else f"📄 Text: {notification.text}")
         logger.info(f"📊 Metadata: {notification.metadata}")
         
-        # Store transcript in memory (you could extend this to database storage)
+        # Store transcript in memory with service info
         transcript_data = {
             "transcript_id": notification.transcript_id,
             "user_id": notification.user_id,
@@ -397,24 +421,17 @@ async def receive_transcript_notification(
             "timestamp": notification.timestamp,
             "metadata": notification.metadata,
             "received_at": datetime.utcnow().isoformat(),
-            "processed": False
+            "source_service": service_name,
+            "auth_type": "service_to_service"
         }
         
         transcript_storage[notification.transcript_id] = transcript_data
         
-        # Here you can add additional processing logic:
-        # 1. Trigger automated AI responses for certain keywords
-        # 2. Store in persistent database
-        # 3. Send to analytics service
-        # 4. Queue for background processing
-        # 5. Update conversation context
-        
-        # Example: Trigger automated processing for certain keywords
+        # Enhanced processing based on content
         text_lower = notification.text.lower()
         if any(keyword in text_lower for keyword in ["urgent", "help", "emergency", "issue"]):
             logger.info(f"🚨 Urgent transcript detected: {notification.transcript_id}")
             transcript_data["priority"] = "high"
-            # You could trigger immediate processing here
         
         if any(keyword in text_lower for keyword in ["thank you", "thanks", "appreciate"]):
             logger.info(f"😊 Positive sentiment detected: {notification.transcript_id}")
@@ -427,23 +444,75 @@ async def receive_transcript_notification(
             status="received",
             transcript_id=notification.transcript_id,
             timestamp=datetime.utcnow().isoformat(),
-            message="Transcript notification received and processed successfully",
-            user_id=authenticated_user_id
+            message=f"Service transcript notification received from {service_name}",
+            user_id=notification.user_id
         )
         
-        logger.info(f"✅ Processed transcript notification: {notification.transcript_id}")
+        logger.info(f"✅ Processed service transcript notification: {notification.transcript_id} from {service_name}")
         return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error processing transcript notification: {e}")
+        logger.error(f"❌ Error processing service transcript notification: {e}")
         raise HTTPException(
             status_code=500, 
-            detail=f"Failed to process transcript notification: {str(e)}"
+            detail=f"Failed to process service transcript notification: {str(e)}"
         )
 
-# NEW: Get transcript history endpoint
+# Original user transcript notification endpoint (unchanged)
+@app.post("/v1/transcripts", response_model=TranscriptResponse)
+async def receive_transcript_notification(
+    notification: TranscriptNotification,
+    user_auth: Dict[str, Any] = Depends(verify_user_token)
+):
+    """
+    User transcript notification endpoint (requires user authentication)
+    """
+    try:
+        authenticated_user_id = user_auth.get("sub", "unknown")
+        
+        if notification.user_id != authenticated_user_id:
+            logger.warning(f"❌ User mismatch: authenticated={authenticated_user_id}, notification={notification.user_id}")
+            raise HTTPException(status_code=403, detail="Access denied - user mismatch")
+        
+        logger.info(f"📝 Received user transcript notification: {notification.transcript_id}")
+        logger.info(f"👤 User: {authenticated_user_id}")
+        logger.info(f"📄 Text: {notification.text[:100]}..." if len(notification.text) > 100 else f"📄 Text: {notification.text}")
+        
+        transcript_data = {
+            "transcript_id": notification.transcript_id,
+            "user_id": notification.user_id,
+            "text": notification.text,
+            "timestamp": notification.timestamp,
+            "metadata": notification.metadata,
+            "received_at": datetime.utcnow().isoformat(),
+            "auth_type": "user_authenticated"
+        }
+        
+        transcript_storage[notification.transcript_id] = transcript_data
+        
+        response = TranscriptResponse(
+            status="received",
+            transcript_id=notification.transcript_id,
+            timestamp=datetime.utcnow().isoformat(),
+            message="User transcript notification received successfully",
+            user_id=authenticated_user_id
+        )
+        
+        logger.info(f"✅ Processed user transcript notification: {notification.transcript_id}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing user transcript notification: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to process user transcript notification: {str(e)}"
+        )
+
+# Get transcript history endpoint
 @app.get("/v1/transcripts")
 async def get_transcripts(
     user_auth: Dict[str, Any] = Depends(verify_user_token),
@@ -453,16 +522,12 @@ async def get_transcripts(
     try:
         authenticated_user_id = user_auth.get("sub", "unknown")
         
-        # Filter transcripts for this user
         user_transcripts = [
             transcript for transcript in transcript_storage.values()
             if transcript["user_id"] == authenticated_user_id
         ]
         
-        # Sort by timestamp (newest first)
         user_transcripts.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        # Apply limit
         limited_transcripts = user_transcripts[:limit]
         
         return {
@@ -480,16 +545,14 @@ async def get_transcripts(
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    user_auth: Dict[str, Any] = Depends(verify_user_token)  # FIXED: Use proper user auth
+    user_auth: Dict[str, Any] = Depends(verify_user_token)
 ):
     start_time = time.time()
     
     try:
-        # Log successful authentication
         user_id = user_auth.get("sub", "unknown")
         logger.info(f"🔐 Processing chat request for user: {user_id}")
         
-        # Generate AI response
         ai_response, provider = await gemini_service.generate_response(
             request.text.strip(), 
             request.language, 
@@ -536,7 +599,6 @@ async def chat(
                 
             except Exception as e:
                 logger.error(f"❌ TTS generation failed: {e}")
-                # Continue without audio - don't fail the whole request
         
         logger.info(f"✅ Chat response completed: {provider} ({response_time}ms)")
         return chat_response
@@ -554,21 +616,11 @@ async def chat(
             ai_provider="error"
         )
 
-# Legacy endpoint for backward compatibility
-@app.post("/v1/conversation", response_model=ChatResponse)
-async def conversation(
-    request: ChatRequest,
-    user_auth: Dict[str, Any] = Depends(verify_user_token)  # FIXED: Add auth here too
-):
-    """Legacy endpoint - redirects to /v1/chat with authentication"""
-    return await chat(request, user_auth)
-
 @app.get("/v1/tts/status")
 async def tts_status():
     tts_client = get_tts_client()
     return await tts_client.get_status()
 
-# ADDED: Authentication test endpoints
 @app.get("/v1/auth/test")
 async def test_auth(user_auth: Dict[str, Any] = Depends(verify_user_token)):
     """Test endpoint to verify user authentication"""
@@ -582,32 +634,25 @@ async def test_auth(user_auth: Dict[str, Any] = Depends(verify_user_token)):
         "timestamp": time.time()
     }
 
-@app.get("/v1/auth/debug")
-async def debug_auth():
-    """Debug endpoint to test Keycloak connectivity"""
-    if not SHARED_AUTH_AVAILABLE:
-        return {
-            "error": "Shared auth module not available",
-            "shared_auth_available": False
-        }
-    
-    try:
-        from shared.auth import test_keycloak_connection
-        result = await test_keycloak_connection()
-        result["shared_auth_available"] = True
-        return result
-    except Exception as e:
-        return {
-            "error": str(e),
-            "shared_auth_available": True,
-            "connection_test_failed": True
-        }
+# NEW: Service authentication test endpoint
+@app.get("/v1/service/auth/test")
+async def test_service_auth(service_auth: Dict[str, Any] = Depends(verify_service_token)):
+    """Test endpoint to verify service authentication"""
+    return {
+        "authenticated": True,
+        "service": service_auth.get("service"),
+        "auth_type": service_auth.get("type"),
+        "timestamp": time.time(),
+        "message": f"Service {service_auth.get('service')} authenticated successfully"
+    }
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Starting June Orchestrator v3.2.0 with transcript notifications")
+    logger.info("🚀 Starting June Orchestrator v3.3.0 with Service-to-Service Auth")
     logger.info(f"TTS Service URL: {os.getenv('TTS_SERVICE_URL', 'not_configured')}")
-    logger.info(f"Authentication: {'ENABLED' if SHARED_AUTH_AVAILABLE else 'DISABLED'}")
+    logger.info(f"User Authentication: {'ENABLED' if SHARED_AUTH_AVAILABLE else 'DISABLED'}")
+    logger.info(f"Service Authentication: ENABLED")
+    logger.info(f"Supported Services: {list(SERVICE_TO_SERVICE_TOKENS.keys())}")
     
     if gemini_service.is_available:
         logger.info("✅ Gemini AI service ready")
@@ -620,26 +665,6 @@ async def startup_event():
         logger.info("✅ External TTS service ready")
     else:
         logger.warning("⚠️ External TTS service not reachable")
-
-# OPTIONAL: Keep service auth endpoint for debugging
-@app.get("/v1/service-auth/status")
-async def service_auth_status():
-    """Test service-to-service authentication (for debugging only)"""
-    try:
-        from service_auth import get_service_auth_client
-        client = get_service_auth_client()
-        auth_status = await client.test_authentication()
-        
-        return {
-            "service_auth": auth_status,
-            "timestamp": time.time(),
-            "note": "This is for service-to-service auth, not user auth"
-        }
-    except Exception as e:
-        return {
-            "service_auth": {"error": str(e)},
-            "timestamp": time.time()
-        }
 
 if __name__ == "__main__":
     import uvicorn
