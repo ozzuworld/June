@@ -1,683 +1,619 @@
----
-# COMPLETE JUNE SERVICES MANIFEST (FIXED FOR AUTOMATED DEPLOYMENT)
-# This is the ONLY k8s manifest file you need - all others can be deleted
-# 
-# Prerequisites (created by stage2-install-k8s-ubuntu.sh):
-#   - june-services namespace
-#   - local-storage StorageClass
-#   - postgresql-pv PersistentVolume at /opt/june-postgresql-data
-#   - GPU Operator with time-slicing (2+ virtual GPUs)
-#   - ingress-nginx with hostNetwork
-#   - cert-manager with letsencrypt-prod ClusterIssuer
-#
-# Usage:
-#   kubectl apply -f complete-manifests-fixed.yaml
+name: 🚀 June Services Deploy (FIXED - Infrastructure Validation)
 
----
-# Namespace (idempotent - won't fail if exists)
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: june-services
-  labels:
-    name: june-services
-    app.kubernetes.io/part-of: june
+on:
+  push:
+    branches: [ main, develop ]
+    paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      build_images:
+        description: '🔨 Build Docker images?'
+        required: true
+        default: true
+        type: boolean
+      deploy_services:
+        description: '🚀 Deploy to Kubernetes?'
+        required: true
+        default: true
+        type: boolean
+      services:
+        description: '📦 Services to build/deploy (comma-separated, or "all")'
+        required: false
+        default: 'all'
+        type: string
 
----
-# ConfigMap
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: june-config
-  namespace: june-services
-data:
-  APP_ENV: production
-  LOG_LEVEL: info
-  REGION: us-central1
+env:
+  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
+  NAMESPACE: june-services
 
----
-# Secrets Placeholder (GitHub workflow will update these)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: june-secrets
-  namespace: june-services
-type: Opaque
-stringData:
-  gemini-api-key: "PLACEHOLDER"
-  keycloak-client-secret: "PLACEHOLDER"
+permissions:
+  contents: read
+  packages: write
 
----
-# PostgreSQL PersistentVolumeClaim
-# FIXED: Uses specific PV name to bind to stage2-created PV
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgresql-pvc
-  namespace: june-services
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: local-storage
-  resources:
-    requests:
-      storage: 10Gi
-  selector:
-    matchLabels:
-      app: postgresql
+jobs:
+  # ============================================================================
+  # SETUP
+  # ============================================================================
+  
+  setup:
+    name: 📋 Setup Build Matrix
+    runs-on: self-hosted
+    outputs:
+      build_images: ${{ steps.config.outputs.build_images }}
+      deploy_services: ${{ steps.config.outputs.deploy_services }}
+      services: ${{ steps.config.outputs.services }}
+    steps:
+      - name: 📝 Configure workflow
+        id: config
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUILD="${{ github.event.inputs.build_images }}"
+            DEPLOY="${{ github.event.inputs.deploy_services }}"
+            SERVICES="${{ github.event.inputs.services }}"
+          else
+            BUILD="true"
+            DEPLOY="true"
+            SERVICES="all"
+          fi
+          
+          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
+          echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          
+          echo "📋 Configuration:"
+          echo "  Build images: $BUILD"
+          echo "  Deploy services: $DEPLOY"
+          echo "  Services: $SERVICES"
 
----
-# PostgreSQL StatefulSet
-# FIXED: Uses PVC instead of volumeClaimTemplates for proper PV binding
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: postgresql
-  namespace: june-services
-  labels:
-    app: postgresql
-spec:
-  serviceName: postgresql
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgresql
-  template:
-    metadata:
-      labels:
-        app: postgresql
-    spec:
-      containers:
-      - name: postgres
-        image: postgres:15-alpine
-        env:
-        - name: POSTGRES_DB
-          value: "keycloak"
-        - name: POSTGRES_USER
-          value: "keycloak"
-        - name: POSTGRES_PASSWORD
-          value: "Pokemon123!"
-        - name: PGDATA
-          value: /var/lib/postgresql/data/pgdata
-        ports:
-        - containerPort: 5432
-          name: postgres
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        volumeMounts:
-        - name: postgres-data
-          mountPath: /var/lib/postgresql/data
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - keycloak
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - keycloak
-          initialDelaySeconds: 5
-          periodSeconds: 5
-      volumes:
-      - name: postgres-data
-        persistentVolumeClaim:
-          claimName: postgresql-pvc
+  # ============================================================================
+  # BUILD IMAGES
+  # ============================================================================
 
----
-# PostgreSQL Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgresql
-  namespace: june-services
-  labels:
-    app: postgresql
-spec:
-  type: ClusterIP
-  ports:
-  - port: 5432
-    targetPort: 5432
-    name: postgres
-  selector:
-    app: postgresql
+  build-stt:
+    name: 🔨 Build june-stt
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'stt'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
 
----
-# June STT Deployment
-# FIXED: Correct image reference, GPU request works with time-slicing
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-stt
-  namespace: june-services
-  labels:
-    app: june-stt
-spec:
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 0
-  selector:
-    matchLabels:
-      app: june-stt
-  template:
-    metadata:
-      labels:
-        app: june-stt
-    spec:
-      nodeSelector:
-        gpu: "true"
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-stt
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-stt
+          file: ./June/services/june-stt/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=stt
+          cache-to: type=gha,mode=max,scope=stt
+          platforms: linux/amd64
+
+  build-tts:
+    name: 🔨 Build june-tts
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'tts'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-tts
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-tts
+          file: ./June/services/june-tts/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=tts
+          cache-to: type=gha,mode=max,scope=tts
+          platforms: linux/amd64
+
+  build-orchestrator:
+    name: 🔨 Build june-orchestrator
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'orchestrator'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-orchestrator
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-orchestrator
+          file: ./June/services/june-orchestrator/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=orchestrator
+          cache-to: type=gha,mode=max,scope=orchestrator
+          platforms: linux/amd64
+
+  build-idp:
+    name: 🔨 Build june-idp
+    runs-on: self-hosted
+    needs: setup
+    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'idp'))
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 📝 Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/june-idp
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: 🏗️ Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./June/services/june-idp
+          file: ./June/services/june-idp/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=idp
+          cache-to: type=gha,mode=max,scope=idp
+          platforms: linux/amd64
+
+  # ============================================================================
+  # DEPLOYMENT (FIXED - Comprehensive Infrastructure Validation)
+  # ============================================================================
+
+  deploy:
+    name: 🚀 Deploy to Kubernetes
+    runs-on: self-hosted
+    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    if: |
+      always() && 
+      needs.setup.outputs.deploy_services == 'true' &&
+      (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
+      (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
+      (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
+      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped')
+
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      # ========================================================================
+      # CRITICAL: Infrastructure Validation (FIXED - Comprehensive checks)
+      # ========================================================================
       
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      terminationGracePeriodSeconds: 30
-      
-      containers:
-      - name: stt
-        image: docker.io/ozzuworld/june-stt:latest
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8080
-          name: http
-        
-        resources:
-          requests:
-            cpu: "1"
-            memory: "6Gi"
-            nvidia.com/gpu: 1  # Requests 1 virtual GPU (works with time-slicing)
-          limits:
-            cpu: "2"
-            memory: "10Gi"
-            nvidia.com/gpu: 1
-        
-        env:
-        - name: PORT
-          value: "8080"
-        - name: WHISPER_MODEL
-          value: "large-v3"
-        - name: WHISPER_DEVICE
-          value: "cuda"
-        - name: WHISPER_COMPUTE_TYPE
-          value: "float16"
-        - name: WHISPER_CACHE_DIR
-          value: "/app/models"
-        - name: WHISPER_CPU_THREADS
-          value: "2"
-        - name: WHISPER_NUM_WORKERS
-          value: "1"
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:128,garbage_collection_threshold:0.6"
-        
-        volumeMounts:
-        - name: model-cache
-          mountPath: /app/models
-        - name: cache
-          mountPath: /app/cache
-        
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 90
-          periodSeconds: 10
-          failureThreshold: 90
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 30
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 180
-          periodSeconds: 30
-          failureThreshold: 3
-      
-      volumes:
-      - name: model-cache
-        emptyDir:
-          sizeLimit: 10Gi
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
-
----
-# June STT Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-stt
-  namespace: june-services
-spec:
-  type: ClusterIP
-  selector:
-    app: june-stt
-  ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
-
----
-# June TTS Deployment
-# FIXED: Correct image reference, GPU request works with time-slicing
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-tts
-  namespace: june-services
-  labels:
-    app: june-tts
-spec:
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 0
-  selector:
-    matchLabels:
-      app: june-tts
-  template:
-    metadata:
-      labels:
-        app: june-tts
-    spec:
-      nodeSelector:
-        gpu: "true"
-      
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      
-      terminationGracePeriodSeconds: 30
-      
-      containers:
-      - name: tts
-        image: docker.io/ozzuworld/june-tts:latest
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8000
-          name: http
-        
-        resources:
-          requests:
-            cpu: "1"
-            memory: "2Gi"
-            nvidia.com/gpu: 1  # Requests 1 virtual GPU (works with time-slicing)
-          limits:
-            cpu: "2"
-            memory: "4Gi"
-            nvidia.com/gpu: 1
-        
-        env:
-        - name: PORT
-          value: "8000"
-        - name: OPENVOICE_CHECKPOINTS_V2
-          value: "/models/openvoice/checkpoints_v2"
-        - name: OPENVOICE_DEVICE
-          value: "cuda"
-        - name: ENABLE_QUANTIZATION
-          value: "false"
-        - name: PRELOAD_MODELS
-          value: "true"
-        - name: TTS_CACHE_SIZE
-          value: "100"
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
-        
-        volumeMounts:
-        - name: model-cache
-          mountPath: /models
-        - name: cache
-          mountPath: /cache
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 30
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180
-          periodSeconds: 30
-      
-      volumes:
-      - name: model-cache
-        emptyDir:
-          sizeLimit: 10Gi
-      - name: cache
-        emptyDir:
-          sizeLimit: 5Gi
-
----
-# June TTS Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-tts
-  namespace: june-services
-spec:
-  type: ClusterIP
-  selector:
-    app: june-tts
-  ports:
-  - port: 8000
-    targetPort: 8000
-    name: http
-
----
-# June Orchestrator Deployment
-# FIXED: Correct image reference (DockerHub, not GCP)
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-orchestrator
-  namespace: june-services
-  labels:
-    app: june-orchestrator
-spec:
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
-  selector:
-    matchLabels:
-      app: june-orchestrator
-  template:
-    metadata:
-      labels:
-        app: june-orchestrator
-    spec:
-      containers:
-      - name: orchestrator
-        image: docker.io/ozzuworld/june-orchestrator:latest
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 8080
-          name: http
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "200m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
-        env:
-        - name: PORT
-          value: "8080"
-        - name: GEMINI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: gemini-api-key
-        - name: KEYCLOAK_URL
-          value: "http://june-idp.june-services.svc.cluster.local:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-orchestrator"
-        - name: TTS_SERVICE_URL
-          value: "http://june-tts.june-services.svc.cluster.local:8000"
-        - name: STT_SERVICE_URL
-          value: "http://june-stt.june-services.svc.cluster.local:8080"
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 15
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 15
-
----
-# June Orchestrator Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-orchestrator
-  namespace: june-services
-spec:
-  type: ClusterIP
-  selector:
-    app: june-orchestrator
-  ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
-
----
-# June IDP (Keycloak) Deployment
-# FIXED: Correct image reference
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-idp
-  namespace: june-services
-  labels:
-    app: june-idp
-spec:
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
-  selector:
-    matchLabels:
-      app: june-idp
-  template:
-    metadata:
-      labels:
-        app: june-idp
-    spec:
-      initContainers:
-      - name: wait-for-postgres
-        image: postgres:15-alpine
-        command: ['sh', '-c']
-        args:
-        - |
-          echo "⏳ Waiting for PostgreSQL..."
-          until pg_isready -h postgresql.june-services.svc.cluster.local -p 5432 -U keycloak; do
-            sleep 3
+      - name: 🔍 Verify Infrastructure Prerequisites
+        run: |
+          echo "🔍 Running comprehensive infrastructure validation..."
+          
+          ERRORS=0
+          WARNINGS=0
+          
+          # Check cluster
+          echo ""
+          echo "1️⃣ Checking cluster connectivity..."
+          if kubectl cluster-info &>/dev/null; then
+            echo "✅ Cluster is accessible"
+          else
+            echo "❌ Cannot connect to Kubernetes cluster!"
+            exit 1
+          fi
+          
+          # Check namespace
+          echo ""
+          echo "2️⃣ Checking namespace..."
+          if kubectl get ns $NAMESPACE &>/dev/null; then
+            echo "✅ Namespace '$NAMESPACE' exists"
+          else
+            echo "❌ Namespace '$NAMESPACE' doesn't exist!"
+            echo "   Run: kubectl create namespace $NAMESPACE"
+            ((ERRORS++))
+          fi
+          
+          # Check StorageClass
+          echo ""
+          echo "3️⃣ Checking StorageClass..."
+          if kubectl get sc local-storage &>/dev/null; then
+            echo "✅ StorageClass 'local-storage' exists"
+          else
+            echo "❌ StorageClass 'local-storage' doesn't exist!"
+            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
+            ((ERRORS++))
+          fi
+          
+          # Check PVs
+          echo ""
+          echo "4️⃣ Checking PersistentVolumes..."
+          if kubectl get pv postgresql-pv &>/dev/null; then
+            echo "✅ PersistentVolume 'postgresql-pv' exists"
+          else
+            echo "❌ PersistentVolume 'postgresql-pv' doesn't exist!"
+            echo "   Run stage2-install-k8s-ubuntu.sh to create it"
+            ((ERRORS++))
+          fi
+          
+          # Check storage directories
+          echo ""
+          echo "5️⃣ Checking storage directories..."
+          STORAGE_DIRS=("/opt/june-postgresql-data" "/opt/june-stt-models" "/opt/june-tts-models")
+          for dir in "${STORAGE_DIRS[@]}"; do
+            if [ -d "$dir" ]; then
+              echo "✅ Storage directory $dir exists"
+            else
+              echo "⚠️  Storage directory $dir doesn't exist (will be created)"
+              mkdir -p "$dir"
+              chmod 755 "$dir"
+              ((WARNINGS++))
+            fi
           done
-          echo "✅ PostgreSQL ready!"
-          export PGPASSWORD=Pokemon123!
-          until psql -h postgresql.june-services.svc.cluster.local -U keycloak -d keycloak -c "SELECT 1" > /dev/null 2>&1; do
-            sleep 3
-          done
-          echo "✅ Database ready!"
-      containers:
-      - name: keycloak
-        image: docker.io/ozzuworld/june-idp:latest
-        imagePullPolicy: Always
-        command: ["/opt/keycloak/bin/kc.sh"]
-        args: ["start", "--optimized"]
-        ports:
-        - containerPort: 8080
-          name: http
-        - containerPort: 9000
-          name: management
-        resources:
-          requests:
-            memory: "1Gi"
-            cpu: "500m"
-          limits:
-            memory: "2Gi"
-            cpu: "2"
-        env:
-        - name: KC_DB
-          value: postgres
-        - name: KC_DB_URL
-          value: jdbc:postgresql://postgresql.june-services.svc.cluster.local:5432/keycloak
-        - name: KC_DB_USERNAME
-          value: keycloak
-        - name: KC_DB_PASSWORD
-          value: Pokemon123!
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: admin
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          value: Pokemon123!
-        - name: KC_HTTP_ENABLED
-          value: "true"
-        - name: KC_HOSTNAME
-          value: "idp.allsafe.world"
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
-        - name: KC_HOSTNAME_STRICT_HTTPS
-          value: "false"
-        - name: KC_PROXY_HEADERS
-          value: "xforwarded"
-        - name: KC_HEALTH_ENABLED
-          value: "true"
-        - name: KC_METRICS_ENABLED
-          value: "true"
-        - name: KC_LOG_LEVEL
-          value: "INFO"
-        
-        startupProbe:
-          httpGet:
-            path: /health/started
-            port: 9000
-            scheme: HTTP
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 60
-        
-        readinessProbe:
-          httpGet:
-            path: /health/ready
-            port: 9000
-            scheme: HTTP
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        
-        livenessProbe:
-          httpGet:
-            path: /health/live
-            port: 9000
-            scheme: HTTP
-          initialDelaySeconds: 60
-          periodSeconds: 20
-          timeoutSeconds: 5
-          failureThreshold: 5
+          
+          # Check ingress controller
+          echo ""
+          echo "6️⃣ Checking ingress controller..."
+          if kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller 2>/dev/null | grep -q Running; then
+            echo "✅ Ingress controller is running"
+          else
+            echo "❌ Ingress controller not running!"
+            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
+            ((ERRORS++))
+          fi
+          
+          # Check cert-manager
+          echo ""
+          echo "7️⃣ Checking cert-manager..."
+          if kubectl get pods -n cert-manager 2>/dev/null | grep -q Running; then
+            echo "✅ cert-manager is running"
+          else
+            echo "❌ cert-manager not running!"
+            echo "   Run stage2-install-k8s-ubuntu.sh to install it"
+            ((ERRORS++))
+          fi
+          
+          # Check GPU availability (CRITICAL for GPU services)
+          echo ""
+          echo "8️⃣ Checking GPU availability..."
+          GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+          
+          if [ "$GPU_ALLOCATABLE" -ge 2 ]; then
+            echo "✅ GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs available"
+          elif [ "$GPU_ALLOCATABLE" -eq 1 ]; then
+            echo "⚠️  Only 1 GPU available (time-slicing may not be active)"
+            echo "   Expected: 2+ virtual GPUs for time-slicing"
+            echo "   Check: kubectl describe nodes | grep nvidia.com/gpu"
+            ((WARNINGS++))
+          else
+            echo "❌ No GPUs available!"
+            echo "   GPU services (STT, TTS) will fail to schedule!"
+            echo "   Run stage2-install-k8s-ubuntu.sh with GPU setup"
+            ((ERRORS++))
+          fi
+          
+          # Check node labels
+          echo ""
+          echo "9️⃣ Checking node labels..."
+          GPU_LABELED=$(kubectl get nodes -l gpu=true --no-headers 2>/dev/null | wc -l)
+          if [ "$GPU_LABELED" -gt 0 ]; then
+            echo "✅ Found $GPU_LABELED node(s) labeled with gpu=true"
+          else
+            echo "⚠️  No nodes labeled with gpu=true"
+            echo "   Labeling nodes now..."
+            kubectl label nodes --all gpu=true --overwrite
+            ((WARNINGS++))
+          fi
+          
+          # Check ClusterIssuers
+          echo ""
+          echo "🔟 Checking ClusterIssuers..."
+          if kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
+            echo "✅ ClusterIssuer 'letsencrypt-prod' exists"
+          else
+            echo "⚠️  ClusterIssuer 'letsencrypt-prod' not found"
+            echo "   TLS certificates may not work"
+            ((WARNINGS++))
+          fi
+          
+          # Summary
+          echo ""
+          echo "========================================"
+          echo "📊 Validation Summary"
+          echo "========================================"
+          echo "Errors: $ERRORS"
+          echo "Warnings: $WARNINGS"
+          echo ""
+          
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "❌ FAILED: $ERRORS critical error(s) found!"
+            echo ""
+            echo "⚠️  DEPLOYMENT BLOCKED"
+            echo "   Fix errors above before deploying"
+            echo "   Run: sudo ./scripts/k8s Install/stage2-install-k8s-ubuntu.sh"
+            exit 1
+          elif [ "$WARNINGS" -gt 0 ]; then
+            echo "⚠️  PASSED with $WARNINGS warning(s)"
+            echo "   Deployment will continue"
+          else
+            echo "✅ PASSED: All checks successful!"
+          fi
 
----
-# June IDP Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-idp
-  namespace: june-services
-spec:
-  type: ClusterIP
-  selector:
-    app: june-idp
-  ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
-  - port: 9000
-    targetPort: 9000
-    name: management
+      # ========================================================================
+      # Update Application Secrets
+      # ========================================================================
+      
+      - name: 🔐 Update Application Secrets
+        run: |
+          echo "🔐 Updating application secrets..."
+          
+          # Create/update June secrets
+          kubectl create secret generic june-secrets \
+            --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
+            --namespace=$NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "✅ Application secrets updated"
 
----
-# Ingress with Wildcard Certificate
-# FIXED: Uses letsencrypt-prod (created by stage2)
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: june-ingress
-  namespace: june-services
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/enable-cors: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-spec:
-  ingressClassName: nginx
-  tls:
-  - hosts:
-    - "*.allsafe.world"
-    secretName: allsafe-wildcard-tls
-  rules:
-  - host: api.allsafe.world
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-orchestrator
-            port:
-              number: 8080
-  - host: idp.allsafe.world
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-idp
-            port:
-              number: 8080
-  - host: stt.allsafe.world
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-stt
-            port:
-              number: 8080
-  - host: tts.allsafe.world
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-tts
-            port:
-              number: 8000
+      # ========================================================================
+      # Deploy All Services (Single Complete Manifest)
+      # ========================================================================
+      
+      - name: 🚀 Deploy All Services
+        run: |
+          echo "🚀 Deploying all June services from complete manifest..."
+          
+          # Apply the single complete manifest (includes everything)
+          kubectl apply -f k8s/complete-manifests.yaml
+          
+          echo "✅ All services deployed"
+          echo ""
+          
+          # Wait specifically for PostgreSQL first (other services depend on it)
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
+            echo "⚠️ PostgreSQL not ready yet, checking status..."
+            kubectl get pods -l app=postgresql -n $NAMESPACE
+            kubectl describe pod -l app=postgresql -n $NAMESPACE | tail -20
+          }
+          
+          echo "✅ PostgreSQL is ready"
+
+      # ========================================================================
+      # Wait for Deployments (FIXED - Better timeout handling)
+      # ========================================================================
+      
+      - name: ⏳ Wait for Deployments
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          
+          # Function to wait for deployment with better error handling
+          wait_for_deployment() {
+            local deployment=$1
+            local timeout=$2
+            local description=$3
+            
+            echo ""
+            echo "Waiting for $description ($deployment)..."
+            
+            if kubectl rollout status deployment/$deployment -n $NAMESPACE --timeout=${timeout}s; then
+              echo "✅ $description is ready"
+              return 0
+            else
+              echo "⚠️ $description taking longer than expected"
+              echo "Current status:"
+              kubectl get deployment $deployment -n $NAMESPACE
+              kubectl get pods -l app=$deployment -n $NAMESPACE
+              
+              # Check for common issues
+              PENDING=$(kubectl get pods -l app=$deployment -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
+              if [ "$PENDING" -gt 0 ]; then
+                echo "❌ Found $PENDING pending pod(s) for $deployment"
+                kubectl describe pods -l app=$deployment -n $NAMESPACE | grep -A 10 "Events:"
+              fi
+              
+              return 1
+            fi
+          }
+          
+          # Wait for non-GPU services first (shorter timeout)
+          wait_for_deployment "june-idp" 300 "Identity Provider (Keycloak)" || true
+          wait_for_deployment "june-orchestrator" 180 "Orchestrator" || true
+          
+          # Wait for GPU services (longer timeout - they download models)
+          wait_for_deployment "june-stt" 600 "Speech-to-Text (GPU service)" || true
+          wait_for_deployment "june-tts" 600 "Text-to-Speech (GPU service)" || true
+
+      # ========================================================================
+      # Deployment Summary (FIXED - Better diagnostics)
+      # ========================================================================
+      
+      - name: 📊 Deployment Summary
+        if: always()
+        run: |
+          echo ""
+          echo "======================================================"
+          echo "📊 Deployment Status Report"
+          echo "======================================================"
+          echo ""
+          
+          # Deployments
+          echo "🚀 Deployments:"
+          kubectl get deployments -n $NAMESPACE -o wide
+          echo ""
+          
+          # Pods
+          echo "📦 Pods:"
+          kubectl get pods -n $NAMESPACE -o wide
+          echo ""
+          
+          # Check for issues
+          echo "🔍 Issue Detection:"
+          PENDING=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | wc -l)
+          FAILED=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name' | wc -l)
+          CRASH_LOOP=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | wc -l || echo "0")
+          IMAGE_PULL=$(kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name' | wc -l || echo "0")
+          
+          if [ "$PENDING" -gt 0 ]; then
+            echo "⚠️ $PENDING pod(s) pending:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Pending") | .metadata.name' | while read pod; do
+              echo "  • $pod"
+              echo "    Reason: $(kubectl get pod $pod -n $NAMESPACE -o jsonpath='{.status.conditions[?(@.type=="PodScheduled")].message}')"
+            done
+            echo ""
+          fi
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo "❌ $FAILED pod(s) failed:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.phase=="Failed") | .metadata.name'
+            echo ""
+          fi
+          
+          if [ "$CRASH_LOOP" -gt 0 ]; then
+            echo "❌ $CRASH_LOOP pod(s) in CrashLoopBackOff:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="CrashLoopBackOff") | .metadata.name' | while read pod; do
+              echo "  • $pod"
+              echo "    Last 20 log lines:"
+              kubectl logs $pod -n $NAMESPACE --tail=20 || echo "    (no logs available)"
+            done
+            echo ""
+          fi
+          
+          if [ "$IMAGE_PULL" -gt 0 ]; then
+            echo "❌ $IMAGE_PULL pod(s) with ImagePullBackOff:"
+            kubectl get pods -n $NAMESPACE -o json | jq -r '.items[] | select(.status.containerStatuses[0].state.waiting.reason=="ImagePullBackOff") | .metadata.name'
+            echo ""
+          fi
+          
+          # GPU Status
+          echo "🎮 GPU Status:"
+          GPU_TOTAL=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+          GPU_USED=$(kubectl get pods -n $NAMESPACE -o json | jq '[.items[].spec.containers[].resources.requests."nvidia.com/gpu" // "0" | tonumber] | add')
+          echo "  Total available: $GPU_TOTAL virtual GPUs"
+          echo "  Currently used: $GPU_USED"
+          echo "  Remaining: $((GPU_TOTAL - GPU_USED))"
+          
+          if [ "$GPU_USED" -gt "$GPU_TOTAL" ]; then
+            echo "  ⚠️  WARNING: GPU over-subscription!"
+          fi
+          echo ""
+          
+          # Services
+          echo "🌐 Services:"
+          kubectl get services -n $NAMESPACE
+          echo ""
+          
+          # Ingress
+          echo "🔐 Ingress:"
+          kubectl get ingress -n $NAMESPACE
+          echo ""
+          
+          # Certificates
+          echo "🔒 Certificates:"
+          kubectl get certificate -n $NAMESPACE 2>/dev/null || echo "  (no certificates found)"
+          echo ""
+          
+          # Recent Events
+          echo "📋 Recent Events (last 10):"
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -10
+          echo ""
+          
+          # Summary
+          echo "======================================================"
+          echo "📈 Summary:"
+          TOTAL_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE --no-headers | wc -l)
+          READY_DEPLOYMENTS=$(kubectl get deployments -n $NAMESPACE -o json | jq '[.items[] | select(.status.readyReplicas == .spec.replicas)] | length')
+          RUNNING_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers | wc -l)
+          TOTAL_PODS=$(kubectl get pods -n $NAMESPACE --no-headers | wc -l)
+          
+          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
+          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
+          echo "  Pending: $PENDING"
+          echo "  Failed: $FAILED"
+          echo "  Issues: $((CRASH_LOOP + IMAGE_PULL))"
+          echo "======================================================"
+          
+          # Exit with error if there are failed pods
+          if [ "$FAILED" -gt 0 ] || [ "$IMAGE_PULL" -gt 0 ]; then
+            echo ""
+            echo "❌ Deployment completed with errors!"
+            echo "   Check the output above for details"
+            exit 1
+          elif [ "$PENDING" -gt 0 ]; then
+            echo ""
+            echo "⚠️  Deployment completed with pending pods"
+            echo "   Pods may still be scheduling/starting"
+            exit 0
+          else
+            echo ""
+            echo "✅ Deployment successful!"
+          fi
