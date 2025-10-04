@@ -133,7 +133,7 @@ if [ -f "$BACKUP_FILE" ] && [ -s "$BACKUP_FILE" ]; then
     # Calculate days until expiry
     EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$EXPIRY" +%s 2>/dev/null)
     NOW_EPOCH=$(date +%s)
-    DAYS_LEFT=$(( ($EXPIRY_EPOCH - $NOW_EPOCH) / 86400 ))
+    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
     
     echo "  Days remaining: $DAYS_LEFT"
     
