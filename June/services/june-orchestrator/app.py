@@ -1,5 +1,5 @@
 # June/services/june-orchestrator/app.py
-# Enhanced orchestrator with FIXED AUTHENTICATION
+# Enhanced orchestrator with FIXED AUTHENTICATION and Transcript Notifications
 
 import os
 import time
@@ -48,9 +48,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from tts_client import get_tts_client
 
-app = FastAPI(title="June Orchestrator", version="3.1.1", description="June AI Platform Orchestrator with FIXED authentication")
+app = FastAPI(title="June Orchestrator", version="3.2.0", description="June AI Platform Orchestrator with transcript notifications")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Storage for transcript notifications (in-memory for now)
+transcript_storage = {}
 
 class AudioConfig(BaseModel):
     voice: Optional[str] = Field(default="default")
@@ -82,6 +85,21 @@ class ChatResponse(BaseModel):
     conversation_id: Optional[str] = None
     ai_provider: str = "gemini"
     audio: Optional[AudioData] = Field(default=None)
+
+# NEW: Transcript notification models
+class TranscriptNotification(BaseModel):
+    transcript_id: str
+    user_id: str
+    text: str
+    timestamp: str  # ISO format datetime string
+    metadata: Dict[str, Any] = {}
+
+class TranscriptResponse(BaseModel):
+    status: str
+    transcript_id: str
+    timestamp: str
+    message: str
+    user_id: str
 
 class GeminiService:
     def __init__(self):
@@ -308,7 +326,7 @@ async def root():
     
     return {
         "service": "June Orchestrator",
-        "version": "3.1.1",
+        "version": "3.2.0",
         "status": "healthy",
         "authentication": {
             "enabled": SHARED_AUTH_AVAILABLE,
@@ -316,13 +334,15 @@ async def root():
         },
         "features": {
             "ai_chat": gemini_service.is_available, 
-            "text_to_speech": tts_status.get("available", False)
+            "text_to_speech": tts_status.get("available", False),
+            "transcript_notifications": True  # NEW
         },
         "ai_provider": "gemini" if gemini_service.is_available else "fallback",
         "tts_service_url": os.getenv("TTS_SERVICE_URL", "not_configured"),
         "endpoints": {
             "health": "/healthz", 
             "chat": "/v1/chat", 
+            "transcripts": "/v1/transcripts",  # NEW
             "tts_status": "/v1/tts/status",
             "auth_test": "/v1/auth/test",
             "auth_debug": "/v1/auth/debug"
@@ -334,11 +354,128 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "june-orchestrator", 
-        "version": "3.1.1", 
+        "version": "3.2.0", 
         "timestamp": time.time(),
         "ai_available": gemini_service.is_available,
-        "auth_available": SHARED_AUTH_AVAILABLE
+        "auth_available": SHARED_AUTH_AVAILABLE,
+        "transcripts_stored": len(transcript_storage)
     }
+
+# NEW: Transcript notification endpoint
+@app.post("/v1/transcripts", response_model=TranscriptResponse)
+async def receive_transcript_notification(
+    notification: TranscriptNotification,
+    user_auth: Dict[str, Any] = Depends(verify_user_token)
+):
+    """
+    Receive transcript notification from STT service
+    
+    This endpoint allows the orchestrator to:
+    - Track all transcriptions
+    - Trigger additional AI workflows
+    - Store transcripts for analytics
+    - Maintain conversation history
+    """
+    try:
+        authenticated_user_id = user_auth.get("sub", "unknown")
+        
+        # Verify the transcript belongs to the authenticated user
+        if notification.user_id != authenticated_user_id:
+            logger.warning(f"❌ User mismatch: authenticated={authenticated_user_id}, notification={notification.user_id}")
+            raise HTTPException(status_code=403, detail="Access denied - user mismatch")
+        
+        logger.info(f"📝 Received transcript notification: {notification.transcript_id}")
+        logger.info(f"👤 User: {authenticated_user_id}")
+        logger.info(f"📄 Text: {notification.text[:100]}..." if len(notification.text) > 100 else f"📄 Text: {notification.text}")
+        logger.info(f"📊 Metadata: {notification.metadata}")
+        
+        # Store transcript in memory (you could extend this to database storage)
+        transcript_data = {
+            "transcript_id": notification.transcript_id,
+            "user_id": notification.user_id,
+            "text": notification.text,
+            "timestamp": notification.timestamp,
+            "metadata": notification.metadata,
+            "received_at": datetime.utcnow().isoformat(),
+            "processed": False
+        }
+        
+        transcript_storage[notification.transcript_id] = transcript_data
+        
+        # Here you can add additional processing logic:
+        # 1. Trigger automated AI responses for certain keywords
+        # 2. Store in persistent database
+        # 3. Send to analytics service
+        # 4. Queue for background processing
+        # 5. Update conversation context
+        
+        # Example: Trigger automated processing for certain keywords
+        text_lower = notification.text.lower()
+        if any(keyword in text_lower for keyword in ["urgent", "help", "emergency", "issue"]):
+            logger.info(f"🚨 Urgent transcript detected: {notification.transcript_id}")
+            transcript_data["priority"] = "high"
+            # You could trigger immediate processing here
+        
+        if any(keyword in text_lower for keyword in ["thank you", "thanks", "appreciate"]):
+            logger.info(f"😊 Positive sentiment detected: {notification.transcript_id}")
+            transcript_data["sentiment"] = "positive"
+        
+        # Mark as processed
+        transcript_data["processed"] = True
+        
+        response = TranscriptResponse(
+            status="received",
+            transcript_id=notification.transcript_id,
+            timestamp=datetime.utcnow().isoformat(),
+            message="Transcript notification received and processed successfully",
+            user_id=authenticated_user_id
+        )
+        
+        logger.info(f"✅ Processed transcript notification: {notification.transcript_id}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing transcript notification: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to process transcript notification: {str(e)}"
+        )
+
+# NEW: Get transcript history endpoint
+@app.get("/v1/transcripts")
+async def get_transcripts(
+    user_auth: Dict[str, Any] = Depends(verify_user_token),
+    limit: int = 50
+):
+    """Get transcript history for the authenticated user"""
+    try:
+        authenticated_user_id = user_auth.get("sub", "unknown")
+        
+        # Filter transcripts for this user
+        user_transcripts = [
+            transcript for transcript in transcript_storage.values()
+            if transcript["user_id"] == authenticated_user_id
+        ]
+        
+        # Sort by timestamp (newest first)
+        user_transcripts.sort(key=lambda x: x["timestamp"], reverse=True)
+        
+        # Apply limit
+        limited_transcripts = user_transcripts[:limit]
+        
+        return {
+            "transcripts": limited_transcripts,
+            "total": len(user_transcripts),
+            "showing": len(limited_transcripts),
+            "user_id": authenticated_user_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error retrieving transcripts: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve transcripts: {str(e)}")
 
 @app.post("/v1/chat", response_model=ChatResponse)
 async def chat(
@@ -468,7 +605,7 @@ async def debug_auth():
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Starting June Orchestrator v3.1.1 with FIXED authentication")
+    logger.info("🚀 Starting June Orchestrator v3.2.0 with transcript notifications")
     logger.info(f"TTS Service URL: {os.getenv('TTS_SERVICE_URL', 'not_configured')}")
     logger.info(f"Authentication: {'ENABLED' if SHARED_AUTH_AVAILABLE else 'DISABLED'}")
     

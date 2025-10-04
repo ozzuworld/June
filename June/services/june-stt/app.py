@@ -292,7 +292,7 @@ class OrchestratorClient:
                 headers["Authorization"] = f"Bearer {self.api_key}"
                 
             # Fix datetime serialization
-            notification_data = notification.dict()
+            notification_data = notification.model_dump()
             notification_data["timestamp"] = notification.timestamp.isoformat()
                 
             async with httpx.AsyncClient(timeout=30.0) as client:
