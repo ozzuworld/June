@@ -1,4 +1,4 @@
-name: 🚀 June Services Deploy (Simple)
+name: 🚀 June Services Deploy (Application Only)
 
 on:
   push:
@@ -232,7 +232,7 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT
+  # DEPLOYMENT (Application Services Only - No Infrastructure)
   # ============================================================================
 
   deploy:
@@ -251,51 +251,73 @@ jobs:
       - name: 📦 Checkout
         uses: actions/checkout@v4
 
-      - name: 🔍 Verify Kubernetes
+      - name: 🔍 Verify Infrastructure Prerequisites
         run: |
-          echo "🔍 Checking Kubernetes cluster..."
+          echo "🔍 Checking infrastructure prerequisites..."
+          
+          # Check cluster
           kubectl cluster-info
-          kubectl get nodes -o wide
           
-          echo ""
-          echo "🎮 GPU Status:"
-          kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU_CAPACITY:.status.allocatable.nvidia\.com/gpu'
-
-      - name: 🏗️ Create Namespace
-        run: |
-          kubectl get ns $NAMESPACE || kubectl create ns $NAMESPACE
-
-      - name: 🔐 Create Secrets
-        run: |
-          # Docker Hub secret
-          kubectl create secret docker-registry dockerhub-secret \
-            --docker-server=docker.io \
-            --docker-username='${{ secrets.DOCKERHUB_USERNAME }}' \
-            --docker-password='${{ secrets.DOCKERHUB_TOKEN }}' \
-            --docker-email='${{ secrets.DOCKERHUB_EMAIL }}' \
-            --namespace=$NAMESPACE \
-            --dry-run=client -o yaml | kubectl apply -f -
+          # Check namespace
+          if ! kubectl get ns $NAMESPACE &>/dev/null; then
+            echo "❌ Namespace $NAMESPACE doesn't exist!"
+            echo "   Run stage2-install-k8s-ubuntu.sh first"
+            exit 1
+          fi
           
-          # June secrets
+          # Check StorageClass
+          if ! kubectl get sc local-storage &>/dev/null; then
+            echo "❌ StorageClass 'local-storage' doesn't exist!"
+            echo "   Run stage2-install-k8s-ubuntu.sh first"
+            exit 1
+          fi
+          
+          # Check PVs
+          if ! kubectl get pv postgresql-pv &>/dev/null; then
+            echo "❌ PersistentVolume 'postgresql-pv' doesn't exist!"
+            echo "   Run stage2-install-k8s-ubuntu.sh first"
+            exit 1
+          fi
+          
+          # Check ingress controller
+          if ! kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller | grep -q Running; then
+            echo "❌ Ingress controller not running!"
+            echo "   Run stage2-install-k8s-ubuntu.sh first"
+            exit 1
+          fi
+          
+          # Check cert-manager
+          if ! kubectl get pods -n cert-manager | grep -q Running; then
+            echo "❌ cert-manager not running!"
+            echo "   Run stage2-install-k8s-ubuntu.sh first"
+            exit 1
+          fi
+          
+          echo "✅ All infrastructure prerequisites met!"
+
+      - name: 🔐 Update Application Secrets
+        run: |
+          echo "🔐 Updating application secrets..."
+          
+          # Create/update June secrets (application-level only)
           kubectl create secret generic june-secrets \
             --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
             --namespace=$NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "✅ Application secrets updated"
 
-      - name: 🎮 Label GPU Nodes
-        run: |
-          echo "🏷️ Labeling nodes for GPU workloads..."
-          for node in $(kubectl get nodes -o name); do
-            kubectl label $node gpu=true --overwrite || true
-          done
-
-      - name: 🗄️ Deploy PostgreSQL
+      - name: 🗄️ Deploy PostgreSQL (StatefulSet Only)
         run: |
           echo "🗄️ Deploying PostgreSQL..."
+          
+          # Only deploy the StatefulSet and Service (PV already exists from stage2)
           if ! kubectl get statefulset postgresql -n $NAMESPACE &>/dev/null; then
+            echo "Creating PostgreSQL StatefulSet..."
             kubectl apply -f k8s/postgresql-deployment.yaml
           else
-            echo "✅ PostgreSQL already exists"
+            echo "✅ PostgreSQL already exists, updating if needed..."
+            kubectl apply -f k8s/postgresql-deployment.yaml
           fi
           
           echo "⏳ Waiting for PostgreSQL..."
@@ -303,12 +325,14 @@ jobs:
             echo "⚠️ PostgreSQL not ready yet"
           }
 
-      - name: 🚀 Deploy Services with Wildcard Certificate
+      - name: 🚀 Deploy Application Services
         run: |
-          echo "🚀 Deploying June services with wildcard certificate support..."
+          echo "🚀 Deploying June application services..."
+          
+          # Deploy services (these reference the PVs created by stage2)
           kubectl apply -f k8s/complete-manifests.yaml
           
-          echo "✅ Services deployed with wildcard ingress"
+          echo "✅ Application services deployed"
 
       - name: ⏳ Wait for Deployments
         run: |
@@ -352,7 +376,7 @@ jobs:
           echo "🔐 Ingress:"
           kubectl get ingress -n $NAMESPACE
           echo ""
-          echo "🔒 Certificates (Wildcard):"
+          echo "🔒 Certificates:"
           kubectl get certificate -n $NAMESPACE
           echo ""
           
