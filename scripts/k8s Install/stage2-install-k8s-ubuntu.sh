@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup
+# Stage 2: Kubernetes + Infrastructure Setup (FIXED - Correct PV Paths)
 # Creates BOTH staging AND production issuers
 # Deployment chooses which one to use
 
@@ -8,6 +8,7 @@ set -e
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
 echo "   WITH DUAL ISSUER SUPPORT (Staging + Production)"
+echo "   FIXED: Correct PostgreSQL PV paths"
 echo "======================================================"
 
 # Colors
@@ -314,11 +315,12 @@ EOF
 fi
 
 # ============================================================================
-# STORAGE
+# STORAGE (FIXED - Correct paths matching deployment manifests)
 # ============================================================================
 
 log_info "Setting up storage..."
 
+# Create all required directories with correct paths
 mkdir -p /opt/june-postgresql-data
 mkdir -p /opt/june-stt-models
 mkdir -p /opt/june-tts-models
@@ -326,6 +328,7 @@ mkdir -p /opt/june-data
 
 chmod 755 /opt/june-*
 
+# Create StorageClass
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -336,29 +339,28 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 EOF
 
-for service in postgresql june-stt-models june-tts-models; do
-    size="10Gi"
-    if [ "$service" == "june-tts-models" ]; then
-        size="20Gi"
-    fi
-    
-    cat <<EOF | kubectl apply -f -
+log_success "StorageClass created!"
+
+# Create PersistentVolumes with correct paths
+# PostgreSQL PV - matches postgresql-deployment.yaml
+log_info "Creating PostgreSQL PV..."
+cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: ${service}-pv
+  name: postgresql-pv
   labels:
     type: local
-    app: ${service}
+    app: postgresql
 spec:
   capacity:
-    storage: ${size}
+    storage: 10Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
-    path: /opt/${service/june-/june-}
+    path: /opt/june-postgresql-data
   nodeAffinity:
     required:
       nodeSelectorTerms:
@@ -368,9 +370,66 @@ spec:
           values:
           - $(hostname)
 EOF
-done
 
-log_success "Storage configured!"
+# STT Models PV
+log_info "Creating STT models PV..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-stt-models-pv
+  labels:
+    type: local
+    app: june-stt-models
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-stt-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+# TTS Models PV
+log_info "Creating TTS models PV..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: june-tts-models-pv
+  labels:
+    type: local
+    app: june-tts-models
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-tts-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+log_success "Storage configured with correct paths!"
 
 # ============================================================================
 # GITHUB RUNNER
@@ -416,8 +475,13 @@ if [[ $SETUP_GPU == [yY] ]]; then
     echo "  • GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
 fi
 
-echo "  • Storage configured"
+echo "  • Storage configured (FIXED paths)"
 echo "  • GitHub runner ready"
+echo ""
+echo "Storage Paths Created:"
+echo "  • /opt/june-postgresql-data (10Gi)"
+echo "  • /opt/june-stt-models (10Gi)"
+echo "  • /opt/june-tts-models (20Gi)"
 echo ""
 echo "External IP: $EXTERNAL_IP"
 echo ""
