@@ -425,41 +425,28 @@ jobs:
           echo "✅ Application secrets updated"
 
       # ========================================================================
-      # Deploy PostgreSQL (StatefulSet Only)
+      # Deploy All Services (Single Complete Manifest)
       # ========================================================================
       
-      - name: 🗄️ Deploy PostgreSQL
+      - name: 🚀 Deploy All Services
         run: |
-          echo "🗄️ Deploying PostgreSQL..."
+          echo "🚀 Deploying all June services from complete manifest..."
           
-          # Deploy StatefulSet (PV already exists from stage2)
-          if ! kubectl get statefulset postgresql -n $NAMESPACE &>/dev/null; then
-            echo "Creating PostgreSQL StatefulSet..."
-            kubectl apply -f k8s/postgresql-deployment.yaml
-          else
-            echo "✅ PostgreSQL already exists, updating if needed..."
-            kubectl apply -f k8s/postgresql-deployment.yaml
-          fi
+          # Apply the single complete manifest (includes everything)
+          kubectl apply -f k8s/complete-manifests.yaml
           
-          echo "⏳ Waiting for PostgreSQL (max 3 minutes)..."
+          echo "✅ All services deployed"
+          echo ""
+          
+          # Wait specifically for PostgreSQL first (other services depend on it)
+          echo "⏳ Waiting for PostgreSQL to be ready..."
           kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
             echo "⚠️ PostgreSQL not ready yet, checking status..."
             kubectl get pods -l app=postgresql -n $NAMESPACE
             kubectl describe pod -l app=postgresql -n $NAMESPACE | tail -20
           }
-
-      # ========================================================================
-      # Deploy Application Services (FIXED - No duplicate PVs)
-      # ========================================================================
-      
-      - name: 🚀 Deploy Application Services
-        run: |
-          echo "🚀 Deploying June application services..."
           
-          # Use complete manifests (which references existing PVs)
-          kubectl apply -f k8s/complete-manifests.yaml
-          
-          echo "✅ Application services deployed"
+          echo "✅ PostgreSQL is ready"
 
       # ========================================================================
       # Wait for Deployments (FIXED - Better timeout handling)
