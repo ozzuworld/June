@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (WITH INTERACTIVE DOMAIN CONFIG)
+# Stage 2: Kubernetes + Infrastructure Setup (WITH GEMINI API KEY + INTERACTIVE DOMAIN CONFIG)
 # This creates ALL infrastructure that deployments depend on
 
 set -e
@@ -7,6 +7,7 @@ set -e
 echo "======================================================"
 echo "🚀 Stage 2: Complete Kubernetes Infrastructure Setup"
 echo "   ✅ Interactive domain configuration"
+echo "   ✅ Gemini API key configuration"
 echo "   ✅ Proper GPU time-slicing activation"
 echo "   ✅ Certificate backup/restore support"
 echo "   ✅ Post-install validation"
@@ -56,6 +57,29 @@ TTS_DOMAIN="${TTS_SUBDOMAIN}.${PRIMARY_DOMAIN}"
 WILDCARD_DOMAIN="*.${PRIMARY_DOMAIN}"
 
 echo ""
+log_info "🔑 API Keys Configuration"
+echo ""
+prompt "Gemini API Key (get from: https://makersuite.google.com/app/apikey)" GEMINI_API_KEY ""
+
+if [ -z "$GEMINI_API_KEY" ]; then
+    log_error "Gemini API key is required for june-orchestrator!"
+    echo ""
+    echo "Get your API key from: https://makersuite.google.com/app/apikey"
+    echo "The orchestrator service will not work without this."
+    exit 1
+fi
+
+# Validate API key format (basic check)
+if [ ${#GEMINI_API_KEY} -lt 20 ]; then
+    log_warning "API key seems unusually short (${#GEMINI_API_KEY} characters)"
+    read -p "Continue anyway? (y/n): " continue_short
+    [[ $continue_short != [yY] ]] && exit 1
+fi
+
+# Mask the key for display
+MASKED_GEMINI_KEY="${GEMINI_API_KEY:0:6}...${GEMINI_API_KEY: -4}"
+
+echo ""
 log_info "🔧 Infrastructure Configuration"
 prompt "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 prompt "Setup GPU Operator? (y/n)" SETUP_GPU "y"
@@ -83,6 +107,9 @@ echo "  API: ${API_DOMAIN}"
 echo "  IDP: ${IDP_DOMAIN}"
 echo "  STT: ${STT_DOMAIN}"
 echo "  TTS: ${TTS_DOMAIN}"
+echo ""
+echo "🔑 API Keys:"
+echo "  Gemini API Key: ${MASKED_GEMINI_KEY}"
 echo ""
 echo "🔧 Infrastructure:"
 echo "  Pod Network: ${POD_NETWORK_CIDR}"
@@ -123,6 +150,9 @@ STT_DOMAIN=${STT_DOMAIN}
 TTS_DOMAIN=${TTS_DOMAIN}
 WILDCARD_DOMAIN=${WILDCARD_DOMAIN}
 CERT_SECRET_NAME=${PRIMARY_DOMAIN//./-}-wildcard-tls
+
+# API Keys (for manual deployments)
+GEMINI_API_KEY=${GEMINI_API_KEY}
 EOF
 
 chmod 600 "${DOMAIN_CONFIG_FILE}"
@@ -317,6 +347,32 @@ log_success "ClusterIssuers created!"
 log_info "Creating june-services namespace..."
 kubectl create namespace june-services || log_warning "Namespace june-services already exists"
 log_success "Namespace ready!"
+
+# ============================================================================
+# APPLICATION SECRETS (INCLUDING GEMINI API KEY)
+# ============================================================================
+
+log_info "Creating application secrets with Gemini API key..."
+
+kubectl create secret generic june-secrets \
+    --from-literal=gemini-api-key="$GEMINI_API_KEY" \
+    --from-literal=keycloak-client-secret="PLACEHOLDER" \
+    --namespace=june-services \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+log_success "Application secrets created!"
+
+# Verify the secret was created correctly
+log_info "Verifying Gemini API key in secret..."
+STORED_KEY=$(kubectl get secret june-secrets -n june-services -o jsonpath='{.data.gemini-api-key}' | base64 -d 2>/dev/null || echo "")
+
+if [ -n "$STORED_KEY" ] && [ ${#STORED_KEY} -ge 20 ]; then
+    log_success "Gemini API key successfully stored in Kubernetes secret"
+    echo "  Key length: ${#STORED_KEY} characters"
+else
+    log_error "Failed to store Gemini API key correctly!"
+    exit 1
+fi
 
 # ============================================================================
 # CERTIFICATE BACKUP RESTORE (WITH DYNAMIC DOMAIN)
@@ -595,7 +651,73 @@ log_info "Running Post-Install Verification..."
 echo "======================================================"
 echo ""
 
-# ... (verification checks remain the same)
+# Check cluster
+log_info "Checking Kubernetes cluster..."
+if kubectl cluster-info &>/dev/null; then
+    log_success "Cluster is accessible"
+else
+    log_error "Cluster not accessible!"
+fi
+
+# Check namespace
+if kubectl get namespace june-services &>/dev/null; then
+    log_success "Namespace 'june-services' exists"
+else
+    log_error "Namespace not found!"
+fi
+
+# Check storage
+log_info "Checking storage..."
+if kubectl get sc local-storage &>/dev/null; then
+    log_success "StorageClass exists"
+else
+    log_error "StorageClass not found!"
+fi
+
+if kubectl get pv postgresql-pv &>/dev/null; then
+    log_success "PostgreSQL PV exists"
+else
+    log_error "PostgreSQL PV not found!"
+fi
+
+# Check ingress
+log_info "Checking ingress controller..."
+INGRESS_READY=$(kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+if [ "$INGRESS_READY" = "True" ]; then
+    log_success "Ingress controller is running"
+else
+    log_warning "Ingress controller not ready yet"
+fi
+
+# Check cert-manager
+log_info "Checking cert-manager..."
+CERT_MANAGER_READY=$(kubectl get pods -n cert-manager -l app.kubernetes.io/instance=cert-manager -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+if [ "$CERT_MANAGER_READY" = "True" ]; then
+    log_success "cert-manager is running"
+else
+    log_warning "cert-manager not ready yet"
+fi
+
+# Check GPU
+if [[ $SETUP_GPU == [yY] ]]; then
+    log_info "Checking GPU availability..."
+    GPU_ALLOCATABLE=$(kubectl get nodes -o json | jq -r '.items[].status.allocatable."nvidia.com/gpu" // "0"' | head -1)
+    
+    if [ "$GPU_ALLOCATABLE" -ge "$GPU_REPLICAS" ]; then
+        log_success "GPU time-slicing active: $GPU_ALLOCATABLE virtual GPUs"
+    else
+        log_warning "GPU showing $GPU_ALLOCATABLE (expected $GPU_REPLICAS)"
+    fi
+fi
+
+# Check Gemini API key secret
+log_info "Verifying Gemini API key in secret..."
+STORED_KEY_CHECK=$(kubectl get secret june-secrets -n june-services -o jsonpath='{.data.gemini-api-key}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+if [ -n "$STORED_KEY_CHECK" ] && [ ${#STORED_KEY_CHECK} -ge 20 ]; then
+    log_success "Gemini API key present in secret (${#STORED_KEY_CHECK} chars)"
+else
+    log_error "Gemini API key missing or invalid in secret!"
+fi
 
 # Check certificate backup status
 echo ""
@@ -630,6 +752,7 @@ fi
 echo "  ✅ Storage infrastructure"
 echo "  ✅ june-services namespace"
 echo "  ✅ Domain configuration saved"
+echo "  ✅ Gemini API key configured"
 
 if [ -f "$BACKUP_FILE" ]; then
     echo "  ✅ Certificate restored from backup"
@@ -644,6 +767,9 @@ echo "  API: ${API_DOMAIN}"
 echo "  IDP: ${IDP_DOMAIN}"
 echo "  STT: ${STT_DOMAIN}"
 echo "  TTS: ${TTS_DOMAIN}"
+echo ""
+echo "🔑 API Keys:"
+echo "  Gemini: ${MASKED_GEMINI_KEY} ✅"
 echo ""
 echo "📁 Configuration Files:"
 echo "  Domain config: ${DOMAIN_CONFIG_FILE}"

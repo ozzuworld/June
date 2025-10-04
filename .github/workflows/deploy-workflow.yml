@@ -64,7 +64,24 @@ jobs:
             SERVICES="all"
           fi
           
-          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
+          echo "📈 Summary:"
+          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
+          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
+          echo "  Pending: $PENDING"
+          echo "  Failed: $FAILED"
+          echo "======================================================"
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "❌ Deployment completed with errors!"
+            exit 1
+          elif [ "$PENDING" -gt 0 ]; then
+            echo ""
+            echo "⚠️  Deployment completed with pending pods"
+          else
+            echo ""
+            echo "✅ Deployment successful!"
+          fi "build_images=$BUILD" >> $GITHUB_OUTPUT
           echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
           echo "services=$SERVICES" >> $GITHUB_OUTPUT
           
@@ -107,7 +124,7 @@ jobs:
           fi
 
   # ============================================================================
-  # BUILD IMAGES (unchanged)
+  # BUILD IMAGES
   # ============================================================================
 
   build-stt:
@@ -271,7 +288,7 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT (WITH DYNAMIC DOMAIN CONFIGURATION)
+  # DEPLOYMENT (WITH DYNAMIC DOMAIN CONFIGURATION + GEMINI API KEY)
   # ============================================================================
 
   deploy:
@@ -454,7 +471,7 @@ jobs:
           # Create a temporary manifest with domain substitution
           cp k8s/complete-manifests.yaml /tmp/deployment-manifest.yaml
           
-          # Replace domain placeholders (if template exists) or directly modify
+          # Replace domain placeholders
           sed -i "s/KC_HOSTNAME_VALUE/${IDP_DOMAIN}/g" /tmp/deployment-manifest.yaml || true
           sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/deployment-manifest.yaml
           sed -i "s/\*.allsafe.world/*.${PRIMARY_DOMAIN}/g" /tmp/deployment-manifest.yaml
@@ -466,19 +483,66 @@ jobs:
           echo "✅ Manifest generated with configured domains"
 
       # ========================================================================
-      # Update Application Secrets
+      # Update Application Secrets (INCLUDING GEMINI API KEY)
       # ========================================================================
       
       - name: 🔐 Update Application Secrets
         run: |
-          echo "🔐 Updating application secrets..."
+          echo "🔐 Updating application secrets with Gemini API key..."
           
+          # Verify we have the Gemini API key from GitHub secrets
+          if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "❌ ERROR: GEMINI_API_KEY not set in GitHub secrets!"
+            echo ""
+            echo "To fix this:"
+            echo "  1. Go to: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "  2. Click 'New repository secret'"
+            echo "  3. Name: GEMINI_API_KEY"
+            echo "  4. Value: Your actual Gemini API key from https://makersuite.google.com/app/apikey"
+            echo "  5. Click 'Add secret'"
+            echo ""
+            exit 1
+          fi
+          
+          # Validate key length (basic check)
+          KEY_LENGTH=$(echo -n "${{ secrets.GEMINI_API_KEY }}" | wc -c)
+          if [ "$KEY_LENGTH" -lt 20 ]; then
+            echo "⚠️  WARNING: Gemini API key seems too short ($KEY_LENGTH characters)"
+            echo "   Please verify your key is correct"
+          else
+            echo "✅ Gemini API key validated ($KEY_LENGTH characters)"
+          fi
+          
+          # Update the shared june-secrets (used by orchestrator)
           kubectl create secret generic june-secrets \
             --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
+            --from-literal=keycloak-client-secret='PLACEHOLDER' \
             --namespace=$NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
           
-          echo "✅ Application secrets updated"
+          echo "✅ Application secrets updated with Gemini API key"
+          
+          # Verify the secret was created correctly
+          echo ""
+          echo "🔍 Verifying secret..."
+          if kubectl get secret june-secrets -n $NAMESPACE &>/dev/null; then
+            echo "✅ june-secrets exists"
+            
+            # Check if gemini-api-key is present (without showing the value)
+            STORED_KEY=$(kubectl get secret june-secrets -n $NAMESPACE -o jsonpath='{.data.gemini-api-key}' | base64 -d 2>/dev/null || echo "")
+            STORED_LENGTH=${#STORED_KEY}
+            
+            if [ "$STORED_LENGTH" -ge 20 ]; then
+              echo "✅ gemini-api-key is present in secret ($STORED_LENGTH characters)"
+              echo "   Masked key: ${STORED_KEY:0:6}...${STORED_KEY: -4}"
+            else
+              echo "❌ gemini-api-key is missing or invalid (length: $STORED_LENGTH)!"
+              exit 1
+            fi
+          else
+            echo "❌ june-secrets not found!"
+            exit 1
+          fi
 
       # ========================================================================
       # Deploy All Services
@@ -547,6 +611,50 @@ jobs:
           wait_for_deployment "june-tts" 600 "Text-to-Speech (GPU service)" || true
 
       # ========================================================================
+      # Verify Gemini API Key in Orchestrator
+      # ========================================================================
+      
+      - name: ✅ Verify Gemini API Key Configuration
+        run: |
+          echo "🔍 Verifying Gemini API key in june-orchestrator..."
+          echo ""
+          
+          # Wait a bit for orchestrator to start
+          sleep 10
+          
+          # Check orchestrator logs for Gemini initialization
+          echo "Checking orchestrator logs..."
+          LOGS=$(kubectl logs -l app=june-orchestrator -n $NAMESPACE --tail=100 2>/dev/null || echo "")
+          
+          if echo "$LOGS" | grep -q "✅ Gemini AI service ready"; then
+            echo "✅ SUCCESS: Gemini AI service is ready and configured!"
+            echo ""
+            echo "   Gemini API key is working correctly"
+          elif echo "$LOGS" | grep -q "❌ GEMINI_API_KEY not set"; then
+            echo "❌ ERROR: Gemini API key not detected in orchestrator!"
+            echo ""
+            echo "Recent logs:"
+            echo "$LOGS" | tail -20
+            echo ""
+            echo "This deployment will continue, but orchestrator won't work properly."
+            echo "Please check GitHub secrets configuration."
+          elif echo "$LOGS" | grep -q "⚠️ Gemini AI service not ready"; then
+            echo "⚠️  WARNING: Gemini initialization in progress or failed"
+            echo ""
+            echo "Recent logs:"
+            echo "$LOGS" | tail -20
+          else
+            echo "⚠️  Could not determine Gemini status from logs"
+            echo ""
+            echo "Recent logs:"
+            echo "$LOGS" | tail -20
+          fi
+          
+          echo ""
+          echo "📋 Full orchestrator status:"
+          kubectl describe pod -l app=june-orchestrator -n $NAMESPACE | grep -A 5 "Environment:"
+
+      # ========================================================================
       # Deployment Summary
       # ========================================================================
       
@@ -575,6 +683,15 @@ jobs:
           echo "  IDP: https://${IDP_DOMAIN}"
           echo "  STT: https://${STT_DOMAIN}"
           echo "  TTS: https://${TTS_DOMAIN}"
+          echo ""
+          
+          echo "🔑 API Keys Status:"
+          GEMINI_CONFIGURED=$(kubectl get secret june-secrets -n $NAMESPACE -o jsonpath='{.data.gemini-api-key}' 2>/dev/null | base64 -d 2>/dev/null | wc -c)
+          if [ "$GEMINI_CONFIGURED" -ge 20 ]; then
+            echo "  ✅ Gemini API Key: Configured ($GEMINI_CONFIGURED chars)"
+          else
+            echo "  ❌ Gemini API Key: Missing or invalid"
+          fi
           echo ""
           
           echo "🚀 Deployments:"
@@ -621,21 +738,4 @@ jobs:
           RUNNING_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers | wc -l)
           TOTAL_PODS=$(kubectl get pods -n $NAMESPACE --no-headers | wc -l)
           
-          echo "📈 Summary:"
-          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
-          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
-          echo "  Pending: $PENDING"
-          echo "  Failed: $FAILED"
-          echo "======================================================"
-          
-          if [ "$FAILED" -gt 0 ]; then
-            echo ""
-            echo "❌ Deployment completed with errors!"
-            exit 1
-          elif [ "$PENDING" -gt 0 ]; then
-            echo ""
-            echo "⚠️  Deployment completed with pending pods"
-          else
-            echo ""
-            echo "✅ Deployment successful!"
-          fi
+          echo
