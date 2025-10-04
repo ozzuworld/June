@@ -1,13 +1,12 @@
 #!/bin/bash
-# Stage 2: Kubernetes + Infrastructure Setup (FIXED WILDCARD CERT SUPPORT)
+# Stage 2: Kubernetes + Infrastructure Setup with PRODUCTION WILDCARD CERTS
 # Run this AFTER stage1-runner-only.sh
-# This prepares the cluster so CI/CD can deploy without GPU issues
 
 set -e
 
 echo "======================================================"
 echo "🚀 Stage 2: Kubernetes Infrastructure Setup"
-echo "   WITH WILDCARD CERTIFICATES & GPU TIME-SLICING"
+echo "   WITH PRODUCTION WILDCARD CERTIFICATES"
 echo "======================================================"
 
 # Colors
@@ -41,48 +40,12 @@ log_info "Configuration"
 prompt "Pod network CIDR" POD_NETWORK_CIDR "10.244.0.0/16"
 prompt "Setup GPU Operator? (y/n)" SETUP_GPU "y"
 prompt "GPU time-slicing replicas (2-8)" GPU_REPLICAS "2"
-echo ""
-log_warning "⚠️  IMPORTANT: Let's Encrypt Rate Limits"
-echo "  - Production: 5 certs per domain set per week"
-echo "  - Staging: Unlimited (but shows as untrusted)"
-echo "  - Use STAGING for testing, switch to PRODUCTION when stable"
-echo ""
-prompt "Use Let's Encrypt STAGING or PRODUCTION? (staging/production)" CERT_ENV "staging"
 prompt "Let's Encrypt email" LETSENCRYPT_EMAIL ""
+prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
 
-# NEW: Wildcard certificate option
-echo ""
-log_info "🌟 WILDCARD CERTIFICATE OPTION"
-echo "  ✅ Wildcard (*.allsafe.world) = UNLIMITED subdomains, NO rate limits"
-echo "  ✅ Individual domains = Rate limits apply (5 per week max)"
-echo ""
-prompt "Enable wildcard certificate? (y/n)" ENABLE_WILDCARD "y"
-
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo ""
-    log_info "📋 Cloudflare API Token Required:"
-    echo "  1. Go to: https://dash.cloudflare.com/profile/api-tokens"
-    echo "  2. Create Token > Edit Zone DNS template"
-    echo "  3. Permissions: Zone:DNS:Edit, Zone:Zone:Read"
-    echo "  4. Zone Resources: allsafe.world"
-    echo ""
-    prompt "Cloudflare API Token for allsafe.world" CF_API_TOKEN ""
-    
-    if [ -z "$CF_API_TOKEN" ]; then
-        log_error "Cloudflare API token required for wildcard certificates!"
-        exit 1
-    fi
-fi
-
-# FIXED: Set the correct ACME server AND issuer name based on choice
-if [[ $CERT_ENV == "production" ]]; then
-    ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory"
-    ISSUER_NAME="letsencrypt-prod"
-    log_warning "⚠️  Using PRODUCTION - counts against rate limits!"
-else
-    ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
-    ISSUER_NAME="letsencrypt-staging"
-    log_success "✅ Using STAGING - unlimited testing, certs show as untrusted"
+if [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
+    log_error "Email and Cloudflare API token are required!"
+    exit 1
 fi
 
 echo ""
@@ -90,14 +53,9 @@ echo "📋 Summary:"
 echo "  Pod Network: $POD_NETWORK_CIDR"
 echo "  GPU: $SETUP_GPU"
 echo "  GPU Replicas: $GPU_REPLICAS"
-echo "  Certificate Environment: $CERT_ENV"
-echo "  Wildcard Enabled: $ENABLE_WILDCARD"
-echo "  ACME Server: $ACME_SERVER"
-echo "  Issuer Name: $ISSUER_NAME"
+echo "  Certificate: PRODUCTION WILDCARD"
 echo "  Email: $LETSENCRYPT_EMAIL"
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
-fi
+echo "  Cloudflare Token: ${CF_API_TOKEN:0:10}..."
 echo ""
 
 read -p "Continue? (y/n): " confirm
@@ -124,7 +82,6 @@ if ! command -v docker &> /dev/null; then
     apt-get install -y docker-ce docker-ce-cli containerd.io
 fi
 
-# Configure containerd
 systemctl stop containerd
 mkdir -p /etc/containerd
 containerd config default > /etc/containerd/config.toml
@@ -138,7 +95,6 @@ systemctl enable containerd
 
 log_info "Installing Kubernetes..."
 
-# Kernel modules
 modprobe br_netfilter
 cat <<EOF | tee /etc/modules-load.d/k8s.conf
 br_netfilter
@@ -151,7 +107,6 @@ net.ipv4.ip_forward = 1
 EOF
 sysctl --system
 
-# Install K8s components
 rm -f /etc/apt/sources.list.d/kubernetes.list
 mkdir -p /etc/apt/keyrings
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
@@ -160,32 +115,27 @@ apt-get update -qq
 apt-get install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
 
-# Initialize cluster
 log_info "Initializing Kubernetes..."
 INTERNAL_IP=$(hostname -I | awk '{print $1}')
 kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR --apiserver-advertise-address=$INTERNAL_IP --cri-socket=unix:///var/run/containerd/containerd.sock
 
-# Setup kubeconfig
 mkdir -p /root/.kube
 cp /etc/kubernetes/admin.conf /root/.kube/config
 chown root:root /root/.kube/config
 
-# Install Flannel
 log_info "Installing Flannel..."
 kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
 
-# Untaint node
 kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
 kubectl taint nodes --all node-role.kubernetes.io/master- || true
 
-# Wait for ready
 log_info "Waiting for cluster..."
 kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
 log_success "Kubernetes ready!"
 
 # ============================================================================
-# INGRESS-NGINX (hostNetwork for VM)
+# INGRESS-NGINX
 # ============================================================================
 
 log_info "Installing ingress-nginx..."
@@ -193,7 +143,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/cont
 
 sleep 15
 
-log_info "Enabling hostNetwork (direct port 80/443 access)..."
+log_info "Enabling hostNetwork..."
 kubectl patch deployment ingress-nginx-controller \
     -n ingress-nginx \
     --type='json' \
@@ -226,38 +176,27 @@ kubectl wait --for=condition=ready pod \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# LET'S ENCRYPT ISSUER (FIXED - WITH PROPER WILDCARD SUPPORT)
+# PRODUCTION WILDCARD CERTIFICATE ISSUER
 # ============================================================================
 
-if [ -n "$LETSENCRYPT_EMAIL" ]; then
-    log_info "Creating Let's Encrypt issuer ($CERT_ENV)..."
-    
-    if [[ $CERT_ENV == "staging" ]]; then
-        log_warning "📝 Note: Staging certificates will show as UNTRUSTED in browsers"
-        log_info "This is NORMAL for testing - switch to production when ready"
-    else
-        log_warning "⚠️  Using PRODUCTION - you have 5 attempts per week per domain set!"
-    fi
-    
-    if [[ $ENABLE_WILDCARD == [yY] ]] && [ -n "$CF_API_TOKEN" ]; then
-        log_info "Creating Cloudflare API secret..."
-        kubectl create secret generic cloudflare-api-token \
-            --from-literal=api-token="$CF_API_TOKEN" \
-            --namespace=cert-manager \
-            --dry-run=client -o yaml | kubectl apply -f -
-        
-        log_info "Creating DNS-01 ClusterIssuer: $ISSUER_NAME (wildcard enabled)..."
-        cat <<EOF | kubectl apply -f -
+log_info "Creating Cloudflare API secret..."
+kubectl create secret generic cloudflare-api-token \
+    --from-literal=api-token="$CF_API_TOKEN" \
+    --namespace=cert-manager \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+log_info "Creating PRODUCTION ClusterIssuer with DNS-01 wildcard support..."
+cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: ${ISSUER_NAME}
+  name: letsencrypt-prod
 spec:
   acme:
-    server: ${ACME_SERVER}
-    email: ${LETSENCRYPT_EMAIL}
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: $LETSENCRYPT_EMAIL
     privateKeySecretRef:
-      name: ${ISSUER_NAME}
+      name: letsencrypt-prod
     solvers:
     - dns01:
         cloudflare:
@@ -269,48 +208,16 @@ spec:
         - "allsafe.world"
         - "*.allsafe.world"
 EOF
-        
-        log_success "Wildcard ClusterIssuer '${ISSUER_NAME}' created with DNS-01!"
-        echo ""
-        log_info "🌟 Wildcard Benefits:"
-        echo "  • *.allsafe.world covers ALL current and future subdomains"
-        echo "  • No more rate limit concerns for new services"
-        echo "  • Perfect for your 'nuke daily' workflow"
-        
-    else
-        log_info "Creating HTTP-01 ClusterIssuer: $ISSUER_NAME (individual domains)..."
-        cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: ${ISSUER_NAME}
-spec:
-  acme:
-    server: ${ACME_SERVER}
-    email: ${LETSENCRYPT_EMAIL}
-    privateKeySecretRef:
-      name: ${ISSUER_NAME}
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOF
-        
-        log_success "Standard ClusterIssuer '${ISSUER_NAME}' created with HTTP-01!"
-    fi
-    
-else
-    log_warning "No email provided - skipping Let's Encrypt setup"
-fi
+
+log_success "PRODUCTION wildcard ClusterIssuer created!"
 
 # ============================================================================
-# GPU OPERATOR WITH PROPER TIME-SLICING
+# GPU OPERATOR
 # ============================================================================
 
 if [[ $SETUP_GPU == [yY] ]]; then
     log_info "Installing GPU Operator with time-slicing..."
     
-    # Install Helm
     if ! command -v helm &> /dev/null; then
         snap install helm --classic || {
             cd /tmp
@@ -340,9 +247,7 @@ if [[ $SETUP_GPU == [yY] ]]; then
     
     log_success "GPU Operator installed!"
     
-    # GPU Time-slicing setup
-    log_info "Configuring GPU time-slicing (1 GPU → $GPU_REPLICAS virtual GPUs)..."
-    
+    log_info "Configuring GPU time-slicing..."
     sleep 30
     
     cat <<EOF | kubectl apply -f -
@@ -369,11 +274,10 @@ EOF
         -p '{"spec": {"devicePlugin": {"config": {"name": "time-slicing-config", "default": "any"}}}}'
     
     log_success "GPU time-slicing configured!"
-    
 fi
 
 # ============================================================================
-# STORAGE SETUP
+# STORAGE
 # ============================================================================
 
 log_info "Setting up storage..."
@@ -395,7 +299,6 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 EOF
 
-# Create all PVs
 for service in postgresql june-stt-models june-tts-models; do
     size="10Gi"
     if [ "$service" == "june-tts-models" ]; then
@@ -433,7 +336,7 @@ done
 log_success "Storage configured!"
 
 # ============================================================================
-# GITHUB RUNNER SETUP
+# GITHUB RUNNER
 # ============================================================================
 
 log_info "Configuring GitHub runner..."
@@ -448,10 +351,10 @@ EOF
         systemctl restart actions.runner.*
         log_success "GitHub runner configured and restarted"
     else
-        log_success "GitHub runner configured (will apply on next start)"
+        log_success "GitHub runner configured"
     fi
 else
-    log_warning "GitHub runner not found - configure manually later"
+    log_warning "GitHub runner not found"
 fi
 
 # ============================================================================
@@ -469,14 +372,7 @@ echo "✅ Infrastructure Ready:"
 echo "  • Kubernetes cluster"
 echo "  • ingress-nginx (hostNetwork mode)"
 echo "  • cert-manager"
-
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "  • Let's Encrypt issuer: $ISSUER_NAME (WILDCARD enabled)"
-    echo "  • DNS-01 challenge with Cloudflare"
-else
-    echo "  • Let's Encrypt issuer: $ISSUER_NAME (individual domains)"
-    echo "  • HTTP-01 challenge"
-fi
+echo "  • letsencrypt-prod ClusterIssuer (WILDCARD DNS-01)"
 
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  • GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
@@ -490,42 +386,16 @@ echo ""
 echo "📋 Next Steps:"
 echo ""
 echo "  1. Configure DNS to point to $EXTERNAL_IP:"
-
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "     • *.allsafe.world (wildcard record)"
-    echo "     • allsafe.world (root domain)"
-else
-    echo "     • api.allsafe.world"
-    echo "     • idp.allsafe.world"
-    echo "     • stt.allsafe.world"
-    echo "     • tts.allsafe.world"
-fi
-
+echo "     • *.allsafe.world (wildcard record)"
+echo "     • allsafe.world (root domain)"
 echo ""
-echo "  2. Apply ingress configuration:"
-echo "     kubectl apply -f scripts/k8s Install/k8s-ingress-complete.yaml"
+echo "  2. Push to GitHub to trigger deployment"
 echo ""
-echo "  3. Push to GitHub to trigger deployment"
+echo "🌟 Wildcard Benefits:"
+echo "   • One certificate covers unlimited subdomains"
+echo "   • No rate limit concerns"
+echo "   • Production-ready certificates"
 echo ""
-
-if [[ $CERT_ENV == "staging" ]]; then
-    echo "💡 Note: Using STAGING certificates (will show as untrusted)"
-    echo "   This is PERFECT for testing. Switch to production when stable."
-    echo ""
-fi
-
-if [[ $ENABLE_WILDCARD == [yY] ]]; then
-    echo "🌟 Wildcard Benefits:"
-    echo "   • One certificate covers unlimited subdomains"
-    echo "   • No rate limit concerns"
-    echo "   • Perfect for frequent deployments"
-    echo ""
-fi
-
 echo "✅ Ready for deployment!"
-echo ""
-echo "🔍 Verify ClusterIssuer was created:"
-echo "   kubectl get clusterissuer"
-echo "   kubectl describe clusterissuer $ISSUER_NAME"
 echo ""
 echo "===================================================="
