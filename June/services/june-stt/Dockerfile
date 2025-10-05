@@ -1,50 +1,73 @@
-# Use official NVIDIA CUDA base image with cuDNN (recommended by faster-whisper docs)
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+# ===== MULTI-STAGE BUILD FOR MINIMAL IMAGE =====
 
-# Install system dependencies
+# Stage 1: Build stage with full tools
+FROM python:3.11-slim as builder
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-dev \
-    ffmpeg \
-    libsndfile1 \
-    curl \
+    build-essential \
+    gcc \
+    g++ \
+    cmake \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy and install Python dependencies
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ===== Stage 2: Production runtime (minimal) =====
+FROM python:3.11-slim as runtime
+
+# Install only runtime dependencies (no build tools)
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean \
+    && rm -rf /tmp/* /var/tmp/*
+
+# Create non-root user for security
+RUN groupadd -r stt && useradd -r -g stt -u 1001 stt
+
+# Copy virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy application code (only what's needed)
+COPY --chown=stt:stt config.py .
+COPY --chown=stt:stt whisper_service.py .
+COPY --chown=stt:stt orchestrator_client.py .
+COPY --chown=stt:stt app.py .
 
-# Install Python dependencies with NVIDIA CUDA libraries
-RUN python3 -m pip install --no-cache-dir --upgrade pip
-RUN python3 -m pip install --no-cache-dir nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
+# Create directories with proper permissions
+RUN mkdir -p /app/models /tmp && \
+    chown -R stt:stt /app /tmp
 
-# Set LD_LIBRARY_PATH for NVIDIA libraries (from official docs)
-ENV LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib
+# Switch to non-root user
+USER stt
 
-# Create directories
-RUN mkdir -p /app/models /app/cache /tmp
-RUN chmod 777 /app/models /app/cache /tmp
-
-# Copy application code
-COPY . .
-
-# Create non-root user
-RUN useradd -m -u 1000 june && \
-    chown -R june:june /app
-USER june
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
-
+# Expose port
 EXPOSE 8080
 
-# Environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+# Health check (optimized)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1
 
-# Start the service
-CMD ["python3", "app.py"]
+# Set environment variables for optimization
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    OMP_NUM_THREADS=4
+
+# Run application
+CMD ["python", "app.py"]
