@@ -1,31 +1,21 @@
-from fastapi import HTTPException, status, UploadFile
-from app.core.config import settings
-import magic
+"""
+Utility functions for file handling.
 
-async def validate_audio_file(file: UploadFile):
-    """Validate uploaded audio file"""
-    
-    # Check file size
-    if file.size and file.size > settings.max_file_size:
-        raise ValueError(f"File too large. Maximum size: {settings.max_file_size // 1024 // 1024}MB")
-    
-    # Check file extension
-    if not file.filename:
-        raise ValueError("Filename is required")
-    
-    extension = file.filename.split('.')[-1].lower()
-    if extension not in settings.allowed_audio_formats:
-        raise ValueError(f"Unsupported format. Allowed: {', '.join(settings.allowed_audio_formats)}")
-    
-    # Reset file pointer
-    await file.seek(0)
-    
-    # Check file content (basic validation)
-    file_content = await file.read(1024)  # Read first 1KB
-    await file.seek(0)  # Reset pointer
-    
-    # Basic audio format validation
-    if len(file_content) < 100:
-        raise ValueError("File appears to be too small to be a valid audio file")
-    
-    return True
+Currently unused in the simplified API. Left here for future extensions.
+"""
+
+from fastapi import UploadFile, HTTPException, status
+from ..core.config import settings
+
+
+async def validate_audio_file(file: UploadFile) -> None:
+    """
+    Validate an uploaded audio file against size and extension constraints.
+
+    Raises an HTTPException if the file is invalid.
+    """
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename else ""
+    if ext not in settings.allowed_audio_formats:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported audio format")
+    if file.size is not None and file.size > settings.max_file_size:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File too large")

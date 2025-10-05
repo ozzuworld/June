@@ -1,65 +1,73 @@
-from typing import AsyncIterator, Optional
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict, HttpUrl
+"""
+Routers for the text‑to‑speech endpoints.
 
-try:
-    from shared import require_service_auth
-    AUTH_AVAILABLE = True
-except ImportError:
-    AUTH_AVAILABLE = False
-    def require_service_auth():
-        return {"client_id": "fallback", "authenticated": True}
+This module exposes a single POST endpoint that accepts text and returns
+speech audio encoded as WAV. A simple GET endpoint lists the supported base
+voices (currently just the default speaker of the MeloTTS model).
+"""
 
-from app.core.openvoice_engine import synthesize_v2_to_wav_path
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import Response
+from pydantic import BaseModel
 
-router = APIRouter(prefix="/tts", tags=["tts"])
+from ..core import openvoice_engine
 
-class TTSRequest(BaseModel):
-    speaker_id: int | None = None
-    model_config = ConfigDict(extra="ignore")
+router = APIRouter(prefix="/tts", tags=["TTS"])
+
+
+class TtsRequest(BaseModel):
     text: str
-    reference_b64: Optional[str] = None       # WAV/MP3/FLAC/OGG/etc (base64-encoded bytes)
-    reference_url: Optional[HttpUrl] = None   # will be downloaded server-side
-    voice_id: str = "base"                    # kept for API consistency; Melo pack selects actual voice
-    language: str = "en"                      # en, es, fr, zh, ja, ko
-    format: str = "wav"                       # output container (fixed to wav for now)
+    language: str = "EN"
     speed: float = 1.0
-    volume: float = 1.0
-    pitch: float = 0.0
-    metadata: dict = Field(default_factory=dict)
 
-async def _file_stream(path: str) -> AsyncIterator[bytes]:
-    chunk = 64 * 1024
-    with open(path, "rb") as f:
-        while True:
-            data = f.read(chunk)
-            if not data:
-                break
-            yield data
 
-@router.post("/generate")
-async def generate(
-    req: TTSRequest,
-    service_auth: dict = Depends(require_service_auth) if AUTH_AVAILABLE else None
-):
-    # Guard clauses
-    if not req.text or len(req.text.strip()) == 0:
-        raise HTTPException(status_code=400, detail="text is required")
-    if req.format.lower() != "wav":
-        raise HTTPException(status_code=415, detail="Only wav output is supported")
-    if not (req.reference_b64 or req.reference_url):
-        raise HTTPException(status_code=400, detail="Provide reference_b64 or reference_url for cloning")
+@router.post("/voice", response_class=Response)
+async def synthesize(request: TtsRequest) -> Response:
+    """
+    Generate speech from text.
 
-    wav_path = await synthesize_v2_to_wav_path(
-        text=req.text.strip(),
-        language=req.language.strip().lower(),
-        reference_b64=req.reference_b64,
-        reference_url=str(req.reference_url) if req.reference_url else None,
-        speed=req.speed,
-        volume=req.volume,
-        pitch=req.pitch,
-        metadata=req.metadata,
+    This endpoint produces a WAV file in the response body. The returned
+    `Content-Disposition` header suggests a filename to help browsers
+    download the audio.
+    """
+    if not request.text.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Text cannot be empty")
+    if not (0.5 <= request.speed <= 2.0):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Speed must be between 0.5 and 2.0")
+    try:
+        audio_bytes = await openvoice_engine.synthesize_tts(
+            text=request.text,
+            language=request.language.upper(),
+            speed=request.speed,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+    return Response(
+        content=audio_bytes,
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "attachment; filename=tts.wav",
+            "X-Generated-By": "june-tts",
+        },
     )
 
-    return StreamingResponse(_file_stream(wav_path), media_type="audio/wav")
+
+@router.get("/voices")
+async def list_voices() -> dict:
+    """
+    Return a list of available base voices.
+
+    OpenVoice V2 supports multi‑lingual generation, but the tone colour
+    conversion does not include accent or emotion【212231721036567†L296-L305】. For
+    simplicity this API exposes only the default speaker (id 0). Clients can
+    specify `language` when calling `/tts/voice`.
+    """
+    voices = [
+        {
+            "id": "0",
+            "display_name": "Default Speaker",
+            "language": "multi-lingual",
+            "meta": {},
+        }
+    ]
+    return {"voices": voices}

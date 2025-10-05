@@ -1,28 +1,37 @@
+"""
+Configuration module for the June TTS service.
+
+Using Pydantic's `BaseSettings`, this module reads environment variables to
+configure aspects of the service. Default values are provided for ease of
+development, but you should set appropriate values in a `.env` file for
+production deployments.
+"""
+
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import List
+
 
 class Settings(BaseSettings):
-    # Keycloak Configuration
-    keycloak_server_url: str = "http://localhost:8080/auth"
-    keycloak_realm: str = "openvoice"
-    keycloak_client_id: str = "openvoice-api"
-    keycloak_client_secret: str
-    
-    # API Configuration
-    api_title: str = "OpenVoice API"
-    api_version: str = "1.0.0"
-    debug: bool = False
-    
-    # OpenVoice Configuration
-    checkpoints_path: str = "/workspace/OpenVoice/checkpoints_v2"
-    max_file_size: int = 50 * 1024 * 1024  # 50MB
-    allowed_audio_formats: list[str] = ["wav", "mp3", "flac", "m4a"]
-    
-    # Performance
-    max_concurrent_requests: int = 5
-    request_timeout: int = 300  # 5 minutes
-    
+    """Application configuration with sensible defaults."""
+
+    # Paths to the model checkpoints. These values should point to directories
+    # containing the OpenVoice V2 MeloTTS and ToneColorConverter checkpoints.
+    melo_checkpoint: str = "checkpoints/melo_v2"
+    converter_checkpoint: str = "checkpoints/converter_v2"
+
+    # Maximum allowed upload size for reference audio (in bytes). The official
+    # documentation recommends short, clean reference audio; this limit keeps
+    # uploads manageable.
+    max_file_size: int = 10 * 1024 * 1024  # 10 MB
+
+    # Allowed audio file extensions for reference audio uploads.
+    allowed_audio_formats: List[str] = ["wav", "mp3", "flac", "m4a"]
+
+    # API key for simple authentication. Leave blank to disable auth.
+    api_key: str = ""
+
     class Config:
         env_file = ".env"
+
 
 settings = Settings()
