@@ -5,7 +5,7 @@ metadata:
   namespace: june-services
   labels:
     app: june-orchestrator
-    version: "3.1.0-tts"
+    version: "5.0.0"
 spec:
   replicas: 2
   strategy:
@@ -20,12 +20,12 @@ spec:
     metadata:
       labels:
         app: june-orchestrator
-        version: "3.1.0-tts"
+        version: "5.0.0"
     spec:
       serviceAccountName: june-secret-manager
       containers:
         - name: orchestrator
-          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:v3.1.0-tts-1758980678
+          image: us-central1-docker.pkg.dev/main-buffer-469817-v7/june/june-orchestrator:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -33,37 +33,48 @@ spec:
               protocol: TCP
           
           env:
-            # AI Configuration
+            # Service Configuration
+            - name: SERVICE_NAME
+              value: "june-orchestrator"
+            - name: PORT
+              value: "8080"
+            - name: ENVIRONMENT
+              value: "production"
+            - name: LOG_LEVEL
+              value: "INFO"
+            
+            # CORS
+            - name: CORS_ALLOW_ORIGINS
+              value: "https://allsafe.world,https://app.allsafe.world"
+            
+            # TTS Service
+            - name: TTS_BASE_URL
+              value: "https://tts.allsafe.world"
+            
+            # Secrets from K8s Secret
             - name: GEMINI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: june-secrets
                   key: gemini-api-key
-                  optional: true
             
-            # External TTS Service Configuration
-            - name: TTS_SERVICE_URL
-              value: "http://YOUR_TTS_VM_IP:8000"
-            - name: TTS_DEFAULT_VOICE
-              value: "default"
-            - name: TTS_DEFAULT_SPEED
-              value: "1.0"
-            - name: TTS_DEFAULT_LANGUAGE
-              value: "EN"
-            
-            # Authentication
             - name: KEYCLOAK_URL
-              value: "https://idp.allsafe.world"
-            - name: KEYCLOAK_REALM
-              value: "allsafe"
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: keycloak-url
             
-            # Application
-            - name: LOG_LEVEL
-              value: "INFO"
-            - name: ENVIRONMENT
-              value: "production"
-            - name: PORT
-              value: "8080"
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: keycloak-realm
+            
+            - name: STT_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: june-secrets
+                  key: stt-service-token
           
           resources:
             requests:
@@ -77,7 +88,7 @@ spec:
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 15
+            initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
@@ -92,7 +103,7 @@ spec:
             failureThreshold: 3
       
       restartPolicy: Always
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: 30
 
 ---
 apiVersion: v1

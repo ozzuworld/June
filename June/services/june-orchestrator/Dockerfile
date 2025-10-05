@@ -12,8 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy ALL application code (including service_auth.py)
-COPY *.py ./
+# Copy application code in clean structure
+COPY app/ ./app/
 
 # Create non-root user for security
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
@@ -29,6 +29,7 @@ EXPOSE 8080
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 
 # Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
+CMD ["uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
