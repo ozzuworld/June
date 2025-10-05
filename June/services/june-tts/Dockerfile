@@ -1,73 +1,47 @@
-# OpenVoice V2 TTS Service - Fixed for ctranslate2
-
+# Use Python 3.10 slim as base image
 FROM python:3.10-slim
 
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies (runtime + build tools)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    curl \
     pkg-config \
-    libmecab-dev \
-    mecab \
-    mecab-ipadic-utf8 \
     libsndfile1 \
     ffmpeg \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
-WORKDIR /workspace
+WORKDIR /app
 
-# Copy and install Python dependencies
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# CRITICAL: Install ctranslate2 with proper flags
-# Use pre-built wheels to avoid compilation issues
-RUN pip install --no-cache-dir \
-    ctranslate2>=3.24.0 \
-    faster-whisper>=1.0.0
+# Create non-root user for security (but we won't switch to it)
+RUN groupadd -r stt && useradd -r -g stt -u 1001 stt
 
-# Install MeloTTS and OpenVoice
-RUN pip install --no-cache-dir \
-    git+https://github.com/myshell-ai/MeloTTS.git \
-    git+https://github.com/myshell-ai/OpenVoice.git
-
-# Download unidic for Japanese
-RUN python -m unidic download || true
+# Create directories with proper permissions
+RUN mkdir -p /app/models /tmp && \
+    chown -R stt:stt /app /tmp
 
 # Copy application code
-COPY app/ ./app/
-COPY model_setup.py setup_nltk.py ./
+COPY . .
 
-# Setup NLTK and models
-RUN python setup_nltk.py && \
-    mkdir -p /models/openvoice/checkpoints_v2 && \
-    python model_setup.py || echo "⚠️ Model download partial, will retry at runtime"
+# NOTE: We intentionally run as root to avoid volume mount permission issues
+# Kubernetes provides security isolation, so container-level users aren't necessary
 
-# Create non-root user and home directory with proper permissions
-RUN useradd -m -u 1001 appuser && \
-    mkdir -p /home/appuser/.cache /home/appuser/.numba_cache && \
-    chown -R appuser:appuser /workspace /models /home/appuser
+# Expose port
+EXPOSE 8080
 
-USER appuser
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1
 
-# Environment variables for cache and ctranslate2
-ENV NUMBA_CACHE_DIR=/home/appuser/.numba_cache \
-    MPLCONFIGDIR=/home/appuser/.matplotlib \
-    HF_HOME=/home/appuser/.cache/huggingface \
-    CT2_VERBOSE=0
-
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
-
-ENV OPENVOICE_CHECKPOINTS_V2=/models/openvoice/checkpoints_v2 \
-    OPENVOICE_DEVICE=cuda \
-    PYTHONPATH=/workspace
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
