@@ -6,10 +6,10 @@ import uuid
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any  # ✅ FIXED: Added Dict, Any imports
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Header, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Header, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
