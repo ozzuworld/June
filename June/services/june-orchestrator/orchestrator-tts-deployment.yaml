@@ -49,7 +49,7 @@ spec:
             
             # TTS Service
             - name: TTS_BASE_URL
-              value: "https://tts.allsafe.world"
+              value: "http://june-tts.june-services.svc.cluster.local"
             
             # Secrets from K8s Secret
             - name: GEMINI_API_KEY
