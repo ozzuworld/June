@@ -12,10 +12,10 @@ import numpy as np
 import soundfile as sf
 import torch
 
-# CORRECT IMPORTS for OpenVoice V2
-from melo.api import TTS as MeloTTS  # MeloTTS is from melo package
-from openvoice import se_extractor  # Speaker embedding extractor
-from openvoice.api import ToneColorConverter  # Only ToneColorConverter is in openvoice.api
+# Standard imports (ctranslate2 issue fixed via deployment config)
+from melo.api import TTS as MeloTTS
+from openvoice import se_extractor
+from openvoice.api import ToneColorConverter
 
 from .config import settings
 
@@ -46,7 +46,6 @@ def _load_models() -> Tuple[MeloTTS, ToneColorConverter]:
     
     if _melo is None:
         # Initialize MeloTTS with default English speaker
-        # Available languages: EN, ES, FR, ZH, JP, KR
         default_language = os.getenv("MELO_LANGUAGE", "EN")
         _melo = MeloTTS(language=default_language)
         print(f"✅ MeloTTS initialized with language: {default_language}")
@@ -58,7 +57,6 @@ def _load_models() -> Tuple[MeloTTS, ToneColorConverter]:
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # CORRECT: ToneColorConverter initialization
         _converter = ToneColorConverter(config_path=config_path, device=device)
         _converter.load_ckpt(ckpt_path)
         
@@ -95,13 +93,12 @@ async def synthesize_tts(
     """
     melo, _ = _load_models()
     
-    # CORRECT: Generate audio using MeloTTS
-    # The correct method signature for MeloTTS.tts_to_file or in-memory generation
+    # Generate to temp file
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
         tmp_path = tmp_file.name
     
     try:
-        # Generate to file (MeloTTS doesn't have direct audio return in some versions)
+        # Generate audio
         melo.tts_to_file(
             text=text,
             speaker_id=speaker_id,
@@ -129,11 +126,11 @@ async def clone_voice(
     speaker_id: int = 0
 ) -> bytes:
     """
-    Clone voice using OpenVoice V2 tone color conversion
+    Clone voice using OpenVoice V2 tone color conversion with VAD
     
     This follows the OpenVoice V2 workflow:
     1. Generate base audio with MeloTTS
-    2. Extract speaker embedding from reference
+    2. Extract speaker embedding from reference (uses faster-whisper VAD)
     3. Apply tone color conversion
     
     Args:
@@ -148,12 +145,12 @@ async def clone_voice(
     """
     melo, converter = _load_models()
     
-    # Step 1: Save reference audio to temp file
+    # Save reference audio to temp file
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
         ref_path = ref_file.name
         ref_file.write(reference_audio_bytes)
     
-    # Step 2: Generate base audio with MeloTTS
+    # Generate base audio with MeloTTS
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as base_file:
         base_path = base_file.name
     
@@ -166,19 +163,18 @@ async def clone_voice(
             speed=speed
         )
         
-        # Step 3: Extract speaker embedding from reference
-        # CORRECT: Use se_extractor to get speaker embedding
+        # Extract speaker embedding from reference with VAD
+        # vad=True enables Voice Activity Detection using faster-whisper
         src_se, _ = se_extractor.get_se(ref_path, converter, vad=True)
         
-        # Step 4: Load base audio
+        # Load base audio
         base_audio, sample_rate = sf.read(base_path, dtype='float32')
         
-        # Step 5: Apply tone color conversion
-        # CORRECT: Use the convert method with proper parameters
+        # Apply tone color conversion
         output_audio = converter.convert(
             audio_src=base_audio,
             src_se=src_se,
-            tgt_se=src_se,  # Use same SE for self-conversion
+            tgt_se=src_se,
             tau=0.3  # Tone color strength (0-1)
         )
         
@@ -197,8 +193,10 @@ def warmup_models() -> None:
     try:
         _load_models()
         print("✅ OpenVoice V2 models warmed up successfully")
+        print("✅ VAD (Voice Activity Detection) enabled via faster-whisper")
     except Exception as e:
         print(f"⚠️ Model warmup failed: {e}")
+        print("   Models will load on first request")
 
 
 def get_supported_languages() -> list[str]:
@@ -208,7 +206,6 @@ def get_supported_languages() -> list[str]:
 
 def get_available_speakers(language: str = "EN") -> dict:
     """Get available speaker IDs for a language"""
-    # MeloTTS speaker IDs vary by language
     speakers = {
         "EN": ["EN-US", "EN-BR", "EN-INDIA", "EN-AU", "EN-Default"],
         "ES": ["ES"],

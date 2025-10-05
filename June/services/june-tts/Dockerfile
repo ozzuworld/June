@@ -1,4 +1,4 @@
-# OpenVoice V2 TTS Service - SIMPLIFIED Dockerfile
+# OpenVoice V2 TTS Service - Fixed for ctranslate2
 
 FROM python:3.10-slim
 
@@ -23,10 +23,18 @@ WORKDIR /workspace
 # Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir \
-        git+https://github.com/myshell-ai/MeloTTS.git \
-        git+https://github.com/myshell-ai/OpenVoice.git
+    pip install --no-cache-dir -r requirements.txt
+
+# CRITICAL: Install ctranslate2 with proper flags
+# Use pre-built wheels to avoid compilation issues
+RUN pip install --no-cache-dir \
+    ctranslate2>=3.24.0 \
+    faster-whisper>=1.0.0
+
+# Install MeloTTS and OpenVoice
+RUN pip install --no-cache-dir \
+    git+https://github.com/myshell-ai/MeloTTS.git \
+    git+https://github.com/myshell-ai/OpenVoice.git
 
 # Download unidic for Japanese
 RUN python -m unidic download || true
@@ -47,9 +55,11 @@ RUN useradd -m -u 1001 appuser && \
 
 USER appuser
 
-# Fix numba/librosa caching issue - disable caching or set proper cache dir
+# Environment variables for cache and ctranslate2
 ENV NUMBA_CACHE_DIR=/home/appuser/.numba_cache \
-    MPLCONFIGDIR=/home/appuser/.matplotlib
+    MPLCONFIGDIR=/home/appuser/.matplotlib \
+    HF_HOME=/home/appuser/.cache/huggingface \
+    CT2_VERBOSE=0
 
 EXPOSE 8000
 

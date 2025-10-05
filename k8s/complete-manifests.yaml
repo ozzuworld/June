@@ -1,17 +1,8 @@
 ---
-# COMPLETE JUNE SERVICES MANIFEST (FIXED FOR AUTOMATED DEPLOYMENT)
-# This is the ONLY k8s manifest file you need - all others can be deleted
+# COMPLETE JUNE SERVICES MANIFEST WITH TTS CTRANSLATE2 FIX
+# File: k8s/complete-manifests.yaml
 # 
-# Prerequisites (created by stage2-install-k8s-ubuntu.sh):
-#   - june-services namespace
-#   - local-storage StorageClass
-#   - postgresql-pv PersistentVolume at /opt/june-postgresql-data
-#   - GPU Operator with time-slicing (2+ virtual GPUs)
-#   - ingress-nginx with hostNetwork
-#   - cert-manager with letsencrypt-prod ClusterIssuer
-#
-# Usage:
-#   kubectl apply -f complete-manifests.yaml
+# This replaces your entire k8s/complete-manifests.yaml file
 
 apiVersion: v1
 kind: Namespace
@@ -274,6 +265,9 @@ spec:
     name: http
 
 ---
+# ============================================================================
+# JUNE-TTS DEPLOYMENT - FIXED FOR CTRANSLATE2 EXECUTABLE STACK ISSUE
+# ============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -303,13 +297,35 @@ spec:
         operator: Exists
         effect: NoSchedule
       terminationGracePeriodSeconds: 30
+      
+      # CRITICAL FIX: Pod-level security context for ctranslate2
+      securityContext:
+        fsGroup: 1001
+        supplementalGroups: [1001]
+      
       containers:
       - name: tts
         image: docker.io/ozzuworld/june-tts:latest
         imagePullPolicy: Always
+        
+        # CRITICAL FIX: Container security context to allow executable stack
+        # This is required for ctranslate2 (used by faster-whisper VAD)
+        securityContext:
+          runAsUser: 1001
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+          # Key fix: allows executable stack for ctranslate2
+          seLinuxOptions:
+            type: spc_t
+        
         ports:
         - containerPort: 8000
           name: http
+        
         resources:
           requests:
             cpu: "1"
@@ -319,6 +335,7 @@ spec:
             cpu: "2"
             memory: "4Gi"
             nvidia.com/gpu: 1
+        
         env:
         - name: PORT
           value: "8000"
@@ -326,6 +343,8 @@ spec:
           value: "/models/openvoice/checkpoints_v2"
         - name: OPENVOICE_DEVICE
           value: "cuda"
+        - name: MELO_LANGUAGE
+          value: "EN"
         - name: ENABLE_QUANTIZATION
           value: "false"
         - name: PRELOAD_MODELS
@@ -336,11 +355,20 @@ spec:
           value: "0"
         - name: PYTORCH_CUDA_ALLOC_CONF
           value: "max_split_size_mb:256"
+        # CRITICAL: ctranslate2 environment variable
+        - name: CT2_FORCE_CPU_ISA
+          value: "GENERIC"
+        - name: CT2_VERBOSE
+          value: "0"
+        
         volumeMounts:
         - name: model-cache
           mountPath: /models
         - name: cache
           mountPath: /cache
+        - name: tmp
+          mountPath: /tmp
+        
         readinessProbe:
           httpGet:
             path: /healthz
@@ -348,12 +376,14 @@ spec:
           initialDelaySeconds: 120
           periodSeconds: 10
           failureThreshold: 30
+        
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8000
           initialDelaySeconds: 180
           periodSeconds: 30
+      
       volumes:
       - name: model-cache
         emptyDir:
@@ -361,6 +391,9 @@ spec:
       - name: cache
         emptyDir:
           sizeLimit: 5Gi
+      - name: tmp
+        emptyDir:
+          sizeLimit: 2Gi
 
 ---
 apiVersion: v1
