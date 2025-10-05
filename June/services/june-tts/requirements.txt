@@ -1,29 +1,25 @@
-# June TTS Optimized Requirements
+# June TTS Service Requirements - CORRECTED for OpenVoice V2
 
-# Core FastAPI and server
+# Core FastAPI
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
 python-multipart>=0.0.7
 
-# Pydantic and validation
+# Pydantic
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
-# Audio processing and ML (optimized versions)
+# PyTorch (must be installed before other ML packages)
 torch>=2.3.0
 torchaudio>=2.3.0
+
+# Audio processing
 librosa==0.10.1
 soundfile==0.12.1
 numpy>=1.24.0
 scipy>=1.11.0
 
-# System monitoring
-psutil>=5.8.0
-
-# OpenVoice specific dependencies
-huggingface_hub>=0.17.0
-
-# MeloTTS and text processing
+# Text processing for MeloTTS
 jieba>=0.42.1
 pypinyin>=0.50.0
 cn2an>=0.5.17
@@ -35,15 +31,15 @@ eng_to_ipa>=0.0.2
 fugashi>=1.3.0
 unidic-lite>=1.0.8
 
-# Audio format support
-pydub>=0.25.1
+# Korean text processing (optional, for KR language)
+jamo>=0.4.1
 
-# HTTP client
+# System utilities
+psutil>=5.8.0
 httpx>=0.25.2
 
-# Authentication and security
-PyJWT>=2.8.0
-cryptography>=41.0.0
+# HuggingFace for model downloads
+huggingface_hub>=0.17.0
 
-# Core utilities
-requests>=2.31.0
+# NLTK for text processing
+nltk>=3.8.0
