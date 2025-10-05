@@ -98,7 +98,7 @@ async def generate_ai_response(
         
         # Generate response
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.5-flash',
             contents=context,
             config=types.GenerateContentConfig(
                 temperature=0.7,
