@@ -21,8 +21,8 @@ echo "🔐 Keycloak Configuration Automation (TRULY FIXED)" >&2
 echo "=================================================" >&2
 
 # Configuration
-read -p "Keycloak URL [https://idp.allsafe.world]: " KEYCLOAK_URL
-KEYCLOAK_URL=${KEYCLOAK_URL:-https://idp.allsafe.world}
+read -p "Keycloak URL [https://idp.ozzu.world](https://idp.ozzu.world): " KEYCLOAK_URL
+KEYCLOAK_URL=${KEYCLOAK_URL:-https://idp.ozzu.world}
 
 read -p "Admin username [admin]: " ADMIN_USER
 ADMIN_USER=${ADMIN_USER:-admin}
@@ -346,20 +346,20 @@ create_audience_scope() {
 log_info "Creating service clients..."
 
 # June Orchestrator
-ORCH_RESULT=$(create_client_with_secret "june-orchestrator" "https://api.allsafe.world" \
-  '["https://api.allsafe.world/*", "http://localhost:8080/*", "http://june-orchestrator.june-services.svc.cluster.local:8080/*"]')
+ORCH_RESULT=$(create_client_with_secret "june-orchestrator" "https://api.ozzu.world" \
+  '["https://api.ozzu.world/*", "http://localhost:8080/*", "http://june-orchestrator.june-services.svc.cluster.local:8080/*"]')
 ORCH_UUID=$(echo "$ORCH_RESULT" | cut -d'|' -f1)
 ORCH_SECRET=$(echo "$ORCH_RESULT" | cut -d'|' -f2)
 
 # June STT
-STT_RESULT=$(create_client_with_secret "june-stt" "https://stt.allsafe.world" \
-  '["https://stt.allsafe.world/*", "http://localhost:8000/*", "http://june-stt.june-services.svc.cluster.local:8000/*"]')
+STT_RESULT=$(create_client_with_secret "june-stt" "https://stt.ozzu.world" \
+  '["https://stt.ozzu.world/*", "http://localhost:8000/*", "http://june-stt.june-services.svc.cluster.local:8000/*"]')
 STT_UUID=$(echo "$STT_RESULT" | cut -d'|' -f1)
 STT_SECRET=$(echo "$STT_RESULT" | cut -d'|' -f2)
 
 # June TTS
-TTS_RESULT=$(create_client_with_secret "june-tts" "https://tts.allsafe.world" \
-  '["https://tts.allsafe.world/*", "http://localhost:8000/*", "http://june-tts.june-services.svc.cluster.local:8000/*"]')
+TTS_RESULT=$(create_client_with_secret "june-tts" "https://tts.ozzu.world" \
+  '["https://tts.ozzu.world/*", "http://localhost:8000/*", "http://june-tts.june-services.svc.cluster.local:8000/*"]')
 TTS_UUID=$(echo "$TTS_RESULT" | cut -d'|' -f1)
 TTS_SECRET=$(echo "$TTS_RESULT" | cut -d'|' -f2)
 
@@ -445,16 +445,30 @@ AUD_SCOPE_ID=$(create_audience_scope "$AUD_SCOPE" "$API_AUDIENCE")
 log_info "Creating/ensuring frontend public PKCE client '$FRONTEND_CLIENT_ID'..."
 FRONTEND_UUID=$(create_public_pkce_client "$FRONTEND_CLIENT_ID" "$FRONTEND_REDIRECTS_CSV" "$INCLUDE_EXPO")
 
-# Assign the audience scope as OPTIONAL so the app can request it
-log_info "Assigning scope '$AUD_SCOPE' to client '$FRONTEND_CLIENT_ID' (optional)..."
-ASSIGN_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-  "$KEYCLOAK_URL/admin/realms/$REALM/clients/$FRONTEND_UUID/optional-client-scopes/$AUD_SCOPE_ID" \
+# ✅ CRITICAL FIX: Assign the audience scope as DEFAULT (not optional)
+log_info "Assigning scope '$AUD_SCOPE' to client '$FRONTEND_CLIENT_ID' (default)..."
+ASSIGN_DEFAULT_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  "$KEYCLOAK_URL/admin/realms/$REALM/clients/$FRONTEND_UUID/default-client-scopes/$AUD_SCOPE_ID" \
   -H "Authorization: Bearer $ADMIN_TOKEN")
 
-if [ "$ASSIGN_RESULT" = "204" ] || [ "$ASSIGN_RESULT" = "201" ]; then
-  log_success "Scope assigned to client (optional)"
+if [ "$ASSIGN_DEFAULT_RESULT" = "204" ] || [ "$ASSIGN_DEFAULT_RESULT" = "201" ]; then
+  log_success "Scope '$AUD_SCOPE' assigned to client as DEFAULT scope"
 else
-  log_warning "Scope assignment may already exist or failed (HTTP $ASSIGN_RESULT)"
+  log_warning "Default scope assignment failed (HTTP $ASSIGN_DEFAULT_RESULT), trying optional..."
+  
+  # Fallback: try optional assignment
+  ASSIGN_OPTIONAL_RESULT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    "$KEYCLOAK_URL/admin/realms/$REALM/clients/$FRONTEND_UUID/optional-client-scopes/$AUD_SCOPE_ID" \
+    -H "Authorization: Bearer $ADMIN_TOKEN")
+    
+  if [ "$ASSIGN_OPTIONAL_RESULT" = "204" ] || [ "$ASSIGN_OPTIONAL_RESULT" = "201" ]; then
+    log_success "Scope '$AUD_SCOPE' assigned to client as OPTIONAL scope"
+    log_warning "NOTE: Your app must explicitly request 'orchestrator-aud' scope"
+  else
+    log_error "Both default and optional scope assignments failed!"
+    log_error "Default: HTTP $ASSIGN_DEFAULT_RESULT, Optional: HTTP $ASSIGN_OPTIONAL_RESULT"
+    exit 1
+  fi
 fi
 
 # === ORIGINAL: Generate Kubernetes secret update script for confidential clients ===
@@ -548,6 +562,15 @@ else
   echo "Response: $TEST_TOKEN" >&2
 fi
 
+# ✅ CRITICAL: Test frontend client token generation with orchestrator-aud scope
+log_info "Testing frontend client scope availability..."
+FRONTEND_TEST=$(curl -s "$KEYCLOAK_URL/realms/$REALM/.well-known/openid-configuration")
+if echo "$FRONTEND_TEST" | jq -e '.scopes_supported[] | select(.=="orchestrator-aud")' > /dev/null 2>&1; then
+  log_success "orchestrator-aud scope is available in realm"
+else
+  log_warning "orchestrator-aud scope may not be properly exposed"
+fi
+
 # Show frontend summary (no secret)
 echo "" >&2
 echo "═══════════════════════════════════════════════" >&2
@@ -575,7 +598,7 @@ echo "📱 Frontend Client (Public PKCE):" >&2
 echo "  client_id: $FRONTEND_CLIENT_ID" >&2
 echo "  UUID: $FRONTEND_UUID" >&2
 echo "  Redirect URIs: $FRONTEND_REDIRECTS_CSV" >&2
-echo "  Optional scope assigned: $AUD_SCOPE (aud: $API_AUDIENCE)" >&2
+echo "  Scope assigned: $AUD_SCOPE (aud: $API_AUDIENCE)" >&2
 echo "" >&2
 echo "🔍 Verify Configuration:" >&2
 echo "  1. Admin: $KEYCLOAK_URL/admin" >&2
