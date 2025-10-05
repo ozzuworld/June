@@ -40,10 +40,16 @@ RUN python setup_nltk.py && \
     mkdir -p /models/openvoice/checkpoints_v2 && \
     python model_setup.py || echo "⚠️ Model download partial, will retry at runtime"
 
-# Create non-root user
+# Create non-root user and home directory with proper permissions
 RUN useradd -m -u 1001 appuser && \
-    chown -R appuser:appuser /workspace /models
+    mkdir -p /home/appuser/.cache /home/appuser/.numba_cache && \
+    chown -R appuser:appuser /workspace /models /home/appuser
+
 USER appuser
+
+# Fix numba/librosa caching issue - disable caching or set proper cache dir
+ENV NUMBA_CACHE_DIR=/home/appuser/.numba_cache \
+    MPLCONFIGDIR=/home/appuser/.matplotlib
 
 EXPOSE 8000
 
