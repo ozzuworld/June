@@ -27,8 +27,12 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from openvoice import ToneColorConverter  # type: ignore
-from openvoice.api import MeloTTS  # type: ignore
+# Import the API classes from the openvoice.api module.  In newer versions of
+# the OpenVoice package, ToneColorConverter and MeloTTS live under
+# `openvoice.api`. Importing them from the top‑level package raises an
+# ImportError (see issue #147 in the OpenVoice repo), so we import from
+# `openvoice.api`【483960623036025†L182-L188】.
+from openvoice.api import ToneColorConverter, MeloTTS  # type: ignore
 
 from .config import settings
 
