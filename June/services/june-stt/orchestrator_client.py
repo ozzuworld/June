@@ -27,7 +27,8 @@ class ExternalOrchestratorClient:
     
     def __init__(self):
         # Kubernetes service name (set in K8s deployment)
-        self.base_url = os.getenv("ORCHESTRATOR_URL", "http://june-orchestrator")
+        self.base_url = os.getenv("ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080")
+
         
         # STT webhook endpoint on orchestrator
         self.webhook_path = os.getenv("ORCHESTRATOR_WEBHOOK_PATH", "/v1/stt/webhook")
