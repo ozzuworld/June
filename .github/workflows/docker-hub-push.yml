@@ -1,4 +1,4 @@
-name: Build and Push to Docker Hub
+name: 🚀 Build and Push to Docker Hub
 
 on:
   push:
@@ -9,12 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Services to build (comma-separated: june-orchestrator,june-stt,june-tts or leave empty for all)'
+        description: '📦 Services to build (comma-separated: june-orchestrator,june-stt,june-tts or leave empty for all)'
         required: false
         type: string
         default: ''
       build_all:
-        description: 'Build all services'
+        description: '🔨 Build all services'
         required: false
         type: boolean
         default: false
@@ -25,12 +25,12 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-    - name: Checkout code
+    - name: 📥 Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Required for changed-files detection
+        fetch-depth: 0
     
-    - name: Detect changed services
+    - name: 🔍 Detect changed services
       if: github.event_name == 'push'
       id: changed-files
       uses: tj-actions/changed-files@v47
@@ -43,38 +43,44 @@ jobs:
           tts:
             - June/services/june-tts/**
     
-    - name: Set matrix for changed services
+    - name: 📋 Set matrix for changed services
       id: set-matrix
       run: |
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
           # Manual trigger logic
           if [[ "${{ inputs.build_all }}" == "true" ]]; then
+            echo "🔨 Building all services"
             echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
           elif [[ -n "${{ inputs.services }}" ]]; then
-            # Convert comma-separated string to JSON array
+            echo "🎯 Building selected services: ${{ inputs.services }}"
             SERVICES="${{ inputs.services }}"
             SERVICES_JSON=$(echo "$SERVICES" | jq -R -s -c 'split(",") | map(select(length > 0) | gsub("^\\s+|\\s+$";""))')
             echo "matrix=$SERVICES_JSON" >> $GITHUB_OUTPUT
           else
+            echo "🔨 No specific services selected, building all"
             echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
           fi
         else
           # Push event - build only changed services
           SERVICES=()
           if [[ "${{ steps.changed-files.outputs.orchestrator_any_changed }}" == "true" ]]; then
+            echo "🎼 june-orchestrator changed"
             SERVICES+=("june-orchestrator")
           fi
           if [[ "${{ steps.changed-files.outputs.stt_any_changed }}" == "true" ]]; then
+            echo "🎤 june-stt changed"
             SERVICES+=("june-stt")
           fi
           if [[ "${{ steps.changed-files.outputs.tts_any_changed }}" == "true" ]]; then
+            echo "🔊 june-tts changed"
             SERVICES+=("june-tts")
           fi
           
-          # If no services changed, build all (safety fallback)
           if [ ${#SERVICES[@]} -eq 0 ]; then
+            echo "⚠️ No services changed, building all as fallback"
             echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
           else
+            echo "✅ Building ${#SERVICES[@]} changed service(s)"
             MATRIX_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s -c .)
             echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
           fi
@@ -87,21 +93,22 @@ jobs:
     strategy:
       matrix:
         service: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
     
     steps:
-    - name: Checkout code
+    - name: 📥 Checkout code
       uses: actions/checkout@v4
       
-    - name: Set up Docker Buildx
+    - name: 🔧 Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       
-    - name: Login to Docker Hub
+    - name: 🔐 Login to Docker Hub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
-    - name: Extract metadata
+    - name: 🏷️ Extract metadata
       id: meta
       uses: docker/metadata-action@v5
       with:
@@ -113,7 +120,7 @@ jobs:
           type=sha,prefix=sha-
           type=raw,value=latest,enable={{is_default_branch}}
     
-    - name: Build and push Docker image
+    - name: 🐳 Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: ./June/services/${{ matrix.service }}
@@ -124,3 +131,8 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64
+    
+    - name: ✅ Build complete
+      run: |
+        echo "✅ Successfully built and pushed ${{ matrix.service }}"
+        echo "📦 Tags: ${{ steps.meta.outputs.tags }}"
