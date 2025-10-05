@@ -45,6 +45,16 @@ stringData:
 
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: service-auth-secret
+  namespace: june-services
+type: Opaque
+stringData:
+  stt-service-token: "stt-service-secure-token-12345"
+
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgresql-pvc
@@ -191,6 +201,13 @@ spec:
         env:
         - name: PORT
           value: "8080"
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator.june-services.svc.cluster.local:8080"
+        - name: STT_SERVICE_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: service-auth-secret
+              key: stt-service-token
         - name: WHISPER_MODEL
           value: "large-v3"
         - name: WHISPER_DEVICE
@@ -400,6 +417,11 @@ spec:
         env:
         - name: PORT
           value: "8080"
+        - name: VALID_SERVICE_TOKENS
+          valueFrom:
+            secretKeyRef:
+              name: service-auth-secret
+              key: stt-service-token
         - name: GEMINI_API_KEY
           valueFrom:
             secretKeyRef:
