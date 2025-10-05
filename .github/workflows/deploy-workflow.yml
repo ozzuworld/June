@@ -64,24 +64,8 @@ jobs:
             SERVICES="all"
           fi
           
-          echo "📈 Summary:"
-          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
-          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
-          echo "  Pending: $PENDING"
-          echo "  Failed: $FAILED"
-          echo "======================================================"
-          
-          if [ "$FAILED" -gt 0 ]; then
-            echo ""
-            echo "❌ Deployment completed with errors!"
-            exit 1
-          elif [ "$PENDING" -gt 0 ]; then
-            echo ""
-            echo "⚠️  Deployment completed with pending pods"
-          else
-            echo ""
-            echo "✅ Deployment successful!"
-          fi "build_images=$BUILD" >> $GITHUB_OUTPUT
+          # Set GitHub outputs first
+          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
           echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
           echo "services=$SERVICES" >> $GITHUB_OUTPUT
           
@@ -738,4 +722,21 @@ jobs:
           RUNNING_PODS=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers | wc -l)
           TOTAL_PODS=$(kubectl get pods -n $NAMESPACE --no-headers | wc -l)
           
-          echo
+          echo "📈 Summary:"
+          echo "  Deployments: $READY_DEPLOYMENTS/$TOTAL_DEPLOYMENTS ready"
+          echo "  Pods: $RUNNING_PODS/$TOTAL_PODS running"
+          echo "  Pending: $PENDING"
+          echo "  Failed: $FAILED"
+          echo "======================================================"
+          
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "❌ Deployment completed with errors!"
+            exit 1
+          elif [ "$PENDING" -gt 0 ]; then
+            echo ""
+            echo "⚠️  Deployment completed with pending pods"
+          else
+            echo ""
+            echo "✅ Deployment successful!"
+          fi
