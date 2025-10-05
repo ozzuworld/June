@@ -6,14 +6,87 @@ on:
     paths:
       - 'June/services/**'
   
-  workflow_dispatch: # Manual trigger
-#####
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to build (comma-separated: june-orchestrator,june-stt,june-tts or leave empty for all)'
+        required: false
+        type: string
+        default: ''
+      build_all:
+        description: 'Build all services'
+        required: false
+        type: boolean
+        default: false
+
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Required for changed-files detection
+    
+    - name: Detect changed services
+      if: github.event_name == 'push'
+      id: changed-files
+      uses: tj-actions/changed-files@v47
+      with:
+        files_yaml: |
+          orchestrator:
+            - June/services/june-orchestrator/**
+          stt:
+            - June/services/june-stt/**
+          tts:
+            - June/services/june-tts/**
+    
+    - name: Set matrix for changed services
+      id: set-matrix
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          # Manual trigger logic
+          if [[ "${{ inputs.build_all }}" == "true" ]]; then
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+          elif [[ -n "${{ inputs.services }}" ]]; then
+            # Convert comma-separated string to JSON array
+            SERVICES="${{ inputs.services }}"
+            SERVICES_JSON=$(echo "$SERVICES" | jq -R -s -c 'split(",") | map(select(length > 0) | gsub("^\\s+|\\s+$";""))')
+            echo "matrix=$SERVICES_JSON" >> $GITHUB_OUTPUT
+          else
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+          fi
+        else
+          # Push event - build only changed services
+          SERVICES=()
+          if [[ "${{ steps.changed-files.outputs.orchestrator_any_changed }}" == "true" ]]; then
+            SERVICES+=("june-orchestrator")
+          fi
+          if [[ "${{ steps.changed-files.outputs.stt_any_changed }}" == "true" ]]; then
+            SERVICES+=("june-stt")
+          fi
+          if [[ "${{ steps.changed-files.outputs.tts_any_changed }}" == "true" ]]; then
+            SERVICES+=("june-tts")
+          fi
+          
+          # If no services changed, build all (safety fallback)
+          if [ ${#SERVICES[@]} -eq 0 ]; then
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+          else
+            MATRIX_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s -c .)
+            echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          fi
+        fi
+
   build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [june-orchestrator, june-stt, june-tts]
+        service: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
     
     steps:
     - name: Checkout code
