@@ -35,5 +35,5 @@ USER sttuser
 # Expose port
 EXPOSE 8080
 
-# Start the service
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Start the service - FIXED: Changed from main:app to app:app
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
