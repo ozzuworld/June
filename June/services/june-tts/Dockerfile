@@ -11,12 +11,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Create writable directory for Numba cache and set permissions
-RUN mkdir -p /tmp/numba_cache && chmod 777 /tmp/numba_cache
+# Create writable directories for all caches and set permissions
+RUN mkdir -p /tmp/numba_cache \
+             /tmp/transformers \
+             /tmp/huggingface/hub \
+             /tmp/torch \
+             /cache \
+             /models && \
+    chmod 777 /tmp/numba_cache \
+             /tmp/transformers \
+             /tmp/huggingface/hub \
+             /tmp/torch \
+             /cache \
+             /models
 
-# Set environment variables for Numba caching fix
+# Set environment variables for all caching systems
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 ENV NUMBA_DISABLE_JIT=0
+ENV NUMBA_WARNINGS=0
+ENV TRANSFORMERS_CACHE=/tmp/transformers
+ENV HF_HOME=/tmp/huggingface
+ENV HUGGINGFACE_HUB_CACHE=/tmp/huggingface/hub
+ENV TORCH_HOME=/tmp/torch
 
 # CRITICAL: Pin ctranslate2 to version without execstack issue
 RUN pip install --no-cache-dir ctranslate2==3.20.0
