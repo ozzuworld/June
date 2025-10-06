@@ -16,12 +16,14 @@ RUN mkdir -p /tmp/numba_cache \
              /tmp/transformers \
              /tmp/huggingface/hub \
              /tmp/torch \
+             /tmp/nltk_data \
              /cache \
              /models && \
     chmod 777 /tmp/numba_cache \
              /tmp/transformers \
              /tmp/huggingface/hub \
              /tmp/torch \
+             /tmp/nltk_data \
              /cache \
              /models
 
@@ -33,6 +35,7 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers
 ENV HF_HOME=/tmp/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/tmp/huggingface/hub
 ENV TORCH_HOME=/tmp/torch
+ENV NLTK_DATA=/tmp/nltk_data
 
 # CRITICAL: Pin ctranslate2 to version without execstack issue
 RUN pip install --no-cache-dir ctranslate2==3.20.0
@@ -62,6 +65,9 @@ RUN pip install --no-cache-dir \
     cn2an>=0.5.22 \
     jieba>=0.42.1 \
     langid>=1.1.6
+
+# Pre-download NLTK data to avoid runtime downloads
+RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger', download_dir='/tmp/nltk_data'); nltk.download('cmudict', download_dir='/tmp/nltk_data')"
 
 # Download unidic for Japanese support
 RUN python -m unidic download
