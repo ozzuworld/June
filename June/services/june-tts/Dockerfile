@@ -45,12 +45,18 @@ RUN pip install --no-cache-dir ctranslate2==3.20.0
 # Install faster-whisper with the compatible ctranslate2
 RUN pip install --no-cache-dir faster-whisper==0.10.1
 
+# Fix dependency version conflicts BEFORE installing MeloTTS
+RUN pip install --no-cache-dir \
+    "botocore>=1.29.0,<1.35.0" \
+    "boto3>=1.26.0,<1.35.0" \
+    "cached-path>=1.5.0"
+
 # Official OpenVoice installation method
 RUN git clone https://github.com/myshell-ai/OpenVoice.git && \
     cd OpenVoice && \
     pip install -e . --no-deps
 
-# Install MeloTTS (required for V2)
+# Install MeloTTS (required for V2) - now with fixed dependencies
 RUN pip install git+https://github.com/myshell-ai/MeloTTS.git
 
 # Install remaining OpenVoice dependencies manually (to avoid version conflicts)
