@@ -11,6 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
+# Create writable directory for Numba cache and set permissions
+RUN mkdir -p /tmp/numba_cache && chmod 777 /tmp/numba_cache
+
+# Set environment variables for Numba caching fix
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+ENV NUMBA_DISABLE_JIT=0
+
 # CRITICAL: Pin ctranslate2 to version without execstack issue
 RUN pip install --no-cache-dir ctranslate2==3.20.0
 
