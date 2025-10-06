@@ -11,12 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Create writable directories for all caches and set permissions
+# Create ALL necessary directories with proper permissions (including system ones)
 RUN mkdir -p /tmp/numba_cache \
              /tmp/transformers \
              /tmp/huggingface/hub \
              /tmp/torch \
              /tmp/nltk_data \
+             /nltk_data \
              /cache \
              /models && \
     chmod 777 /tmp/numba_cache \
@@ -24,6 +25,7 @@ RUN mkdir -p /tmp/numba_cache \
              /tmp/huggingface/hub \
              /tmp/torch \
              /tmp/nltk_data \
+             /nltk_data \
              /cache \
              /models
 
@@ -66,8 +68,8 @@ RUN pip install --no-cache-dir \
     jieba>=0.42.1 \
     langid>=1.1.6
 
-# Pre-download NLTK data to avoid runtime downloads
-RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger', download_dir='/tmp/nltk_data'); nltk.download('cmudict', download_dir='/tmp/nltk_data')"
+# Pre-download NLTK data to avoid runtime downloads (to both locations)
+RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger', download_dir='/tmp/nltk_data'); nltk.download('cmudict', download_dir='/tmp/nltk_data'); nltk.download('averaged_perceptron_tagger', download_dir='/nltk_data'); nltk.download('cmudict', download_dir='/nltk_data')"
 
 # Download unidic for Japanese support
 RUN python -m unidic download
