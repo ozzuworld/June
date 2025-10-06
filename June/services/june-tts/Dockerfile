@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ffmpeg \
     build-essential \
+    execstack \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
@@ -18,6 +19,10 @@ RUN git clone https://github.com/myshell-ai/OpenVoice.git && \
 
 # Install MeloTTS (required for V2)
 RUN pip install git+https://github.com/myshell-ai/MeloTTS.git
+
+# CRITICAL FIX: Clear execstack flag on ctranslate2
+RUN find /usr/local/lib/python* -name "libctranslate2*.so*" -exec execstack -c {} \; && \
+    find /usr/local/lib/python* -name "libctranslate2*.so*" -exec execstack -q {} \;
 
 # Download unidic for Japanese support
 RUN python -m unidic download
