@@ -1,32 +1,44 @@
 FROM python:3.9-slim
 
-# Install system dependencies
+# Install system dependencies (both OpenVoice and MeloTTS need these)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
-# Create cache directories  
-RUN mkdir -p /tmp/nltk_data /nltk_data && chmod 777 /tmp/nltk_data /nltk_data
+# Create necessary directories
+RUN mkdir -p /workspace/models /workspace/app
 
-# Set environment variables
-ENV NLTK_DATA=/tmp/nltk_data \
-    TRANSFORMERS_CACHE=/tmp/transformers \
-    HF_HOME=/tmp/huggingface
+# Install OpenVoice first (with dependencies)
+RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
+    cd /workspace/OpenVoice && \
+    pip install --no-cache-dir -e .
 
-# Install OpenVoice
-RUN git clone https://github.com/myshell-ai/OpenVoice.git . && \
-    pip install --no-cache-dir -e . && \
-    python -c "import nltk; nltk.download('averaged_perceptron_tagger')" || true
+# Install MeloTTS (avoiding conflicts)
+RUN pip install --no-cache-dir \
+    "mecab-python3>=1.0.6" \
+    "unidic-lite>=1.0.8" \
+    "num2words" \
+    && pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# Install your app requirements
+# Download NLTK data and unidic (required for multilingual)
+RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger')" || true
+RUN python -m unidic download || true
+
+# Install your app requirements  
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your app
+# Copy your app to the correct location
 COPY . /workspace/app
 
+# Set Python path so imports work
+ENV PYTHONPATH="/workspace:/workspace/OpenVoice:${PYTHONPATH}"
+
+WORKDIR /workspace/app
+
 EXPOSE 8080
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
