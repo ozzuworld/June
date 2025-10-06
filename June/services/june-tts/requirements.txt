@@ -1,20 +1,6 @@
-# This is what OpenVoice's setup.py actually installs
-librosa>=0.8.1
-wavmark>=0.0.3
-faster-whisper>=0.9.0
-pydub>=0.25.1
-whisper-timestamped>=1.14.2
-tqdm
-inflect>=7.0.0
-unidecode>=1.3.7 
-eng_to_ipa>=0.0.2
-pypinyin>=0.50.0
-cn2an>=0.5.22
-jieba>=0.42.1
-langid>=1.1.6
-
-# Your FastAPI additions
+# FastAPI stack only - OpenVoice deps installed in Dockerfile
 fastapi>=0.110,<1
 uvicorn[standard]>=0.23
 pydantic>=2,<3
 python-multipart>=0.0.9
+aiofiles>=23.2
