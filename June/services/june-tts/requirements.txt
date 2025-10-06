@@ -1,45 +1,20 @@
-# June TTS Service Requirements - CORRECTED for OpenVoice V2
-
-# Core FastAPI
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-python-multipart>=0.0.7
-
-# Pydantic
-pydantic==2.5.0
-pydantic-settings==2.1.0
-
-# PyTorch (must be installed before other ML packages)
-torch>=2.3.0
-torchaudio>=2.3.0
-
-# Audio processing
-librosa==0.10.1
-soundfile==0.12.1
-numpy>=1.24.0
-scipy>=1.11.0
-
-# Text processing for MeloTTS
-jieba>=0.42.1
-pypinyin>=0.50.0
-cn2an>=0.5.17
+# This is what OpenVoice's setup.py actually installs
+librosa>=0.8.1
+wavmark>=0.0.3
+faster-whisper>=0.9.0
+pydub>=0.25.1
+whisper-timestamped>=1.14.2
+tqdm
 inflect>=7.0.0
-unidecode>=1.3.7
+unidecode>=1.3.7 
 eng_to_ipa>=0.0.2
+pypinyin>=0.50.0
+cn2an>=0.5.22
+jieba>=0.42.1
+langid>=1.1.6
 
-# Japanese text processing
-fugashi>=1.3.0
-unidic-lite>=1.0.8
-
-# Korean text processing (optional, for KR language)
-jamo>=0.4.1
-
-# System utilities
-psutil>=5.8.0
-httpx>=0.25.2
-
-# HuggingFace for model downloads
-huggingface_hub>=0.17.0
-
-# NLTK for text processing
-nltk>=3.8.0
+# Your FastAPI additions
+fastapi>=0.110,<1
+uvicorn[standard]>=0.23
+pydantic>=2,<3
+python-multipart>=0.0.9
