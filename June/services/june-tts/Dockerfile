@@ -16,18 +16,21 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     HF_HOME=/tmp/huggingface \
     PYTHONPATH="/workspace"
 
-# Install XTTS and dependencies
+# Install compatible versions to avoid librosa issues
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
     pydantic-settings \
-    TTS==0.21.1 \
+    "librosa==0.9.1" \
+    "numpy<2.0" \
     torch \
     torchaudio \
     soundfile \
-    librosa \
     python-multipart
+
+# Install TTS with compatible librosa
+RUN pip install --no-cache-dir TTS==0.21.1
 
 # Copy app
 COPY . /workspace
