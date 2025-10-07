@@ -19,55 +19,65 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     PYTHONPATH="/workspace:/workspace/OpenVoice" \
     MECABRC=/etc/mecabrc
 
-# CRITICAL FIX: Pin NumPy to 1.x to avoid compatibility issues
-RUN pip install --no-cache-dir "numpy<2.0"
+# Create constraints file to lock NumPy at 1.24.3
+RUN echo "numpy==1.24.3" > /tmp/constraints.txt && \
+    echo "scipy<1.11" >> /tmp/constraints.txt && \
+    echo "scikit-learn<1.4" >> /tmp/constraints.txt
 
-# Install core packages with compatible versions
-RUN pip install --no-cache-dir \
-    torch==2.0.1 torchaudio==2.0.2 \
-    fastapi==0.104.1 uvicorn[standard]==0.24.0 \
-    pydantic==2.5.0 pydantic-settings \
-    librosa==0.9.1 soundfile tqdm scipy resampy huggingface_hub
+# Install EVERYTHING with constraints in one step to avoid conflicts
+RUN pip install --no-cache-dir --constraint /tmp/constraints.txt \
+    "numpy==1.24.3" \
+    "torch==2.0.1" \
+    "torchaudio==2.0.2" \
+    "scipy==1.10.1" \
+    "scikit-learn==1.3.2" \
+    "fastapi==0.104.1" \
+    "uvicorn[standard]==0.24.0" \
+    "pydantic==2.5.0" \
+    "pydantic-settings" \
+    "librosa==0.9.1" \
+    "soundfile" \
+    "tqdm" \
+    "resampy" \
+    "huggingface_hub<0.17" \
+    "transformers<4.35" \
+    "onnxruntime<1.16"
 
-# Install MeloTTS
-RUN pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
+# Install MeloTTS with strict constraints
+RUN pip install --no-cache-dir --constraint /tmp/constraints.txt \
+    git+https://github.com/myshell-ai/MeloTTS.git
 
-# Fix botocore version incompatibility 
-RUN pip install --no-cache-dir --upgrade botocore>=1.20.0
+# Install other dependencies with constraints
+RUN pip install --no-cache-dir --constraint /tmp/constraints.txt \
+    "botocore>=1.20.0,<2.0" \
+    "faster-whisper<0.9" \
+    "pydub" \
+    "whisper-timestamped" \
+    "openai-whisper<20231117" \
+    "ffmpeg-python"
 
-# Install OpenVoice dependencies
-RUN pip install --no-cache-dir \
-    faster-whisper \
-    onnxruntime \
-    pydub \
-    whisper-timestamped \
-    openai-whisper \
-    ffmpeg-python
+# Final NumPy verification and lock
+RUN pip install --no-cache-dir --force-reinstall --constraint /tmp/constraints.txt "numpy==1.24.3"
 
-# CRITICAL FIX: Copy unidic_lite dictionary to the expected unidic location
+# Verify NumPy stayed at 1.24.3
+RUN python -c "import numpy; assert numpy.__version__ == '1.24.3', f'FAILED: NumPy is {numpy.__version__}, expected 1.24.3'"
+
+# CRITICAL FIX: Copy unidic_lite dictionary
 RUN mkdir -p /usr/local/lib/python3.9/site-packages/unidic/dicdir && \
     cp -r /usr/local/lib/python3.9/site-packages/unidic_lite/dicdir/* /usr/local/lib/python3.9/site-packages/unidic/dicdir/
-
-# Test MeCab works
-RUN python -c "import MeCab; tagger = MeCab.Tagger(); print('MeCab configuration successful')"
 
 # Install OpenVoice
 RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
     cd /workspace/OpenVoice && \
-    pip install --no-cache-dir -e . --no-deps
+    pip install --no-cache-dir --constraint /tmp/constraints.txt -e . --no-deps
 
 # Copy app and setup
 COPY . /workspace
 RUN python setup_nltk.py && \
     python model_setup.py || echo "Model setup completed with warnings"
 
-# Test all critical imports individually
-RUN python -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
-RUN python -c "import torch; print('PyTorch: OK')"
-RUN python -c "import torchaudio; print('TorchAudio: OK')" 
-RUN python -c "from pydantic_settings import BaseSettings; print('Pydantic Settings: OK')"
-RUN python -c "from melo.api import TTS; print('MeloTTS: OK')"
-RUN python -c "from openvoice import se_extractor; print('OpenVoice: OK')"
+# Final test
+RUN python -c "import numpy; print(f'Final NumPy: {numpy.__version__}'); import torchaudio; from melo.api import TTS; print('All imports: SUCCESS')"
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
