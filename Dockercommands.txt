@@ -46,3 +46,13 @@ kubectl get pods -n june-services
 
 CERT PATH FOR BACKUP
 /root/.june-certs/
+
+
+# Create a test audio file (or use any short audio file you have)
+curl -X POST "http://localhost:8000/v1/clone" \
+  -F "text=Hello, this is a test of voice cloning with F5-TTS" \
+  -F "language=en" \
+  -F "speed=1.0" \
+  -F "reference_text=This is my voice speaking clearly" \
+  -F "reference_audio=/home/user/June/test.wav" \
+  --output cloned_voice.wav
