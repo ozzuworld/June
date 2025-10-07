@@ -1,7 +1,9 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-# Install system dependencies
+# Install Python and system dependencies
 RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
     git \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -18,7 +20,7 @@ WORKDIR /app
 
 # Copy requirements and install Python packages
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
@@ -35,5 +37,5 @@ USER sttuser
 # Expose port
 EXPOSE 8080
 
-# Start the service - FIXED: Changed from main:app to app:app
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+# Start the service
+CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
