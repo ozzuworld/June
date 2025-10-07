@@ -16,11 +16,13 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     NLTK_DATA=/tmp/nltk_data \
     PYTHONPATH="/workspace:/workspace/OpenVoice:${PYTHONPATH}"
 
-# Install ONLY essential packages (no complex ML ecosystem)
+# Install essential packages with the missing ones
 RUN pip install --no-cache-dir \
     torch==2.0.1 torchaudio==2.0.2 \
     numpy==1.24.3 \
     tqdm \
+    soundfile \
+    librosa==0.9.1 \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0
