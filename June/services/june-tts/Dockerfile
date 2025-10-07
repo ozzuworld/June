@@ -1,6 +1,6 @@
 FROM python:3.9-slim
 
-# Install system dependencies (much simpler - no MeCab!)
+# Install system dependencies (much simpler!)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git build-essential && \
     rm -rf /var/lib/apt/lists/*
@@ -16,7 +16,7 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     HF_HOME=/tmp/huggingface \
     PYTHONPATH="/workspace"
 
-# Install XTTS and dependencies (no version hell!)
+# Install XTTS and dependencies
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
@@ -26,7 +26,8 @@ RUN pip install --no-cache-dir \
     torch \
     torchaudio \
     soundfile \
-    librosa
+    librosa \
+    python-multipart
 
 # Copy app
 COPY . /workspace
