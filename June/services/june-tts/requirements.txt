@@ -23,6 +23,16 @@ inflect
 unidec
 unidic-lite==1.0.8
 
+# ===== MELO TTS DEPENDENCIES (MISSING) =====
+cn2an
+opencc-python-reimplemented
+dragonmapper
+anyascii
+jamo
+gruut[de,es,fr]
+phonemizer
+epitran
+
 # ===== MODEL MANAGEMENT =====
 huggingface_hub
 
