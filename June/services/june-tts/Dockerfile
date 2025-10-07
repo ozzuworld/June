@@ -61,20 +61,13 @@ COPY . /workspace
 RUN python setup_nltk.py && \
     python model_setup.py || echo "Model setup completed with warnings"
 
-# Test all critical imports
-RUN python -c "
-try:
-    import numpy; print(f'NumPy version: {numpy.__version__}')
-    import torch; print('PyTorch: OK')
-    import torchaudio; print('TorchAudio: OK')
-    from pydantic_settings import BaseSettings; print('Pydantic Settings: OK')
-    from melo.api import TTS; print('MeloTTS: OK')
-    from openvoice import se_extractor; print('OpenVoice: OK')
-    print('All imports successful!')
-except Exception as e:
-    print(f'Import test failed: {e}')
-    exit(1)
-"
+# Test all critical imports individually
+RUN python -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
+RUN python -c "import torch; print('PyTorch: OK')"
+RUN python -c "import torchaudio; print('TorchAudio: OK')" 
+RUN python -c "from pydantic_settings import BaseSettings; print('Pydantic Settings: OK')"
+RUN python -c "from melo.api import TTS; print('MeloTTS: OK')"
+RUN python -c "from openvoice import se_extractor; print('OpenVoice: OK')"
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
