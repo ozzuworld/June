@@ -7,13 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Create directories
-RUN mkdir -p /tmp/transformers /tmp/huggingface /cache /models && \
-    chmod 777 /tmp/transformers /tmp/huggingface /cache /models
+# Create directories (including matplotlib config)
+RUN mkdir -p /tmp/transformers /tmp/huggingface /cache /models /tmp/matplotlib && \
+    chmod 777 /tmp/transformers /tmp/huggingface /cache /models /tmp/matplotlib
 
 # Set environment variables
 ENV TRANSFORMERS_CACHE=/tmp/transformers \
     HF_HOME=/tmp/huggingface \
+    MPLCONFIGDIR=/tmp/matplotlib \
     PYTHONPATH="/workspace"
 
 # Install F5-TTS and dependencies
