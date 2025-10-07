@@ -10,12 +10,33 @@ production deployments.
 from pydantic_settings import BaseSettings
 from typing import List
 import torch
+import os
+
+
+def parse_max_file_size() -> int:
+    """Parse MAX_FILE_SIZE environment variable, handling shell expressions"""
+    env_val = os.getenv("MAX_FILE_SIZE", "10485760")  # 10MB default
+    
+    # Handle shell arithmetic like '$((20*1024*1024))'
+    if env_val.startswith('$((') and env_val.endswith('))'):
+        try:
+            # Extract the arithmetic expression
+            expr = env_val[3:-2]  # Remove '$((...))'
+            # Simple eval for basic arithmetic (safe for deployment env)
+            return eval(expr)
+        except:
+            return 10485760  # Fallback to 10MB
+    
+    try:
+        return int(env_val)
+    except:
+        return 10485760  # Fallback to 10MB
 
 
 class Settings(BaseSettings):
     """Application configuration with sensible defaults."""
 
-    # Use Pydantic v2 model_config (remove old Config class)
+    # Use Pydantic v2 model_config
     model_config = {
         "extra": "allow",
         "env_file": ".env"
@@ -25,8 +46,8 @@ class Settings(BaseSettings):
     melo_checkpoint: str = "checkpoints/melo_v2"
     converter_checkpoint: str = "checkpoints/converter_v2"
 
-    # Maximum allowed upload size for reference audio (in bytes)
-    max_file_size: int = 10 * 1024 * 1024  # 10 MB
+    # Maximum allowed upload size - parse from environment properly
+    max_file_size: int = parse_max_file_size()
 
     # Allowed audio file extensions for reference audio uploads
     allowed_audio_formats: List[str] = ["wav", "mp3", "flac", "m4a"]
