@@ -80,9 +80,10 @@ class OptimizedWhisperService:
             vad_parameters = {
                 "threshold": 0.35,                    # Optimal threshold
                 "min_silence_duration_ms": 750,       # Shorter for responsiveness  
-                "speech_pad_ms": 400,                 # Standard padding
-                "window_size_samples": 1024           # Standard window
+                "speech_pad_ms": 400                  # Standard padding
+                # Remove window_size_samples - not supported in current VAD version
             }
+
             
             logger.info(f"Transcribing with optimized settings: beam_size={config.WHISPER_BEAM_SIZE}")
             
