@@ -1,74 +1,56 @@
-"""
-Simplified TTS client for June Orchestrator
-"""
-import logging
-from typing import Dict, Any, Optional
+import os
 import httpx
-
-from app.config import get_config
+import logging
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-
 class TTSClient:
-    """Simple TTS client with error handling"""
-    
     def __init__(self):
-        config = get_config()
-        self.base_url = config["tts_base_url"]
-        self.timeout = httpx.Timeout(30.0, connect=5.0)
+        # Use internal Kubernetes service URL with HTTP
+        self.base_url = os.getenv(
+            "TTS_SERVICE_URL", 
+            "http://june-tts.june-services.svc.cluster.local:8080"  # Internal HTTP
+        )
+        
+        # Create HTTP client without SSL verification for internal calls
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=30.0,
+            verify=False  # Disable SSL verification for internal calls
+        )
+        
+        logger.info(f"🔊 TTS Client initialized: {self.base_url}")
     
     async def synthesize_speech(
-        self,
-        text: str,
+        self, 
+        text: str, 
         voice: str = "default",
         speed: float = 1.0,
         language: str = "EN"
     ) -> Dict[str, Any]:
-        """
-        Synthesize speech from text
-        
-        Returns:
-            Dict with audio_data (bytes), content_type, size_bytes, etc.
-            Or dict with error key if failed
-        """
+        """Generate speech from text"""
         try:
-            payload = {
-                "text": text,
-                "voice": voice,
-                "speed": speed,
-                "language": language,
-                "format": "wav"
-            }
+            logger.info(f"🔊 Synthesizing: {text[:50]}... (voice: {voice}, speed: {speed}, lang: {language})")
             
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                logger.debug(f"🔊 Requesting TTS: {text[:50]}...")
-                
-                response = await client.post(
-                    f"{self.base_url}/v1/tts",
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    audio_data = response.content
-                    
-                    return {
-                        "audio_data": audio_data,
-                        "content_type": response.headers.get("content-type", "audio/wav"),
-                        "size_bytes": len(audio_data),
-                        "voice": voice,
-                        "speed": speed,
-                        "language": language
-                    }
-                else:
-                    error_msg = f"TTS failed with status {response.status_code}"
-                    logger.error(f"❌ {error_msg}")
-                    return {"error": error_msg}
-        
-        except httpx.TimeoutException:
-            error_msg = "TTS request timed out"
-            logger.error(f"❌ {error_msg}")
-            return {"error": error_msg}
+            response = await self.client.post(
+                "/v1/synthesize",
+                json={
+                    "text": text,
+                    "voice": voice,
+                    "speed": speed,
+                    "language": language
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"✅ TTS success: {result.get('size_bytes', 0)} bytes")
+                return result
+            else:
+                error_msg = f"TTS API error: {response.status_code} - {response.text}"
+                logger.error(f"❌ {error_msg}")
+                return {"error": error_msg}
         
         except Exception as e:
             error_msg = f"TTS error: {str(e)}"
@@ -76,39 +58,27 @@ class TTSClient:
             return {"error": error_msg}
     
     async def get_status(self) -> Dict[str, Any]:
-        """Check TTS service status"""
+        """Get TTS service status"""
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self.base_url}/healthz")
-                
-                if response.status_code == 200:
-                    return {
-                        "available": True,
-                        "url": self.base_url,
-                        "status": "healthy"
-                    }
-                else:
-                    return {
-                        "available": False,
-                        "url": self.base_url,
-                        "error": f"Status check failed: {response.status_code}"
-                    }
+            response = await self.client.get("/healthz")
+            if response.status_code == 200:
+                return {"available": True, "status": response.json()}
+            else:
+                return {"available": False, "error": f"Status check failed: {response.status_code}"}
         
         except Exception as e:
-            logger.warning(f"⚠️ TTS status check failed: {e}")
-            return {
-                "available": False,
-                "url": self.base_url,
-                "error": str(e)
-            }
+            return {"available": False, "error": str(e)}
+    
+    async def close(self):
+        """Close the HTTP client"""
+        await self.client.aclose()
 
 
 # Singleton instance
-_tts_client: Optional[TTSClient] = None
-
+_tts_client = None
 
 def get_tts_client() -> TTSClient:
-    """Get global TTS client instance"""
+    """Get TTS client singleton"""
     global _tts_client
     if _tts_client is None:
         _tts_client = TTSClient()
