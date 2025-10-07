@@ -16,17 +16,36 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     NLTK_DATA=/tmp/nltk_data \
     PYTHONPATH="/workspace:/workspace/OpenVoice:${PYTHONPATH}"
 
-# Install standard packages from requirements.txt
-COPY requirements.txt /tmp/
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Install core ML packages first (most important versions)
+RUN pip install --no-cache-dir \
+    torch==2.0.1 torchaudio==2.0.2 \
+    numpy==1.24.3
 
-# Install OpenVoice with special handling (keep --no-deps)
+# Install core web framework
+RUN pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    pydantic==2.5.0
+
+# Install audio processing
+RUN pip install --no-cache-dir \
+    librosa==0.9.1 \
+    soundfile \
+    tqdm \
+    scipy \
+    resampy
+
+# Install model management
+RUN pip install --no-cache-dir \
+    huggingface_hub
+
+# Install MeloTTS with ALL its dependencies (remove --no-deps)
+RUN pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
+
+# Install OpenVoice with --no-deps (this one we keep controlled)
 RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
     cd /workspace/OpenVoice && \
     pip install --no-cache-dir -e . --no-deps
-
-# Install MeloTTS with special handling (keep --no-deps)
-RUN pip install --no-cache-dir --no-deps git+https://github.com/myshell-ai/MeloTTS.git
 
 # Copy your app
 COPY . /workspace
