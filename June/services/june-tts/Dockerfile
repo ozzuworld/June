@@ -1,42 +1,41 @@
-FROM python:3.10-slim
+FROM nvidia/cuda:12.1-devel-ubuntu20.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg git build-essential && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    ffmpeg \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set python3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 WORKDIR /workspace
 
-# Create directories (including matplotlib config)
-RUN mkdir -p /tmp/transformers /tmp/huggingface /cache /models /tmp/matplotlib && \
-    chmod 777 /tmp/transformers /tmp/huggingface /cache /models /tmp/matplotlib
-
-# Set environment variables
-ENV TRANSFORMERS_CACHE=/tmp/transformers \
-    HF_HOME=/tmp/huggingface \
-    MPLCONFIGDIR=/tmp/matplotlib \
-    PYTHONPATH="/workspace"
+# Install PyTorch first (CUDA 12.1)
+RUN pip3 install torch==2.4.0+cu121 torchaudio==2.4.0+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Install F5-TTS and dependencies
-RUN pip install --no-cache-dir \
-    fastapi==0.104.1 \
-    uvicorn[standard]==0.24.0 \
-    pydantic==2.5.0 \
-    pydantic-settings \
-    f5-tts \
-    torch \
-    torchaudio \
-    transformers \
-    soundfile \
-    librosa \
-    python-multipart \
-    numpy
+COPY requirements.txt .
+RUN pip3 install -r requirements.txt
 
-# Copy app
+# Copy application
 COPY . /workspace
 
-# Test F5-TTS import
-RUN python -c "from f5_tts.api import F5TTS; print('F5-TTS import: SUCCESS')"
+# Set environment variables
+ENV PYTHONPATH="/workspace"
+ENV HF_HOME="/tmp/huggingface"
+ENV TORCH_HOME="/tmp/torch"
+
+# Test F5-TTS installation
+RUN python3 -c "import f5_tts; print('F5-TTS successfully imported')"
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
