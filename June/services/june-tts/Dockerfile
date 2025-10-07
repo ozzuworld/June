@@ -6,37 +6,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Create cache directories
+# Create cache directories with proper permissions
 RUN mkdir -p /tmp/transformers /tmp/huggingface /tmp/nltk_data /cache /models && \
     chmod 777 /tmp/transformers /tmp/huggingface /tmp/nltk_data /cache /models
 
-# Set environment variables
+# Set environment variables for caching
 ENV TRANSFORMERS_CACHE=/tmp/transformers \
     HF_HOME=/tmp/huggingface \
-    NLTK_DATA=/tmp/nltk_data
+    NLTK_DATA=/tmp/nltk_data \
+    PYTHONPATH="/workspace:${PYTHONPATH}"
 
-# Install ONLY essential packages (avoid gradio dependency hell)
+# Install core ML dependencies
 RUN pip install --no-cache-dir \
     torch torchaudio \
     librosa==0.9.1 \
     numpy \
     fastapi \
-    uvicorn[standard]
+    uvicorn[standard] \
+    pydantic
 
 # Install OpenVoice
-RUN git clone https://github.com/myshell-ai/OpenVoice.git . && \
+RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
+    cd /workspace/OpenVoice && \
     pip install --no-cache-dir -e . --no-deps
 
-# Install MeloTTS core only (skip heavy dependencies)
+# Install MeloTTS dependencies
 RUN pip install --no-cache-dir \
     mecab-python3 unidic-lite pykakasi \
     && pip install --no-cache-dir --no-deps git+https://github.com/myshell-ai/MeloTTS.git
 
-# Copy your app
-COPY . /workspace/app
+# Download required NLTK data
+RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger')" || true
 
-ENV PYTHONPATH="/workspace:${PYTHONPATH}"
-WORKDIR /workspace/app
+# Copy your app to the workspace root (not /workspace/app)
+COPY . /workspace
+
+# Set working directory to workspace root where your files are
+WORKDIR /workspace
 
 EXPOSE 8080
+
+# Start uvicorn with the correct module path
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
