@@ -229,17 +229,17 @@ async def stt_webhook(
     service_auth: dict = Depends(verify_service_token)
 ):
     """
-    STT webhook endpoint
+    STT webhook endpoint with TTS generation
     
     Flow:
     1. User speaks → STT transcribes
     2. STT sends transcript here
     3. Generate AI response
-    4. Store in conversation
-    5. Return success
-    
-    Note: Frontend should poll /v1/conversations/{user_id} for response
+    4. Generate TTS audio for voice-to-voice flow
+    5. Store in conversation
+    6. Return response with audio
     """
+    start_time = time.time()
     logger.info(f"🎙️ Transcript from {transcript.user_id}: {transcript.text}")
     
     try:
@@ -258,14 +258,63 @@ async def stt_webhook(
         await add_message(transcript.user_id, "user", transcript.text)
         await add_message(transcript.user_id, "assistant", ai_response)
         
-        logger.info(f"✅ Processed transcript {transcript.transcript_id}")
+        # FIXED: Generate TTS audio for voice-to-voice flow
+        audio_data = None
+        try:
+            logger.info(f"🔊 Generating TTS audio for response: {ai_response[:50]}...")
+            tts_client = get_tts_client()
+            
+            # Map language codes if needed
+            tts_language = "EN"
+            if transcript.language:
+                lang_map = {
+                    "en": "EN", "english": "EN",
+                    "es": "ES", "spanish": "ES", 
+                    "fr": "FR", "french": "FR",
+                    "de": "DE", "german": "DE",
+                    "it": "IT", "italian": "IT",
+                    "pt": "PT", "portuguese": "PT",
+                    "zh": "ZH", "chinese": "ZH"
+                }
+                tts_language = lang_map.get(transcript.language.lower(), "EN")
+            
+            audio_result = await tts_client.synthesize_speech(
+                text=ai_response,
+                voice="default",
+                speed=1.0,
+                language=tts_language
+            )
+            
+            if "error" not in audio_result:
+                audio_b64 = base64.b64encode(audio_result["audio_data"]).decode('utf-8')
+                audio_data = {
+                    "data": audio_b64,
+                    "content_type": audio_result["content_type"],
+                    "size_bytes": audio_result["size_bytes"],
+                    "voice": audio_result.get("voice", "default"),
+                    "speed": audio_result.get("speed", 1.0),
+                    "language": audio_result.get("language", tts_language)
+                }
+                logger.info(f"✅ TTS generated: {audio_result['size_bytes']} bytes for voice response")
+            else:
+                logger.warning(f"⚠️ TTS failed: {audio_result['error']}")
+                audio_data = {"error": audio_result["error"]}
+        
+        except Exception as e:
+            logger.error(f"❌ TTS generation error: {e}")
+            audio_data = {"error": f"TTS failed: {str(e)}"}
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        logger.info(f"✅ Processed transcript {transcript.transcript_id} ({processing_time}ms)")
         
         return {
             "status": "success",
             "transcript_id": transcript.transcript_id,
             "user_id": transcript.user_id,
             "ai_response": ai_response,
-            "message": "Transcript processed successfully"
+            "audio": audio_data,  # FIXED: Include audio in response
+            "processing_time_ms": processing_time,
+            "message": "Transcript processed with voice response"
         }
     
     except Exception as e:
