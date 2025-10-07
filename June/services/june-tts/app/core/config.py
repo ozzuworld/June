@@ -9,14 +9,17 @@ production deployments.
 
 from pydantic_settings import BaseSettings
 from typing import List
-import torch  # Add this import
+import torch
 
 
 class Settings(BaseSettings):
     """Application configuration with sensible defaults."""
 
-    # Allow extra fields from environment variables (Kubernetes env vars)
-    model_config = {"extra": "allow"}
+    # Use Pydantic v2 model_config (remove old Config class)
+    model_config = {
+        "extra": "allow",
+        "env_file": ".env"
+    }
 
     # Paths to the model checkpoints (keeping for compatibility)
     melo_checkpoint: str = "checkpoints/melo_v2"
@@ -47,10 +50,6 @@ class Settings(BaseSettings):
     max_text_len: int = 2000
     cors_allow_origins: str = "*"
     log_level: str = "INFO"
-
-    class Config:
-        env_file = ".env"
-        extra = "allow"  # This allows extra environment variables
 
 
 settings = Settings()
