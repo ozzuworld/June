@@ -16,27 +16,26 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     HF_HOME=/tmp/huggingface \
     PYTHONPATH="/workspace"
 
-# Install compatible versions to avoid librosa issues
+# Install F5-TTS and dependencies
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
     pydantic-settings \
-    "librosa==0.9.1" \
-    "numpy<2.0" \
+    f5-tts \
     torch \
     torchaudio \
+    transformers \
     soundfile \
-    python-multipart
-
-# Install TTS with compatible librosa
-RUN pip install --no-cache-dir TTS==0.21.1
+    librosa \
+    python-multipart \
+    numpy
 
 # Copy app
 COPY . /workspace
 
-# Test XTTS import
-RUN python -c "from TTS.api import TTS; print('XTTS import: SUCCESS')"
+# Test F5-TTS import
+RUN python -c "from f5_tts.api import F5TTS; print('F5-TTS import: SUCCESS')"
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

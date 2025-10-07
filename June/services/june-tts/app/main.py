@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core import xtts_engine as openvoice_engine
+from app.core import f5tts_engine as openvoice_engine
 
 # Configure logging
 logging.basicConfig(
@@ -141,17 +141,17 @@ async def synthesize_speech(request: TTSRequest):
         logger.error(f"TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {str(e)}")
 
-
 @app.post("/v1/clone")
 async def clone_voice_endpoint(
     text: str = Form(...),
-    language: str = Form(default="EN"),
+    language: str = Form(default="en"),
     speed: float = Form(default=1.0),
+    reference_text: str = Form(default=""),  # New: F5-TTS specific
     reference_audio: UploadFile = File(...)
 ):
     """
-    Voice cloning endpoint
-    Clones the tone color from reference audio
+    Enhanced voice cloning with F5-TTS
+    Supports reference text for better quality
     """
     try:
         # Validate file
@@ -162,32 +162,26 @@ async def clone_voice_endpoint(
                 detail="File must be an audio file"
             )
         
-        # Validate language
-        if language.upper() not in openvoice_engine.get_supported_languages():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Language '{language}' not supported"
-            )
-        
         # Read reference audio
         reference_bytes = await reference_audio.read()
         
-        # Generate cloned audio
+        # Generate cloned audio with F5-TTS
         audio_bytes = await openvoice_engine.clone_voice(
             text=text,
             reference_audio_bytes=reference_bytes,
-            language=language.upper(),
-            speed=speed
+            language=language.lower(),
+            speed=speed,
+            reference_text=reference_text  # F5-TTS enhancement
         )
         
-        # Return audio
         return Response(
             content=audio_bytes,
             media_type="audio/wav",
             headers={
-                "Content-Disposition": f"attachment; filename=cloned_{reference_audio.filename}",
+                "Content-Disposition": f"attachment; filename=f5tts_cloned_{reference_audio.filename}",
                 "X-Language": language,
                 "X-Speed": str(speed),
+                "X-Engine": "F5-TTS",
                 "X-Cloned": "true"
             }
         )
@@ -195,7 +189,7 @@ async def clone_voice_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Voice cloning failed: {e}")
+        logger.error(f"F5-TTS voice cloning failed: {e}")
         raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
 
 
