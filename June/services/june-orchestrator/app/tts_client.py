@@ -10,14 +10,14 @@ class TTSClient:
         # Use internal Kubernetes service URL with HTTP
         self.base_url = os.getenv(
             "TTS_SERVICE_URL", 
-            "http://june-tts.june-services.svc.cluster.local:8080"  # Internal HTTP
+            "http://june-tts.june-services.svc.cluster.local:8000"  # Note: port 8000, not 8080
         )
         
         # Create HTTP client without SSL verification for internal calls
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=30.0,
-            verify=False  # Disable SSL verification for internal calls
+            verify=False
         )
         
         logger.info(f"🔊 TTS Client initialized: {self.base_url}")
@@ -33,8 +33,9 @@ class TTSClient:
         try:
             logger.info(f"🔊 Synthesizing: {text[:50]}... (voice: {voice}, speed: {speed}, lang: {language})")
             
+            # FIXED: Use /synthesize instead of /v1/synthesize
             response = await self.client.post(
-                "/v1/synthesize",
+                "/synthesize",  # Correct endpoint
                 json={
                     "text": text,
                     "voice": voice,
@@ -45,8 +46,25 @@ class TTSClient:
             
             if response.status_code == 200:
                 result = response.json()
-                logger.info(f"✅ TTS success: {result.get('size_bytes', 0)} bytes")
-                return result
+                
+                # The TTS service returns audio as base64 in 'audio_base64' field
+                if 'audio_base64' in result:
+                    # Convert base64 back to bytes for consistency
+                    import base64
+                    audio_bytes = base64.b64decode(result['audio_base64'])
+                    
+                    return {
+                        "audio_data": audio_bytes,
+                        "content_type": result.get("content_type", "audio/wav"),
+                        "size_bytes": len(audio_bytes),
+                        "voice": result.get("voice", voice),
+                        "speed": result.get("speed", speed),
+                        "language": result.get("language", language)
+                    }
+                else:
+                    logger.error(f"❌ TTS response missing audio_base64 field: {result}")
+                    return {"error": "Invalid TTS response format"}
+            
             else:
                 error_msg = f"TTS API error: {response.status_code} - {response.text}"
                 logger.error(f"❌ {error_msg}")
