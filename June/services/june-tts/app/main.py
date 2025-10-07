@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core import openvoice_engine
+from app.core import xtts_engine as openvoice_engine
 
 # Configure logging
 logging.basicConfig(

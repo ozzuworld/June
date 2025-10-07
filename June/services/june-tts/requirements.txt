@@ -1,45 +1,10 @@
-# ===== CORE WEB FRAMEWORK =====
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
-
-# ===== ML/AUDIO PROCESSING =====
-torch==2.0.1
-torchaudio==2.0.2
-numpy==1.24.3
-librosa==0.9.1
+pydantic-settings
+TTS==0.21.1
+torch
+torchaudio
 soundfile
-tqdm
-
-# ===== TEXT PROCESSING & NLP =====
-nltk
-mecab-python3
-pynini
-pypinyin
-jieba
-g2p_en
-num2words
-inflect
-unidec
-unidic-lite==1.0.8
-
-# ===== MELO TTS DEPENDENCIES (MISSING) =====
-cn2an
-opencc-python-reimplemented
-dragonmapper
-anyascii
-jamo
-gruut[de,es,fr]
-phonemizer
-epitran
-
-# ===== MODEL MANAGEMENT =====
-huggingface_hub
-
-# ===== AUDIO UTILITIES =====
-scipy
-resampy
-
-# Note: The following are installed separately in Dockerfile with special flags:
-# - OpenVoice: git+https://github.com/myshell-ai/OpenVoice.git (--no-deps)
-# - MeloTTS: git+https://github.com/myshell-ai/MeloTTS.git (--no-deps)
+librosa
+python-multipart
