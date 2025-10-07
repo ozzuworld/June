@@ -27,43 +27,36 @@ class TTSClient:
         text: str, 
         voice: str = "default",
         speed: float = 1.0,
-        language: str = "EN"
+        language: str = "en"  # Changed from "EN" to "en" to match TTS service
     ) -> Dict[str, Any]:
         """Generate speech from text"""
         try:
             logger.info(f"🔊 Synthesizing: {text[:50]}... (voice: {voice}, speed: {speed}, lang: {language})")
             
-            # FIXED: Use /synthesize instead of /v1/synthesize
+            # FIXED: Use /v1/tts instead of /synthesize
             response = await self.client.post(
-                "/synthesize",  # Correct endpoint
+                "/v1/tts",  # Correct endpoint matching your TTS service
                 json={
                     "text": text,
                     "voice": voice,
                     "speed": speed,
-                    "language": language
+                    "language": language,
+                    "format": "wav"  # Added format field as expected by TTS service
                 }
             )
             
             if response.status_code == 200:
-                result = response.json()
+                # TTS service returns raw audio bytes, not JSON
+                audio_bytes = response.content
                 
-                # The TTS service returns audio as base64 in 'audio_base64' field
-                if 'audio_base64' in result:
-                    # Convert base64 back to bytes for consistency
-                    import base64
-                    audio_bytes = base64.b64decode(result['audio_base64'])
-                    
-                    return {
-                        "audio_data": audio_bytes,
-                        "content_type": result.get("content_type", "audio/wav"),
-                        "size_bytes": len(audio_bytes),
-                        "voice": result.get("voice", voice),
-                        "speed": result.get("speed", speed),
-                        "language": result.get("language", language)
-                    }
-                else:
-                    logger.error(f"❌ TTS response missing audio_base64 field: {result}")
-                    return {"error": "Invalid TTS response format"}
+                return {
+                    "audio_data": audio_bytes,
+                    "content_type": response.headers.get("content-type", "audio/wav"),
+                    "size_bytes": len(audio_bytes),
+                    "voice": response.headers.get("X-Voice", voice),
+                    "speed": float(response.headers.get("X-Speed", speed)),
+                    "language": response.headers.get("X-Language", language)
+                }
             
             else:
                 error_msg = f"TTS API error: {response.status_code} - {response.text}"
