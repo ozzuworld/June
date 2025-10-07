@@ -1,6 +1,6 @@
 """
-F5-TTS Engine for June TTS Service
-State-of-the-art TTS with voice cloning using official F5-TTS
+F5-TTS Engine - Following Official F5-TTS Documentation
+Simple implementation using the official F5TTS API class
 """
 
 import io
@@ -8,73 +8,31 @@ import tempfile
 import os
 import logging
 from typing import Optional, List
-import torch
 import soundfile as sf
-import numpy as np
 
-# F5-TTS imports
-from f5_tts.infer.utils_infer import (
-    infer_process,
-    load_vocoder,
-    load_model,
-    preprocess_ref_audio_text,
-    remove_silence_for_generated_wav
-)
-from f5_tts.model import DiT, UNetT
+# Official F5-TTS import (as per documentation)
+from f5_tts.api import F5TTS
 
 logger = logging.getLogger(__name__)
 
-# Global model instances
-_f5tts_model = None
-_vocoder = None
-_device = None
+# Global F5TTS instance
+_f5tts: Optional[F5TTS] = None
 
-# Model configurations
-F5TTS_model_cfg = dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4)
-E2TTS_model_cfg = dict(dim=1024, depth=24, heads=16, ff_mult=4)
-
-def _get_device():
-    """Get the best available device"""
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    else:
-        return "cpu"
-
-def _load_models():
-    """Load F5-TTS models"""
-    global _f5tts_model, _vocoder, _device
+def _get_model() -> F5TTS:
+    """Get F5TTS model instance (official API)"""
+    global _f5tts
     
-    if _f5tts_model is None:
-        _device = _get_device()
-        logger.info(f"🔄 Loading F5-TTS on {_device}")
-        
+    if _f5tts is None:
+        logger.info("🔄 Loading F5-TTS using official API")
         try:
-            # Load F5-TTS model
-            ckpt_file = "hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors"
-            vocab_file = "hf://SWivid/F5-TTS/F5TTS_Base/vocab.txt"
-            
-            _f5tts_model = load_model(
-                DiT, 
-                F5TTS_model_cfg, 
-                ckpt_file, 
-                vocab_file, 
-                ode_method="euler", 
-                use_ema=True,
-                device=_device
-            )
-            
-            # Load vocoder
-            _vocoder = load_vocoder(device=_device)
-            
-            logger.info("✅ F5-TTS models loaded successfully")
-            
+            # Official F5TTS initialization (from vendor docs)
+            _f5tts = F5TTS()
+            logger.info("✅ F5-TTS loaded successfully")
         except Exception as e:
-            logger.error(f"❌ Failed to load F5-TTS models: {e}")
+            logger.error(f"❌ Failed to load F5-TTS: {e}")
             raise RuntimeError(f"Could not load F5-TTS: {e}")
     
-    return _f5tts_model, _vocoder
+    return _f5tts
 
 async def synthesize_tts(
     text: str,
@@ -83,38 +41,24 @@ async def synthesize_tts(
     **kwargs
 ) -> bytes:
     """
-    Standard TTS synthesis using F5-TTS
+    Standard TTS synthesis using F5-TTS official API
     """
     try:
-        model, vocoder = _load_models()
+        model = _get_model()
         
         logger.info(f"🔊 Synthesizing: {text[:50]}...")
         
-        # For basic TTS, we use a default reference
-        # In production, you might want to have a library of reference voices
-        ref_audio_orig = torch.zeros(24000 * 3).unsqueeze(0)  # 3 seconds of silence
-        ref_text = "This is a clear reference voice for text to speech synthesis."
-        
-        # Preprocess
-        ref_audio, ref_text = preprocess_ref_audio_text(ref_audio_orig, ref_text, device=_device)
-        
-        # Generate audio
-        final_wave, final_sample_rate, combined_spectrogram = infer_process(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
+        # Use F5TTS official API method
+        # For basic TTS, F5-TTS still needs reference audio
+        # Using the built-in example reference
+        wav, sr, spect = model.infer(
             gen_text=text,
-            model_obj=model,
-            vocoder=vocoder,
-            mel_spec_type="vocos",
-            speed=speed,
-            device=_device
+            # F5-TTS will use default reference if not provided
+            speed=speed
         )
         
-        # Post-process
-        final_wave = remove_silence_for_generated_wav(final_wave)
-        
         # Convert to bytes
-        return _audio_to_bytes(final_wave, final_sample_rate)
+        return _audio_to_bytes(wav, sr)
         
     except Exception as e:
         logger.error(f"❌ F5-TTS synthesis error: {e}")
@@ -128,10 +72,10 @@ async def clone_voice(
     reference_text: str = ""
 ) -> bytes:
     """
-    Voice cloning with F5-TTS
+    Voice cloning with F5-TTS official API
     """
     try:
-        model, vocoder = _load_models()
+        model = _get_model()
         
         # Save reference audio to temp file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
@@ -139,40 +83,24 @@ async def clone_voice(
             ref_file.write(reference_audio_bytes)
         
         try:
-            # Load reference audio
-            ref_audio_orig, sr = sf.read(ref_path)
-            ref_audio_orig = torch.FloatTensor(ref_audio_orig)
-            
-            # Use provided reference text or default
+            # Use default reference text if none provided
             if not reference_text.strip():
-                reference_text = "This is the reference audio for voice cloning."
+                reference_text = "This is a reference audio for voice cloning."
             
-            logger.info(f"🔊 Cloning voice: {text[:50]}...")
+            logger.info(f"🎭 Cloning voice: {text[:50]}...")
             
-            # Preprocess
-            ref_audio, ref_text = preprocess_ref_audio_text(
-                ref_audio_orig, reference_text, device=_device
-            )
-            
-            # Generate cloned audio
-            final_wave, final_sample_rate, combined_spectrogram = infer_process(
-                ref_audio=ref_audio,
-                ref_text=ref_text,
+            # F5TTS official API for voice cloning
+            wav, sr, spect = model.infer(
+                ref_file=ref_path,
+                ref_text=reference_text,
                 gen_text=text,
-                model_obj=model,
-                vocoder=vocoder,
-                mel_spec_type="vocos",
-                speed=speed,
-                device=_device
+                speed=speed
             )
             
-            # Post-process
-            final_wave = remove_silence_for_generated_wav(final_wave)
-            
-            return _audio_to_bytes(final_wave, final_sample_rate)
+            return _audio_to_bytes(wav, sr)
             
         finally:
-            # Cleanup
+            # Cleanup temp file
             if os.path.exists(ref_path):
                 os.unlink(ref_path)
                 
@@ -180,7 +108,7 @@ async def clone_voice(
         logger.error(f"❌ F5-TTS voice cloning error: {e}")
         raise
 
-def _audio_to_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> bytes:
+def _audio_to_bytes(audio_array, sample_rate: int) -> bytes:
     """Convert audio array to WAV bytes"""
     buf = io.BytesIO()
     sf.write(buf, audio_array, samplerate=sample_rate, format="WAV", subtype="PCM_16")
@@ -190,7 +118,7 @@ def _audio_to_bytes(audio_array: np.ndarray, sample_rate: int = 24000) -> bytes:
 def warmup_models() -> None:
     """Load models at startup"""
     try:
-        _load_models()
+        _get_model()
         logger.info("✅ F5-TTS models warmed up successfully")
     except Exception as e:
         logger.error(f"⚠️ F5-TTS warmup failed: {e}")
@@ -200,26 +128,24 @@ def get_supported_languages() -> List[str]:
     """F5-TTS supported languages"""
     return [
         "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", 
-        "zh-cn", "zh-tw", "ja", "ko", "hi", "th", "vi", "id", "ms", "tl"
+        "zh-cn", "zh-tw", "ja", "ko", "hi", "th", "vi", "id", "ms"
     ]
 
 def get_available_speakers() -> dict:
     """F5-TTS capabilities"""
     return {
-        "message": "F5-TTS: State-of-the-art voice cloning with flow matching",
-        "engine": "F5-TTS v1.1.9",
+        "message": "F5-TTS: Official API implementation",
+        "engine": "F5-TTS Official",
         "voice_cloning": "Zero-shot voice cloning with reference audio",
         "supported_languages": get_supported_languages(),
         "features": {
             "zero_shot_cloning": True,
             "multilingual": True,
-            "real_time": True,
-            "high_quality": True
+            "official_api": True
         },
         "recommendations": {
             "ref_audio_length": "3-15 seconds",
             "ref_audio_quality": "Clear speech, minimal noise",
-            "ref_text_accuracy": "Accurate transcription improves quality",
-            "supported_formats": ["wav", "mp3", "flac", "m4a"]
+            "ref_text_accuracy": "Accurate transcription improves quality"
         }
     }
