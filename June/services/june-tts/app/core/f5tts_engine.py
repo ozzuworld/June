@@ -10,37 +10,65 @@ from typing import Optional
 import torch
 import soundfile as sf
 import numpy as np
-from f5_tts.api import F5TTS
-from f5_tts.model import DiT, UNetT
-from f5_tts.infer.utils_infer import (
-    load_model,
-    infer_process,
-    remove_silence_for_generated_wav
-)
+
+# Import the correct F5-TTS components based on current API
+try:
+    from f5_tts.api import F5TTS
+except ImportError:
+    # Fallback for different F5-TTS versions
+    from f5_tts.infer.utils_infer import load_model
+    from f5_tts.model import DiT
 
 from .config import settings
 
 # Global F5-TTS instance
 _f5tts: Optional[F5TTS] = None
+_device = None
 
 def _load_model() -> F5TTS:
     """Load F5-TTS model"""
-    global _f5tts
+    global _f5tts, _device
     
     if _f5tts is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Initialize F5-TTS
-        _f5tts = F5TTS(
-            model_type="F5-TTS",  # or "E2-TTS" for faster inference
-            ckpt_file="",  # Uses default pretrained model
-            vocab_file="",  # Uses default vocab
-            ode_method="euler",  # Sampling method
-            use_ema=True,
-            device=device
-        )
-        
-        print(f"✅ F5-TTS loaded on {device}")
+        try:
+            # Updated F5-TTS initialization (without model_type parameter)
+            _f5tts = F5TTS(
+                ckpt_file="",  # Uses default pretrained model
+                vocab_file="",  # Uses default vocab
+                ode_method="euler",  # Sampling method
+                use_ema=True,
+                device=_device
+            )
+            print(f"✅ F5-TTS loaded on {_device}")
+        except Exception as e:
+            print(f"❌ Failed to load F5-TTS with new API, trying alternative: {e}")
+            
+            # Fallback for older F5-TTS versions or different installations
+            try:
+                # Alternative initialization method
+                model_cfg = {
+                    "dim": 1024, 
+                    "depth": 22, 
+                    "heads": 16, 
+                    "ff_mult": 2, 
+                    "text_dim": 512, 
+                    "conv_layers": 4
+                }
+                
+                # Load model using utils_infer
+                _f5tts = load_model(
+                    DiT, 
+                    model_cfg, 
+                    ckpt_file="",  # Will download default
+                    vocab_file="",
+                    device=_device
+                )
+                print(f"✅ F5-TTS loaded with fallback method on {_device}")
+            except Exception as e2:
+                print(f"❌ Both F5-TTS loading methods failed: {e2}")
+                raise RuntimeError(f"Could not load F5-TTS model: {e2}")
     
     return _f5tts
 
@@ -60,25 +88,38 @@ async def synthesize_tts(
     """
     Standard TTS synthesis using F5-TTS default voice
     """
-    f5tts = _load_model()
-    
     try:
-        # Generate audio with F5-TTS
-        # For basic TTS without reference audio, use default speaker
-        audio_array, sample_rate = f5tts.infer(
-            text=text,
-            ref_audio=None,  # No reference for standard TTS
-            ref_text="",     # No reference text needed
-            speed=speed
-        )
+        f5tts = _load_model()
         
-        # Remove silence and normalize
-        audio_array = remove_silence_for_generated_wav(audio_array)
+        # For F5-TTS, we need reference audio even for "standard" TTS
+        # Use a default reference for basic synthesis
+        default_ref_text = "Hello, this is a reference audio for text to speech synthesis."
+        
+        # Generate audio with F5-TTS
+        if hasattr(f5tts, 'infer'):
+            # New API method
+            audio_array, sample_rate = f5tts.infer(
+                text=text,
+                ref_audio=None,  # Will use default reference
+                ref_text=default_ref_text,
+                speed=speed
+            )
+        else:
+            # Fallback to direct model inference
+            raise NotImplementedError("F5-TTS model does not have infer method")
+        
+        # Post-process if possible
+        try:
+            from f5_tts.infer.utils_infer import remove_silence_for_generated_wav
+            audio_array = remove_silence_for_generated_wav(audio_array)
+        except ImportError:
+            # If utils not available, use audio as-is
+            pass
         
         return _audio_to_bytes(audio_array, sample_rate)
     
     except Exception as e:
-        print(f"F5-TTS synthesis error: {e}")
+        print(f"❌ F5-TTS synthesis error: {e}")
         raise
 
 async def clone_voice(
@@ -90,47 +131,52 @@ async def clone_voice(
 ) -> bytes:
     """
     Voice cloning with F5-TTS
-    
-    Args:
-        text: Text to synthesize
-        reference_audio_bytes: Reference audio for voice cloning
-        language: Language (F5-TTS is multilingual by default)
-        speed: Speech speed
-        reference_text: Optional transcription of reference audio (improves quality)
     """
-    f5tts = _load_model()
-    
-    # Save reference audio to temp file
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
-        ref_path = ref_file.name
-        ref_file.write(reference_audio_bytes)
-    
     try:
-        # Load reference audio
-        ref_audio, ref_sr = sf.read(ref_path)
+        f5tts = _load_model()
         
-        # If no reference text provided, use a default
-        if not reference_text.strip():
-            reference_text = "This is a reference audio for voice cloning."
+        # Save reference audio to temp file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ref_file:
+            ref_path = ref_file.name
+            ref_file.write(reference_audio_bytes)
         
-        # Generate cloned audio
-        audio_array, sample_rate = f5tts.infer(
-            text=text,
-            ref_audio=ref_audio,
-            ref_text=reference_text,
-            speed=speed,
-            cross_fade_duration=0.15  # Smooth transitions
-        )
+        try:
+            # Load reference audio
+            ref_audio, ref_sr = sf.read(ref_path)
+            
+            # If no reference text provided, use a default
+            if not reference_text.strip():
+                reference_text = "This is a reference audio for voice cloning."
+            
+            # Generate cloned audio
+            if hasattr(f5tts, 'infer'):
+                audio_array, sample_rate = f5tts.infer(
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=reference_text,
+                    speed=speed,
+                    cross_fade_duration=0.15  # Smooth transitions
+                )
+            else:
+                raise NotImplementedError("F5-TTS model does not have infer method")
+            
+            # Post-process: remove silence if utils available
+            try:
+                from f5_tts.infer.utils_infer import remove_silence_for_generated_wav
+                audio_array = remove_silence_for_generated_wav(audio_array)
+            except ImportError:
+                pass
+            
+            return _audio_to_bytes(audio_array, sample_rate)
         
-        # Post-process: remove silence
-        audio_array = remove_silence_for_generated_wav(audio_array)
-        
-        return _audio_to_bytes(audio_array, sample_rate)
+        finally:
+            # Cleanup temp file
+            if os.path.exists(ref_path):
+                os.unlink(ref_path)
     
-    finally:
-        # Cleanup temp file
-        if os.path.exists(ref_path):
-            os.unlink(ref_path)
+    except Exception as e:
+        print(f"❌ F5-TTS voice cloning error: {e}")
+        raise
 
 def warmup_models() -> None:
     """Load models at startup"""
@@ -139,6 +185,7 @@ def warmup_models() -> None:
         print("✅ F5-TTS models warmed up successfully")
     except Exception as e:
         print(f"⚠️ F5-TTS warmup failed: {e}")
+        raise
 
 def get_supported_languages() -> list[str]:
     """F5-TTS supported languages (multilingual model)"""
