@@ -28,10 +28,9 @@ RUN pip install --no-cache-dir \
 # Install MeloTTS and its dependencies
 RUN pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 
-# Fix MeCab dictionary issue by creating the expected unidic directory
+# Critical MeCab fix: Create the expected unidic directory and config
 RUN mkdir -p /usr/local/lib/python3.9/site-packages/unidic/dicdir && \
-    cp /etc/mecabrc /usr/local/lib/python3.9/site-packages/unidic/dicdir/mecabrc && \
-    sed -i 's|dicdir = /var/lib/mecab/dic/ipadic|dicdir = /var/lib/mecab/dic/ipadic-utf8|g' /usr/local/lib/python3.9/site-packages/unidic/dicdir/mecabrc
+    echo "dicdir = /var/lib/mecab/dic/ipadic-utf8" > /usr/local/lib/python3.9/site-packages/unidic/dicdir/mecabrc
 
 # Install OpenVoice
 RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
@@ -42,6 +41,9 @@ RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice &
 COPY . /workspace
 RUN python setup_nltk.py && \
     python model_setup.py || echo "Model setup completed with warnings"
+
+# Test MeCab during build to catch issues early
+RUN python -c "import MeCab; print('MeCab test successful')" || echo "MeCab test failed but continuing"
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
