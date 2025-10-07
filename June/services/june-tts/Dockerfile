@@ -16,14 +16,18 @@ ENV TRANSFORMERS_CACHE=/tmp/transformers \
     NLTK_DATA=/tmp/nltk_data \
     PYTHONPATH="/workspace:${PYTHONPATH}"
 
-# Install core ML dependencies
+# Install core ML dependencies INCLUDING NLTK
 RUN pip install --no-cache-dir \
     torch torchaudio \
     librosa==0.9.1 \
     numpy \
+    nltk \
     fastapi \
     uvicorn[standard] \
     pydantic
+
+# Download NLTK data (this will work now since NLTK is installed)
+RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger', download_dir='/tmp/nltk_data'); nltk.download('punkt', download_dir='/tmp/nltk_data'); nltk.download('cmudict', download_dir='/tmp/nltk_data')" || true
 
 # Install OpenVoice
 RUN git clone https://github.com/myshell-ai/OpenVoice.git /workspace/OpenVoice && \
@@ -35,10 +39,7 @@ RUN pip install --no-cache-dir \
     mecab-python3 unidic-lite pykakasi \
     && pip install --no-cache-dir --no-deps git+https://github.com/myshell-ai/MeloTTS.git
 
-# Download required NLTK data
-RUN python -c "import nltk; nltk.download('averaged_perceptron_tagger')" || true
-
-# Copy your app to the workspace root (not /workspace/app)
+# Copy your app to the workspace root
 COPY . /workspace
 
 # Set working directory to workspace root where your files are
