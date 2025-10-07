@@ -31,20 +31,23 @@ RUN pip install --no-cache-dir git+https://github.com/myshell-ai/MeloTTS.git
 # Fix botocore version incompatibility 
 RUN pip install --no-cache-dir --upgrade botocore>=1.20.0
 
-# Install OpenVoice dependencies that were skipped by --no-deps
+# Install ALL OpenVoice dependencies that were skipped by --no-deps
 RUN pip install --no-cache-dir \
     faster-whisper \
     onnxruntime \
-    pydub
+    pydub \
+    whisper-timestamped \
+    openai-whisper \
+    ffmpeg-python
 
 # CRITICAL FIX: Copy unidic_lite dictionary to the expected unidic location
 RUN mkdir -p /usr/local/lib/python3.9/site-packages/unidic/dicdir && \
     cp -r /usr/local/lib/python3.9/site-packages/unidic_lite/dicdir/* /usr/local/lib/python3.9/site-packages/unidic/dicdir/
 
-# Test MeCab works now
+# Test MeCab works
 RUN python -c "import MeCab; tagger = MeCab.Tagger(); print('MeCab configuration successful')"
 
-# Test the problematic import
+# Test MeloTTS import
 RUN python -c "from melo.api import TTS as MeloTTS; print('MeloTTS import successful')"
 
 # Install OpenVoice with --no-deps (but dependencies installed above)
