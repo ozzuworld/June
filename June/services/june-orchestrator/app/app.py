@@ -433,6 +433,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
     """Enhanced WebSocket endpoint with audio input and output streaming"""
     user = None
     session_id = None
+    audio_task = None
     
     try:
         # Verify authentication
@@ -483,6 +484,9 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
                         "message": "Invalid message format",
                         "timestamp": datetime.utcnow().isoformat()
                     })
+            except Exception as e:
+                logger.error(f"Error in message loop for {session_id[:8]}...: {e}")
+                break
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket {session_id[:8] if session_id else 'unknown'}... disconnected normally")
@@ -491,7 +495,7 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
     finally:
         if session_id:
             # Cancel audio task
-            if 'audio_task' in locals():
+            if audio_task:
                 audio_task.cancel()
             await manager.disconnect(session_id)
 
