@@ -42,6 +42,7 @@ kubectl rollout status deployment june-orchestrator -n june-services
 
 # Verify pods are running with new secret
 kubectl get pods -n june-services
+!
 
 
 CERT PATH FOR BACKUP
