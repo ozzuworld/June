@@ -13,9 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# Your existing imports
-from app.auth import authenticate_user, get_user_by_token, create_access_token, verify_token
-from app.ai_service import get_ai_service, AIService
+# Your actual auth imports (from your existing auth.py)
+from app.auth import get_keycloak_user, verify_keycloak_token, get_shared_auth_user, get_anonymous_user
+from app.ai_service import get_ai_service, AIService  
 from app.tts_client import get_tts_client
 
 # Configure logging
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="June Orchestrator", 
-    description="Advanced AI Voice Chat Orchestrator with Real-time WebSocket Support",
+    description="Advanced AI Voice Chat Orchestrator with Real-time WebSocket Support + Keycloak Auth",
     version="6.0.0"
 )
 
@@ -37,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# WebSocket connection manager (NEW FEATURE)
+# WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -66,16 +66,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Your existing models
-class UserCreate(BaseModel):
-    username: str
-    email: str
-    password: str
-
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
+# Pydantic models
 class ChatRequest(BaseModel):
     message: str
     user_id: Optional[str] = "anonymous"
@@ -93,12 +84,30 @@ class TTSRequest(BaseModel):
     language: str = "en"
     speed: float = 1.0
 
-# NEW WebSocket models
+# WebSocket models
 class AudioMessage(BaseModel):
     type: str
     audio_data: Optional[str] = None
     text: Optional[str] = None
     user_id: Optional[str] = "anonymous"
+
+# Auth dependency functions
+async def get_current_user_from_token(authorization: str = None):
+    """Get current user from Keycloak token"""
+    if not authorization:
+        return get_anonymous_user()
+    
+    try:
+        if authorization.startswith("Bearer "):
+            token = authorization[7:]
+            if verify_keycloak_token(token):
+                user = get_keycloak_user(token)
+                if user:
+                    return user
+        return get_anonymous_user()
+    except Exception as e:
+        logger.warning(f"⚠️ Token verification failed: {e}")
+        return get_anonymous_user()
 
 # Startup event
 @app.on_event("startup")
@@ -119,7 +128,7 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"⚠️ TTS service check failed: {e}")
         
-    logger.info("✅ Orchestrator ready with WebSocket support")
+    logger.info("✅ Orchestrator ready with WebSocket + Keycloak Auth")
 
 # Health endpoints
 @app.get("/healthz")
@@ -150,10 +159,11 @@ async def get_status():
             "provider": "gemini" if ai_available else "none"
         },
         "tts_service": tts_status,
-        "stt_service": {"available": True},  # Assuming available
+        "stt_service": {"available": True},
+        "auth_service": {"provider": "keycloak", "available": True},
         "websocket_connections": len(manager.active_connections),
         "features": {
-            "authentication": True,
+            "keycloak_authentication": True,
             "websocket_voice_chat": True,
             "http_api": True,
             "stt_webhook": True
@@ -161,62 +171,46 @@ async def get_status():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# Your existing authentication endpoints
-@app.post("/v1/auth/register")
-async def register(user: UserCreate):
+# Auth endpoint (simplified - Keycloak handles the heavy lifting)
+@app.get("/v1/auth/user")
+async def get_user_info(authorization: str = None):
+    """Get current user info from Keycloak token"""
     try:
-        # Your existing registration logic
-        new_user = await authenticate_user(user.username, user.password, create=True, email=user.email)
-        if new_user:
-            access_token = create_access_token(data={"sub": user.username})
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "user": {
-                    "username": user.username,
-                    "email": user.email
-                }
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Registration failed")
+        user = await get_current_user_from_token(authorization)
+        if user.get("username") == "anonymous":
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        return {
+            "user": user,
+            "authenticated": True,
+            "provider": "keycloak"
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Registration error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=500, detail="Authentication service error")
 
-@app.post("/v1/auth/login")
-async def login(user: UserLogin):
-    try:
-        authenticated_user = await authenticate_user(user.username, user.password)
-        if authenticated_user:
-            access_token = create_access_token(data={"sub": user.username})
-            return {
-                "access_token": access_token,
-                "token_type": "bearer",
-                "user": authenticated_user
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password"
-            )
-    except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Your existing chat endpoint
+# Chat endpoint with auth
 @app.post("/v1/chat")
 async def chat(request: ChatRequest):
-    """Enhanced HTTP chat endpoint"""
+    """Enhanced HTTP chat endpoint with auth support"""
     try:
         start_time = time.time()
         
-        # Get user info (if available)
+        # Get user info
         user_info = "anonymous"
-        try:
-            if request.user_id and request.user_id != "anonymous":
+        if request.user_id and request.user_id != "anonymous":
+            try:
+                # Try to get user from shared auth or use provided user_id
+                user_data = get_shared_auth_user(request.user_id)
+                if user_data:
+                    user_info = user_data.get("username", request.user_id)
+                else:
+                    user_info = request.user_id
+            except:
                 user_info = request.user_id
-        except:
-            pass
+                logger.warning(f"⚠️ Shared auth not available for user tokens - returning {user_info}")
             
         logger.info(f"💬 Chat from {user_info}: {request.message[:50]}...")
         
@@ -242,7 +236,7 @@ async def chat(request: ChatRequest):
         logger.error(f"❌ Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Your existing STT webhook
+# STT webhook (keeping your existing logic)
 @app.post("/v1/stt/webhook")
 async def stt_webhook(request: dict):
     """Process STT webhook and generate TTS response"""
@@ -276,8 +270,6 @@ async def stt_webhook(request: dict):
             
             if "audio_data" in tts_result:
                 logger.info(f"✅ TTS audio generated successfully")
-                # Here you can save the audio file or send it to your frontend
-                # For now, we'll just log success
             else:
                 logger.warning(f"⚠️ TTS failed: {tts_result.get('error', 'Unknown error')}")
                 
@@ -299,7 +291,7 @@ async def stt_webhook(request: dict):
         logger.error(f"❌ STT webhook processing failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Your existing TTS endpoint
+# TTS endpoint
 @app.post("/v1/tts/generate")
 async def generate_tts(request: TTSRequest):
     """Generate TTS audio"""
@@ -329,11 +321,21 @@ async def generate_tts(request: TTSRequest):
         logger.error(f"❌ TTS generation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# NEW WebSocket endpoint for real-time voice chat
+# WebSocket endpoint with optional auth
 @app.websocket("/ws/voice-chat")
-async def websocket_voice_chat(websocket: WebSocket):
+async def websocket_voice_chat(websocket: WebSocket, token: str = None):
     session_id = str(uuid.uuid4())
-    user_id = "anonymous"  # Can be enhanced with auth token
+    user_id = "anonymous"
+    
+    # Try to authenticate WebSocket connection
+    if token:
+        try:
+            if verify_keycloak_token(token):
+                user_data = get_keycloak_user(token)
+                if user_data:
+                    user_id = user_data.get("preferred_username", user_data.get("username", "anonymous"))
+        except Exception as e:
+            logger.warning(f"⚠️ WebSocket auth failed: {e}")
     
     await manager.connect(websocket, session_id, user_id)
     
@@ -341,17 +343,17 @@ async def websocket_voice_chat(websocket: WebSocket):
     await manager.send_personal_message({
         "type": "connection_established",
         "session_id": session_id,
-        "message": "Connected to June AI Assistant",
+        "user_id": user_id,
+        "authenticated": user_id != "anonymous",
+        "message": f"Connected to June AI Assistant as {user_id}",
         "features": ["voice_input", "text_input", "audio_output", "real_time"],
         "timestamp": datetime.utcnow().isoformat()
     }, session_id)
     
     try:
         while True:
-            # Receive message from frontend
             data = await websocket.receive_text()
             message = json.loads(data)
-            
             await process_websocket_message(message, session_id, user_id)
             
     except WebSocketDisconnect:
@@ -405,7 +407,6 @@ async def process_audio_input(message: dict, session_id: str, user_id: str, star
     
     logger.info(f"🎙️ Processing audio from {user_id} (session: {session_id[:8]}...)")
     
-    # Send status update
     await manager.send_personal_message({
         "type": "processing_status",
         "status": "transcribing",
@@ -413,13 +414,12 @@ async def process_audio_input(message: dict, session_id: str, user_id: str, star
         "timestamp": datetime.utcnow().isoformat()
     }, session_id)
     
-    # For now, simulate STT - you can integrate your STT service here
-    # TODO: Add STT service integration
+    # TODO: Integrate with your STT service
+    # For now, simulate transcript
     transcript = "This is a simulated transcript from your audio input"
     
     logger.info(f"🎙️ Transcript from {user_id}: {transcript}")
     
-    # Send transcript to user
     await manager.send_personal_message({
         "type": "transcript",
         "text": transcript,
@@ -428,7 +428,6 @@ async def process_audio_input(message: dict, session_id: str, user_id: str, star
         "timestamp": datetime.utcnow().isoformat()
     }, session_id)
     
-    # Process the transcript as text
     await process_text_message(transcript, session_id, user_id, start_time)
 
 async def process_text_input(message: dict, session_id: str, user_id: str, start_time: float):
@@ -442,7 +441,6 @@ async def process_text_input(message: dict, session_id: str, user_id: str, start
 async def process_text_message(text: str, session_id: str, user_id: str, start_time: float):
     """Process text message and generate AI response with TTS"""
     
-    # Send thinking status
     await manager.send_personal_message({
         "type": "processing_status",
         "status": "thinking",
@@ -456,11 +454,10 @@ async def process_text_message(text: str, session_id: str, user_id: str, start_t
         if ai_service and ai_service.is_available():
             ai_response = await ai_service.generate_response(text, user_id)
         else:
-            ai_response = f"I received your message: '{text[:50]}...' I'm currently in basic mode without AI capabilities."
+            ai_response = f"I received your message: '{text[:50]}...' I'm currently in basic mode."
             
         logger.info(f"🤖 AI response to {user_id}: {ai_response[:100]}...")
         
-        # Send text response
         await manager.send_personal_message({
             "type": "text_response",
             "text": ai_response,
@@ -471,7 +468,7 @@ async def process_text_message(text: str, session_id: str, user_id: str, start_t
         logger.error(f"❌ AI generation failed: {e}")
         ai_response = "I'm having trouble generating a response right now. Please try again."
     
-    # Send TTS status
+    # Generate TTS
     await manager.send_personal_message({
         "type": "processing_status",
         "status": "generating_audio",
@@ -479,7 +476,6 @@ async def process_text_message(text: str, session_id: str, user_id: str, start_t
         "timestamp": datetime.utcnow().isoformat()
     }, session_id)
     
-    # Generate TTS audio
     try:
         tts_client = get_tts_client()
         tts_result = await tts_client.synthesize_speech(
@@ -492,7 +488,6 @@ async def process_text_message(text: str, session_id: str, user_id: str, start_t
         if "audio_data" in tts_result:
             logger.info(f"🔊 TTS generated for {user_id}")
             
-            # Send audio response
             await manager.send_personal_message({
                 "type": "audio_response",
                 "audio_data": tts_result["audio_data"],
@@ -518,7 +513,6 @@ async def process_text_message(text: str, session_id: str, user_id: str, start_t
             "timestamp": datetime.utcnow().isoformat()
         }, session_id)
     
-    # Send completion status
     processing_time = int((time.time() - start_time) * 1000)
     await manager.send_personal_message({
         "type": "processing_complete",
