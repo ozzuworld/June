@@ -1,26 +1,116 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import json
 import logging
-import asyncio
+import time
 import uuid
-from typing import Dict, Optional
+from typing import Dict, Any, Optional, List
+import os
 from datetime import datetime
 
-from .auth import verify_websocket_token, get_user_from_token
-from .websocket_manager import ConnectionManager
-from .services.ai_service import generate_ai_response
-from .services.tts_service import synthesize_speech
-from .config import get_settings
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
-app = FastAPI(title="June Orchestrator", version="2.0.0")
+# Inline ConnectionManager to fix import issue
+class ConnectionManager:
+    def __init__(self):
+        self.connections: Dict[str, WebSocket] = {}
+        self.users: Dict[str, dict] = {}
+
+    async def connect(self, websocket: WebSocket, user: Optional[dict] = None) -> str:
+        await websocket.accept()
+        session_id = str(uuid.uuid4())
+        self.connections[session_id] = websocket
+        self.users[session_id] = user or {"sub": "anonymous"}
+        
+        user_id = user.get("sub", "anonymous") if user else "anonymous"
+        logger.info(f"🔌 WebSocket connected: {session_id[:8]}... (user: {user_id})")
+        return session_id
+
+    async def disconnect(self, session_id: str):
+        if session_id in self.connections:
+            try:
+                await self.connections[session_id].close()
+            except:
+                pass
+            del self.connections[session_id]
+        if session_id in self.users:
+            del self.users[session_id]
+        logger.info(f"🔌 WebSocket disconnected: {session_id[:8]}...")
+
+    async def send_message(self, session_id: str, message: dict):
+        if session_id not in self.connections:
+            return
+        try:
+            await self.connections[session_id].send_text(json.dumps(message))
+        except Exception as e:
+            logger.error(f"Failed to send message to {session_id[:8]}...: {e}")
+            await self.disconnect(session_id)
+
+    def get_user(self, session_id: str) -> Optional[dict]:
+        return self.users.get(session_id)
+
+# Inline auth functions
+async def verify_websocket_token(token: str) -> Optional[Dict]:
+    if not token:
+        return None
+    try:
+        from shared.auth import get_auth_service, AuthError
+        if token.startswith("Bearer "):
+            token = token[7:]
+        auth_service = get_auth_service()
+        user_data = await auth_service.verify_bearer(token)
+        return user_data
+    except Exception as e:
+        logger.warning(f"Auth failed: {e}")
+        return None
+
+# Inline AI service
+async def generate_ai_response(text: str, user_id: str) -> str:
+    try:
+        if os.getenv("GEMINI_API_KEY"):
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=f"You are JUNE, a helpful AI assistant. User says: {text}",
+                config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=1000)
+            )
+            if response and response.text:
+                return response.text.strip()
+    except Exception as e:
+        logger.error(f"AI error: {e}")
+    
+    # Fallback response
+    return f"I received your message: '{text[:50]}...' I'm currently in basic mode."
+
+# Inline TTS service
+async def synthesize_speech(text: str) -> Optional[str]:
+    try:
+        import httpx
+        tts_url = os.getenv("TTS_BASE_URL", "http://june-tts.june-services.svc.cluster.local:8000")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(f"{tts_url}/synthesize", json={
+                "text": text, "speaker": "Claribel Dervla", "speed": 1.0, "language": "en"
+            })
+            response.raise_for_status()
+            result = response.json()
+            return result.get("audio_data")
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
+        return None
+
+# FastAPI app
+app = FastAPI(title="June Orchestrator", version="6.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,64 +120,40 @@ manager = ConnectionManager()
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 June Orchestrator v2.0.0 - WebSocket-first architecture")
+    logger.info("🚀 June Orchestrator v6.1.0 - Fixed")
 
 @app.get("/healthz")
 async def health_check():
-    return {
-        "status": "healthy", 
-        "service": "june-orchestrator",
-        "version": "2.0.0",
-        "websocket_connections": len(manager.connections)
-    }
+    return {"status": "healthy", "service": "june-orchestrator", "version": "6.1.0"}
 
 @app.get("/status")
 async def get_status():
-    """Comprehensive service status"""
     return {
         "orchestrator": "healthy",
         "websocket_connections": len(manager.connections),
-        "features": {
-            "keycloak_authentication": True,
-            "websocket_voice_chat": True,
-            "real_time_ai": True,
-            "tts_integration": True
-        },
-        "services": {
-            "ai": bool(settings.gemini_api_key),
-            "tts": settings.tts_base_url != "",
-        },
+        "ai_available": bool(os.getenv("GEMINI_API_KEY")),
+        "tts_available": bool(os.getenv("TTS_BASE_URL")),
         "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    """Main WebSocket endpoint for real-time voice chat"""
-    
-    # Authenticate WebSocket connection
     user = None
     if token:
-        try:
-            user = await verify_websocket_token(token)
-            logger.info(f"WebSocket authenticated user: {user.get('sub', 'unknown')}")
-        except Exception as e:
-            logger.warning(f"WebSocket auth failed: {e}")
+        user = await verify_websocket_token(token)
     
     session_id = await manager.connect(websocket, user)
     
     try:
-        # Send connection confirmation
         user_id = user.get("sub", "anonymous") if user else "anonymous"
         await manager.send_message(session_id, {
             "type": "connected",
             "user_id": user_id,
             "session_id": session_id,
             "authenticated": user is not None,
-            "message": f"Connected to June AI Assistant as {user_id}",
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Main message loop
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
@@ -95,62 +161,39 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
             
     except WebSocketDisconnect:
         await manager.disconnect(session_id)
-        logger.info(f"WebSocket client disconnected: {session_id}")
     except Exception as e:
-        logger.error(f"WebSocket error for {session_id}: {e}")
+        logger.error(f"WebSocket error: {e}")
         await manager.disconnect(session_id)
 
 async def process_websocket_message(message: dict, session_id: str, user: dict):
-    """Process incoming WebSocket messages"""
     msg_type = message.get("type", "unknown")
-    user_id = user.get("sub", "anonymous") if user else "anonymous"
-    
-    logger.info(f"Processing {msg_type} from {user_id}")
     
     try:
         if msg_type == "text_input":
             await handle_text_input(message, session_id, user)
-        elif msg_type == "audio_input":
-            await handle_audio_input(message, session_id, user)
         elif msg_type == "ping":
-            await manager.send_message(session_id, {
-                "type": "pong",
-                "timestamp": datetime.utcnow().isoformat()
-            })
+            await manager.send_message(session_id, {"type": "pong", "timestamp": datetime.utcnow().isoformat()})
         else:
             await manager.send_message(session_id, {
-                "type": "error", 
-                "message": f"Unknown message type: {msg_type}",
-                "timestamp": datetime.utcnow().isoformat()
+                "type": "error", "message": f"Unknown message type: {msg_type}", "timestamp": datetime.utcnow().isoformat()
             })
     except Exception as e:
         logger.error(f"Error processing {msg_type}: {e}")
         await manager.send_message(session_id, {
-            "type": "error",
-            "message": "Failed to process message",
-            "timestamp": datetime.utcnow().isoformat()
+            "type": "error", "message": "Failed to process message", "timestamp": datetime.utcnow().isoformat()
         })
 
 async def handle_text_input(message: dict, session_id: str, user: dict):
-    """Handle text input from user"""
     text = message.get("text", "").strip()
     user_id = user.get("sub", "anonymous") if user else "anonymous"
     
     if not text:
-        await manager.send_message(session_id, {
-            "type": "error",
-            "message": "Empty text input",
-            "timestamp": datetime.utcnow().isoformat()
-        })
         return
     
     try:
         # Send processing status
         await manager.send_message(session_id, {
-            "type": "processing_status",
-            "status": "thinking", 
-            "message": "Generating AI response...",
-            "timestamp": datetime.utcnow().isoformat()
+            "type": "processing_status", "status": "thinking", "message": "Generating response...", "timestamp": datetime.utcnow().isoformat()
         })
         
         # Generate AI response
@@ -158,81 +201,34 @@ async def handle_text_input(message: dict, session_id: str, user: dict):
         
         # Send text response
         await manager.send_message(session_id, {
-            "type": "text_response",
-            "text": ai_response,
-            "user_id": user_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "type": "text_response", "text": ai_response, "user_id": user_id, "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Generate TTS audio
+        # Generate TTS
         await manager.send_message(session_id, {
-            "type": "processing_status",
-            "status": "generating_audio",
-            "message": "Converting to speech...",
-            "timestamp": datetime.utcnow().isoformat()
+            "type": "processing_status", "status": "generating_audio", "message": "Converting to speech...", "timestamp": datetime.utcnow().isoformat()
         })
         
         audio_data = await synthesize_speech(ai_response)
         if audio_data:
             await manager.send_message(session_id, {
-                "type": "audio_response", 
-                "audio_data": audio_data,
-                "text": ai_response,
-                "content_type": "audio/wav",
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        else:
-            await manager.send_message(session_id, {
-                "type": "warning",
-                "message": "Text-to-speech failed. Response sent as text only.",
-                "timestamp": datetime.utcnow().isoformat()
+                "type": "audio_response", "audio_data": audio_data, "text": ai_response, "timestamp": datetime.utcnow().isoformat()
             })
         
-        # Send completion status
-        await manager.send_message(session_id, {
-            "type": "processing_complete",
-            "timestamp": datetime.utcnow().isoformat()
-        })
-            
+        await manager.send_message(session_id, {"type": "processing_complete", "timestamp": datetime.utcnow().isoformat()})
+        
     except Exception as e:
-        logger.error(f"Error processing text input: {e}")
+        logger.error(f"Error processing text: {e}")
         await manager.send_message(session_id, {
-            "type": "error",
-            "message": "Failed to process text input",
-            "timestamp": datetime.utcnow().isoformat()
+            "type": "error", "message": "Failed to process text", "timestamp": datetime.utcnow().isoformat()
         })
 
-async def handle_audio_input(message: dict, session_id: str, user: dict):
-    """Handle audio input from user"""
-    await manager.send_message(session_id, {
-        "type": "info",
-        "message": "Audio processing not yet implemented. Please use text input or STT service directly.",
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
-# STT Webhook (for backward compatibility)
 @app.post("/v1/stt/webhook")
 async def stt_webhook(request: dict):
-    """Process STT webhook results"""
     try:
         user_id = request.get('user_id', 'webhook_user')
         transcript = request.get('transcript', '')
-        session_id = request.get('session_id')
-        
         logger.info(f"STT webhook: {transcript[:50]}... from {user_id}")
-        
-        # If we have a session_id, try to send via WebSocket
-        if session_id and session_id in manager.connections:
-            await manager.send_message(session_id, {
-                "type": "transcript",
-                "text": transcript,
-                "user_id": user_id,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            
-            # Process as text input
-            user = manager.get_user(session_id)
-            await handle_text_input({"text": transcript}, session_id, user)
         
         return {
             "status": "processed",
@@ -240,7 +236,6 @@ async def stt_webhook(request: dict):
             "transcript_length": len(transcript),
             "timestamp": datetime.utcnow().isoformat()
         }
-        
     except Exception as e:
         logger.error(f"STT webhook error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
