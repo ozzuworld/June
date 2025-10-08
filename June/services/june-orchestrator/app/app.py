@@ -1,376 +1,347 @@
-"""
-June Orchestrator - Simplified and Clean
-Handles AI chat, TTS, and STT webhook integration
-"""
-import time
+import asyncio
 import base64
+import json
 import logging
+import time
+import uuid
+from typing import Dict, Any, Optional
+import os
 from datetime import datetime
-from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-# Import our clean modules
-from app.config import get_config
-from app.auth import verify_service_token, verify_user_token, extract_user_id
-from app.ai_service import generate_ai_response, is_ai_available
-from app.storage import add_message, get_conversation, get_stats
+# Import your existing services
+from app.auth import get_current_user, get_anonymous_user
+from app.ai_service import get_ai_service, AIService
 from app.tts_client import get_tts_client
+from app.stt_client import get_stt_client
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create app
-config = get_config()
 app = FastAPI(
     title="June Orchestrator",
-    version="5.0.0",
-    description="Simplified AI Orchestrator"
+    description="AI Voice Chat Orchestrator with WebSocket Support",
+    version="6.0.0"
 )
 
-# CORS
+# CORS configuration for your frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config["cors_origins"],
+    allow_origins=["http://localhost:3000", "https://your-frontend-domain.com"],  # Add your frontend URLs
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.user_sessions: Dict[str, str] = {}  # session_id -> user_id
 
-# ============================================================================
-# DATA MODELS
-# ============================================================================
+    async def connect(self, websocket: WebSocket, session_id: str, user_id: str = "anonymous"):
+        await websocket.accept()
+        self.active_connections[session_id] = websocket
+        self.user_sessions[session_id] = user_id
+        logger.info(f"🔌 WebSocket connected: {session_id} (user: {user_id})")
 
-class AudioConfig(BaseModel):
-    """Audio configuration for TTS"""
-    voice: str = Field(default="default")
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
-    language: str = Field(default="EN")
+    def disconnect(self, session_id: str):
+        if session_id in self.active_connections:
+            del self.active_connections[session_id]
+        if session_id in self.user_sessions:
+            del self.user_sessions[session_id]
+        logger.info(f"🔌 WebSocket disconnected: {session_id}")
 
+    async def send_personal_message(self, message: dict, session_id: str):
+        if session_id in self.active_connections:
+            await self.active_connections[session_id].send_text(json.dumps(message))
 
+manager = ConnectionManager()
+
+# Pydantic models
 class ChatRequest(BaseModel):
-    """Chat request from frontend"""
-    text: str = Field(..., min_length=1, max_length=10000)
-    language: str = Field(default="en")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=1000, ge=1, le=4000)
-    include_audio: bool = Field(default=False)
-    audio_config: Optional[AudioConfig] = None
+    message: str
+    user_id: Optional[str] = "anonymous"
 
+class AudioMessage(BaseModel):
+    type: str
+    audio_data: Optional[str] = None
+    text: Optional[str] = None
+    user_id: Optional[str] = "anonymous"
 
-class TranscriptFromSTT(BaseModel):
-    """Transcript received from STT service"""
-    transcript_id: str
-    user_id: str
-    text: str
-    language: Optional[str] = None
-    confidence: Optional[float] = None
-    timestamp: str
-    metadata: dict = {}
-
-
-class ChatResponse(BaseModel):
-    """Chat response to frontend"""
-    ok: bool
-    message: dict  # {"text": "...", "role": "assistant"}
-    response_time_ms: int
-    conversation_id: Optional[str] = None
-    ai_provider: str = "gemini"
-    audio: Optional[dict] = None
-
-
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
-
-@app.get("/")
-async def root():
-    """Service information"""
-    tts_status = await get_tts_client().get_status()
-    storage_stats = get_stats()
-    
-    return {
-        "service": "June Orchestrator",
-        "version": "5.0.0",
-        "status": "healthy",
-        "features": {
-            "ai_chat": is_ai_available(),
-            "text_to_speech": tts_status.get("available", False),
-            "stt_webhook": True,
-            "conversation_memory": True
-        },
-        "storage": storage_stats,
-        "endpoints": {
-            "health": "/healthz",
-            "user_chat": "/v1/chat",
-            "stt_webhook": "/v1/stt/webhook",
-            "conversation": "/v1/conversations/{user_id}"
-        }
-    }
-
-
+# Health check endpoints
 @app.get("/healthz")
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "june-orchestrator",
-        "version": "5.0.0",
-        "timestamp": time.time(),
-        "ai_available": is_ai_available()
-    }
+    return {"status": "healthy", "service": "june-orchestrator", "version": "6.0.0"}
 
-
-@app.post("/v1/chat", response_model=ChatResponse)
-async def chat(
-    request: ChatRequest,
-    auth_data: dict = Depends(verify_user_token)
-):
-    """
-    User chat endpoint (when user types text)
+@app.get("/status")
+async def get_status():
+    """Get status of all services"""
+    ai_service = get_ai_service()
+    tts_client = get_tts_client()
+    stt_client = get_stt_client()
     
-    Flow:
-    1. User types message
-    2. Generate AI response
-    3. Optionally generate TTS audio
-    4. Store in conversation history
-    5. Return response
-    """
-    start_time = time.time()
-    user_id = extract_user_id(auth_data)
+    # Check AI service
+    ai_available = ai_service.is_available()
     
-    logger.info(f"💬 Chat from {user_id}: {request.text[:50]}...")
+    # Check TTS service
+    tts_status = await tts_client.get_status()
+    tts_available = tts_status.get("available", False)
     
-    try:
-        # Get conversation history
-        history = await get_conversation(user_id)
-        
-        # Generate AI response
-        ai_response = await generate_ai_response(
-            text=request.text,
-            user_id=user_id,
-            conversation_history=history,
-            language=request.language
-        )
-        
-        # Store messages
-        await add_message(user_id, "user", request.text)
-        await add_message(user_id, "assistant", ai_response)
-        
-        # Build response
-        response_time = int((time.time() - start_time) * 1000)
-        
-        chat_response = ChatResponse(
-            ok=True,
-            message={"text": ai_response, "role": "assistant"},
-            response_time_ms=response_time,
-            conversation_id=f"conv-{user_id}-{int(time.time())}",
-            ai_provider="gemini" if is_ai_available() else "fallback"
-        )
-        
-        # Generate TTS audio if requested
-        if request.include_audio:
-            audio_config = request.audio_config or AudioConfig()
-            
-            try:
-                tts_client = get_tts_client()
-                audio_result = await tts_client.synthesize_speech(
-                    text=ai_response,
-                    voice=audio_config.voice,
-                    speed=audio_config.speed,
-                    language=audio_config.language
-                )
-                
-                if "error" in audio_result:
-                    logger.warning(f"⚠️ TTS failed: {audio_result['error']}")
-                    chat_response.audio = {"error": audio_result["error"]}
-                else:
-                    audio_b64 = base64.b64encode(audio_result["audio_data"]).decode('utf-8')
-                    chat_response.audio = {
-                        "data": audio_b64,
-                        "content_type": audio_result["content_type"],
-                        "size_bytes": audio_result["size_bytes"],
-                        "voice": audio_result["voice"],
-                        "speed": audio_result["speed"],
-                        "language": audio_result["language"]
-                    }
-                    logger.info(f"✅ TTS generated: {audio_result['size_bytes']} bytes")
-            
-            except Exception as e:
-                logger.error(f"❌ TTS generation error: {e}")
-                chat_response.audio = {"error": f"TTS failed: {str(e)}"}
-        
-        logger.info(f"✅ Chat response sent to {user_id} ({response_time}ms)")
-        return chat_response
-    
-    except Exception as e:
-        logger.error(f"❌ Chat error: {e}")
-        response_time = int((time.time() - start_time) * 1000)
-        
-        return ChatResponse(
-            ok=False,
-            message={"text": f"Error: {str(e)}", "role": "error"},
-            response_time_ms=response_time,
-            ai_provider="error"
-        )
-
-
-@app.post("/v1/stt/webhook")
-async def stt_webhook(
-    transcript: TranscriptFromSTT,
-    background_tasks: BackgroundTasks,
-    service_auth: dict = Depends(verify_service_token)
-):
-    """
-    STT webhook endpoint with TTS generation
-    
-    Flow:
-    1. User speaks → STT transcribes
-    2. STT sends transcript here
-    3. Generate AI response
-    4. Generate TTS audio for voice-to-voice flow
-    5. Store in conversation
-    6. Return response with audio
-    """
-    start_time = time.time()
-    logger.info(f"🎙️ Transcript from {transcript.user_id}: {transcript.text}")
-    
-    try:
-        # Get conversation history
-        history = await get_conversation(transcript.user_id)
-        
-        # Generate AI response
-        ai_response = await generate_ai_response(
-            text=transcript.text,
-            user_id=transcript.user_id,
-            conversation_history=history,
-            language=transcript.language or "en"
-        )
-        
-        # Store messages
-        await add_message(transcript.user_id, "user", transcript.text)
-        await add_message(transcript.user_id, "assistant", ai_response)
-        
-        # FIXED: Generate TTS audio for voice-to-voice flow
-        audio_data = None
-        try:
-            logger.info(f"🔊 Generating TTS audio for response: {ai_response[:50]}...")
-            tts_client = get_tts_client()
-            
-            # Map language codes if needed
-            tts_language = "EN"
-            if transcript.language:
-                lang_map = {
-                    "en": "EN", "english": "EN",
-                    "es": "ES", "spanish": "ES", 
-                    "fr": "FR", "french": "FR",
-                    "de": "DE", "german": "DE",
-                    "it": "IT", "italian": "IT",
-                    "pt": "PT", "portuguese": "PT",
-                    "zh": "ZH", "chinese": "ZH"
-                }
-                tts_language = lang_map.get(transcript.language.lower(), "EN")
-            
-            audio_result = await tts_client.synthesize_speech(
-                text=ai_response,
-                voice="default",
-                speed=1.0,
-                language=tts_language
-            )
-            
-            if "error" not in audio_result:
-                audio_b64 = base64.b64encode(audio_result["audio_data"]).decode('utf-8')
-                audio_data = {
-                    "data": audio_b64,
-                    "content_type": audio_result["content_type"],
-                    "size_bytes": audio_result["size_bytes"],
-                    "voice": audio_result.get("voice", "default"),
-                    "speed": audio_result.get("speed", 1.0),
-                    "language": audio_result.get("language", tts_language)
-                }
-                logger.info(f"✅ TTS generated: {audio_result['size_bytes']} bytes for voice response")
-            else:
-                logger.warning(f"⚠️ TTS failed: {audio_result['error']}")
-                audio_data = {"error": audio_result["error"]}
-        
-        except Exception as e:
-            logger.error(f"❌ TTS generation error: {e}")
-            audio_data = {"error": f"TTS failed: {str(e)}"}
-        
-        processing_time = int((time.time() - start_time) * 1000)
-        logger.info(f"✅ Processed transcript {transcript.transcript_id} ({processing_time}ms)")
-        
-        return {
-            "status": "success",
-            "transcript_id": transcript.transcript_id,
-            "user_id": transcript.user_id,
-            "ai_response": ai_response,
-            "audio": audio_data,  # FIXED: Include audio in response
-            "processing_time_ms": processing_time,
-            "message": "Transcript processed with voice response"
-        }
-    
-    except Exception as e:
-        logger.error(f"❌ STT webhook error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/v1/conversations/{user_id}")
-async def get_user_conversation(
-    user_id: str,
-    auth_data: dict = Depends(verify_user_token),
-    limit: int = 20
-):
-    """
-    Get conversation history for user
-    Frontend can poll this to get latest messages
-    """
-    authenticated_user = extract_user_id(auth_data)
-    
-    # Users can only see their own conversations
-    if authenticated_user != user_id and authenticated_user != "anonymous":
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    messages = await get_conversation(user_id, limit=limit)
+    # Check STT service (if you have health check)
+    stt_available = True  # Add STT health check if available
     
     return {
-        "user_id": user_id,
-        "total_messages": len(messages),
-        "messages": messages,
+        "orchestrator": "healthy",
+        "ai_service": {"available": ai_available, "provider": "gemini" if ai_available else "none"},
+        "tts_service": tts_status,
+        "stt_service": {"available": stt_available},
+        "websocket_connections": len(manager.active_connections),
         "timestamp": datetime.utcnow().isoformat()
     }
 
-
-@app.get("/v1/tts/status")
-async def tts_status():
-    """Check TTS service status"""
-    tts_client = get_tts_client()
-    return await tts_client.get_status()
-
-
-# ============================================================================
-# STARTUP
-# ============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup"""
-    logger.info("🚀 Starting June Orchestrator v5.0.0")
-    logger.info(f"AI Available: {is_ai_available()}")
+# WebSocket voice chat endpoint
+@app.websocket("/ws/voice-chat")
+async def websocket_voice_chat(websocket: WebSocket):
+    session_id = str(uuid.uuid4())
+    user_id = "anonymous"  # You can implement auth here
     
-    tts_status = await get_tts_client().get_status()
-    logger.info(f"TTS Available: {tts_status.get('available', False)}")
+    await manager.connect(websocket, session_id, user_id)
     
-    logger.info("✅ Orchestrator ready")
+    # Send welcome message
+    await manager.send_personal_message({
+        "type": "connection_established",
+        "session_id": session_id,
+        "message": "Connected to June AI Assistant",
+        "timestamp": datetime.utcnow().isoformat()
+    }, session_id)
+    
+    try:
+        while True:
+            # Receive message from frontend
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            await process_websocket_message(message, session_id, user_id)
+            
+    except WebSocketDisconnect:
+        manager.disconnect(session_id)
+        logger.info(f"🔌 Client {session_id} disconnected")
+    except Exception as e:
+        logger.error(f"❌ WebSocket error for {session_id}: {e}")
+        await manager.send_personal_message({
+            "type": "error",
+            "message": f"An error occurred: {str(e)}",
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+        manager.disconnect(session_id)
 
+async def process_websocket_message(message: dict, session_id: str, user_id: str):
+    """Process incoming WebSocket messages"""
+    message_type = message.get("type", "unknown")
+    start_time = time.time()
+    
+    try:
+        if message_type == "audio_input":
+            await process_audio_input(message, session_id, user_id, start_time)
+        elif message_type == "text_input":
+            await process_text_input(message, session_id, user_id, start_time)
+        elif message_type == "ping":
+            await manager.send_personal_message({
+                "type": "pong",
+                "timestamp": datetime.utcnow().isoformat()
+            }, session_id)
+        else:
+            logger.warning(f"⚠️ Unknown message type: {message_type}")
+            await manager.send_personal_message({
+                "type": "error",
+                "message": f"Unknown message type: {message_type}",
+                "timestamp": datetime.utcnow().isoformat()
+            }, session_id)
+            
+    except Exception as e:
+        logger.error(f"❌ Error processing {message_type}: {e}")
+        await manager.send_personal_message({
+            "type": "error",
+            "message": f"Failed to process {message_type}: {str(e)}",
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+
+async def process_audio_input(message: dict, session_id: str, user_id: str, start_time: float):
+    """Process audio input from user"""
+    audio_data = message.get("audio_data")
+    if not audio_data:
+        raise ValueError("No audio data provided")
+    
+    logger.info(f"🎙️ Processing audio from {user_id} (session: {session_id[:8]}...)")
+    
+    # Send status update
+    await manager.send_personal_message({
+        "type": "processing_status",
+        "status": "transcribing",
+        "message": "Converting speech to text...",
+        "timestamp": datetime.utcnow().isoformat()
+    }, session_id)
+    
+    # Convert audio to text using STT service
+    try:
+        audio_bytes = base64.b64decode(audio_data)
+        stt_client = get_stt_client()
+        transcript_result = await stt_client.transcribe_audio(audio_bytes)
+        transcript = transcript_result.get("transcript", "").strip()
+        
+        if not transcript:
+            await manager.send_personal_message({
+                "type": "error",
+                "message": "Could not transcribe audio. Please try again.",
+                "timestamp": datetime.utcnow().isoformat()
+            }, session_id)
+            return
+            
+        logger.info(f"🎙️ Transcript from {user_id}: {transcript}")
+        
+        # Send transcript to user
+        await manager.send_personal_message({
+            "type": "transcript",
+            "text": transcript,
+            "user": user_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+        
+    except Exception as e:
+        logger.error(f"❌ STT failed: {e}")
+        await manager.send_personal_message({
+            "type": "error",
+            "message": "Speech recognition failed. Please try again.",
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+        return
+    
+    # Process the transcript as text
+    await process_text_message(transcript, session_id, user_id, start_time)
+
+async def process_text_input(message: dict, session_id: str, user_id: str, start_time: float):
+    """Process text input from user"""
+    text = message.get("text", "").strip()
+    if not text:
+        raise ValueError("No text provided")
+    
+    await process_text_message(text, session_id, user_id, start_time)
+
+async def process_text_message(text: str, session_id: str, user_id: str, start_time: float):
+    """Process text message and generate AI response with TTS"""
+    
+    # Send thinking status
+    await manager.send_personal_message({
+        "type": "processing_status",
+        "status": "thinking",
+        "message": "Generating response...",
+        "timestamp": datetime.utcnow().isoformat()
+    }, session_id)
+    
+    # Generate AI response
+    try:
+        ai_service = get_ai_service()
+        if ai_service.is_available():
+            ai_response = await ai_service.generate_response(text, user_id)
+        else:
+            ai_response = f"I received your message: '{text[:50]}...' I'm currently in basic mode without AI capabilities."
+            
+        logger.info(f"🤖 AI response to {user_id}: {ai_response[:100]}...")
+        
+        # Send text response
+        await manager.send_personal_message({
+            "type": "text_response",
+            "text": ai_response,
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+        
+    except Exception as e:
+        logger.error(f"❌ AI generation failed: {e}")
+        ai_response = "I'm having trouble generating a response right now. Please try again."
+    
+    # Send TTS status
+    await manager.send_personal_message({
+        "type": "processing_status",
+        "status": "generating_audio",
+        "message": "Converting text to speech...",
+        "timestamp": datetime.utcnow().isoformat()
+    }, session_id)
+    
+    # Generate TTS audio
+    try:
+        tts_client = get_tts_client()
+        tts_result = await tts_client.synthesize_speech(
+            text=ai_response,
+            language="en",
+            voice="Claribel Dervla",
+            speed=1.0
+        )
+        
+        if "audio_data" in tts_result:
+            logger.info(f"🔊 TTS generated for {user_id} ({len(tts_result['audio_data'])} chars base64)")
+            
+            # Send audio response
+            await manager.send_personal_message({
+                "type": "audio_response",
+                "audio_data": tts_result["audio_data"],
+                "text": ai_response,
+                "speaker": tts_result.get("voice", "default"),
+                "timestamp": datetime.utcnow().isoformat()
+            }, session_id)
+            
+        else:
+            logger.warning(f"⚠️ TTS failed for {user_id}: {tts_result.get('error', 'Unknown error')}")
+            await manager.send_personal_message({
+                "type": "error",
+                "message": "Text-to-speech failed. Response sent as text only.",
+                "timestamp": datetime.utcnow().isoformat()
+            }, session_id)
+            
+    except Exception as e:
+        logger.error(f"❌ TTS failed: {e}")
+        await manager.send_personal_message({
+            "type": "error", 
+            "message": "Text-to-speech failed. Response sent as text only.",
+            "timestamp": datetime.utcnow().isoformat()
+        }, session_id)
+    
+    # Send completion status
+    processing_time = int((time.time() - start_time) * 1000)
+    await manager.send_personal_message({
+        "type": "processing_complete",
+        "processing_time_ms": processing_time,
+        "timestamp": datetime.utcnow().isoformat()
+    }, session_id)
+    
+    logger.info(f"✅ Processed message for {user_id} ({processing_time}ms)")
+
+# Legacy HTTP endpoints (keeping for backward compatibility)
+@app.post("/v1/chat")
+async def chat(request: ChatRequest):
+    """Legacy HTTP chat endpoint"""
+    try:
+        ai_service = get_ai_service()
+        if ai_service.is_available():
+            response = await ai_service.generate_response(request.message, request.user_id)
+        else:
+            response = f"I received your message: '{request.message[:50]}...' Please use WebSocket for full voice features."
+        
+        return {
+            "response": response,
+            "user_id": request.user_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "message": "Use WebSocket /ws/voice-chat for real-time voice features"
+        }
+    except Exception as e:
+        logger.error(f"❌ Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=config["port"], log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8080)
