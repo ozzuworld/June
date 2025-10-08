@@ -1,5 +1,5 @@
 # Multi-stage build for optimal image size
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 as builder
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 AS builder
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -8,7 +8,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install system dependencies
+# Install system dependencies with correct package names
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3.10-dev \
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libsndfile1-dev \
     libportaudio2 \
-    libportaudio-dev \
+    portaudio19-dev \
     ffmpeg \
     espeak-ng \
     espeak-ng-data \
@@ -73,7 +73,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies
+# Install runtime dependencies with correct package names
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
