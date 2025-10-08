@@ -7,31 +7,23 @@ ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies with correct package names
-RUN apt-get update && apt-get install -y \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3.10-dev \
     python3-pip \
     git \
-    wget \
-    curl \
     build-essential \
     cmake \
     pkg-config \
     libsndfile1-dev \
-    libportaudio2 \
     portaudio19-dev \
     ffmpeg \
     espeak-ng \
-    espeak-ng-data \
-    libespeak-ng-dev \
-    mecab \
-    libmecab-dev \
-    mecab-ipadic-utf8 \
-    libffi-dev \
-    rustc \
-    cargo \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,29 +31,34 @@ RUN apt-get update && apt-get install -y \
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
     ln -sf /usr/bin/python3.10 /usr/bin/python3
 
-# Upgrade pip and install build tools
-RUN python -m pip install --upgrade pip setuptools wheel
+# Upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip
+
+# Install compatible NumPy FIRST (critical for PyTorch compatibility)
+RUN pip install --no-cache-dir "numpy<2.0"
 
 # Install PyTorch with CUDA 11.8 support
-RUN pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+RUN pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+    --index-url https://download.pytorch.org/whl/cu118
 
-# Install the new Coqui TTS fork with all features
-RUN pip install coqui-tts[all,server]==0.27.2
+# Install compatible Pydantic v1 to avoid config conflicts
+RUN pip install --no-cache-dir "pydantic<2.0"
 
-# Install additional voice processing libraries
-RUN pip install \
+# Install Coqui TTS
+RUN pip install --no-cache-dir coqui-tts==0.27.2
+
+# Install additional libraries with compatible versions
+RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     librosa==0.10.1 \
     soundfile==0.12.1 \
-    pydub==0.25.1 \
-    numpy==1.24.3 \
-    scipy==1.11.3 \
-    Pillow==10.0.1 \
     requests==2.31.0 \
-    pydantic==2.5.0 \
-    aiofiles==23.2.1 \
     python-multipart==0.0.6
+
+# Clean up
+RUN pip cache purge && \
+    rm -rf /tmp/* /var/tmp/* /root/.cache
 
 # Runtime stage
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
@@ -73,17 +70,13 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies with correct package names
-RUN apt-get update && apt-get install -y \
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
-    python3-pip \
     ffmpeg \
     espeak-ng \
-    espeak-ng-data \
     libsndfile1 \
     libportaudio2 \
-    mecab \
-    mecab-ipadic-utf8 \
     curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -102,13 +95,13 @@ WORKDIR /app
 RUN chown -R ttsuser:ttsuser /app
 
 # Copy application code
-COPY --chown=ttsuser:ttsuser . /app/
+COPY --chown=ttsuser:ttsuser main.py /app/
 
 # Switch to non-root user
 USER ttsuser
 
-# Create directories for models and voices
-RUN mkdir -p /app/models /app/voices /app/cache
+# Create directories
+RUN mkdir -p /app/models /app/cache
 
 # Set TTS environment variables
 ENV TTS_CACHE_PATH=/app/cache
