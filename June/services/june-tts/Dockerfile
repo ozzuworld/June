@@ -56,9 +56,8 @@ RUN pip install --no-cache-dir \
     requests==2.31.0 \
     python-multipart==0.0.6
 
-# Clean up
-RUN pip cache purge && \
-    rm -rf /tmp/* /var/tmp/* /root/.cache
+# Clean up (remove pip cache purge since cache is disabled)
+RUN rm -rf /tmp/* /var/tmp/* /root/.cache
 
 # Runtime stage
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
