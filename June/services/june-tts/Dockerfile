@@ -45,8 +45,8 @@ RUN python -m pip install --upgrade pip setuptools wheel
 # Install PyTorch with CUDA 11.8 support
 RUN pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 
-# Install Coqui TTS with all features
-RUN pip install TTS[all,server]==0.27.0
+# Install the new Coqui TTS fork with all features
+RUN pip install coqui-tts[all,server]==0.27.2
 
 # Install additional voice processing libraries
 RUN pip install \
