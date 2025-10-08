@@ -31,8 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
     ln -sf /usr/bin/python3.10 /usr/bin/python3
 
-# Upgrade pip
-RUN python -m pip install --no-cache-dir --upgrade pip
+# Upgrade pip and install essential tools
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install compatible NumPy FIRST (critical for PyTorch compatibility)
 RUN pip install --no-cache-dir "numpy<2.0"
@@ -56,7 +56,7 @@ RUN pip install --no-cache-dir \
     requests==2.31.0 \
     python-multipart==0.0.6
 
-# Clean up (remove pip cache purge since cache is disabled)
+# Clean up
 RUN rm -rf /tmp/* /var/tmp/* /root/.cache
 
 # Runtime stage
