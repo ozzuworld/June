@@ -2,20 +2,8 @@ import os
 import torch
 import logging
 
-# Set environment variable early
-os.environ['COQUI_TOS_AGREED'] = 'yes'
-
-# Patch the TTS library to bypass license check
-import sys
-from unittest.mock import patch
-
-def mock_ask_tos(self, output_path):
-    """Mock function to always return True for license agreement"""
-    return True
-
-# Patch the ask_tos method before importing TTS
-with patch('TTS.utils.manage.ModelManager.ask_tos', mock_ask_tos):
-    from TTS.api import TTS
+# Accept Coqui TTS license automatically - MUST be "1" not "yes"
+os.environ['COQUI_TOS_AGREED'] = '1'
 
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse
@@ -23,6 +11,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import tempfile
 import uuid
+from TTS.api import TTS
 import numpy as np
 from pathlib import Path
 
