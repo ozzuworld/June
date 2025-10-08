@@ -37,8 +37,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install compatible NumPy FIRST (critical for PyTorch compatibility)
 RUN pip install --no-cache-dir "numpy<2.0"
 
-# Install PyTorch with CUDA 11.8 support
-RUN pip install --no-cache-dir torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+# Install PyTorch 2.1.2 with CUDA 11.8 support (fixes the transformers issue)
+RUN pip install --no-cache-dir torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
     --index-url https://download.pytorch.org/whl/cu118
 
 # Install compatible Pydantic v1 to avoid config conflicts
