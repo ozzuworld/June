@@ -1,6 +1,10 @@
 import os
 import torch
 import logging
+
+# Accept Coqui TTS license automatically for containerized deployment
+os.environ['COQUI_TOS_AGREED'] = 'yes'
+
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -144,7 +148,6 @@ async def clone_voice(
             text=text,
             speaker_wav=reference_path,
             language=language,
-            speaker=speaker_name,
             file_path=output_path
         )
         
