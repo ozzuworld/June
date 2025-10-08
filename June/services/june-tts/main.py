@@ -28,6 +28,7 @@ app = FastAPI(
 # Global TTS instance
 tts_instance = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
+tts_ready = False
 
 class TTSRequest(BaseModel):
     text: str
@@ -44,7 +45,7 @@ class VoiceCloneRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    global tts_instance
+    global tts_instance, tts_ready
     logger.info(f"Initializing TTS on device: {device}")
     logger.info(f"CUDA available: {torch.cuda.is_available()}")
     
@@ -58,7 +59,28 @@ async def startup_event():
     ).to(device)
     
     logger.info("TTS instance initialized successfully")
+    tts_ready = True
 
+# Kubernetes health check endpoints
+@app.get("/healthz")
+async def kubernetes_health_check():
+    """Liveness probe for Kubernetes"""
+    return {"status": "healthy", "service": "june-tts"}
+
+@app.get("/readyz")
+async def kubernetes_readiness_check():
+    """Readiness probe for Kubernetes"""
+    if tts_ready and tts_instance is not None:
+        return {
+            "status": "ready", 
+            "service": "june-tts",
+            "model_loaded": True,
+            "device": device
+        }
+    else:
+        raise HTTPException(status_code=503, detail="TTS service not ready")
+
+# Your existing health endpoint (keeping for compatibility)
 @app.get("/health")
 async def health_check():
     return {
