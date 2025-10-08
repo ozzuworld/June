@@ -8,5 +8,3 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
 aiofiles==23.2.1
-asyncio==3.4.3
-base64==0.5.1
