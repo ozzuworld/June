@@ -1,131 +1,108 @@
-import os
 import httpx
 import logging
-from typing import Dict, Any, Optional
+from typing import Optional
+import asyncio
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-class VoiceCloningClient:
-    def __init__(self):
-        # Voice cloning service URL
-        self.clone_url = os.getenv(
-            "VOICE_CLONE_SERVICE_URL", 
-            "http://june-clone.june-services.svc.cluster.local:8000"
-        )
-        
-        # Traditional TTS service URL (placeholder for future)
-        self.tts_url = os.getenv(
-            "TTS_SERVICE_URL",
-            "http://june-tts.june-services.svc.cluster.local:8000"  # Keep for legacy
-        )
-        
-        self.client = httpx.AsyncClient(timeout=120.0, verify=False)
-        logger.info(f"🎭 Voice Cloning Client initialized: {self.clone_url}")
+class TTSClient:
+    def __init__(self, tts_service_url: str = "http://june-tts.june-services.svc.cluster.local:8000"):
+        self.base_url = tts_service_url.rstrip('/')
+        self.client = httpx.AsyncClient(timeout=30.0)
     
-    async def clone_voice(
-        self, 
-        text: str,
-        reference_audio: bytes,
-        reference_text: str = "",
-        language: str = "en",
-        speed: float = 1.0
-    ) -> Dict[str, Any]:
-        """Clone voice using reference audio"""
+    async def health_check(self) -> bool:
+        """Check if TTS service is healthy and ready"""
         try:
-            logger.info(f"🎭 Voice cloning: {text[:50]}... (lang: {language}, speed: {speed})")
-            
-            files = {
-                "reference_audio": ("reference.wav", reference_audio, "audio/wav")
-            }
-            
-            data = {
-                "text": text,
-                "language": language,
-                "speed": speed,
-                "reference_text": reference_text or "This is reference audio for voice cloning."
-            }
-            
-            response = await self.client.post(
-                f"{self.clone_url}/v1/clone",
-                files=files,
-                data=data
-            )
-            
-            if response.status_code == 200:
-                audio_bytes = response.content
-                return {
-                    "audio_data": audio_bytes,
-                    "content_type": "audio/wav",
-                    "size_bytes": len(audio_bytes),
-                    "cloned": True,
-                    "language": language,
-                    "speed": speed
-                }
-            else:
-                error_msg = f"Voice cloning error: {response.status_code} - {response.text}"
-                logger.error(f"❌ {error_msg}")
-                return {"error": error_msg}
-        
+            response = await self.client.get(f"{self.base_url}/readyz")
+            return response.status_code == 200
         except Exception as e:
-            error_msg = f"Voice cloning error: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            return {"error": error_msg}
+            logger.error(f"TTS health check failed: {e}")
+            return False
+    
+    async def get_supported_languages(self) -> dict:
+        """Get supported languages from TTS service"""
+        try:
+            response = await self.client.get(f"{self.base_url}/languages")
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get supported languages: {e}")
+            return {"supported_languages": {"en": "English"}, "total": 1}
     
     async def synthesize_speech(
         self, 
         text: str, 
-        voice: str = "default",
-        speed: float = 1.0,
         language: str = "en",
-        reference_audio: Optional[bytes] = None,
-        reference_text: Optional[str] = None
-    ) -> Dict[str, Any]:
+        speaker: Optional[str] = None,
+        speed: float = 1.0
+    ) -> Optional[bytes]:
         """
-        Enhanced synthesis: voice cloning if reference audio provided,
-        fallback to traditional TTS if implemented
+        Synthesize speech using the new TTS service
+        Returns audio bytes or None if failed
         """
-        
-        # If reference audio provided, use voice cloning
-        if reference_audio:
-            return await self.clone_voice(
-                text=text,
-                reference_audio=reference_audio,
-                reference_text=reference_text or "",
-                language=language,
-                speed=speed
-            )
-        
-        # For now, return error for traditional TTS (will implement later)
-        return {
-            "error": "Traditional TTS not implemented. Please provide reference_audio for voice cloning."
-        }
-    
-    async def get_status(self) -> Dict[str, Any]:
-        """Get voice cloning service status"""
         try:
-            response = await self.client.get(f"{self.clone_url}/healthz")
-            if response.status_code == 200:
-                return {"available": True, "status": response.json(), "service": "voice-cloning"}
-            else:
-                return {"available": False, "error": f"Status check failed: {response.status_code}"}
-        
+            payload = {
+                "text": text,
+                "language": language,
+                "speed": speed
+            }
+            if speaker:
+                payload["speaker"] = speaker
+            
+            logger.info(f"🔊 Calling TTS service: {text[:50]}...")
+            response = await self.client.post(
+                f"{self.base_url}/synthesize",
+                json=payload
+            )
+            response.raise_for_status()
+            
+            # The response should be audio/wav content
+            audio_data = response.content
+            logger.info(f"✅ TTS synthesis successful, got {len(audio_data)} bytes")
+            return audio_data
+            
         except Exception as e:
-            return {"available": False, "error": str(e)}
+            logger.error(f"❌ TTS synthesis failed: {e}")
+            return None
+    
+    async def clone_voice(
+        self,
+        text: str,
+        reference_audio_path: str,
+        language: str = "en",
+        speaker_name: str = "cloned_voice"
+    ) -> Optional[bytes]:
+        """
+        Clone voice using reference audio
+        """
+        try:
+            with open(reference_audio_path, "rb") as audio_file:
+                files = {"reference_audio": audio_file}
+                data = {
+                    "text": text,
+                    "language": language,
+                    "speaker_name": speaker_name
+                }
+                
+                response = await self.client.post(
+                    f"{self.base_url}/clone-voice",
+                    data=data,
+                    files=files
+                )
+                response.raise_for_status()
+                
+                audio_data = response.content
+                logger.info(f"✅ Voice cloning successful, got {len(audio_data)} bytes")
+                return audio_data
+                
+        except Exception as e:
+            logger.error(f"❌ Voice cloning failed: {e}")
+            return None
     
     async def close(self):
         """Close the HTTP client"""
         await self.client.aclose()
 
-# Singleton instance
-_voice_client = None
-
-def get_voice_client() -> VoiceCloningClient:
-    """Get voice cloning client singleton"""
-    global _voice_client
-    if _voice_client is None:
-        _voice_client = VoiceCloningClient()
-    return _voice_client
-
-# Backward compatibility aliases
-TTSClient = VoiceCloningClient
-get_tts_client = get_voice_client
+# Global TTS client instance
+tts_client = TTSClient()
