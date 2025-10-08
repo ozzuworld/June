@@ -118,25 +118,77 @@ async def get_supported_languages():
 async def get_available_speakers():
     """Get all available pre-trained speakers"""
     try:
-        speakers = tts_instance.speakers if hasattr(tts_instance, 'speakers') else []
-        return {"speakers": speakers}
+        # XTTS-v2 built-in speakers
+        default_speakers = [
+            "Claribel Dervla", "Daisy Studious", "Gracie Wise", 
+            "Tammie Ema", "Alison Dietlinde", "Ana Florence",
+            "Annmarie Nele", "Asya Anara", "Brenda Stern",
+            "Gitta Nikolina", "Henriette Usha", "Sofia Hellen",
+            "Tammy Grit", "Tanja Adelina", "Vjollca Johnnie",
+            "Andrew Chipper", "Badr Odhiambo", "Dionisio Schuyler",
+            "Royston Min", "Viktor Eka", "Abrahan Mack",
+            "Adde Michal", "Baldur Sanjin", "Craig Gutsy",
+            "Damien Black", "Gilberto Mathias", "Ilkin Urbano",
+            "Kazuhiko Atallah", "Ludvig Milivoj", "Suad Qasim",
+            "Torcull Diarmuid", "Viktor Menelaos", "Zacharie Aimilios"
+        ]
+        
+        # Try to get speakers from TTS instance, fallback to default list
+        speakers = tts_instance.speakers if hasattr(tts_instance, 'speakers') and tts_instance.speakers else default_speakers
+        
+        return {
+            "speakers": speakers,
+            "total": len(speakers),
+            "default_speaker": speakers[0] if speakers else "Claribel Dervla"
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting speakers: {e}")
+        # Return default speakers as fallback
+        default_speakers = ["Claribel Dervla", "Andrew Chipper", "Daisy Studious", "Viktor Eka"]
+        return {
+            "speakers": default_speakers,
+            "total": len(default_speakers),
+            "default_speaker": default_speakers[0]
+        }
 
 @app.post("/synthesize")
 async def synthesize_speech(request: TTSRequest):
-    """Synthesize speech from text"""
+    """Synthesize speech from text using pre-trained speakers (basic TTS)"""
     try:
         output_path = f"/tmp/{uuid.uuid4()}.wav"
         
-        # Generate speech
+        # For basic TTS, we need a speaker_id (pre-trained speaker)
+        speaker_to_use = request.speaker
+        
+        if not speaker_to_use:
+            # Default speakers available in XTTS-v2
+            default_speakers = [
+                "Claribel Dervla", "Daisy Studious", "Gracie Wise", 
+                "Tammie Ema", "Alison Dietlinde", "Ana Florence",
+                "Annmarie Nele", "Asya Anara", "Brenda Stern",
+                "Gitta Nikolina", "Henriette Usha", "Sofia Hellen",
+                "Tammy Grit", "Tanja Adelina", "Vjollca Johnnie",
+                "Andrew Chipper", "Badr Odhiambo", "Dionisio Schuyler",
+                "Royston Min", "Viktor Eka", "Abrahan Mack",
+                "Adde Michal", "Baldur Sanjin", "Craig Gutsy",
+                "Damien Black", "Gilberto Mathias", "Ilkin Urbano",
+                "Kazuhiko Atallah", "Ludvig Milivoj", "Suad Qasim",
+                "Torcull Diarmuid", "Viktor Menelaos", "Zacharie Aimilios"
+            ]
+            speaker_to_use = default_speakers[0]  # Use "Claribel Dervla" as default
+            
+        logger.info(f"🎙️ Using speaker: {speaker_to_use} for basic TTS")
+        
+        # Basic TTS with speaker_id (no reference audio needed)
         tts_instance.tts_to_file(
             text=request.text,
             language=request.language,
-            speaker=request.speaker,
+            speaker=speaker_to_use,  # This is speaker_id for XTTS
             file_path=output_path,
             speed=request.speed
         )
+        
+        logger.info(f"✅ TTS synthesis completed with speaker: {speaker_to_use}")
         
         return FileResponse(
             output_path,
@@ -145,7 +197,7 @@ async def synthesize_speech(request: TTSRequest):
         )
     
     except Exception as e:
-        logger.error(f"Synthesis error: {str(e)}")
+        logger.error(f"❌ Synthesis error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/clone-voice")
@@ -155,7 +207,7 @@ async def clone_voice(
     speaker_name: str,
     reference_audio: UploadFile = File(...)
 ):
-    """Clone a voice from reference audio"""
+    """Clone a voice from reference audio (special requests only)"""
     try:
         # Save uploaded file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
@@ -165,16 +217,20 @@ async def clone_voice(
         
         output_path = f"/tmp/{uuid.uuid4()}.wav"
         
-        # Clone voice and generate speech
+        logger.info(f"🎭 Voice cloning with reference audio: {reference_audio.filename}")
+        
+        # Clone voice and generate speech using speaker_wav (reference audio)
         tts_instance.tts_to_file(
             text=text,
-            speaker_wav=reference_path,
+            speaker_wav=reference_path,  # This is the reference audio for cloning
             language=language,
             file_path=output_path
         )
         
         # Clean up temp file
         os.unlink(reference_path)
+        
+        logger.info(f"✅ Voice cloning completed for: {speaker_name}")
         
         return FileResponse(
             output_path,
@@ -183,7 +239,7 @@ async def clone_voice(
         )
     
     except Exception as e:
-        logger.error(f"Voice cloning error: {str(e)}")
+        logger.error(f"❌ Voice cloning error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/voice-conversion")  
@@ -206,6 +262,8 @@ async def convert_voice(
         
         output_path = f"/tmp/{uuid.uuid4()}.wav"
         
+        logger.info("🔄 Voice conversion starting...")
+        
         # Perform voice conversion using TTS voice conversion
         # Note: This requires additional VC models, simplified for demo
         tts_instance.voice_conversion_to_file(
@@ -218,6 +276,8 @@ async def convert_voice(
         os.unlink(source_path)
         os.unlink(target_path)
         
+        logger.info("✅ Voice conversion completed")
+        
         return FileResponse(
             output_path,
             media_type="audio/wav", 
@@ -225,7 +285,7 @@ async def convert_voice(
         )
         
     except Exception as e:
-        logger.error(f"Voice conversion error: {str(e)}")
+        logger.error(f"❌ Voice conversion error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
