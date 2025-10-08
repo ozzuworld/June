@@ -1,114 +1,53 @@
-"""
-Simplified Gemini AI service
-"""
 import logging
-from typing import Optional, List, Dict, Any
-from functools import lru_cache
-from datetime import datetime
+from typing import Optional
 
-from app.config import get_gemini_api_key
+from ..config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# Try to import Gemini
+# Direct Gemini integration
 try:
     from google import genai
     from google.genai import types
-    GEMINI_AVAILABLE = True
+    GEMINI_AVAILABLE = bool(settings.gemini_api_key)
+    if GEMINI_AVAILABLE:
+        client = genai.Client(api_key=settings.gemini_api_key)
+        logger.info("✅ Gemini AI client initialized")
+    else:
+        client = None
+        logger.warning("⚠️ No Gemini API key provided")
 except ImportError:
     GEMINI_AVAILABLE = False
+    client = None
     logger.warning("⚠️ Gemini SDK not available")
 
+SYSTEM_PROMPT = """You are JUNE, a helpful AI assistant. You provide clear, concise, and friendly responses. 
+Keep your responses conversational and engaging, but not overly long unless specifically asked for detail."""
 
-@lru_cache(maxsize=1)
-def get_gemini_client():
-    """Get Gemini client (cached)"""
-    if not GEMINI_AVAILABLE:
-        return None
+async def generate_ai_response(text: str, user_id: str) -> str:
+    """Generate AI response directly using Gemini"""
     
-    api_key = get_gemini_api_key()
-    if not api_key:
-        logger.warning("❌ No valid Gemini API key")
-        return None
-    
-    try:
-        client = genai.Client(api_key=api_key)
-        logger.info("✅ Gemini client initialized")
-        return client
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Gemini: {e}")
-        return None
-
-
-def get_system_prompt(language: str) -> str:
-    """Get system prompt for language"""
-    prompts = {
-        "en": "You are JUNE, a helpful AI assistant.",
-        "es": "Eres JUNE, un asistente de IA útil.",
-    }
-    return prompts.get(language, prompts["en"])
-
-
-def build_conversation_context(
-    history: List[Dict[str, Any]], 
-    user_message: str, 
-    language: str
-) -> str:
-    """Build context from conversation history"""
-    parts = [get_system_prompt(language)]
-    
-    # Add last 5 messages for context
-    for msg in history[-5:]:
-        role = msg.get("role", "user")
-        text = msg.get("text", "")
-        parts.append(f"{role}: {text}")
-    
-    parts.append(f"user: {user_message}")
-    return "\n\n".join(parts)
-
-
-async def generate_ai_response(
-    text: str,
-    user_id: str,
-    conversation_history: List[Dict[str, Any]],
-    language: str = "en"
-) -> str:
-    """
-    Generate AI response using Gemini
-    
-    Args:
-        text: User's message
-        user_id: User identifier
-        conversation_history: Previous messages
-        language: Language code
-        
-    Returns:
-        AI response text
-    """
-    client = get_gemini_client()
-    
-    if not client:
+    if not GEMINI_AVAILABLE or not client:
         return get_fallback_response(text)
     
     try:
-        # Build context with history
-        context = build_conversation_context(conversation_history, text, language)
+        logger.info(f"🤖 Generating AI response for user {user_id}: {text[:50]}...")
         
-        logger.debug(f"🤖 Generating response for user {user_id}")
-        
-        # Generate response
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=context,
+            contents=f"{SYSTEM_PROMPT}\n\nUser: {text}",
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=1000
+                max_output_tokens=1000,
+                top_p=0.8,
+                top_k=40
             )
         )
         
         if response and response.text:
             ai_text = response.text.strip()
-            logger.info(f"✅ Generated response: {ai_text[:50]}...")
+            logger.info(f"✅ AI response generated: {ai_text[:100]}...")
             return ai_text
         
         logger.warning("⚠️ Empty response from Gemini")
@@ -118,20 +57,29 @@ async def generate_ai_response(
         logger.error(f"❌ AI generation failed: {e}")
         return get_fallback_response(text)
 
-
 def get_fallback_response(text: str) -> str:
     """Simple fallback when AI is unavailable"""
     text_lower = text.lower()
     
-    if any(word in text_lower for word in ["hello", "hi", "hey"]):
-        return "Hello! I'm JUNE. How can I help you today?"
+    # Basic pattern matching for common queries
+    if any(word in text_lower for word in ["hello", "hi", "hey", "good morning", "good afternoon"]):
+        return "Hello! I'm JUNE, your AI assistant. How can I help you today?"
     
-    if any(word in text_lower for word in ["thank", "thanks"]):
-        return "You're welcome! Anything else I can help with?"
+    if any(word in text_lower for word in ["thank", "thanks", "appreciate"]):
+        return "You're welcome! Is there anything else I can help you with?"
     
-    return f"I received your message: '{text}'. I'm currently in basic mode."
-
+    if any(word in text_lower for word in ["how are you", "how's it going"]):
+        return "I'm doing well, thank you for asking! I'm here and ready to help with whatever you need."
+    
+    if any(word in text_lower for word in ["what can you do", "what are your capabilities", "help me"]):
+        return "I can help you with questions, have conversations, provide information, and assist with various tasks. What would you like to know or discuss?"
+    
+    if any(word in text_lower for word in ["goodbye", "bye", "see you", "talk later"]):
+        return "Goodbye! Feel free to come back anytime if you need help. Have a great day!"
+    
+    # Default response
+    return f"I received your message: '{text[:100]}...' I'm currently running in basic mode, but I'm still here to help! Could you tell me more about what you need?"
 
 def is_ai_available() -> bool:
     """Check if AI service is available"""
-    return get_gemini_client() is not None
+    return GEMINI_AVAILABLE and client is not None

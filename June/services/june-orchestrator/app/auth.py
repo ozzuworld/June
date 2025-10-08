@@ -1,99 +1,76 @@
-"""
-Authentication for June Orchestrator
-Supports both shared auth module and fallback
-"""
-import os
 import logging
-from typing import Dict, Any
-from fastapi import HTTPException, Header
+from typing import Dict, Optional
+from fastapi import HTTPException
 
-from app.config import get_config
+# Use the shared auth module properly
+try:
+    from shared.auth import get_auth_service, AuthError
+    SHARED_AUTH_AVAILABLE = True
+except ImportError:
+    SHARED_AUTH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-class SharedAuth:
-    def __init__(self):
-        # Load service tokens from environment variable
-        tokens_env = os.getenv("VALID_SERVICE_TOKENS", "")
-        if tokens_env:
-            # Support comma-separated list of tokens
-            self.valid_service_tokens = [token.strip() for token in tokens_env.split(",")]
-        else:
-            self.valid_service_tokens = []
+async def verify_websocket_token(token: str) -> Optional[Dict]:
+    """Verify WebSocket token using shared auth service"""
+    if not token:
+        return None
+    
+    if not SHARED_AUTH_AVAILABLE:
+        logger.warning("Shared auth not available - allowing anonymous access")
+        return None
         
-        logger.info(f"✅ SharedAuth initialized with {len(self.valid_service_tokens)} service tokens")
-    
-    def validate_service_token(self, token: str) -> bool:
-        return token in self.valid_service_tokens
-
-# Initialize shared auth
-try:
-    shared_auth = SharedAuth()
-    logger.info("✅ Shared auth initialized successfully")
-except Exception as e:
-    logger.warning(f"⚠️ Shared auth initialization failed: {e}")
-    shared_auth = None
-
-def validate_service_token(token: str) -> bool:
-    if shared_auth:
-        return shared_auth.validate_service_token(token)
-    
-    # Fallback validation - should not be needed now
-    logger.warning("⚠️ Using fallback token validation")
-    return False
-
-async def verify_service_token(authorization: str = Header(None)) -> Dict[str, Any]:
-    """
-    Verify service-to-service token (for STT calling orchestrator)
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    
-    token = authorization.replace("Bearer ", "").strip()
-    
-    # Use the new service token validation
-    if validate_service_token(token):
-        logger.debug("✅ Service authenticated: june-stt")
-        return {
-            "service": "june-stt",
-            "authenticated": True,
-            "type": "service_to_service"
-        }
-    
-    raise HTTPException(status_code=401, detail="Invalid service token")
-
-
-async def verify_user_token(authorization: str = Header(None)) -> Dict[str, Any]:
-    """
-    Verify user authentication token from frontend
-    """
-    # Try to import shared auth for user tokens
     try:
-        from shared.auth import get_auth_service, AuthError
-        SHARED_AUTH_AVAILABLE = True
-    except ImportError:
-        SHARED_AUTH_AVAILABLE = False
-        logger.warning("⚠️ Shared auth not available for user tokens - returning anonymous user")
-        return {"sub": "anonymous", "authenticated": False}
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    
-    token = authorization.replace("Bearer ", "").strip()
-    
-    try:
+        # Clean token format
+        if token.startswith("Bearer "):
+            token = token[7:]
+            
         auth_service = get_auth_service()
-        token_data = await auth_service.verify_bearer(token)
+        user_data = await auth_service.verify_bearer(token)
+        logger.info(f"Token verified for user: {user_data.get('sub', 'unknown')}")
+        return user_data
         
-        user_id = token_data.get('sub', 'unknown')
-        logger.debug(f"✅ User authenticated: {user_id}")
-        return token_data
-        
+    except AuthError as e:
+        logger.warning(f"Token verification failed: {e}")
+        return None
     except Exception as e:
-        logger.error(f"❌ User authentication failed: {e}")
-        raise HTTPException(status_code=401, detail="Authentication failed")
+        logger.error(f"Unexpected auth error: {e}")
+        return None
 
+async def get_user_from_token(token: str) -> Dict:
+    """Get user data or return anonymous user"""
+    user = await verify_websocket_token(token)
+    return user or {"sub": "anonymous", "username": "anonymous"}
 
-def extract_user_id(auth_data: Dict[str, Any]) -> str:
-    """Extract user ID from auth data"""
-    return auth_data.get("sub") or auth_data.get("user_id", "anonymous")
+# HTTP endpoint auth dependency  
+async def require_auth(authorization: str = None) -> Dict:
+    """FastAPI dependency for HTTP endpoints requiring auth"""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization required")
+        
+    user = await verify_websocket_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    return user
+
+def get_keycloak_user(token: str) -> Optional[Dict]:
+    """Legacy function for compatibility - delegates to shared auth"""
+    import asyncio
+    try:
+        return asyncio.run(verify_websocket_token(token))
+    except:
+        return None
+
+def verify_keycloak_token(token: str) -> bool:
+    """Legacy function for compatibility"""
+    user = get_keycloak_user(token)
+    return user is not None
+
+def get_shared_auth_user(user_id: str) -> Optional[Dict]:
+    """Get user by ID - simplified for WebSocket architecture"""
+    return {"username": user_id, "sub": user_id}
+
+def get_anonymous_user() -> Dict:
+    """Return anonymous user data"""
+    return {"sub": "anonymous", "username": "anonymous"}
