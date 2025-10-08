@@ -4,6 +4,8 @@ import logging
 import time
 import uuid
 import base64
+import io
+import tempfile
 from typing import Dict, Any, Optional, List
 import os
 from datetime import datetime
@@ -16,12 +18,50 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Enhanced ConnectionManager with session tracking
+# Audio session manager for streaming STT
+class AudioSession:
+    def __init__(self, session_id: str, user_id: str):
+        self.session_id = session_id
+        self.user_id = user_id
+        self.audio_buffer = io.BytesIO()
+        self.buffer_size = 0
+        self.last_activity = datetime.utcnow()
+        self.is_recording = False
+        self.chunk_count = 0
+        self.sample_rate = 16000  # Default
+        self.format = "wav"
+        
+    def add_chunk(self, audio_data: bytes):
+        """Add audio chunk to buffer"""
+        self.audio_buffer.write(audio_data)
+        self.buffer_size += len(audio_data)
+        self.chunk_count += 1
+        self.last_activity = datetime.utcnow()
+        
+    def get_buffer_bytes(self) -> bytes:
+        """Get all buffered audio as bytes"""
+        return self.audio_buffer.getvalue()
+        
+    def clear_buffer(self):
+        """Clear the audio buffer"""
+        self.audio_buffer = io.BytesIO()
+        self.buffer_size = 0
+        self.chunk_count = 0
+        
+    def should_process(self) -> bool:
+        """Check if buffer should be processed (size or time based)"""
+        # Process if buffer is larger than 64KB or no activity for 2 seconds
+        time_threshold = (datetime.utcnow() - self.last_activity).total_seconds() > 2.0
+        size_threshold = self.buffer_size > 65536  # 64KB
+        return (size_threshold or time_threshold) and self.buffer_size > 0
+
+# Enhanced ConnectionManager with audio session tracking
 class ConnectionManager:
     def __init__(self):
         self.connections: Dict[str, WebSocket] = {}
         self.users: Dict[str, dict] = {}
         self.sessions: Dict[str, str] = {}  # session_id -> user_id mapping
+        self.audio_sessions: Dict[str, AudioSession] = {}  # session_id -> AudioSession
 
     async def connect(self, websocket: WebSocket, user: Optional[dict] = None) -> str:
         await websocket.accept()
@@ -31,6 +71,9 @@ class ConnectionManager:
         
         user_id = user.get("sub", "anonymous") if user else "anonymous"
         self.sessions[session_id] = user_id
+        
+        # Initialize audio session
+        self.audio_sessions[session_id] = AudioSession(session_id, user_id)
         
         logger.info(f"🔌 WebSocket connected: {session_id[:8]}... (user: {user_id})")
         return session_id
@@ -46,6 +89,8 @@ class ConnectionManager:
             del self.users[session_id]
         if session_id in self.sessions:
             del self.sessions[session_id]
+        if session_id in self.audio_sessions:
+            del self.audio_sessions[session_id]
         logger.info(f"🔌 WebSocket disconnected: {session_id[:8]}...")
 
     async def send_message(self, session_id: str, message: dict):
@@ -76,6 +121,9 @@ class ConnectionManager:
     def get_user(self, session_id: str) -> Optional[dict]:
         return self.users.get(session_id)
     
+    def get_audio_session(self, session_id: str) -> Optional[AudioSession]:
+        return self.audio_sessions.get(session_id)
+    
     def find_session_by_user(self, user_id: str) -> Optional[str]:
         """Find active session for a user"""
         for session_id, uid in self.sessions.items():
@@ -105,15 +153,59 @@ async def verify_websocket_token(token: str) -> Optional[Dict]:
                 "authenticated": True
             }
         
-        # TODO: Replace with actual Keycloak token validation
-        # from shared.auth import get_auth_service, AuthError
-        # auth_service = get_auth_service()
-        # user_data = await auth_service.verify_bearer(token)
-        # return user_data
-        
         return None
     except Exception as e:
         logger.warning(f"Auth failed: {e}")
+        return None
+
+# STT service integration
+async def send_audio_to_stt(audio_bytes: bytes, session_id: str, user_id: str) -> Optional[str]:
+    """Send audio to STT service and get transcription"""
+    try:
+        import httpx
+        stt_url = os.getenv("STT_BASE_URL", "http://june-stt.june-services.svc.cluster.local:8000")
+        
+        # Create a temporary file for the audio
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_file.write(audio_bytes)
+            temp_path = temp_file.name
+        
+        try:
+            # Send audio file to STT service
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                with open(temp_path, "rb") as audio_file:
+                    files = {"audio_file": ("audio.wav", audio_file, "audio/wav")}
+                    data = {
+                        "language": "en",
+                    }
+                    headers = {
+                        "Authorization": f"Bearer {os.getenv('STT_SERVICE_TOKEN', 'fallback_token')}",
+                        "User-Agent": "june-orchestrator/9.0.0"
+                    }
+                    
+                    response = await client.post(
+                        f"{stt_url}/v1/transcribe",
+                        files=files,
+                        data=data,
+                        headers=headers
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        transcript = result.get("text", "").strip()
+                        logger.info(f"✅ STT transcription: {transcript[:50]}...")
+                        return transcript
+                    else:
+                        logger.error(f"STT service error: {response.status_code}")
+                        return None
+                        
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+                
+    except Exception as e:
+        logger.error(f"STT service error: {e}")
         return None
 
 # Enhanced AI service with better error handling
@@ -237,57 +329,6 @@ async def synthesize_speech_binary(text: str, user_id: str = "default") -> Optio
         
     return None
 
-# Legacy TTS function for compatibility
-async def synthesize_speech(text: str, user_id: str = "default") -> Optional[str]:
-    """Synthesize speech using TTS service - Returns base64 audio (Legacy)"""
-    try:
-        if not text or len(text.strip()) == 0:
-            return None
-            
-        # Limit text length for TTS
-        if len(text) > 1000:
-            text = text[:1000] + "..."
-            
-        logger.info(f"🔊 Synthesizing speech: {text[:50]}...")
-        
-        import httpx
-        tts_url = os.getenv("TTS_BASE_URL", "http://june-tts.june-services.svc.cluster.local:8000")
-        
-        # Try internal TTS service first
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(f"{tts_url}/synthesize", json={
-                "text": text,
-                "speaker": "Claribel Dervla",  # Default speaker
-                "speed": 1.0,
-                "language": "en"
-            })
-            
-            if response.status_code == 200:
-                result = response.json()
-                audio_data = result.get("audio_data")
-                if audio_data:
-                    logger.info(f"✅ TTS synthesis successful")
-                    return audio_data
-                    
-        # Try external TTS service as fallback
-        external_tts_url = os.getenv("EXTERNAL_TTS_URL")
-        if external_tts_url:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(f"{external_tts_url}/tts/generate", json={
-                    "text": text,
-                    "voice": "default",
-                    "speed": 1.0
-                })
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    return result.get("audio_data")
-                    
-    except Exception as e:
-        logger.error(f"TTS synthesis error: {e}")
-        
-    return None
-
 # Binary audio streaming functions
 async def send_binary_audio_chunks(session_id: str, audio_bytes: bytes):
     """Send audio in binary chunks via WebSocket - Optimized delivery"""
@@ -338,54 +379,11 @@ async def send_binary_audio_chunks(session_id: str, audio_bytes: bytes):
     except Exception as e:
         logger.error(f"Binary audio streaming error for {session_id[:8]}...: {e}")
 
-async def send_legacy_audio_chunks(session_id: str, audio_data: str):
-    """Send Base64 audio in chunks via WebSocket - Legacy compatibility"""
-    try:
-        chunk_size = 32768  # 32KB chunks for Base64 data
-        total_chunks = len(audio_data) // chunk_size + (1 if len(audio_data) % chunk_size else 0)
-        
-        logger.info(f"🎵 Legacy streaming {len(audio_data)} chars in {total_chunks} chunks to {session_id[:8]}...")
-        
-        # Send stream start
-        await manager.send_message(session_id, {
-            "type": "audio_stream_start",
-            "total_chunks": total_chunks,
-            "encoding": "base64",
-            "format": "wav",
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        
-        # Send chunks
-        for i in range(0, len(audio_data), chunk_size):
-            chunk = audio_data[i:i + chunk_size]
-            chunk_index = i // chunk_size
-            is_final = i + chunk_size >= len(audio_data)
-            
-            await manager.send_message(session_id, {
-                "type": "audio_chunk",
-                "chunk_data": chunk,
-                "chunk_index": chunk_index,
-                "is_final": is_final
-            })
-            
-            await asyncio.sleep(0.005)  # 5ms between chunks
-        
-        # Send complete notification
-        await manager.send_message(session_id, {
-            "type": "audio_stream_complete",
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        
-        logger.info(f"✅ Legacy audio streaming complete to {session_id[:8]}...")
-        
-    except Exception as e:
-        logger.error(f"Legacy audio streaming error: {e}")
-
 # FastAPI app with enhanced configuration
 app = FastAPI(
     title="June Orchestrator", 
-    version="8.0.0",
-    description="Enhanced AI Voice Chat Orchestrator with Binary WebSocket Streaming"
+    version="9.0.0",
+    description="Enhanced AI Voice Chat Orchestrator with WebSocket Audio Input/Output"
 )
 
 app.add_middleware(
@@ -401,8 +399,9 @@ manager = ConnectionManager()
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 June Orchestrator v8.0.0 - Binary WebSocket Streaming")
+    logger.info("🚀 June Orchestrator v9.0.0 - WebSocket Audio Input/Output")
     logger.info(f"🔧 TTS URL: {os.getenv('TTS_BASE_URL', 'Not configured')}")
+    logger.info(f"🔧 STT URL: {os.getenv('STT_BASE_URL', 'Not configured')}")
     logger.info(f"🔧 Gemini API: {'Configured' if os.getenv('GEMINI_API_KEY') else 'Not configured'}")
 
 @app.get("/healthz")
@@ -410,7 +409,7 @@ async def health_check():
     return {
         "status": "healthy", 
         "service": "june-orchestrator", 
-        "version": "8.0.0",
+        "version": "9.0.0",
         "connections": manager.get_connection_count(),
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -422,15 +421,16 @@ async def get_status():
         "websocket_connections": manager.get_connection_count(),
         "ai_available": bool(os.getenv("GEMINI_API_KEY")) or bool(os.getenv("OPENAI_API_KEY")),
         "tts_available": bool(os.getenv("TTS_BASE_URL")),
-        "features": ["binary_streaming", "chunked_delivery", "legacy_compatibility"],
+        "stt_available": bool(os.getenv("STT_BASE_URL")),
+        "features": ["websocket_audio_input", "binary_streaming", "real_time_transcription"],
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "8.0.0"
+        "version": "9.0.0"
     }
 
-# Enhanced WebSocket endpoint with binary streaming support
+# Enhanced WebSocket endpoint with audio input support
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    """Enhanced WebSocket endpoint with binary audio streaming"""
+    """Enhanced WebSocket endpoint with audio input and output streaming"""
     user = None
     session_id = None
     
@@ -452,24 +452,37 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
             "user_id": user_id,
             "session_id": session_id,
             "authenticated": user is not None,
-            "features": ["binary_audio", "chunked_streaming"],
+            "features": ["audio_input", "audio_output", "real_time_stt", "binary_streaming"],
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "8.0.0"
+            "version": "9.0.0"
         })
         
-        # Main message loop
+        # Start audio processing task
+        audio_task = asyncio.create_task(process_audio_buffer(session_id))
+        
+        # Main message loop - handle both text and binary messages
         while True:
             try:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                await process_websocket_message(message, session_id, user)
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON from {session_id[:8]}...: {e}")
-                await manager.send_message(session_id, {
-                    "type": "error",
-                    "message": "Invalid message format",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
+                # Try to receive text message first
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                    message = json.loads(data)
+                    await process_websocket_message(message, session_id, user)
+                except asyncio.TimeoutError:
+                    # Try to receive binary message
+                    try:
+                        binary_data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
+                        await process_audio_chunk(binary_data, session_id, user)
+                    except asyncio.TimeoutError:
+                        # No messages, continue loop
+                        continue
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON from {session_id[:8]}...: {e}")
+                    await manager.send_message(session_id, {
+                        "type": "error",
+                        "message": "Invalid message format",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket {session_id[:8] if session_id else 'unknown'}... disconnected normally")
@@ -477,7 +490,93 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
         logger.error(f"WebSocket error: {e}")
     finally:
         if session_id:
+            # Cancel audio task
+            if 'audio_task' in locals():
+                audio_task.cancel()
             await manager.disconnect(session_id)
+
+async def process_audio_chunk(audio_data: bytes, session_id: str, user: Optional[dict]):
+    """Process incoming binary audio chunk"""
+    try:
+        audio_session = manager.get_audio_session(session_id)
+        if not audio_session:
+            logger.warning(f"No audio session found for {session_id[:8]}...")
+            return
+        
+        # Add chunk to buffer
+        audio_session.add_chunk(audio_data)
+        logger.debug(f"🎤 Audio chunk received: {len(audio_data)} bytes (total: {audio_session.buffer_size} bytes)")
+        
+        # Send acknowledgment
+        await manager.send_message(session_id, {
+            "type": "audio_chunk_received",
+            "chunk_size": len(audio_data),
+            "buffer_size": audio_session.buffer_size,
+            "chunk_count": audio_session.chunk_count,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error processing audio chunk from {session_id[:8]}...: {e}")
+
+async def process_audio_buffer(session_id: str):
+    """Background task to process audio buffer when ready"""
+    try:
+        while session_id in manager.connections:
+            audio_session = manager.get_audio_session(session_id)
+            if audio_session and audio_session.should_process():
+                # Get buffered audio
+                audio_bytes = audio_session.get_buffer_bytes()
+                user_id = audio_session.user_id
+                
+                logger.info(f"🔊 Processing audio buffer: {len(audio_bytes)} bytes from {session_id[:8]}...")
+                
+                # Clear buffer before processing
+                audio_session.clear_buffer()
+                
+                # Send processing status
+                await manager.send_message(session_id, {
+                    "type": "processing_status",
+                    "status": "transcribing_audio",
+                    "message": "Converting speech to text...",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                
+                # Send to STT service
+                transcript = await send_audio_to_stt(audio_bytes, session_id, user_id)
+                
+                if transcript and transcript.strip():
+                    # Send transcription result
+                    await manager.send_message(session_id, {
+                        "type": "transcription_result",
+                        "text": transcript,
+                        "confidence": 0.95,  # Placeholder - STT service should provide this
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+                    # Process transcription as text input (trigger AI response)
+                    user = manager.get_user(session_id)
+                    await process_websocket_message({
+                        "type": "text_input",
+                        "text": transcript,
+                        "source": "voice"
+                    }, session_id, user)
+                else:
+                    # No transcription or empty result
+                    await manager.send_message(session_id, {
+                        "type": "transcription_result",
+                        "text": "",
+                        "error": "No speech detected or transcription failed",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+            
+            # Sleep briefly before checking again
+            await asyncio.sleep(0.5)
+            
+    except asyncio.CancelledError:
+        logger.info(f"Audio processing task cancelled for {session_id[:8]}...")
+    except Exception as e:
+        logger.error(f"Audio processing task error for {session_id[:8]}...: {e}")
 
 async def process_websocket_message(message: dict, session_id: str, user: Optional[dict]):
     """Process incoming WebSocket messages with enhanced handling"""
@@ -493,10 +592,12 @@ async def process_websocket_message(message: dict, session_id: str, user: Option
                 "type": "pong", 
                 "timestamp": datetime.utcnow().isoformat()
             })
-        elif msg_type == "voice_input":
-            await handle_voice_input(message, session_id, user)
-        elif msg_type == "audio_preference":
-            await handle_audio_preference(message, session_id, user)
+        elif msg_type == "audio_config":
+            await handle_audio_config(message, session_id, user)
+        elif msg_type == "start_recording":
+            await handle_start_recording(session_id, user)
+        elif msg_type == "stop_recording":
+            await handle_stop_recording(session_id, user)
         else:
             await manager.send_message(session_id, {
                 "type": "error", 
@@ -512,30 +613,51 @@ async def process_websocket_message(message: dict, session_id: str, user: Option
             "timestamp": datetime.utcnow().isoformat()
         })
 
-async def handle_audio_preference(message: dict, session_id: str, user: Optional[dict]):
-    """Handle client audio preference settings"""
-    prefer_binary = message.get("prefer_binary", True)
-    prefer_chunked = message.get("prefer_chunked", True)
+async def handle_audio_config(message: dict, session_id: str, user: Optional[dict]):
+    """Handle audio configuration from client"""
+    audio_session = manager.get_audio_session(session_id)
+    if not audio_session:
+        return
     
-    # Store preferences (in production, save to user profile)
-    if session_id not in manager.users:
-        manager.users[session_id] = {}
-    
-    manager.users[session_id]["audio_preferences"] = {
-        "binary": prefer_binary,
-        "chunked": prefer_chunked
-    }
+    # Update audio session configuration
+    audio_session.sample_rate = message.get("sample_rate", 16000)
+    audio_session.format = message.get("format", "wav")
     
     await manager.send_message(session_id, {
-        "type": "audio_preference_set",
-        "binary": prefer_binary,
-        "chunked": prefer_chunked,
+        "type": "audio_config_set",
+        "sample_rate": audio_session.sample_rate,
+        "format": audio_session.format,
         "timestamp": datetime.utcnow().isoformat()
     })
+
+async def handle_start_recording(session_id: str, user: Optional[dict]):
+    """Handle start recording command"""
+    audio_session = manager.get_audio_session(session_id)
+    if audio_session:
+        audio_session.is_recording = True
+        audio_session.clear_buffer()  # Clear any existing buffer
+        
+        await manager.send_message(session_id, {
+            "type": "recording_started",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+async def handle_stop_recording(session_id: str, user: Optional[dict]):
+    """Handle stop recording command"""
+    audio_session = manager.get_audio_session(session_id)
+    if audio_session:
+        audio_session.is_recording = False
+        
+        await manager.send_message(session_id, {
+            "type": "recording_stopped",
+            "buffer_size": audio_session.buffer_size,
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
 async def handle_text_input(message: dict, session_id: str, user: Optional[dict]):
     """Handle text input with AI response and optimized TTS streaming"""
     text = message.get("text", "").strip()
+    source = message.get("source", "text")  # "text" or "voice"
     user_id = user.get("sub", "anonymous") if user else "anonymous"
     
     if not text:
@@ -557,7 +679,8 @@ async def handle_text_input(message: dict, session_id: str, user: Optional[dict]
         await manager.send_message(session_id, {
             "type": "text_response", 
             "text": ai_response, 
-            "user_id": user_id, 
+            "user_id": user_id,
+            "input_source": source,
             "timestamp": datetime.utcnow().isoformat()
         })
         
@@ -578,14 +701,6 @@ async def handle_text_input(message: dict, session_id: str, user: Optional[dict]
             "timestamp": datetime.utcnow().isoformat()
         })
 
-async def handle_voice_input(message: dict, session_id: str, user: Optional[dict]):
-    """Handle voice input (future implementation)"""
-    await manager.send_message(session_id, {
-        "type": "error", 
-        "message": "Voice input not yet implemented via WebSocket", 
-        "timestamp": datetime.utcnow().isoformat()
-    })
-
 async def generate_and_send_audio_optimized(text: str, session_id: str, user_id: str):
     """Generate and send audio using optimized binary streaming"""
     try:
@@ -597,46 +712,19 @@ async def generate_and_send_audio_optimized(text: str, session_id: str, user_id:
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Check user preferences
-        user_prefs = manager.users.get(session_id, {}).get("audio_preferences", {})
-        prefer_binary = user_prefs.get("binary", True)
-        prefer_chunked = user_prefs.get("chunked", True)
+        # Generate audio
+        audio_bytes = await synthesize_speech_binary(text, user_id)
         
-        if prefer_binary:
-            # Use binary streaming (optimized)
-            audio_bytes = await synthesize_speech_binary(text, user_id)
-            
-            if audio_bytes:
-                if prefer_chunked:
-                    await send_binary_audio_chunks(session_id, audio_bytes)
-                else:
-                    # Send as single binary message
-                    await manager.send_binary(session_id, audio_bytes)
-                    await manager.send_message(session_id, {
-                        "type": "audio_ready",
-                        "size_bytes": len(audio_bytes),
-                        "format": "binary_wav"
-                    })
-            else:
-                logger.warning(f"⚠️ Binary TTS failed for {session_id[:8]}...")
+        if audio_bytes:
+            # Send via binary chunks (optimized)
+            await send_binary_audio_chunks(session_id, audio_bytes)
         else:
-            # Fallback to legacy Base64 streaming
-            audio_data = await synthesize_speech(text, user_id)
-            
-            if audio_data:
-                if prefer_chunked:
-                    await send_legacy_audio_chunks(session_id, audio_data)
-                else:
-                    # Send as single JSON message (original method)
-                    await manager.send_message(session_id, {
-                        "type": "audio_response", 
-                        "audio_data": audio_data,
-                        "text": text,
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
-                    logger.info(f"✅ Legacy audio response sent to {session_id[:8]}...")
-            else:
-                logger.warning(f"⚠️ Legacy TTS failed for {session_id[:8]}...")
+            logger.warning(f"⚠️ TTS failed for {session_id[:8]}...")
+            await manager.send_message(session_id, {
+                "type": "audio_error",
+                "message": "Failed to generate speech audio",
+                "timestamp": datetime.utcnow().isoformat()
+            })
                 
     except Exception as e:
         logger.error(f"Audio generation error for {session_id[:8]}...: {e}")
@@ -700,77 +788,46 @@ async def enhanced_stt_webhook(request: dict):
         logger.error(f"STT webhook error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Session management endpoints
-@app.get("/v1/session/info/{session_id}")
-async def get_session_info(session_id: str):
-    """Get information about a WebSocket session"""
-    if session_id in manager.connections:
-        user = manager.get_user(session_id)
+# Audio session management endpoints
+@app.get("/v1/audio/session/{session_id}")
+async def get_audio_session_info(session_id: str):
+    """Get audio session information"""
+    audio_session = manager.get_audio_session(session_id)
+    if audio_session:
         return {
             "session_id": session_id,
-            "connected": True,
-            "user": user,
-            "timestamp": datetime.utcnow().isoformat()
+            "user_id": audio_session.user_id,
+            "is_recording": audio_session.is_recording,
+            "buffer_size": audio_session.buffer_size,
+            "chunk_count": audio_session.chunk_count,
+            "sample_rate": audio_session.sample_rate,
+            "format": audio_session.format,
+            "last_activity": audio_session.last_activity.isoformat()
         }
     else:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Audio session not found")
 
 @app.get("/v1/sessions")
 async def list_active_sessions():
-    """List all active WebSocket sessions (admin endpoint)"""
+    """List all active WebSocket sessions"""
     sessions = []
     for session_id, user in manager.users.items():
+        audio_session = manager.get_audio_session(session_id)
         sessions.append({
             "session_id": session_id,
             "user_id": user.get("sub", "anonymous"),
             "connected": session_id in manager.connections,
-            "preferences": user.get("audio_preferences", {})
+            "audio_session": {
+                "is_recording": audio_session.is_recording if audio_session else False,
+                "buffer_size": audio_session.buffer_size if audio_session else 0,
+                "chunk_count": audio_session.chunk_count if audio_session else 0
+            }
         })
     
     return {
         "sessions": sessions,
         "total_count": len(sessions),
         "timestamp": datetime.utcnow().isoformat()
-    }
-
-# Test endpoints for development
-@app.post("/v1/test/message")
-async def test_send_message(data: dict):
-    """Test endpoint to send message to a specific session"""
-    session_id = data.get("session_id")
-    message = data.get("message", "Test message")
-    
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-    
-    success = await manager.send_message(session_id, {
-        "type": "text_response",
-        "text": message,
-        "timestamp": datetime.utcnow().isoformat()
-    })
-    
-    return {
-        "sent": success,
-        "session_id": session_id,
-        "message": message
-    }
-
-@app.post("/v1/test/binary-audio")
-async def test_binary_audio(data: dict):
-    """Test endpoint for binary audio streaming"""
-    session_id = data.get("session_id")
-    text = data.get("text", "Hello! This is a binary audio streaming test.")
-    
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-    
-    # Generate and send test audio
-    asyncio.create_task(generate_and_send_audio_optimized(text, session_id, "test_user"))
-    
-    return {
-        "status": "binary_audio_test_initiated",
-        "session_id": session_id,
-        "text": text
     }
 
 if __name__ == "__main__":
