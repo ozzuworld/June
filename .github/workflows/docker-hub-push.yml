@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: '📦 Services to build (comma-separated: june-orchestrator,june-stt,june-tts or leave empty for all)'
+        description: '📦 Services to build (comma-separated: june-orchestrator,june-stt,june-tts,june-clone or leave empty for all)'
         required: false
         type: string
         default: ''
@@ -42,6 +42,8 @@ jobs:
             - June/services/june-stt/**
           tts:
             - June/services/june-tts/**
+          clone:
+            - June/services/june-clone/**
     
     - name: 📋 Set matrix for changed services
       id: set-matrix
@@ -50,7 +52,7 @@ jobs:
           # Manual trigger logic
           if [[ "${{ inputs.build_all }}" == "true" ]]; then
             echo "🔨 Building all services"
-            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\",\"june-clone\"]" >> $GITHUB_OUTPUT
           elif [[ -n "${{ inputs.services }}" ]]; then
             echo "🎯 Building selected services: ${{ inputs.services }}"
             SERVICES="${{ inputs.services }}"
@@ -58,7 +60,7 @@ jobs:
             echo "matrix=$SERVICES_JSON" >> $GITHUB_OUTPUT
           else
             echo "🔨 No specific services selected, building all"
-            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\",\"june-clone\"]" >> $GITHUB_OUTPUT
           fi
         else
           # Push event - build only changed services
@@ -75,10 +77,14 @@ jobs:
             echo "🔊 june-tts changed"
             SERVICES+=("june-tts")
           fi
+          if [[ "${{ steps.changed-files.outputs.clone_any_changed }}" == "true" ]]; then
+            echo "🎭 june-clone changed"
+            SERVICES+=("june-clone")
+          fi
           
           if [ ${#SERVICES[@]} -eq 0 ]; then
             echo "⚠️ No services changed, building all as fallback"
-            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\"]" >> $GITHUB_OUTPUT
+            echo "matrix=[\"june-orchestrator\",\"june-stt\",\"june-tts\",\"june-clone\"]" >> $GITHUB_OUTPUT
           else
             echo "✅ Building ${#SERVICES[@]} changed service(s)"
             MATRIX_JSON=$(printf '%s\n' "${SERVICES[@]}" | jq -R . | jq -s -c .)
@@ -131,7 +137,7 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
         platforms: linux/amd64
-    
+        
     - name: ✅ Build complete
       run: |
         echo "✅ Successfully built and pushed ${{ matrix.service }}"
