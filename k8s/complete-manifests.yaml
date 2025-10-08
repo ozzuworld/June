@@ -1,8 +1,17 @@
 ---
-# COMPLETE JUNE SERVICES MANIFEST WITH JUNE-CLONE VOICE CLONING SERVICE
-# File: k8s/complete-manifests.yaml
+# COMPLETE JUNE SERVICES MANIFEST (FIXED FOR AUTOMATED DEPLOYMENT)
+# This is the ONLY k8s manifest file you need - all others can be deleted
 # 
-# This replaces your entire k8s/complete-manifests.yaml file
+# Prerequisites (created by stage2-install-k8s-ubuntu.sh):
+#   - june-services namespace
+#   - local-storage StorageClass
+#   - postgresql-pv PersistentVolume at /opt/june-postgresql-data
+#   - GPU Operator with time-slicing (2+ virtual GPUs)
+#   - ingress-nginx with hostNetwork
+#   - cert-manager with letsencrypt-prod ClusterIssuer
+#
+# Usage:
+#   kubectl apply -f complete-manifests.yaml
 
 apiVersion: v1
 kind: Namespace
@@ -265,9 +274,6 @@ spec:
     name: http
 
 ---
-# ============================================================================
-# JUNE-TTS DEPLOYMENT - FIXED FOR CTRANSLATE2 EXECUTABLE STACK ISSUE
-# ============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -297,35 +303,13 @@ spec:
         operator: Exists
         effect: NoSchedule
       terminationGracePeriodSeconds: 30
-      
-      # CRITICAL FIX: Pod-level security context for ctranslate2
-      securityContext:
-        fsGroup: 1001
-        supplementalGroups: [1001]
-      
       containers:
       - name: tts
         image: docker.io/ozzuworld/june-tts:latest
         imagePullPolicy: Always
-        
-        # CRITICAL FIX: Container security context to allow executable stack
-        # This is required for ctranslate2 (used by faster-whisper VAD)
-        securityContext:
-          runAsUser: 1001
-          runAsNonRoot: true
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false
-          capabilities:
-            drop:
-            - ALL
-          # Key fix: allows executable stack for ctranslate2
-          seLinuxOptions:
-            type: spc_t
-        
         ports:
         - containerPort: 8000
           name: http
-        
         resources:
           requests:
             cpu: "1"
@@ -335,7 +319,6 @@ spec:
             cpu: "2"
             memory: "4Gi"
             nvidia.com/gpu: 1
-        
         env:
         - name: PORT
           value: "8000"
@@ -343,8 +326,6 @@ spec:
           value: "/models/openvoice/checkpoints_v2"
         - name: OPENVOICE_DEVICE
           value: "cuda"
-        - name: MELO_LANGUAGE
-          value: "EN"
         - name: ENABLE_QUANTIZATION
           value: "false"
         - name: PRELOAD_MODELS
@@ -355,20 +336,11 @@ spec:
           value: "0"
         - name: PYTORCH_CUDA_ALLOC_CONF
           value: "max_split_size_mb:256"
-        # CRITICAL: ctranslate2 environment variable
-        - name: CT2_FORCE_CPU_ISA
-          value: "GENERIC"
-        - name: CT2_VERBOSE
-          value: "0"
-        
         volumeMounts:
         - name: model-cache
           mountPath: /models
         - name: cache
           mountPath: /cache
-        - name: tmp
-          mountPath: /tmp
-        
         readinessProbe:
           httpGet:
             path: /healthz
@@ -376,14 +348,12 @@ spec:
           initialDelaySeconds: 120
           periodSeconds: 10
           failureThreshold: 30
-        
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8000
           initialDelaySeconds: 180
           periodSeconds: 30
-      
       volumes:
       - name: model-cache
         emptyDir:
@@ -391,9 +361,6 @@ spec:
       - name: cache
         emptyDir:
           sizeLimit: 5Gi
-      - name: tmp
-        emptyDir:
-          sizeLimit: 2Gi
 
 ---
 apiVersion: v1
@@ -405,159 +372,6 @@ spec:
   type: ClusterIP
   selector:
     app: june-tts
-  ports:
-  - port: 8000
-    targetPort: 8000
-    name: http
-
----
-# ============================================================================
-# JUNE-CLONE DEPLOYMENT - DEDICATED VOICE CLONING SERVICE
-# ============================================================================
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: june-clone
-  namespace: june-services
-  labels:
-    app: june-clone
-spec:
-  replicas: 1
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 1
-      maxSurge: 0
-  selector:
-    matchLabels:
-      app: june-clone
-  template:
-    metadata:
-      labels:
-        app: june-clone
-    spec:
-      nodeSelector:
-        gpu: "true"
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      terminationGracePeriodSeconds: 30
-      
-      securityContext:
-        fsGroup: 1001
-        supplementalGroups: [1001]
-      
-      initContainers:
-      - name: setup-cache
-        image: busybox:1.35
-        command:
-        - sh
-        - -c
-        - mkdir -p /tmp/transformers /tmp/huggingface /tmp/huggingface/hub && chmod 777 /tmp/transformers /tmp/huggingface /tmp/huggingface/hub
-        volumeMounts:
-        - name: cache
-          mountPath: /tmp
-      
-      containers:
-      - name: voice-cloning
-        image: docker.io/ozzuworld/june-clone:latest
-        imagePullPolicy: Always
-        
-        securityContext:
-          runAsUser: 1001
-          runAsNonRoot: true
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false
-          capabilities:
-            drop:
-            - ALL
-          seLinuxOptions:
-            type: spc_t
-        
-        ports:
-        - containerPort: 8000
-          name: http
-        
-        resources:
-          requests:
-            cpu: "1"
-            memory: "3Gi"
-            nvidia.com/gpu: 1
-          limits:
-            cpu: "3"
-            memory: "6Gi"
-            nvidia.com/gpu: 1
-        
-        env:
-        - name: PORT
-          value: "8000"
-        - name: TRANSFORMERS_CACHE
-          value: "/tmp/transformers"
-        - name: HF_HOME
-          value: "/tmp/huggingface"
-        - name: HUGGINGFACE_HUB_CACHE
-          value: "/tmp/huggingface/hub"
-        - name: NUMBA_DISABLE_JIT
-          value: "1"
-        - name: NUMBA_CACHE_DIR
-          value: "/tmp"
-        - name: NUMBA_WARNINGS
-          value: "0"
-        - name: NUMBA_DISABLE_INTEL_SVML
-          value: "1"
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: PYTORCH_CUDA_ALLOC_CONF
-          value: "max_split_size_mb:256"
-        - name: CT2_FORCE_CPU_ISA
-          value: "GENERIC"
-        - name: CT2_VERBOSE
-          value: "0"
-        - name: LOG_LEVEL
-          value: "INFO"
-        - name: F5TTS_DEVICE
-          value: "cuda"
-        
-        volumeMounts:
-        - name: cache
-          mountPath: /tmp
-        - name: models-cache
-          mountPath: /models
-        
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 30
-        
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180
-          periodSeconds: 30
-      
-      volumes:
-      - name: cache
-        emptyDir:
-          sizeLimit: 15Gi
-      - name: models-cache
-        emptyDir:
-          sizeLimit: 10Gi
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-clone
-  namespace: june-services
-spec:
-  type: ClusterIP
-  selector:
-    app: june-clone
   ports:
   - port: 8000
     targetPort: 8000
@@ -621,8 +435,6 @@ spec:
           value: "june-orchestrator"
         - name: TTS_SERVICE_URL
           value: "http://june-tts.june-services.svc.cluster.local:8000"
-        - name: VOICE_CLONE_SERVICE_URL
-          value: "http://june-clone.june-services.svc.cluster.local:8000"
         - name: STT_SERVICE_URL
           value: "http://june-stt.june-services.svc.cluster.local:8080"
         readinessProbe:
@@ -848,15 +660,5 @@ spec:
         backend:
           service:
             name: june-tts
-            port:
-              number: 8000
-  - host: clone.allsafe.world
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-clone
             port:
               number: 8000
