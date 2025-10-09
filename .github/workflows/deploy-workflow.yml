@@ -360,12 +360,7 @@ jobs:
         run: |
           echo "🔗 Deploying STUNner Gateway API resources..."
           
-          # Check if operator is installed
-          if ! kubectl get deployment stunner-gateway-operator -n stunner-system &>/dev/null; then
-            echo "❌ STUNner operator not installed!"
-            echo "Run: helm install stunner-gateway-operator stunner/stunner-gateway-operator --namespace stunner-system"
-            exit 1
-          fi
+          # Operator is guaranteed to be installed by verify-infrastructure job
           
           # Apply Gateway API resources
           if [ -f "/tmp/stunner-resources.yaml" ]; then
@@ -385,7 +380,8 @@ jobs:
             echo "✅ STUNner Gateway deployed"
             echo "   Address: $GATEWAY_ADDR:3478"
           else
-            echo "⚠️  STUNner manifest not found"
+            echo "❌ STUNner manifest not found at /tmp/stunner-resources.yaml"
+            exit 1
           fi
 
       # ========================================================================
