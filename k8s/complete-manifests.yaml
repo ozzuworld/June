@@ -50,21 +50,21 @@ data:
   
   # ✅ UPDATED: STUNner Gateway API format
   # The operator manages the actual TURN server, we just need to reference it
-  STUN_SERVER_URL: "stun:TURN_DOMAIN_PLACEHOLDER:3478"
-  TURN_SERVER_URL: "turn:TURN_DOMAIN_PLACEHOLDER:3478" 
-  TURN_USERNAME: "STUNNER_USERNAME_PLACEHOLDER"
-  TURN_CREDENTIAL: "STUNNER_PASSWORD_PLACEHOLDER"
+  STUN_SERVER_URL: "stun:turn.ozzu.world:3478"
+  TURN_SERVER_URL: "turn:turn.ozzu.world:3478"
+  TURN_USERNAME: "june-user"
+  TURN_CREDENTIAL: "Pokemon123!"
   
   # ICE Server Configuration (JSON format for WebRTC clients)
   ICE_SERVERS: |
     [
       {
-        "urls": ["stun:TURN_DOMAIN_PLACEHOLDER:3478"]
+        "urls": ["stun:turn.ozzu.world:3478"]
       },
       {
-        "urls": ["turn:TURN_DOMAIN_PLACEHOLDER:3478"],
-        "username": "STUNNER_USERNAME_PLACEHOLDER",
-        "credential": "STUNNER_PASSWORD_PLACEHOLDER"
+        "urls": ["turn:turn.ozzu.world:3478"],
+        "username": "june-user",
+        "credential": "Pokemon123!"
       }
     ]
   
