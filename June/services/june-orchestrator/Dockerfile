@@ -33,18 +33,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install runtime dependencies only (no build tools)
+# Install runtime dependencies with CORRECT version numbers for Debian Trixie
 RUN apt-get update && apt-get install -y \
     curl \
-    libavformat59 \
-    libavcodec59 \
-    libavdevice59 \
-    libavutil57 \
-    libswscale6 \
-    libswresample4 \
-    libavfilter8 \
+    libavformat61 \
+    libavcodec61 \
+    libavdevice61 \
+    libavutil59 \
+    libswscale8 \
+    libswresample5 \
+    libavfilter10 \
     libopus0 \
-    libvpx7 \
+    libvpx9 \
     libsrtp2-1 \
     && rm -rf /var/lib/apt/lists/*
 
