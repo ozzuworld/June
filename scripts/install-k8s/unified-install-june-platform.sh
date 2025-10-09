@@ -381,6 +381,17 @@ log_success "ingress-nginx ready!"
 
 log_info "🌐 Installing MetalLB for LoadBalancer support..."
 
+# ✅ FIX: Detect external IP FIRST
+log_info "Detecting server external IP..."
+EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || curl -s http://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+
+if [ -z "$EXTERNAL_IP" ]; then
+    log_error "Could not detect external IP!"
+    read -p "Enter your server's public IP address: " EXTERNAL_IP
+fi
+
+log_info "Using external IP: $EXTERNAL_IP"
+
 # Check if MetalLB is already installed
 if kubectl get namespace metallb-system &>/dev/null; then
     log_warning "MetalLB already installed"
@@ -399,7 +410,7 @@ else
 fi
 
 # Configure IP address pool
-log_info "Configuring MetalLB IP pool..."
+log_info "Configuring MetalLB IP pool with $EXTERNAL_IP..."
 
 cat <<EOF | kubectl apply -f -
 apiVersion: metallb.io/v1beta1
