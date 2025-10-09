@@ -353,26 +353,39 @@ jobs:
           echo "✅ Application secrets updated"
 
       # ========================================================================
-      # Deploy STUNner (FIXED - no gateway wait)
+      # Deploy STUNner (Gateway API - Operator Managed)
       # ========================================================================
       
-      - name: 🔗 Deploy STUNner Resources
+      - name: 🔗 Deploy STUNner Gateway Resources
         run: |
+          echo "🔗 Deploying STUNner Gateway API resources..."
+          
+          # Check if operator is installed
+          if ! kubectl get deployment stunner-gateway-operator -n stunner-system &>/dev/null; then
+            echo "❌ STUNner operator not installed!"
+            echo "Run: helm install stunner-gateway-operator stunner/stunner-gateway-operator --namespace stunner-system"
+            exit 1
+          fi
+          
+          # Apply Gateway API resources
           if [ -f "/tmp/stunner-resources.yaml" ]; then
-            echo "🔗 Deploying STUNner resources..."
             kubectl apply -f /tmp/stunner-resources.yaml
             
-            # Wait for STUNner Deployment (NOT gateway!)
-            echo "⏳ Waiting for STUNner deployment..."
-            kubectl wait --for=condition=available deployment/june-stunner-gateway \
-              -n stunner --timeout=120s || {
-              echo "⚠️  STUNner deployment taking longer than expected"
-              kubectl describe deployment june-stunner-gateway -n stunner
+            echo "⏳ Waiting for Gateway to be Programmed..."
+            kubectl wait --for=condition=Programmed gateway/june-stunner-gateway \
+              -n stunner --timeout=300s || {
+              echo "⚠️  Gateway taking longer than expected"
+              kubectl describe gateway june-stunner-gateway -n stunner
             }
             
-            echo "✅ STUNner resources deployed"
+            # Get Gateway address
+            GATEWAY_ADDR=$(kubectl get gateway june-stunner-gateway -n stunner \
+              -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || echo "pending")
+            
+            echo "✅ STUNner Gateway deployed"
+            echo "   Address: $GATEWAY_ADDR:3478"
           else
-            echo "⚠️  STUNner not available, skipping"
+            echo "⚠️  STUNner manifest not found"
           fi
 
       # ========================================================================
