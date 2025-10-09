@@ -1,32 +1,3 @@
-# STUNner STUN/TURN Server Kubernetes Manifests for June Services
-# FIXED VERSION - Correct coturn configuration that actually works
-# This configuration ensures TURN/STUN server works correctly every time
-
----
-# STUNner Namespace
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: stunner
-  labels:
-    name: stunner
-    app.kubernetes.io/part-of: june
-
----
-# STUNner Authentication Secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: stunner-auth-secret
-  namespace: stunner
-type: Opaque
-stringData:
-  username: "june"
-  password: "Pokemon123!"
-  type: "static"
-
----
-# STUNner Deployment - FIXED: Correct coturn command
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +6,7 @@ metadata:
   labels:
     app: stunner
 spec:
-  replicas: 1  # CRITICAL: Only 1 replica when using hostNetwork
+  replicas: 1
   selector:
     matchLabels:
       app: stunner
@@ -44,11 +15,9 @@ spec:
       labels:
         app: stunner
     spec:
-      # CRITICAL: Use hostNetwork for bare metal deployments
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       
-      # Ensure STUNner runs on the control plane node
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -58,20 +27,18 @@ spec:
       
       containers:
       - name: stunner
-        # FIXED: Use stable coturn image
         image: coturn/coturn:4.6.2-alpine
         imagePullPolicy: IfNotPresent
         
-        # ✅ FIXED CONFIGURATION - Removed -a flag, added --fingerprint
+        # ✅ FIXED: Removed --lt-cred-mech, using static auth only
         command:
         - turnserver
         - -n
         - -v
         - --listening-ip=0.0.0.0
         - --listening-port=3478
-        - --realm=STUNNER_REALM_PLACEHOLDER
-        - --lt-cred-mech
-        - --user=STUNNER_USERNAME_PLACEHOLDER:STUNNER_PASSWORD_PLACEHOLDER
+        - --realm=turn.ozzu.world
+        - --user=june-user:Pokemon123!
         - --no-dtls
         - --no-tls
         - --fingerprint
@@ -84,9 +51,11 @@ spec:
         - containerPort: 3478
           protocol: UDP
           name: turn-udp
+          hostPort: 3478  # ✅ Explicit host port binding
         - containerPort: 3478
           protocol: TCP
           name: turn-tcp
+          hostPort: 3478
         
         resources:
           requests:
@@ -101,73 +70,9 @@ spec:
             port: 3478
           initialDelaySeconds: 5
           periodSeconds: 10
-          timeoutSeconds: 3
         
         livenessProbe:
           tcpSocket:
             port: 3478
           initialDelaySeconds: 15
           periodSeconds: 30
-          timeoutSeconds: 3
-
----
-# STUNner Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-stunner-gateway
-  namespace: stunner
-  labels:
-    app: stunner
-spec:
-  type: ClusterIP
-  selector:
-    app: stunner
-  ports:
-  - port: 3478
-    targetPort: 3478
-    protocol: UDP
-    name: turn-udp
-  - port: 3478
-    targetPort: 3478
-    protocol: TCP
-    name: turn-tcp
-
----
-# ConfigMap for TURN server configuration
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: stunner-config
-  namespace: stunner
-data:
-  turnserver.conf: |
-    # TURN server configuration
-    listening-port=3478
-    tls-listening-port=5349
-    
-    # Authentication
-    lt-cred-mech
-    use-auth-secret
-    static-auth-secret=STUNNER_PASSWORD_PLACEHOLDER
-    
-    # Realm
-    realm=STUNNER_REALM_PLACEHOLDER
-    
-    # Enable STUN
-    fingerprint
-    
-    # Logging
-    verbose
-    simple-log
-    
-    # Network
-    no-loopback-peers
-    no-multicast-peers
-    
-    # Security
-    stale-nonce=600
-    
-    # Ports
-    min-port=49152
-    max-port=65535

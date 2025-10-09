@@ -80,27 +80,28 @@ class AppConfig:
     def _load_webrtc_config(self) -> WebRTCConfig:
         """Load WebRTC configuration from environment"""
         
-        # ✅ FIX: Support both old and new environment variable formats
-        # Check for K8s-style single server URLs first (current deployment)
-        stun_server_url = os.getenv("STUN_SERVER_URL")  # K8s format: "stun:turn.ozzu.world:3478"
-        turn_server_url = os.getenv("TURN_SERVER_URL")  # K8s format: "turn:turn.ozzu.world:3478"
-        
-        # Check for legacy comma-separated format
-        stun_servers_str = os.getenv("STUN_SERVERS", "")
-        turn_servers_str = os.getenv("TURN_SERVERS", "")
-        
-        # Build STUN servers list
-        stun_servers = []
-        if stun_server_url:
-            stun_servers.append(stun_server_url)
-            logger.info(f"Using K8s STUN server: {stun_server_url}")
-        elif stun_servers_str:
-            stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
-            logger.info(f"Using legacy STUN servers: {stun_servers}")
-        else:
-            # Fallback to Google STUN
-            stun_servers = ["stun:stun.l.google.com:19302"]
-            logger.info("Using fallback Google STUN server")
+def _load_webrtc_config(self) -> WebRTCConfig:
+    """Load WebRTC configuration from environment"""
+    
+    # Check for K8s-style single server URLs first
+    stun_server_url = os.getenv("STUN_SERVER_URL")
+    turn_server_url = os.getenv("TURN_SERVER_URL")
+    
+    # Check for legacy comma-separated format FIRST
+    stun_servers_str = os.getenv("STUN_SERVERS", "")  # ✅ FIXED: Define before use
+    turn_servers_str = os.getenv("TURN_SERVERS", "")
+    
+    # Build STUN servers list
+    stun_servers = []
+    if stun_server_url:
+        stun_servers.append(stun_server_url)
+        logger.info(f"Using K8s STUN server: {stun_server_url}")
+    elif stun_servers_str:  # ✅ Now this variable exists
+        stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
+        logger.info(f"Using legacy STUN servers: {stun_servers}")
+    else:
+        stun_servers = ["stun:stun.l.google.com:19302"]
+        logger.info("Using fallback Google STUN server")
         
         # Build TURN servers list
         turn_servers = []
