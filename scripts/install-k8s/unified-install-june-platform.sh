@@ -376,6 +376,54 @@ kubectl wait --namespace ingress-nginx \
 log_success "ingress-nginx ready!"
 
 # ============================================================================
+# INSTALLATION PHASE 4.5: METALLB (FOR LOADBALANCER SUPPORT)
+# ============================================================================
+
+log_info "🌐 Installing MetalLB for LoadBalancer support..."
+
+# Check if MetalLB is already installed
+if kubectl get namespace metallb-system &>/dev/null; then
+    log_warning "MetalLB already installed"
+else
+    # Install MetalLB
+    kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml
+    
+    # Wait for MetalLB to be ready
+    log_info "Waiting for MetalLB pods..."
+    kubectl wait --namespace metallb-system \
+        --for=condition=ready pod \
+        --selector=app=metallb \
+        --timeout=90s || log_warning "MetalLB taking longer than expected"
+    
+    log_success "MetalLB installed!"
+fi
+
+# Configure IP address pool
+log_info "Configuring MetalLB IP pool..."
+
+cat <<EOF | kubectl apply -f -
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: june-pool
+  namespace: metallb-system
+spec:
+  addresses:
+  - ${EXTERNAL_IP}/32
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: june-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - june-pool
+EOF
+
+log_success "MetalLB configured with IP: $EXTERNAL_IP"
+
+# ============================================================================
 # INSTALLATION PHASE 5: CERT-MANAGER
 # ============================================================================
 
