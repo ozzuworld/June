@@ -3,6 +3,7 @@ Configuration management for June Orchestrator
 Handles WebRTC, services, and environment settings
 """
 import os
+import json
 from typing import List, Optional
 from pydantic import BaseModel
 import logging
@@ -20,6 +21,7 @@ class WebRTCConfig(BaseModel):
     turn_servers: List[str] = []
     turn_username: Optional[str] = None
     turn_password: Optional[str] = None
+    ice_servers_json: Optional[str] = None
 
 
 class VADConfig(BaseModel):
@@ -64,14 +66,57 @@ class AppConfig:
         logger.info(f"Configuration loaded for {self.environment} environment")
         logger.info(f"WebRTC enabled: {self.webrtc.enabled}")
         logger.info(f"VAD enabled: {self.vad.enabled}")
+        
+        # Log the actual WebRTC configuration for debugging
+        logger.info(f"STUN servers configured: {len(self.webrtc.stun_servers)}")
+        logger.info(f"TURN servers configured: {len(self.webrtc.turn_servers)}")
+        if self.webrtc.stun_servers:
+            logger.info(f"STUN servers: {', '.join(self.webrtc.stun_servers)}")
+        if self.webrtc.turn_servers:
+            logger.info(f"TURN servers: {', '.join(self.webrtc.turn_servers)}")
+        if self.webrtc.turn_username:
+            logger.info(f"TURN username: {self.webrtc.turn_username}")
     
     def _load_webrtc_config(self) -> WebRTCConfig:
         """Load WebRTC configuration from environment"""
-        stun_servers_str = os.getenv("STUN_SERVERS", "stun:stun.l.google.com:19302")
-        stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
         
+        # ✅ FIX: Support both old and new environment variable formats
+        # Check for K8s-style single server URLs first (current deployment)
+        stun_server_url = os.getenv("STUN_SERVER_URL")  # K8s format: "stun:turn.ozzu.world:3478"
+        turn_server_url = os.getenv("TURN_SERVER_URL")  # K8s format: "turn:turn.ozzu.world:3478"
+        
+        # Check for legacy comma-separated format
+        stun_servers_str = os.getenv("STUN_SERVERS", "")
         turn_servers_str = os.getenv("TURN_SERVERS", "")
-        turn_servers = [s.strip() for s in turn_servers_str.split(",") if s.strip()]
+        
+        # Build STUN servers list
+        stun_servers = []
+        if stun_server_url:
+            stun_servers.append(stun_server_url)
+            logger.info(f"Using K8s STUN server: {stun_server_url}")
+        elif stun_servers_str:
+            stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
+            logger.info(f"Using legacy STUN servers: {stun_servers}")
+        else:
+            # Fallback to Google STUN
+            stun_servers = ["stun:stun.l.google.com:19302"]
+            logger.info("Using fallback Google STUN server")
+        
+        # Build TURN servers list
+        turn_servers = []
+        if turn_server_url:
+            turn_servers.append(turn_server_url)
+            logger.info(f"Using K8s TURN server: {turn_server_url}")
+        elif turn_servers_str:
+            turn_servers = [s.strip() for s in turn_servers_str.split(",") if s.strip()]
+            logger.info(f"Using legacy TURN servers: {turn_servers}")
+        
+        # ✅ FIX: Support both TURN_CREDENTIAL (K8s) and TURN_PASSWORD (legacy)
+        turn_username = os.getenv("TURN_USERNAME")
+        turn_password = os.getenv("TURN_CREDENTIAL") or os.getenv("TURN_PASSWORD")  # K8s first, legacy fallback
+        
+        # Get ICE servers JSON if available (for direct client use)
+        ice_servers_json = os.getenv("ICE_SERVERS")
         
         return WebRTCConfig(
             enabled=os.getenv("WEBRTC_ENABLED", "true").lower() == "true",
@@ -80,8 +125,9 @@ class AppConfig:
             channels=int(os.getenv("WEBRTC_CHANNELS", "1")),
             stun_servers=stun_servers,
             turn_servers=turn_servers,
-            turn_username=os.getenv("TURN_USERNAME"),
-            turn_password=os.getenv("TURN_PASSWORD")
+            turn_username=turn_username,
+            turn_password=turn_password,
+            ice_servers_json=ice_servers_json
         )
     
     def _load_vad_config(self) -> VADConfig:
@@ -95,14 +141,24 @@ class AppConfig:
     def _load_service_config(self) -> ServiceConfig:
         """Load service URLs and credentials"""
         return ServiceConfig(
-            tts_base_url=os.getenv("TTS_BASE_URL", "http://june-tts.june-services.svc.cluster.local:8000"),
-            stt_base_url=os.getenv("STT_BASE_URL", "http://june-stt.june-services.svc.cluster.local:8080"),
+            tts_base_url=os.getenv("TTS_SERVICE_URL", "http://june-tts.june-services.svc.cluster.local:8000"),
+            stt_base_url=os.getenv("STT_SERVICE_URL", "http://june-stt.june-services.svc.cluster.local:8080"),
             gemini_api_key=os.getenv("GEMINI_API_KEY"),
-            stt_service_token=os.getenv("STT_SERVICE_TOKEN")
+            stt_service_token=os.getenv("VALID_SERVICE_TOKENS")
         )
     
     def get_ice_servers(self) -> List[dict]:
         """Get ICE servers configuration for WebRTC"""
+        # ✅ NEW: Try to use the pre-configured ICE_SERVERS JSON first
+        if self.webrtc.ice_servers_json:
+            try:
+                ice_servers_from_json = json.loads(self.webrtc.ice_servers_json)
+                logger.info(f"Using ICE servers from JSON config: {len(ice_servers_from_json)} servers")
+                return ice_servers_from_json
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse ICE_SERVERS JSON: {e}")
+        
+        # Fallback: Build ICE servers from individual config
         ice_servers = []
         
         # Add STUN servers
@@ -118,7 +174,12 @@ class AppConfig:
                     turn_config["credential"] = self.webrtc.turn_password
                 ice_servers.append(turn_config)
         
+        logger.info(f"Built ICE servers from config: {len(ice_servers)} servers")
         return ice_servers
+    
+    def get_ice_servers_json(self) -> str:
+        """Get ICE servers as JSON string for client-side use"""
+        return json.dumps(self.get_ice_servers(), indent=2)
 
 
 # Global config instance
