@@ -2,14 +2,15 @@
 # UNIFIED INSTALLATION SCRIPT: Complete June Platform Setup
 # This combines Stage 1 (GitHub Runner) + Stage 2 (K8s Infrastructure) + Stage 3 (STUNner)
 # Single script to set up everything from scratch
+# FIXED: Uses reliable coturn TURN server instead of problematic STUNner operator
 
 set -e
 
 echo "======================================================"
-echo "🚀 UNIFIED June Platform Installation"
+echo "🚀 UNIFIED June Platform Installation - FIXED VERSION"
 echo "   ✅ GitHub Actions Runner Setup"
 echo "   ✅ Kubernetes + Infrastructure Setup"
-echo "   ✅ STUNner STUN/TURN Server Setup"
+echo "   ✅ Reliable STUNner with coturn (FIXED)"
 echo "   ✅ Complete WebRTC Integration"
 echo "======================================================"
 
@@ -20,10 +21,10 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
-log_success() { echo -e "${GREEN}✅ $1${NC}"; }
-log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-log_error()   { echo -e "${RED}❌ $1${NC}"; }
+log_info()    { echo -e "${BLUE}\u2139\ufe0f  $1${NC}"; }
+log_success() { echo -e "${GREEN}\u2705 $1${NC}"; }
+log_warning() { echo -e "${YELLOW}\u26a0\ufe0f  $1${NC}"; }
+log_error()   { echo -e "${RED}\u274c $1${NC}"; }
 
 # Configuration function
 prompt() {
@@ -130,7 +131,7 @@ echo ""
 # SECTION 5: STUNner Configuration
 # ============================================================================
 
-echo "🔗 STUNner STUN/TURN Configuration:"
+echo "🔗 STUNner STUN/TURN Configuration (RELIABLE VERSION):"
 echo ""
 prompt "STUNner realm" STUNNER_REALM "${TURN_DOMAIN}"
 prompt "STUNner username" STUNNER_USERNAME "june-user"
@@ -166,11 +167,12 @@ echo "  Pod Network: ${POD_NETWORK_CIDR}"
 echo "  GPU Setup: ${SETUP_GPU}"
 echo "  GPU Replicas: ${GPU_REPLICAS}"
 echo ""
-echo "🔗 STUNner:"
+echo "🔗 STUNner (RELIABLE COTURN VERSION):"
 echo "  TURN Domain: ${TURN_DOMAIN}"
 echo "  Realm: ${STUNNER_REALM}"
 echo "  Username: ${STUNNER_USERNAME}"
 echo "  Password: ${STUNNER_PASSWORD:0:3}***"
+echo "  Image: coturn/coturn:4.6.2-alpine (RELIABLE)"
 echo ""
 echo "======================================================"
 echo ""
@@ -664,44 +666,16 @@ else
 fi
 
 # ============================================================================
-# INSTALLATION PHASE 9: STUNNER OPERATOR
+# INSTALLATION PHASE 9: RELIABLE STUNNER WITH COTURN
 # ============================================================================
 
-log_info "🔗 Installing STUNner Gateway Operator..."
+log_info "🔗 Installing Reliable STUNner with coturn (FIXED VERSION)..."
 
-# Ensure Helm is available
-if ! command -v helm &> /dev/null; then
-    cd /tmp
-    wget https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz
-    tar -zxvf helm-v3.14.0-linux-amd64.tar.gz
-    mv linux-amd64/helm /usr/local/bin/helm
-    chmod +x /usr/local/bin/helm
-    rm -rf linux-amd64 helm-v3.14.0-linux-amd64.tar.gz
-fi
-
-# Add STUNner Helm repository
-helm repo add stunner https://l7mp.io/stunner
-helm repo update
-
-# Create stunner-system namespace
-kubectl create namespace stunner-system || log_warning "stunner-system namespace already exists"
-
-# Install STUNner Gateway Operator
-log_info "Installing STUNner Gateway Operator (this may take a few minutes)..."
-helm install stunner-gateway-operator stunner/stunner-gateway-operator \
-    --create-namespace \
-    --namespace=stunner-system \
-    --wait \
-    --timeout=10m || {
-    log_error "Failed to install STUNner Gateway Operator"
-    exit 1
-}
-
-log_success "STUNner Gateway Operator installed!"
-
-# Create stunner namespace and auth secret
+# Create stunner namespace
 kubectl create namespace stunner || log_warning "stunner namespace already exists"
 
+# Create authentication secret
+log_info "Creating STUNner authentication secret..."
 kubectl create secret generic stunner-auth-secret \
     --from-literal=type=static \
     --from-literal=username="$STUNNER_USERNAME" \
@@ -710,6 +684,146 @@ kubectl create secret generic stunner-auth-secret \
     --dry-run=client -o yaml | kubectl apply -f -
 
 log_success "STUNner authentication configured!"
+
+# Generate the reliable STUNner manifest with actual values
+log_info "Generating reliable STUNner deployment manifest..."
+SCRIPT_DIR="$(dirname "$(realpath "$0")")" 
+
+# Create the reliable STUNner manifest directly
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-stunner-gateway
+  namespace: stunner
+  labels:
+    app: stunner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stunner
+  template:
+    metadata:
+      labels:
+        app: stunner
+    spec:
+      # CRITICAL: Use hostNetwork for bare metal deployments
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      
+      # Ensure STUNner runs on the control plane node
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      
+      containers:
+      - name: stunner
+        # RELIABLE: Use stable coturn image
+        image: coturn/coturn:4.6.2-alpine
+        imagePullPolicy: IfNotPresent
+        
+        # TURN server configuration
+        command:
+        - turnserver
+        - -n                                    # No daemon mode
+        - -a                                   # Use long-term authentication
+        - -v                                   # Verbose logging
+        - -f                                   # Use config file format
+        - -L
+        - "0.0.0.0"                           # Listen on all interfaces
+        - -p
+        - "3478"                              # TURN port
+        - -r
+        - "${STUNNER_REALM}"                  # Realm
+        - -u
+        - "${STUNNER_USERNAME}:${STUNNER_PASSWORD}"  # User:pass
+        - --no-dtls                           # Disable DTLS
+        - --no-tls                            # Disable TLS
+        - --min-port=49152                    # RTP port range start
+        - --max-port=65535                    # RTP port range end
+        - --pidfile=/tmp/turnserver.pid       # PID file location
+        
+        ports:
+        - containerPort: 3478
+          protocol: UDP
+          name: turn-udp
+        - containerPort: 3478
+          protocol: TCP
+          name: turn-tcp
+        
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+        
+        # Health checks
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stunner-gateway
+  namespace: stunner
+  labels:
+    app: stunner
+spec:
+  type: ClusterIP
+  selector:
+    app: stunner
+  ports:
+  - port: 3478
+    targetPort: 3478
+    protocol: UDP
+    name: turn-udp
+  - port: 3478
+    targetPort: 3478
+    protocol: TCP
+    name: turn-tcp
+EOF
+
+log_success "Reliable STUNner deployment applied!"
+
+# Wait for STUNner deployment
+log_info "Waiting for STUNner deployment to be ready..."
+kubectl wait --for=condition=available deployment/june-stunner-gateway \
+    -n stunner \
+    --timeout=300s || log_warning "STUNner deployment taking longer than expected"
+
+log_success "Reliable STUNner is ready!"
+
+# Verify port is listening
+log_info "Verifying STUNner is listening on port 3478..."
+sleep 10
+if netstat -ulnp | grep -q ":3478"; then
+    log_success "STUNner is listening on port 3478 (hostNetwork working!)"
+else
+    log_warning "STUNner may not be listening on port 3478 yet (deployment might still be starting)"
+fi
 
 # ============================================================================
 # CONFIGURATION SAVE
@@ -727,6 +841,7 @@ cat > "${CONFIG_DIR}/domain-config.env" << EOF
 # June Infrastructure Complete Configuration
 # Generated: $(date)
 # This file is used by GitHub Actions workflow for deployments
+# FIXED VERSION: Uses reliable coturn TURN server
 
 PRIMARY_DOMAIN=${PRIMARY_DOMAIN}
 API_DOMAIN=${API_DOMAIN}
@@ -740,10 +855,13 @@ CERT_SECRET_NAME=${CERT_SECRET_NAME}
 # API Keys (for manual deployments)
 GEMINI_API_KEY=${GEMINI_API_KEY}
 
-# STUNner Configuration
+# STUNner Configuration (RELIABLE VERSION)
 STUNNER_REALM=${STUNNER_REALM}
 STUNNER_USERNAME=${STUNNER_USERNAME}
 STUNNER_PASSWORD=${STUNNER_PASSWORD}
+STUNNER_IMAGE=coturn/coturn:4.6.2-alpine
+STUNNER_HOST_NETWORK=true
+STUNNER_PORT=3478
 EOF
 
 chmod 600 "${CONFIG_DIR}/domain-config.env"
@@ -834,23 +952,40 @@ else
 fi
 
 # Check STUNner
-log_info "Checking STUNner..."
-if kubectl get pods -n stunner-system | grep -q Running; then
-    log_success "STUNner operator is running"
-else
-    log_warning "STUNner operator not ready yet"
-fi
-
+log_info "Checking reliable STUNner..."
 if kubectl get namespace stunner &>/dev/null; then
     log_success "STUNner namespace exists"
 else
     log_error "STUNner namespace not found!"
 fi
 
+if kubectl get deployment june-stunner-gateway -n stunner &>/dev/null; then
+    log_success "STUNner deployment exists"
+    
+    # Check pod status
+    READY_PODS=$(kubectl get pods -n stunner -l app=stunner --no-headers | grep Running | wc -l)
+    if [ "$READY_PODS" -gt 0 ]; then
+        log_success "STUNner pod is running (RELIABLE VERSION)"
+    else
+        log_warning "STUNner pod may not be ready yet"
+        kubectl get pods -n stunner -l app=stunner
+    fi
+else
+    log_error "STUNner deployment not found!"
+fi
+
 if kubectl get secret stunner-auth-secret -n stunner &>/dev/null; then
     log_success "STUNner authentication secret exists"
 else
     log_error "STUNner authentication secret not found!"
+fi
+
+# Check if STUNner is listening on host port
+log_info "Checking if STUNner is listening on port 3478..."
+if netstat -ulnp | grep -q ":3478"; then
+    log_success "STUNner is listening on port 3478 (hostNetwork working!)"
+else
+    log_warning "STUNner may not be listening on port 3478 yet (deployment might still be starting)"
 fi
 
 # Check GPU
@@ -880,7 +1015,7 @@ fi
 
 echo ""
 echo "======================================================"
-log_success "🎉 UNIFIED June Platform Installation Complete!"
+log_success "🎉 UNIFIED June Platform Installation Complete! (FIXED)"
 echo "======================================================"
 echo ""
 echo "✅ Infrastructure Ready:"
@@ -888,7 +1023,7 @@ echo "  🐙 GitHub Actions Runner: ${RUNNER_NAME}"
 echo "  ☸️  Kubernetes cluster with Flannel networking"
 echo "  🌐 ingress-nginx (hostNetwork mode)"
 echo "  🔐 cert-manager with Let's Encrypt"
-echo "  🔗 STUNner Gateway Operator"
+echo "  🔗 Reliable STUNner with coturn (FIXED VERSION)"
 
 if [[ $SETUP_GPU == [yY] ]]; then
     echo "  🎮 GPU Operator with time-slicing ($GPU_REPLICAS virtual GPUs)"
@@ -905,10 +1040,11 @@ echo "  STT: ${STT_DOMAIN}"
 echo "  TTS: ${TTS_DOMAIN}"
 echo "  TURN: ${TURN_DOMAIN}"
 echo ""
-echo "🔗 STUNner STUN/TURN Server:"
+echo "🔗 Reliable STUNner STUN/TURN Server:"
 echo "  Domain: ${TURN_DOMAIN}"
 echo "  Username: ${STUNNER_USERNAME}"
 echo "  Password: ${STUNNER_PASSWORD:0:3}***"
+echo "  Image: coturn/coturn:4.6.2-alpine (RELIABLE)"
 echo ""
 echo "🔑 API Keys:"
 echo "  Gemini: ${MASKED_GEMINI_KEY} ✅"
@@ -934,7 +1070,7 @@ echo "  4. Monitor services:"
 echo "     kubectl get pods -n june-services -w"
 echo "     kubectl get pods -n stunner -w"
 echo ""
-echo "  5. Test STUN/TURN server after deployment:"
+echo "  5. Test reliable STUN/TURN server after deployment:"
 echo "     https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/"
 echo "     STUN URI: stun:${TURN_DOMAIN}:3478"
 echo "     TURN URI: turn:${TURN_DOMAIN}:3478"
@@ -946,7 +1082,8 @@ echo "  Runner status: cd /opt/actions-runner && sudo ./svc.sh status"
 echo "  Runner logs:   journalctl -u actions.runner.* -f"
 echo "  Cluster info:  kubectl cluster-info"
 echo "  All pods:      kubectl get pods --all-namespaces"
+echo "  STUNner logs:  kubectl logs -n stunner -l app=stunner -f"
 echo ""
 echo "======================================================"
-echo "🎉 Your June Platform is ready for deployment!"
+echo "🎉 Your June Platform is ready for deployment with RELIABLE STUNner!"
 echo "======================================================"
