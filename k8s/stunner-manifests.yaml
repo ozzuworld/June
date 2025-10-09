@@ -30,7 +30,7 @@ spec:
         image: coturn/coturn:4.6.2-alpine
         imagePullPolicy: IfNotPresent
         
-        # ✅ FIXED: Removed --lt-cred-mech, using static auth only
+        # ✅ CRITICAL: Add explicit UDP listener
         command:
         - turnserver
         - -n
@@ -46,16 +46,17 @@ spec:
         - --simple-log
         - --min-port=49152
         - --max-port=65535
+        - -L
+        - 0.0.0.0  # ✅ Explicit listener IP
         
         ports:
         - containerPort: 3478
           protocol: UDP
           name: turn-udp
-          hostPort: 3478  # ✅ Explicit host port binding
         - containerPort: 3478
           protocol: TCP
           name: turn-tcp
-          hostPort: 3478
+        # Note: hostNetwork means these are already on host, no hostPort needed
         
         resources:
           requests:
@@ -66,13 +67,19 @@ spec:
             cpu: "200m"
         
         readinessProbe:
-          tcpSocket:
-            port: 3478
+          exec:
+            command:
+            - sh
+            - -c
+            - "echo test | nc -u -w1 127.0.0.1 3478 && nc -z 127.0.0.1 3478"
           initialDelaySeconds: 5
           periodSeconds: 10
         
         livenessProbe:
-          tcpSocket:
-            port: 3478
+          exec:
+            command:
+            - sh
+            - -c
+            - "nc -z 127.0.0.1 3478"
           initialDelaySeconds: 15
           periodSeconds: 30
