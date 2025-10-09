@@ -34,11 +34,19 @@ class PeerConnectionManager:
         logger.info(f"PeerConnectionManager initialized with {len(self.ice_servers)} ICE servers")
     
     def _create_ice_servers(self) -> list:
-        """Create RTCIceServer list from configuration"""
+        """Create RTCIceServer list with multiple STUN servers for better connectivity"""
         ice_servers = []
         
-        # Add STUN servers
-        for stun_url in config.webrtc.stun_servers:
+        # Add multiple STUN servers for better connectivity across internet
+        stun_servers = [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302', 
+            'stun:stun3.l.google.com:19302',
+            'stun:stun.cloudflare.com:3478'
+        ]
+        
+        for stun_url in stun_servers:
             ice_servers.append(RTCIceServer(urls=stun_url))
             logger.info(f"Added STUN server: {stun_url}")
         
@@ -75,6 +83,7 @@ class PeerConnectionManager:
             RTCPeerConnection instance
         """
         logger.info(f"[{session_id[:8]}] Creating peer connection...")
+        logger.info(f"[{session_id[:8]}] ICE servers configured: {len(self.ice_servers)}")
         
         # Create peer connection with ICE servers
         pc = RTCPeerConnection(configuration=self.rtc_configuration)
@@ -87,8 +96,17 @@ class PeerConnectionManager:
         async def on_ice_connection_state_change():
             logger.info(f"[{session_id[:8]}] ICE connection state: {pc.iceConnectionState}")
             
-            if pc.iceConnectionState == "failed":
-                logger.error(f"[{session_id[:8]}] ICE connection failed")
+            if pc.iceConnectionState == "connected":
+                logger.info(f"[{session_id[:8]}] ✅ ICE connection established successfully!")
+            elif pc.iceConnectionState == "checking":
+                logger.info(f"[{session_id[:8]}] 🔍 ICE connection checking...")
+            elif pc.iceConnectionState == "failed":
+                logger.error(f"[{session_id[:8]}] ❌ ICE connection failed")
+                logger.error(f"[{session_id[:8]}] This usually means:")
+                logger.error(f"[{session_id[:8]}]   1. STUN servers couldn't be reached")
+                logger.error(f"[{session_id[:8]}]   2. No server reflexive candidates generated") 
+                logger.error(f"[{session_id[:8]}]   3. Firewall blocking WebRTC traffic")
+                logger.error(f"[{session_id[:8]}]   4. May need TURN server for NAT traversal")
                 await self.close_peer_connection(session_id)
             elif pc.iceConnectionState == "closed":
                 logger.info(f"[{session_id[:8]}] ICE connection closed")
@@ -104,6 +122,27 @@ class PeerConnectionManager:
                 await self.close_peer_connection(session_id)
             elif pc.connectionState == "closed":
                 logger.info(f"[{session_id[:8]}] Connection closed")
+
+        @pc.on("icecandidate")
+        async def on_ice_candidate(candidate):
+            if candidate:
+                logger.info(f"[{session_id[:8]}] 🧊 Backend ICE candidate generated:")
+                logger.info(f"[{session_id[:8]}]   Type: {getattr(candidate, 'type', 'unknown')}")
+                logger.info(f"[{session_id[:8]}]   Protocol: {getattr(candidate, 'protocol', 'unknown')}")
+                logger.info(f"[{session_id[:8]}]   Address: {getattr(candidate, 'ip', getattr(candidate, 'address', 'unknown'))}")
+                logger.info(f"[{session_id[:8]}]   Port: {getattr(candidate, 'port', 'unknown')}")
+                logger.info(f"[{session_id[:8]}]   Foundation: {getattr(candidate, 'foundation', 'unknown')}")
+                
+                if getattr(candidate, 'type', None) == "srflx":
+                    logger.info(f"[{session_id[:8]}] ✅ Server reflexive candidate - backend public IP discovered!")
+                elif getattr(candidate, 'type', None) == "host":
+                    logger.info(f"[{session_id[:8]}] 🏠 Host candidate - local backend IP")
+            else:
+                logger.info(f"[{session_id[:8]}] 🏁 Backend ICE gathering completed")
+
+        @pc.on("icegatheringstatechange")
+        async def on_ice_gathering_state_change():
+            logger.info(f"[{session_id[:8]}] ICE gathering state: {pc.iceGatheringState}")
         
         @pc.on("track")
         async def on_track(track):
@@ -142,6 +181,7 @@ class PeerConnectionManager:
         """
         try:
             logger.info(f"[{session_id[:8]}] Processing WebRTC offer...")
+            logger.info(f"[{session_id[:8]}] Offer SDP length: {len(sdp)} bytes")
             
             # Create or get peer connection
             if session_id not in self.peers:
@@ -167,6 +207,7 @@ class PeerConnectionManager:
             # Return the SDP answer
             answer_sdp = pc.localDescription.sdp
             logger.info(f"[{session_id[:8]}] ✅ Answer created (SDP length: {len(answer_sdp)} bytes)")
+            logger.info(f"[{session_id[:8]}] 🔍 ICE gathering should start now on backend...")
             
             return answer_sdp
             
@@ -191,7 +232,9 @@ class PeerConnectionManager:
             
             # aiortc handles ICE candidates automatically through signaling
             # This is mainly for logging and monitoring
-            logger.debug(f"[{session_id[:8]}] ICE candidate received")
+            logger.debug(f"[{session_id[:8]}] ICE candidate received from frontend")
+            logger.debug(f"[{session_id[:8]}] Candidate type: {candidate.get('type', 'unknown')}")
+            logger.debug(f"[{session_id[:8]}] Candidate address: {candidate.get('address', 'unknown')}")
             
         except Exception as e:
             logger.error(f"[{session_id[:8]}] Error adding ICE candidate: {e}")
