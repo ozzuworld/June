@@ -532,13 +532,24 @@ async def process_websocket_message(message: dict, session_id: str, user: Option
     msg_type = message.get("type", "unknown")
     
     try:
+        logger.info(f"[{session_id[:8]}] Processing message: {msg_type}")
+        
         # WebRTC signaling messages
         if msg_type in ["webrtc_offer", "ice_candidate"]:
             if config.webrtc.enabled:
+                logger.info(f"[{session_id[:8]}] Handling WebRTC signaling: {msg_type}")
                 response = await signaling_manager.handle_message(session_id, message)
                 if response:
-                    await manager.send_message(session_id, response)
+                    logger.info(f"[{session_id[:8]}] Sending WebRTC response: {response.get('type')}")
+                    success = await manager.send_message(session_id, response)
+                    if success:
+                        logger.info(f"[{session_id[:8]}] WebRTC response sent successfully")
+                    else:
+                        logger.error(f"[{session_id[:8]}] Failed to send WebRTC response")
+                else:
+                    logger.warning(f"[{session_id[:8]}] No response generated for {msg_type}")
             else:
+                logger.warning(f"[{session_id[:8]}] WebRTC not enabled")
                 await manager.send_message(session_id, {
                     "type": "error",
                     "message": "WebRTC is not enabled"
@@ -554,13 +565,18 @@ async def process_websocket_message(message: dict, session_id: str, user: Option
             })
         
         else:
+            logger.warning(f"[{session_id[:8]}] Unknown message type: {msg_type}")
             await manager.send_message(session_id, {
                 "type": "error", 
                 "message": f"Unknown message type: {msg_type}"
             })
             
     except Exception as e:
-        logger.error(f"Error processing {msg_type}: {e}")
+        logger.error(f"[{session_id[:8]}] Error processing {msg_type}: {e}", exc_info=True)
+        await manager.send_message(session_id, {
+            "type": "error",
+            "message": f"Error processing message: {str(e)}"
+        })
 
 async def handle_text_input(message: dict, session_id: str, user: Optional[dict]):
     """Handle text input with AI response and TTS"""
