@@ -313,11 +313,11 @@ spec:
         resources:
           requests:
             cpu: "1"
-            memory: "2Gi"
+            memory: "4Gi"
             nvidia.com/gpu: 1
           limits:
             cpu: "2"
-            memory: "4Gi"
+            memory: "6Gi"
             nvidia.com/gpu: 1
         env:
         - name: PORT
