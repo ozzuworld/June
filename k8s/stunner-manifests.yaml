@@ -1,12 +1,12 @@
 # STUNner STUN/TURN Server Kubernetes Manifests for June Services
-# This file should be added to your k8s directory as: k8s/stunner-manifests.yaml
+# Fixed version - removes problematic TCPRoute and Ingress resources
 
 ---
 # STUNner GatewayClass
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
-  name: june-stunner-gateway
+  name: june-stunner-gateway-class
   namespace: stunner
 spec:
   controllerName: "stunner.l7mp.io/gateway-operator"
@@ -40,7 +40,7 @@ metadata:
   annotations:
     stunner.l7mp.io/enable-mixed-protocol-lb: "true"
 spec:
-  gatewayClassName: june-stunner-gateway
+  gatewayClassName: june-stunner-gateway-class
   listeners:
   - name: udp-listener
     port: 3478
@@ -48,15 +48,9 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
-  - name: tcp-listener
-    port: 3479
-    protocol: TCP
-    allowedRoutes:
-      namespaces:
-        from: All
 
 ---
-# UDPRoute for June Orchestrator
+# UDPRoute for June Orchestrator (primary WebRTC traffic)
 apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
@@ -71,84 +65,3 @@ spec:
     - name: june-orchestrator
       namespace: june-services
       port: 8080
-
----
-# TCPRoute for June Orchestrator  
-apiVersion: stunner.l7mp.io/v1
-kind: TCPRoute
-metadata:
-  name: june-orchestrator-tcp-route
-  namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-orchestrator
-      namespace: june-services
-      port: 8080
-
----
-# Optional: Additional routes for TTS service
-apiVersion: stunner.l7mp.io/v1
-kind: UDPRoute
-metadata:
-  name: june-tts-udp-route
-  namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-tts
-      namespace: june-services
-      port: 8000
-
----
-# Optional: Additional routes for STT service
-apiVersion: stunner.l7mp.io/v1
-kind: UDPRoute
-metadata:
-  name: june-stt-udp-route
-  namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-stt
-      namespace: june-services
-      port: 8080
-
----
-# Ingress for STUNner management/monitoring (optional)
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: stunner-ingress
-  namespace: stunner
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-spec:
-  ingressClassName: nginx
-  tls:
-  - hosts:
-    - "TURN_DOMAIN_PLACEHOLDER"
-    secretName: turn-tls-secret
-  rules:
-  - host: TURN_DOMAIN_PLACEHOLDER
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-stunner-gateway-svc
-            port:
-              number: 3478
