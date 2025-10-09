@@ -46,7 +46,8 @@ kubectl get pods -n june-services
 
 
 CERT PATH FOR BACKUP
-/root/.june-certs/ozzu-world-wildcard-tls-backup.yaml
+mkdir /root/.june-certs/
+nano /root/.june-certs/ozzu-world-wildcard-tls-backup.yaml
 
 
 # Create a test audio file (or use any short audio file you have)
