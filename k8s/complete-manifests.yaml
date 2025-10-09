@@ -10,7 +10,12 @@
 #   - ingress-nginx with hostNetwork
 #   - cert-manager with letsencrypt-prod ClusterIssuer
 #
+# TURN/STUN Prerequisites:
+#   - STUNner operator installed (apply stunner-manifests.yaml first)
+#   - stunner namespace created
+#
 # Usage:
+#   kubectl apply -f stunner-manifests.yaml
 #   kubectl apply -f complete-manifests.yaml
 
 apiVersion: v1
@@ -43,7 +48,7 @@ data:
   LOG_LEVEL: info
   REGION: us-central1
   
-  # WebRTC/STUNner Configuration
+  # WebRTC/STUNner Configuration (Fixed for hostNetwork deployment)
   STUN_SERVER_URL: "stun:TURN_DOMAIN_PLACEHOLDER:3478"
   TURN_SERVER_URL: "turn:TURN_DOMAIN_PLACEHOLDER:3478" 
   TURN_USERNAME: "STUNNER_USERNAME_PLACEHOLDER"
@@ -63,7 +68,7 @@ data:
     ]
   
   # STUNner Gateway Service URL (for internal cluster access)
-  STUNNER_GATEWAY_URL: "june-stunner-gateway-svc.stunner.svc.cluster.local:3478"
+  STUNNER_GATEWAY_URL: "june-stunner-gateway.stunner.svc.cluster.local:3478"
 
 ---
 apiVersion: v1
@@ -471,7 +476,7 @@ spec:
         - name: STT_SERVICE_URL
           value: "http://june-stt.june-services.svc.cluster.local:8080"
         
-        # WebRTC/STUNner Configuration
+        # WebRTC/STUNner Configuration (Fixed environment variable names)
         - name: STUN_SERVER_URL
           valueFrom:
             configMapKeyRef:
@@ -728,13 +733,3 @@ spec:
             name: june-tts
             port:
               number: 8000
-  - host: TURN_DOMAIN_PLACEHOLDER
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-stunner-gateway-svc
-            port:
-              number: 3478
