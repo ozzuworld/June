@@ -123,22 +123,44 @@ class PeerConnectionManager:
             elif pc.connectionState == "closed":
                 logger.info(f"[{session_id[:8]}] Connection closed")
 
+        # Find your existing @pc.on("icecandidate") handler and replace it with:
         @pc.on("icecandidate")
         async def on_ice_candidate(candidate):
             if candidate:
                 logger.info(f"[{session_id[:8]}] 🧊 Backend ICE candidate generated:")
-                logger.info(f"[{session_id[:8]}]   Type: {getattr(candidate, 'type', 'unknown')}")
-                logger.info(f"[{session_id[:8]}]   Protocol: {getattr(candidate, 'protocol', 'unknown')}")
-                logger.info(f"[{session_id[:8]}]   Address: {getattr(candidate, 'ip', getattr(candidate, 'address', 'unknown'))}")
-                logger.info(f"[{session_id[:8]}]   Port: {getattr(candidate, 'port', 'unknown')}")
-                logger.info(f"[{session_id[:8]}]   Foundation: {getattr(candidate, 'foundation', 'unknown')}")
+                logger.info(f"[{session_id[:8]}]   Foundation: {candidate.foundation}")
+                logger.info(f"[{session_id[:8]}]   Protocol: {candidate.protocol}")
+                logger.info(f"[{session_id[:8]}]   Address: {candidate.ip}")
+                logger.info(f"[{session_id[:8]}]   Port: {candidate.port}")
+                logger.info(f"[{session_id[:8]}]   Type: {candidate.type}")
                 
-                if getattr(candidate, 'type', None) == "srflx":
-                    logger.info(f"[{session_id[:8]}] ✅ Server reflexive candidate - backend public IP discovered!")
-                elif getattr(candidate, 'type', None) == "host":
-                    logger.info(f"[{session_id[:8]}] 🏠 Host candidate - local backend IP")
+                if candidate.type == "srflx":
+                    logger.info(f"[{session_id[:8]}] ✅ Server reflexive - backend public IP discovered!")
+                
+                # ✅ CRITICAL FIX: Send to frontend via WebSocket
+                try:
+                    # Import here to avoid circular imports
+                    from ..app import manager
+                    
+                    candidate_dict = {
+                        "candidate": f"candidate:{candidate.foundation} {candidate.component} {candidate.protocol} {candidate.priority} {candidate.ip} {candidate.port} typ {candidate.type}",
+                        "sdpMLineIndex": 0,
+                        "sdpMid": "0"
+                    }
+                    
+                    ice_message = {
+                        "type": "ice_candidate", 
+                        "candidate": candidate_dict
+                    }
+                    
+                    await manager.send_message(session_id, ice_message)
+                    logger.info(f"[{session_id[:8]}] ✅ Backend ICE candidate sent to frontend")
+                    
+                except Exception as e:
+                    logger.error(f"[{session_id[:8]}] Error sending ICE candidate: {e}")
             else:
                 logger.info(f"[{session_id[:8]}] 🏁 Backend ICE gathering completed")
+
 
         @pc.on("icegatheringstatechange")
         async def on_ice_gathering_state_change():

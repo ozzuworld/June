@@ -109,20 +109,29 @@ class SignalingManager:
             }
     
     async def _handle_ice_candidate(self, session_id: str, message: dict):
-        """Handle ICE candidate from client"""
+        """Handle ICE candidate from client with enhanced logging"""  
         try:
             candidate = message.get("candidate")
             if not candidate:
-                logger.warning(f"[{session_id[:8]}] Empty ICE candidate (end-of-candidates)")
+                logger.info(f"[{session_id[:8]}] End of ICE candidates from frontend")
                 return
             
-            logger.debug(f"[{session_id[:8]}] Received ICE candidate")
+            # Enhanced logging for frontend candidates
+            candidate_str = candidate.get("candidate", "")
+            logger.info(f"[{session_id[:8]}] Processing frontend ICE candidate:")
             
+            if "typ host" in candidate_str:
+                logger.info(f"[{session_id[:8]}]   📱 Frontend host candidate (local IP)")
+            elif "typ srflx" in candidate_str:
+                logger.info(f"[{session_id[:8]}]   ✅ Frontend srflx candidate (public IP)")
+                
+            # Your existing callback logic...
             if self.on_ice_candidate_callback:
                 await self.on_ice_candidate_callback(session_id, candidate)
                 
         except Exception as e:
             logger.error(f"[{session_id[:8]}] ICE candidate error: {e}")
+
     
     def create_ice_candidate_message(self, candidate: str) -> dict:
         """
