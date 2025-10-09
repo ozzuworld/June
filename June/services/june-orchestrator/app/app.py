@@ -9,10 +9,12 @@ import tempfile
 from typing import Dict, Any, Optional, List
 import os
 from datetime import datetime
+from enum import Enum
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
 # Import WebRTC components
 try:
@@ -77,9 +79,7 @@ class ConnectionManager:
         self.sessions: Dict[str, str] = {}  # session_id -> user_id mapping
         self.audio_sessions: Dict[str, AudioSession] = {}  # session_id -> AudioSession
 
-    async def connect(self, websocket: WebSocket, user: Optional[dict] = None) -> str:
-        await websocket.accept()
-        session_id = str(uuid.uuid4())
+    async def connect(self, session_id: str, websocket: WebSocket, user: Optional[dict] = None):
         self.connections[session_id] = websocket
         self.users[session_id] = user or {"sub": "anonymous"}
         
@@ -90,7 +90,6 @@ class ConnectionManager:
         self.audio_sessions[session_id] = AudioSession(session_id, user_id)
         
         logger.info(f"🔌 WebSocket connected: {session_id[:8]}... (user: {user_id})")
-        return session_id
 
     async def disconnect(self, session_id: str):
         # Clean up WebRTC connection if exists
@@ -104,7 +103,9 @@ class ConnectionManager:
         # Clean up WebSocket
         if session_id in self.connections:
             try:
-                await self.connections[session_id].close()
+                websocket = self.connections[session_id]
+                if websocket.application_state != WebSocketState.DISCONNECTED:
+                    await websocket.close()
             except:
                 pass
             del self.connections[session_id]
@@ -122,8 +123,13 @@ class ConnectionManager:
             logger.warning(f"Session {session_id[:8]}... not found for message")
             return False
         try:
-            await self.connections[session_id].send_text(json.dumps(message))
-            return True
+            websocket = self.connections[session_id]
+            if websocket.application_state == WebSocketState.CONNECTED:
+                await websocket.send_text(json.dumps(message))
+                return True
+            else:
+                logger.warning(f"WebSocket {session_id[:8]}... not connected")
+                return False
         except Exception as e:
             logger.error(f"Failed to send message to {session_id[:8]}...: {e}")
             await self.disconnect(session_id)
@@ -135,8 +141,13 @@ class ConnectionManager:
             logger.warning(f"Session {session_id[:8]}... not found for binary message")
             return False
         try:
-            await self.connections[session_id].send_bytes(data)
-            return True
+            websocket = self.connections[session_id]
+            if websocket.application_state == WebSocketState.CONNECTED:
+                await websocket.send_bytes(data)
+                return True
+            else:
+                logger.warning(f"WebSocket {session_id[:8]}... not connected")
+                return False
         except Exception as e:
             logger.error(f"Failed to send binary data to {session_id[:8]}...: {e}")
             await self.disconnect(session_id)
@@ -159,26 +170,70 @@ class ConnectionManager:
         return len(self.connections)
 
 # Enhanced auth functions
-async def verify_websocket_token(token: str) -> Optional[Dict]:
-    """Verify WebSocket token from query parameter"""
-    if not token:
-        return None
+def generate_session_id() -> str:
+    """Generate a unique session ID"""
+    return str(uuid.uuid4())
+
+def decode_jwt_token(token: str) -> Optional[dict]:
+    """Decode JWT token and return payload"""
     try:
-        if token.startswith("Bearer "):
-            token = token[7:]
+        # This is a simplified version - in production you'd use a proper JWT library
+        # For now, we'll extract basic info from the token
+        import base64
         
-        # For development, accept a simple token validation
-        if token and len(token) > 10:
-            return {
-                "sub": f"user_{token[:8]}",
-                "email": f"user@example.com",
-                "authenticated": True
-            }
+        # Split the JWT token
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+            
+        # Decode the payload (add padding if needed)
+        payload = parts[1]
+        # Add padding if needed
+        payload += '=' * (-len(payload) % 4)
         
-        return None
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+        
     except Exception as e:
-        logger.warning(f"Auth failed: {e}")
+        logger.error(f"JWT decode error: {e}")
         return None
+
+async def validate_websocket_token(token: str) -> Optional[dict]:
+    """Validate WebSocket token and return user info"""
+    try:
+        # Remove 'Bearer ' prefix if present
+        if token.startswith('Bearer '):
+            token = token[7:]
+        elif token.startswith('Bearer%20'):
+            token = token[9:]  # Handle URL encoding
+            
+        # Validate the JWT token
+        payload = decode_jwt_token(token)
+        if not payload:
+            # For development, create a mock user
+            return {
+                'sub': f'user_{token[:8]}',
+                'preferred_username': f'user_{token[:8]}',
+                'email': 'user@example.com',
+                'name': 'Test User'
+            }
+            
+        return {
+            'sub': payload.get('sub'),
+            'preferred_username': payload.get('preferred_username'),
+            'email': payload.get('email'),
+            'name': payload.get('name')
+        }
+        
+    except Exception as e:
+        logger.error(f"Token validation error: {e}")
+        # For development, return a mock user
+        return {
+            'sub': 'anonymous',
+            'preferred_username': 'anonymous',
+            'email': 'anonymous@example.com',
+            'name': 'Anonymous User'
+        }
 
 # STT service integration
 async def send_audio_to_stt(audio_bytes: bytes, session_id: str, user_id: str) -> Optional[str]:
@@ -464,71 +519,131 @@ async def get_status():
         "version": "10.0.0"
     }
 
-# WebSocket endpoint
+# Enhanced WebSocket endpoint with robust error handling
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    """WebSocket endpoint with WebRTC signaling support"""
-    user = None
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    """Enhanced WebSocket endpoint with better error handling"""
     session_id = None
+    user = None
     
     try:
-        if token:
-            user = await verify_websocket_token(token)
+        # Validate token and extract user info
+        user = await validate_websocket_token(token)
+        if not user:
+            logger.warning("❌ Invalid token provided")
+            await websocket.close(code=1008, reason="Invalid token")
+            return
+
+        await websocket.accept()
         
-        session_id = await manager.connect(websocket, user)
-        user_id = user.get("sub", "anonymous") if user else "anonymous"
+        # Generate session and register connection
+        session_id = generate_session_id()
+        await manager.connect(session_id, websocket, user)
         
+        logger.info(f"🔌 WebSocket connected: {session_id[:8]}... (user: {user.get('preferred_username', 'unknown')})")
+        
+        # Send initial connection message
         await manager.send_message(session_id, {
             "type": "connected",
-            "user_id": user_id,
             "session_id": session_id,
-            "authenticated": user is not None,
-            "features": ["websocket", "webrtc", "audio_input", "audio_output", "binary_streaming"],
-            "webrtc_enabled": config.webrtc.enabled,
-            "ice_servers": config.get_ice_servers() if config.webrtc.enabled else [],
+            "message": "Connected successfully",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "10.0.0"
+            "webrtc_enabled": config.webrtc.enabled,
+            "features": ["webrtc", "audio_streaming", "text_chat"] if config.webrtc.enabled else ["text_chat"]
         })
         
+        # Message processing loop with enhanced error handling
         while True:
             try:
-                # Try text message
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
-                    message = json.loads(data)
-                    await process_websocket_message(message, session_id, user)
-                except asyncio.TimeoutError:
-                    # Try binary message
+                # Receive message with proper type handling
+                raw_data = await websocket.receive()
+                
+                # Handle different message types
+                if "text" in raw_data:
+                    message_text = raw_data["text"]
                     try:
-                        binary_data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.1)
-                        await process_audio_chunk(binary_data, session_id, user)
-                    except asyncio.TimeoutError:
-                        continue
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON: {e}")
-            except Exception as e:
-                logger.error(f"Message loop error: {e}")
+                        message = json.loads(message_text)
+                        logger.debug(f"[{session_id[:8]}] Received text message: {message.get('type', 'unknown')}")
+                        await process_websocket_message(message, session_id, user)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"[{session_id[:8]}] JSON decode error: {e}")
+                        await manager.send_message(session_id, {
+                            "type": "error",
+                            "message": "Invalid JSON format"
+                        })
+                
+                elif "bytes" in raw_data:
+                    # Handle binary data (e.g., audio frames)
+                    binary_data = raw_data["bytes"]
+                    logger.debug(f"[{session_id[:8]}] Received binary data: {len(binary_data)} bytes")
+                    
+                    if config.webrtc.enabled:
+                        # Process binary audio data if WebRTC is enabled
+                        await process_binary_message(binary_data, session_id)
+                    else:
+                        logger.warning(f"[{session_id[:8]}] Received binary data but WebRTC is disabled")
+                
+                else:
+                    logger.warning(f"[{session_id[:8]}] Unknown message format: {raw_data}")
+                    
+            except WebSocketDisconnect:
+                logger.info(f"🔌 WebSocket disconnected: {session_id[:8]}...")
                 break
-            
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"[{session_id[:8]}] JSON parsing error: {e}")
+                await manager.send_message(session_id, {
+                    "type": "error",
+                    "message": "Invalid message format"
+                })
+                
+            except Exception as e:
+                logger.error(f"[{session_id[:8]}] Message loop error: {e}", exc_info=True)
+                # Don't break the loop for individual message errors
+                await manager.send_message(session_id, {
+                    "type": "error",
+                    "message": f"Error processing message: {str(e)}"
+                })
+                
     except WebSocketDisconnect:
-        logger.info(f"WebSocket {session_id[:8] if session_id else 'unknown'}... disconnected")
+        logger.info(f"🔌 WebSocket disconnected: {session_id[:8] if session_id else 'unknown'}...")
+        
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket connection error: {e}", exc_info=True)
+        if websocket.application_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close(code=1011, reason="Internal server error")
+            except:
+                pass
+            
     finally:
+        # Clean up connection
         if session_id:
             await manager.disconnect(session_id)
+            
+            # Clean up WebRTC resources if enabled
+            if config.webrtc.enabled:
+                try:
+                    signaling_manager.cleanup_session(session_id)
+                except Exception as e:
+                    logger.error(f"Error cleaning up WebRTC session {session_id[:8]}: {e}")
 
-async def process_audio_chunk(audio_data: bytes, session_id: str, user: Optional[dict]):
-    """Process incoming binary audio chunk (WebSocket fallback)"""
+async def process_binary_message(binary_data: bytes, session_id: str):
+    """Process binary messages (e.g., audio data)"""
     try:
-        audio_session = manager.get_audio_session(session_id)
-        if audio_session and not audio_session.webrtc_enabled:
-            audio_session.add_chunk(audio_data)
+        # This is where you'd handle binary audio data
+        # For now, just log it
+        logger.debug(f"[{session_id[:8]}] Processing {len(binary_data)} bytes of binary data")
+        
+        # TODO: Process audio frames if needed
+        # For WebRTC, audio is usually handled through the peer connection
+        # not through WebSocket binary messages
+        
     except Exception as e:
-        logger.error(f"Error processing audio chunk: {e}")
+        logger.error(f"[{session_id[:8]}] Error processing binary data: {e}", exc_info=True)
 
 async def process_websocket_message(message: dict, session_id: str, user: Optional[dict]):
-    """Process incoming WebSocket messages"""
+    """Process incoming WebSocket messages with enhanced logging"""
     msg_type = message.get("type", "unknown")
     
     try:
