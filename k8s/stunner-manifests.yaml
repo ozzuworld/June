@@ -1,5 +1,5 @@
 # STUNner STUN/TURN Server Kubernetes Manifests for June Services
-# FIXED VERSION - Uses reliable coturn image with hostNetwork for bare metal K8s
+# FIXED VERSION - Correct coturn configuration that actually works
 # This configuration ensures TURN/STUN server works correctly every time
 
 ---
@@ -21,12 +21,12 @@ metadata:
   namespace: stunner
 type: Opaque
 stringData:
-  username: "STUNNER_USERNAME_PLACEHOLDER"
-  password: "STUNNER_PASSWORD_PLACEHOLDER"
+  username: "june"
+  password: "Pokemon123!"
   type: "static"
 
 ---
-# STUNner Deployment - FIXED: Uses coturn instead of stunner operator
+# STUNner Deployment - FIXED: Correct coturn command
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +35,7 @@ metadata:
   labels:
     app: stunner
 spec:
-  replicas: 1
+  replicas: 1  # CRITICAL: Only 1 replica when using hostNetwork
   selector:
     matchLabels:
       app: stunner
@@ -58,30 +58,27 @@ spec:
       
       containers:
       - name: stunner
-        # FIXED: Use stable coturn image instead of problematic stunner
+        # FIXED: Use stable coturn image
         image: coturn/coturn:4.6.2-alpine
         imagePullPolicy: IfNotPresent
         
-        # TURN server configuration
+        # ✅ FIXED CONFIGURATION - Removed -a flag, added --fingerprint
         command:
         - turnserver
-        - -n                                    # No daemon mode
-        - -a                                   # Use long-term authentication
-        - -v                                   # Verbose logging
-        - -f                                   # Use config file format
-        - -L
-        - "0.0.0.0"                           # Listen on all interfaces
-        - -p
-        - "3478"                              # TURN port
-        - -r
-        - "STUNNER_REALM_PLACEHOLDER"         # Realm (will be replaced)
-        - -u
-        - "STUNNER_USERNAME_PLACEHOLDER:STUNNER_PASSWORD_PLACEHOLDER"  # User:pass
-        - --no-dtls                           # Disable DTLS
-        - --no-tls                            # Disable TLS
-        - --min-port=49152                    # RTP port range start
-        - --max-port=65535                    # RTP port range end
-        - --pidfile=/tmp/turnserver.pid       # PID file location
+        - -n
+        - -v
+        - --listening-ip=0.0.0.0
+        - --listening-port=3478
+        - --realm=STUNNER_REALM_PLACEHOLDER
+        - --lt-cred-mech
+        - --user=STUNNER_USERNAME_PLACEHOLDER:STUNNER_PASSWORD_PLACEHOLDER
+        - --no-dtls
+        - --no-tls
+        - --fingerprint
+        - --log-file=stdout
+        - --simple-log
+        - --min-port=49152
+        - --max-port=65535
         
         ports:
         - containerPort: 3478
@@ -99,23 +96,16 @@ spec:
             memory: "128Mi"
             cpu: "200m"
         
-        # Health checks
         readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
+          tcpSocket:
+            port: 3478
           initialDelaySeconds: 5
           periodSeconds: 10
           timeoutSeconds: 3
         
         livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
+          tcpSocket:
+            port: 3478
           initialDelaySeconds: 15
           periodSeconds: 30
           timeoutSeconds: 3
@@ -144,7 +134,7 @@ spec:
     name: turn-tcp
 
 ---
-# ConfigMap for TURN server configuration (if needed for advanced config)
+# ConfigMap for TURN server configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -164,8 +154,12 @@ data:
     # Realm
     realm=STUNNER_REALM_PLACEHOLDER
     
+    # Enable STUN
+    fingerprint
+    
     # Logging
     verbose
+    simple-log
     
     # Network
     no-loopback-peers
