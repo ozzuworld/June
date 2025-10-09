@@ -48,7 +48,8 @@ data:
   LOG_LEVEL: info
   REGION: us-central1
   
-  # WebRTC/STUNner Configuration (Fixed for hostNetwork deployment)
+  # ✅ UPDATED: STUNner Gateway API format
+  # The operator manages the actual TURN server, we just need to reference it
   STUN_SERVER_URL: "stun:TURN_DOMAIN_PLACEHOLDER:3478"
   TURN_SERVER_URL: "turn:TURN_DOMAIN_PLACEHOLDER:3478" 
   TURN_USERNAME: "STUNNER_USERNAME_PLACEHOLDER"
@@ -67,8 +68,8 @@ data:
       }
     ]
   
-  # STUNner Gateway Service URL (for internal cluster access)
-  STUNNER_GATEWAY_URL: "june-stunner-gateway.stunner.svc.cluster.local:3478"
+  # ✅ NEW: STUNner Gateway Service URL (managed by operator)
+  STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
 
 ---
 apiVersion: v1

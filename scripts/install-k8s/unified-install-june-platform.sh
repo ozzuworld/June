@@ -654,136 +654,151 @@ else
 fi
 
 # ============================================================================
-# INSTALLATION PHASE 9: RELIABLE STUNNER WITH COTURN (FIXED)
+# INSTALLATION PHASE 9: STUNNER OPERATOR (PROPER K8S WAY)
 # ============================================================================
 
-log_info "🔗 Installing Reliable STUNner with coturn (FIXED VERSION)..."
+log_info "🔗 Installing STUNner Operator (Gateway API)..."
 
-# Create stunner namespace
+# Install Gateway API CRDs (required by STUNner)
+log_info "Installing Gateway API CRDs..."
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+
+# Wait for Gateway API CRDs
+sleep 5
+
+# Create stunner-system namespace
+kubectl create namespace stunner-system || log_warning "stunner-system namespace already exists"
 kubectl create namespace stunner || log_warning "stunner namespace already exists"
 
-# Create authentication secret
-log_info "Creating STUNner authentication secret..."
-kubectl create secret generic stunner-auth-secret \
-    --from-literal=type=static \
-    --from-literal=username="$STUNNER_USERNAME" \
-    --from-literal=password="$STUNNER_PASSWORD" \
-    --namespace=stunner \
-    --dry-run=client -o yaml | kubectl apply -f -
+# Install Helm if not present (needed for STUNner operator)
+if ! command -v helm &> /dev/null; then
+    log_info "Installing Helm..."
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
 
-log_success "STUNner authentication configured!"
+# Add STUNner Helm repo
+log_info "Adding STUNner Helm repository..."
+helm repo add stunner https://l7mp.io/stunner
+helm repo update
 
-# Generate the reliable STUNner manifest with actual values
-log_info "Generating reliable STUNner deployment manifest..."
+# Install STUNner Gateway Operator
+log_info "Installing STUNner Gateway Operator..."
+helm install stunner-gateway-operator stunner/stunner-gateway-operator \
+    --create-namespace \
+    --namespace=stunner-system \
+    --wait \
+    --timeout=5m
 
-# Create the reliable STUNner manifest directly
+log_success "STUNner operator installed!"
+
+# Wait for operator to be ready
+log_info "Waiting for STUNner operator to be ready..."
+kubectl wait --for=condition=available deployment/stunner-gateway-operator \
+    -n stunner-system \
+    --timeout=180s || log_warning "Operator taking longer than expected"
+
+# Create GatewayConfig (STUNner configuration)
+log_info "Creating STUNner GatewayConfig..."
 cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: stunner.l7mp.io/v1
+kind: GatewayConfig
 metadata:
-  name: june-stunner-gateway
-  namespace: stunner
-  labels:
-    app: stunner
+  name: stunner-gatewayconfig
+  namespace: stunner-system
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: stunner
-  template:
-    metadata:
-      labels:
-        app: stunner
-    spec:
-      # CRITICAL: Use hostNetwork for bare metal deployments
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
-      
-      # Ensure STUNner runs on the control plane node
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
-      tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      
-      containers:
-      - name: stunner
-        # RELIABLE: Use stable coturn image
-        image: coturn/coturn:4.6.2-alpine
-        imagePullPolicy: IfNotPresent
-        
-        # ✅ FIXED CONFIGURATION - Removed -a flag, added --fingerprint
-        command:
-        - turnserver
-        - -n
-        - -v
-        - --listening-ip=0.0.0.0
-        - --listening-port=3478
-        - --realm=${STUNNER_REALM}
-        - --lt-cred-mech
-        - --user=${STUNNER_USERNAME}:${STUNNER_PASSWORD}
-        - --no-dtls
-        - --no-tls
-        - --fingerprint
-        - --log-file=stdout
-        - --simple-log
-        - --min-port=49152
-        - --max-port=65535
-        
-        ports:
-        - containerPort: 3478
-          protocol: UDP
-          name: turn-udp
-        - containerPort: 3478
-          protocol: TCP
-          name: turn-tcp
-        
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "200m"
-        
-        readinessProbe:
-          tcpSocket:
-            port: 3478
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 3
-        
-        livenessProbe:
-          tcpSocket:
-            port: 3478
-          initialDelaySeconds: 15
-          periodSeconds: 30
-          timeoutSeconds: 3
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: june-stunner-gateway
-  namespace: stunner
-  labels:
-    app: stunner
-spec:
-  type: ClusterIP
-  selector:
-    app: stunner
-  ports:
-  - port: 3478
-    targetPort: 3478
-    protocol: UDP
-    name: turn-udp
-  - port: 3478
-    targetPort: 3478
-    protocol: TCP
-    name: turn-tcp
+  realm: ${STUNNER_REALM}
+  authType: static
+  userName: ${STUNNER_USERNAME}
+  password: ${STUNNER_PASSWORD}
+  logLevel: all:INFO
 EOF
 
-log_success "Reliable STUNner deployment applied!"
+log_success "GatewayConfig created"
+
+# Create GatewayClass
+log_info "Creating STUNner GatewayClass..."
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: stunner-gatewayclass
+spec:
+  controllerName: "stunner.l7mp.io/gateway-operator"
+  parametersRef:
+    group: "stunner.l7mp.io"
+    kind: GatewayConfig
+    name: stunner-gatewayconfig
+    namespace: stunner-system
+  description: "STUNner Gateway for WebRTC"
+EOF
+
+log_success "GatewayClass created"
+
+# Create Gateway (this deploys the actual TURN server)
+log_info "Creating STUNner Gateway..."
+cat <<EOF | kubectl apply -f -
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: june-stunner-gateway
+  namespace: stunner
+  annotations:
+    stunner.l7mp.io/service-type: LoadBalancer
+spec:
+  gatewayClassName: stunner-gatewayclass
+  listeners:
+  - name: udp-listener
+    port: 3478
+    protocol: UDP
+  - name: tcp-listener
+    port: 3478
+    protocol: TCP
+EOF
+
+log_success "Gateway created - STUNner is deploying..."
+
+# Wait for Gateway to be ready
+log_info "Waiting for STUNner Gateway to be ready (this may take 2-3 minutes)..."
+kubectl wait --for=condition=Programmed gateway/june-stunner-gateway \
+    -n stunner \
+    --timeout=300s || log_warning "Gateway taking longer than expected"
+
+# Get the external IP/address
+log_info "Retrieving STUNner Gateway address..."
+sleep 10
+
+STUNNER_ADDRESS=$(kubectl get gateway june-stunner-gateway -n stunner \
+    -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || echo "")
+
+if [ -n "$STUNNER_ADDRESS" ]; then
+    log_success "STUNner Gateway ready at: $STUNNER_ADDRESS:3478"
+else
+    log_warning "Gateway address not yet assigned (this is normal, will be available soon)"
+    log_info "Check with: kubectl get gateway -n stunner"
+fi
+
+# Create UDPRoute for orchestrator (optional, for internal routing)
+log_info "Creating UDPRoute for June services..."
+cat <<EOF | kubectl apply -f -
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-services-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-orchestrator
+      namespace: june-services
+      port: 8080
+EOF
+
+log_success "UDPRoute created"
+
+log_success "STUNner Operator installation complete!"
 
 # Wait for STUNner deployment
 log_info "Waiting for STUNner deployment to be ready..."

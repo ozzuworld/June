@@ -1,85 +1,110 @@
-apiVersion: apps/v1
-kind: Deployment
+# STUNner Gateway API Configuration (Operator-Managed)
+# This file is applied AFTER the operator is installed
+# The operator creates the actual TURN server deployment
+
+---
+# GatewayConfig: Core STUNner configuration
+apiVersion: stunner.l7mp.io/v1
+kind: GatewayConfig
+metadata:
+  name: stunner-gatewayconfig
+  namespace: stunner-system
+spec:
+  realm: STUNNER_REALM_PLACEHOLDER
+  authType: static
+  userName: STUNNER_USERNAME_PLACEHOLDER
+  password: STUNNER_PASSWORD_PLACEHOLDER
+  logLevel: all:INFO
+
+---
+# GatewayClass: Links Gateway to STUNner operator
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: stunner-gatewayclass
+spec:
+  controllerName: "stunner.l7mp.io/gateway-operator"
+  parametersRef:
+    group: "stunner.l7mp.io"
+    kind: GatewayConfig
+    name: stunner-gatewayconfig
+    namespace: stunner-system
+  description: "STUNner Gateway for June WebRTC Services"
+
+---
+# Gateway: The actual TURN server (operator creates deployment)
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
 metadata:
   name: june-stunner-gateway
   namespace: stunner
-  labels:
-    app: stunner
+  annotations:
+    stunner.l7mp.io/service-type: LoadBalancer
+    stunner.l7mp.io/service-annotations: |
+      metallb.universe.tf/address-pool: june-pool
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: stunner
-  template:
-    metadata:
-      labels:
-        app: stunner
-    spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
-      
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
-      tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      
-      containers:
-      - name: stunner
-        image: coturn/coturn:4.6.2-alpine
-        imagePullPolicy: IfNotPresent
-        
-        # ✅ CRITICAL: Add explicit UDP listener
-        command:
-        - turnserver
-        - -n
-        - -v
-        - --listening-ip=0.0.0.0
-        - --listening-port=3478
-        - --realm=turn.ozzu.world
-        - --user=june-user:Pokemon123!
-        - --no-dtls
-        - --no-tls
-        - --fingerprint
-        - --log-file=stdout
-        - --simple-log
-        - --min-port=49152
-        - --max-port=65535
-        - -L
-        - 0.0.0.0  # ✅ Explicit listener IP
-        
-        ports:
-        - containerPort: 3478
-          protocol: UDP
-          name: turn-udp
-        - containerPort: 3478
-          protocol: TCP
-          name: turn-tcp
-        # Note: hostNetwork means these are already on host, no hostPort needed
-        
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "200m"
-        
-        readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "echo test | nc -u -w1 127.0.0.1 3478 && nc -z 127.0.0.1 3478"
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "nc -z 127.0.0.1 3478"
-          initialDelaySeconds: 15
-          periodSeconds: 30
+  gatewayClassName: stunner-gatewayclass
+  listeners:
+  - name: udp-listener
+    port: 3478
+    protocol: UDP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: tcp-listener
+    port: 3478
+    protocol: TCP
+    allowedRoutes:
+      namespaces:
+        from: All
+
+---
+# UDPRoute: Routes traffic to June services
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-orchestrator-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-orchestrator
+      namespace: june-services
+      port: 8080
+
+---
+# UDPRoute: STT service
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-stt-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-stt
+      namespace: june-services
+      port: 8080
+
+---
+# UDPRoute: TTS service
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-tts-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-tts
+      namespace: june-services
+      port: 8000
