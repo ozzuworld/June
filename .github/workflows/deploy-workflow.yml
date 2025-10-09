@@ -2,10 +2,10 @@ name: 🚀 June Services Deploy (Dynamic Domain Support)
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ master, develop ]
     paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
   workflow_dispatch:
     inputs:
       build_images:
@@ -272,20 +272,160 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
+  # STUNner STUN/TURN Server Deployment
+  # ============================================================================
+  
+  deploy-stunner:
+    name: 🔗 Deploy STUNner STUN/TURN
+    runs-on: self-hosted
+    needs: [setup]
+    if: needs.setup.outputs.deploy_services == 'true'
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check STUNner Prerequisites
+        run: |
+          echo "🔍 Checking STUNner prerequisites..."
+          
+          # Check if STUNner operator is installed
+          if kubectl get deployment stunner-gateway-operator -n stunner-system &>/dev/null; then
+            echo "✅ STUNner Gateway Operator is installed"
+          else
+            echo "❌ STUNner Gateway Operator not found!"
+            echo ""
+            echo "Please run: sudo ./scripts/install-k8s/stage3-install-stunner.sh"
+            exit 1
+          fi
+          
+          # Check if stunner namespace exists
+          if kubectl get namespace stunner &>/dev/null; then
+            echo "✅ STUNner namespace exists"
+          else
+            echo "❌ STUNner namespace not found!"
+            echo ""
+            echo "Please run: sudo ./scripts/install-k8s/stage3-install-stunner.sh"
+            exit 1
+          fi
+          
+          # Check if STUNner auth secret exists
+          if kubectl get secret stunner-auth-secret -n stunner &>/dev/null; then
+            echo "✅ STUNner authentication secret exists"
+          else
+            echo "❌ STUNner authentication secret not found!"
+            echo ""
+            echo "Please run: sudo ./scripts/install-k8s/stage3-install-stunner.sh"
+            exit 1
+          fi
+
+      - name: 🌐 Generate STUNner Manifest with Domain Config
+        run: |
+          echo "🌐 Generating STUNner manifest with domain configuration..."
+          
+          # Load domain and STUNner config
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+            echo "✅ Using configured domains:"
+            echo "   Primary: $PRIMARY_DOMAIN"
+            echo "   TURN: $TURN_DOMAIN"
+            echo "   STUNner Realm: $STUNNER_REALM"
+            echo "   STUNner Username: $STUNNER_USERNAME"
+          else
+            echo "⚠️  No domain config found, using defaults"
+            PRIMARY_DOMAIN="allsafe.world"
+            TURN_DOMAIN="turn.allsafe.world"
+            STUNNER_REALM="turn.allsafe.world"
+            STUNNER_USERNAME="june-user"
+            STUNNER_PASSWORD="Pokemon123!"
+          fi
+          
+          # Create STUNner manifest with domain substitution
+          cp k8s/stunner-manifests.yaml /tmp/stunner-deployment-manifest.yaml
+          
+          # Replace domain and config placeholders
+          sed -i "s/TURN_DOMAIN_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/stunner-deployment-manifest.yaml
+          sed -i "s/STUNNER_REALM_PLACEHOLDER/${STUNNER_REALM}/g" /tmp/stunner-deployment-manifest.yaml
+          sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${STUNNER_USERNAME}/g" /tmp/stunner-deployment-manifest.yaml
+          sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${STUNNER_PASSWORD}/g" /tmp/stunner-deployment-manifest.yaml
+          
+          echo "✅ STUNner manifest generated with configured domains"
+
+      - name: 🚀 Deploy STUNner Resources
+        run: |
+          echo "🚀 Deploying STUNner STUN/TURN server..."
+          
+          # Apply STUNner manifests
+          kubectl apply -f /tmp/stunner-deployment-manifest.yaml
+          
+          echo "✅ STUNner resources deployed"
+
+      - name: ⏳ Wait for STUNner Gateway
+        run: |
+          echo "⏳ Waiting for STUNner Gateway to be ready..."
+          
+          # Wait for Gateway to be programmed
+          kubectl wait --for=condition=Programmed gateway/june-stunner-gateway \
+            -n stunner \
+            --timeout=300s || {
+            echo "⚠️ STUNner Gateway taking longer than expected"
+            kubectl describe gateway june-stunner-gateway -n stunner
+          }
+          
+          # Wait for STUNner dataplane pods
+          kubectl wait --for=condition=ready pod \
+            -l stunner.l7mp.io/owned-by=june-stunner-gateway \
+            -n stunner \
+            --timeout=300s || {
+            echo "⚠️ STUNner dataplane pods taking longer than expected"
+            kubectl get pods -n stunner -l stunner.l7mp.io/owned-by=june-stunner-gateway
+          }
+          
+          echo "✅ STUNner Gateway is ready"
+
+      - name: 🔍 Verify STUNner Status
+        run: |
+          echo "🔍 Verifying STUNner deployment status..."
+          
+          echo ""
+          echo "STUNner Gateway Status:"
+          kubectl get gateway june-stunner-gateway -n stunner -o wide
+          
+          echo ""
+          echo "STUNner Dataplane Pods:"
+          kubectl get pods -n stunner -l stunner.l7mp.io/owned-by=june-stunner-gateway
+          
+          echo ""
+          echo "STUNner Routes:"
+          kubectl get udproute,tcproute -n stunner
+          
+          echo ""
+          echo "STUNner Services:"
+          kubectl get services -n stunner
+          
+          # Get the external IP/port for STUN/TURN access
+          GATEWAY_SERVICE=$(kubectl get service -n stunner -l stunner.l7mp.io/owned-by=june-stunner-gateway -o name | head -1)
+          if [ -n "$GATEWAY_SERVICE" ]; then
+            echo ""
+            echo "STUNner Gateway Service Details:"
+            kubectl describe "$GATEWAY_SERVICE" -n stunner
+          fi
+
+  # ============================================================================
   # DEPLOYMENT (WITH DYNAMIC DOMAIN CONFIGURATION + GEMINI API KEY)
   # ============================================================================
 
   deploy:
     name: 🚀 Deploy to Kubernetes
     runs-on: self-hosted
-    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp, deploy-stunner]
     if: |
       always() && 
       needs.setup.outputs.deploy_services == 'true' &&
       (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
       (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
       (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
-      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped')
+      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped') &&
+      (needs.deploy-stunner.result == 'success' || needs.deploy-stunner.result == 'skipped')
 
     steps:
       - name: 📦 Checkout
@@ -465,6 +605,30 @@ jobs:
           sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/deployment-manifest.yaml
           
           echo "✅ Manifest generated with configured domains"
+
+      # ========================================================================
+      # Generate WebRTC Configuration
+      # ========================================================================
+      
+      - name: 🔗 Generate WebRTC Configuration
+        run: |
+          echo "🔗 Generating WebRTC configuration with STUNner..."
+          
+          # Load STUNner config
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+          else
+            TURN_DOMAIN="turn.allsafe.world"
+            STUNNER_USERNAME="june-user"
+            STUNNER_PASSWORD="Pokemon123!"
+          fi
+          
+          # Replace WebRTC placeholders in the manifest
+          sed -i "s/TURN_DOMAIN_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${STUNNER_USERNAME}/g" /tmp/deployment-manifest.yaml
+          sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${STUNNER_PASSWORD}/g" /tmp/deployment-manifest.yaml
+          
+          echo "✅ WebRTC configuration manifest generated"
 
       # ========================================================================
       # Update Application Secrets (INCLUDING GEMINI API KEY)
@@ -667,6 +831,21 @@ jobs:
           echo "  IDP: https://${IDP_DOMAIN}"
           echo "  STT: https://${STT_DOMAIN}"
           echo "  TTS: https://${TTS_DOMAIN}"
+          echo ""
+          
+          echo "🔗 STUNner Status:"
+          STUNNER_GATEWAY=$(kubectl get gateway june-stunner-gateway -n stunner -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null || echo "Unknown")
+          STUNNER_PODS=$(kubectl get pods -n stunner -l stunner.l7mp.io/owned-by=june-stunner-gateway --no-headers 2>/dev/null | wc -l)
+          STUNNER_RUNNING=$(kubectl get pods -n stunner -l stunner.l7mp.io/owned-by=june-stunner-gateway --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+          
+          echo "  Gateway Status: $STUNNER_GATEWAY"
+          echo "  Dataplane Pods: $STUNNER_RUNNING/$STUNNER_PODS running"
+          
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+            echo "  STUN Server: stun:${TURN_DOMAIN}:3478"
+            echo "  TURN Server: turn:${TURN_DOMAIN}:3478"
+          fi
           echo ""
           
           echo "🔑 API Keys Status:"
