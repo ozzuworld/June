@@ -1,6 +1,6 @@
 # STUNner STUN/TURN Server Kubernetes Manifests for June Services
-# FIXED VERSION - Uses hostNetwork for reliable external access
-# This configuration ensures TURN/STUN server works correctly on bare metal K8s
+# FIXED VERSION - Uses reliable coturn image with hostNetwork for bare metal K8s
+# This configuration ensures TURN/STUN server works correctly every time
 
 ---
 # STUNner Namespace
@@ -26,55 +26,7 @@ stringData:
   type: "static"
 
 ---
-# STUNner GatewayClass
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: june-stunner-gateway-class
-  namespace: stunner
-spec:
-  controllerName: "stunner.l7mp.io/gateway-operator"
-  parametersRef:
-    group: "stunner.l7mp.io"
-    kind: GatewayConfig
-    name: june-stunner-config
-    namespace: stunner
-
----
-# STUNner GatewayConfig
-apiVersion: stunner.l7mp.io/v1
-kind: GatewayConfig
-metadata:
-  name: june-stunner-config
-  namespace: stunner
-spec:
-  logLevel: "all:INFO"
-  realm: "STUNNER_REALM_PLACEHOLDER"
-  authRef:
-    name: stunner-auth-secret
-    namespace: stunner
-
----
-# STUNner Gateway for STUN/TURN with hostNetwork
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: june-stunner-gateway
-  namespace: stunner
-  annotations:
-    stunner.l7mp.io/enable-mixed-protocol-lb: "true"
-spec:
-  gatewayClassName: june-stunner-gateway-class
-  listeners:
-  - name: udp-listener
-    port: 3478
-    protocol: UDP
-    allowedRoutes:
-      namespaces:
-        from: All
-
----
-# STUNner Deployment with hostNetwork (FIXED for bare metal)
+# STUNner Deployment - FIXED: Uses coturn instead of stunner operator
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,23 +34,17 @@ metadata:
   namespace: stunner
   labels:
     app: stunner
-    stunner.l7mp.io/related-gateway-name: june-stunner-gateway
-    stunner.l7mp.io/related-gateway-namespace: stunner
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: stunner
-      stunner.l7mp.io/related-gateway-name: june-stunner-gateway
-      stunner.l7mp.io/related-gateway-namespace: stunner
   template:
     metadata:
       labels:
         app: stunner
-        stunner.l7mp.io/related-gateway-name: june-stunner-gateway
-        stunner.l7mp.io/related-gateway-namespace: stunner
     spec:
-      # CRITICAL FIX: Use hostNetwork for bare metal deployments
+      # CRITICAL: Use hostNetwork for bare metal deployments
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       
@@ -112,48 +58,70 @@ spec:
       
       containers:
       - name: stunner
-        # Use the official STUNner image
-        image: l7mp/stunner:latest
-        imagePullPolicy: Always
+        # FIXED: Use stable coturn image instead of problematic stunner
+        image: coturn/coturn:4.6.2-alpine
+        imagePullPolicy: IfNotPresent
+        
+        # TURN server configuration
+        command:
+        - turnserver
+        - -n                                    # No daemon mode
+        - -a                                   # Use long-term authentication
+        - -v                                   # Verbose logging
+        - -f                                   # Use config file format
+        - -L
+        - "0.0.0.0"                           # Listen on all interfaces
+        - -p
+        - "3478"                              # TURN port
+        - -r
+        - "STUNNER_REALM_PLACEHOLDER"         # Realm (will be replaced)
+        - -u
+        - "STUNNER_USERNAME_PLACEHOLDER:STUNNER_PASSWORD_PLACEHOLDER"  # User:pass
+        - --no-dtls                           # Disable DTLS
+        - --no-tls                            # Disable TLS
+        - --min-port=49152                    # RTP port range start
+        - --max-port=65535                    # RTP port range end
+        - --pidfile=/tmp/turnserver.pid       # PID file location
         
         ports:
         - containerPort: 3478
           protocol: UDP
           name: turn-udp
-        - containerPort: 8086
+        - containerPort: 3478
           protocol: TCP
-          name: health
-        
-        env:
-        - name: STUNNER_ADDR
-          value: "0.0.0.0:3478"
-        - name: STUNNER_HEALTH_CHECK
-          value: "http://0.0.0.0:8086"
+          name: turn-tcp
         
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
+            memory: "64Mi"
+            cpu: "50m"
           limits:
-            memory: "256Mi"
-            cpu: "500m"
+            memory: "128Mi"
+            cpu: "200m"
         
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8086
-          initialDelaySeconds: 10
-          periodSeconds: 30
-        
+        # Health checks
         readinessProbe:
-          httpGet:
-            path: /health
-            port: 8086
+          exec:
+            command:
+            - sh
+            - -c
+            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
           initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 3
+        
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "netstat -ulnp | grep :3478 || ss -ulnp | grep :3478"
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          timeoutSeconds: 3
 
 ---
-# STUNner Service (ClusterIP since we're using hostNetwork)
+# STUNner Service
 apiVersion: v1
 kind: Service
 metadata:
@@ -161,71 +129,51 @@ metadata:
   namespace: stunner
   labels:
     app: stunner
-    stunner.l7mp.io/related-gateway-name: june-stunner-gateway
-    stunner.l7mp.io/related-gateway-namespace: stunner
 spec:
   type: ClusterIP
   selector:
     app: stunner
-    stunner.l7mp.io/related-gateway-name: june-stunner-gateway
-    stunner.l7mp.io/related-gateway-namespace: stunner
   ports:
   - port: 3478
     targetPort: 3478
     protocol: UDP
-    name: udp-listener
-  - port: 8086
-    targetPort: 8086
+    name: turn-udp
+  - port: 3478
+    targetPort: 3478
     protocol: TCP
-    name: health
+    name: turn-tcp
 
 ---
-# UDPRoute for June Orchestrator (primary WebRTC traffic)
-apiVersion: stunner.l7mp.io/v1
-kind: UDPRoute
+# ConfigMap for TURN server configuration (if needed for advanced config)
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: june-orchestrator-udp-route
+  name: stunner-config
   namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-orchestrator
-      namespace: june-services
-      port: 8080
-
----
-# UDPRoute for June STT Service
-apiVersion: stunner.l7mp.io/v1
-kind: UDPRoute
-metadata:
-  name: june-stt-udp-route
-  namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-stt
-      namespace: june-services
-      port: 8080
-
----
-# UDPRoute for June TTS Service
-apiVersion: stunner.l7mp.io/v1
-kind: UDPRoute
-metadata:
-  name: june-tts-udp-route
-  namespace: stunner
-spec:
-  parentRefs:
-  - name: june-stunner-gateway
-    namespace: stunner
-  rules:
-  - backendRefs:
-    - name: june-tts
-      namespace: june-services
-      port: 8000
+data:
+  turnserver.conf: |
+    # TURN server configuration
+    listening-port=3478
+    tls-listening-port=5349
+    
+    # Authentication
+    lt-cred-mech
+    use-auth-secret
+    static-auth-secret=STUNNER_PASSWORD_PLACEHOLDER
+    
+    # Realm
+    realm=STUNNER_REALM_PLACEHOLDER
+    
+    # Logging
+    verbose
+    
+    # Network
+    no-loopback-peers
+    no-multicast-peers
+    
+    # Security
+    stale-nonce=600
+    
+    # Ports
+    min-port=49152
+    max-port=65535
