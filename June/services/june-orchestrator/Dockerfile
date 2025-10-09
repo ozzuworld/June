@@ -1,9 +1,25 @@
-FROM python:3.11-slim
+# Multi-stage build to keep final image small
+FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install build dependencies (needed for webrtcvad, aiortc, av)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
+    libopus-dev \
+    libvpx-dev \
+    libsrtp2-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -12,8 +28,33 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Runtime stage
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies only (no build tools)
+RUN apt-get update && apt-get install -y \
+    curl \
+    libavformat59 \
+    libavcodec59 \
+    libavdevice59 \
+    libavutil57 \
+    libswscale6 \
+    libswresample4 \
+    libavfilter8 \
+    libopus0 \
+    libvpx7 \
+    libsrtp2-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
 # Copy application code in clean structure
 COPY app/ ./app/
+COPY .env .env
 
 # Create non-root user for security
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
