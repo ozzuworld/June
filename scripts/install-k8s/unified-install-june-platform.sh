@@ -435,6 +435,52 @@ EOF
 log_success "MetalLB configured with IP: $EXTERNAL_IP"
 
 # ============================================================================
+# CONFIGURE NETWORK FOR EXTERNAL ACCESS
+# ============================================================================
+
+log_info "🌐 Configuring network for external LoadBalancer access..."
+
+# Get the network interface for the external IP
+EXTERNAL_INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
+log_info "Detected external interface: $EXTERNAL_INTERFACE"
+
+# Enable IP forwarding (critical for LoadBalancer)
+log_info "Enabling IP forwarding..."
+sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+# Configure iptables to allow forwarded traffic
+log_info "Configuring iptables for LoadBalancer traffic..."
+iptables -P FORWARD ACCEPT
+iptables -A FORWARD -i $EXTERNAL_INTERFACE -j ACCEPT
+iptables -A FORWARD -o $EXTERNAL_INTERFACE -j ACCEPT
+
+# Save iptables rules
+if command -v iptables-save &> /dev/null; then
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+fi
+
+log_success "Network configured for external access"
+
+# Configure MetalLB with proper L2 advertisement
+log_info "Ensuring MetalLB L2 advertisement is properly configured..."
+
+cat <<EOF | kubectl apply -f -
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: june-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - june-pool
+  interfaces:
+  - $EXTERNAL_INTERFACE
+EOF
+
+log_success "MetalLB L2 advertisement updated with interface: $EXTERNAL_INTERFACE"
+
+# ============================================================================
 # INSTALLATION PHASE 5: CERT-MANAGER
 # ============================================================================
 
