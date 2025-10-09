@@ -34,6 +34,39 @@ data:
 
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: june-webrtc-config
+  namespace: june-services
+data:
+  APP_ENV: production
+  LOG_LEVEL: info
+  REGION: us-central1
+  
+  # WebRTC/STUNner Configuration
+  STUN_SERVER_URL: "stun:TURN_DOMAIN_PLACEHOLDER:3478"
+  TURN_SERVER_URL: "turn:TURN_DOMAIN_PLACEHOLDER:3478" 
+  TURN_USERNAME: "STUNNER_USERNAME_PLACEHOLDER"
+  TURN_CREDENTIAL: "STUNNER_PASSWORD_PLACEHOLDER"
+  
+  # ICE Server Configuration (JSON format for WebRTC clients)
+  ICE_SERVERS: |
+    [
+      {
+        "urls": ["stun:TURN_DOMAIN_PLACEHOLDER:3478"]
+      },
+      {
+        "urls": ["turn:TURN_DOMAIN_PLACEHOLDER:3478"],
+        "username": "STUNNER_USERNAME_PLACEHOLDER",
+        "credential": "STUNNER_PASSWORD_PLACEHOLDER"
+      }
+    ]
+  
+  # STUNner Gateway Service URL (for internal cluster access)
+  STUNNER_GATEWAY_URL: "june-stunner-gateway-svc.stunner.svc.cluster.local:3478"
+
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: june-secrets
@@ -437,6 +470,39 @@ spec:
           value: "http://june-tts.june-services.svc.cluster.local:8000"
         - name: STT_SERVICE_URL
           value: "http://june-stt.june-services.svc.cluster.local:8080"
+        
+        # WebRTC/STUNner Configuration
+        - name: STUN_SERVER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: STUN_SERVER_URL
+        - name: TURN_SERVER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_SERVER_URL
+        - name: TURN_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_USERNAME
+        - name: TURN_CREDENTIAL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_CREDENTIAL
+        - name: ICE_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: ICE_SERVERS
+        - name: STUNNER_GATEWAY_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: STUNNER_GATEWAY_URL
+        
         readinessProbe:
           httpGet:
             path: /healthz
@@ -662,109 +728,6 @@ spec:
             name: june-tts
             port:
               number: 8000
-
-# Updated ConfigMap for June Services with STUNner Integration
-# Add this section to your k8s/complete-manifests.yaml
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: june-webrtc-config
-  namespace: june-services
-data:
-  APP_ENV: production
-  LOG_LEVEL: info
-  REGION: us-central1
-  
-  # WebRTC/STUNner Configuration
-  STUN_SERVER_URL: "stun:TURN_DOMAIN_PLACEHOLDER:3478"
-  TURN_SERVER_URL: "turn:TURN_DOMAIN_PLACEHOLDER:3478" 
-  TURN_USERNAME: "STUNNER_USERNAME_PLACEHOLDER"
-  TURN_CREDENTIAL: "STUNNER_PASSWORD_PLACEHOLDER"
-  
-  # ICE Server Configuration (JSON format for WebRTC clients)
-  ICE_SERVERS: |
-    [
-      {
-        "urls": ["stun:TURN_DOMAIN_PLACEHOLDER:3478"]
-      },
-      {
-        "urls": ["turn:TURN_DOMAIN_PLACEHOLDER:3478"],
-        "username": "STUNNER_USERNAME_PLACEHOLDER",
-        "credential": "STUNNER_PASSWORD_PLACEHOLDER"
-      }
-    ]
-  
-  # STUNner Gateway Service URL (for internal cluster access)
-  STUNNER_GATEWAY_URL: "june-stunner-gateway-svc.stunner.svc.cluster.local:3478"
-
----
-# Updated june-orchestrator deployment with WebRTC environment variables
-# REPLACE the existing june-orchestrator deployment environment section with this:
-
-        env:
-        - name: PORT
-          value: "8080"
-        - name: VALID_SERVICE_TOKENS
-          valueFrom:
-            secretKeyRef:
-              name: service-auth-secret
-              key: stt-service-token
-        - name: GEMINI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: gemini-api-key
-        - name: KEYCLOAK_URL
-          value: "http://june-idp.june-services.svc.cluster.local:8080"
-        - name: KEYCLOAK_REALM
-          value: "allsafe"
-        - name: KEYCLOAK_CLIENT_ID
-          value: "june-orchestrator"
-        - name: TTS_SERVICE_URL
-          value: "http://june-tts.june-services.svc.cluster.local:8000"
-        - name: STT_SERVICE_URL
-          value: "http://june-stt.june-services.svc.cluster.local:8080"
-        
-        # WebRTC/STUNner Configuration
-        - name: STUN_SERVER_URL
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: STUN_SERVER_URL
-        - name: TURN_SERVER_URL
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: TURN_SERVER_URL
-        - name: TURN_USERNAME
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: TURN_USERNAME
-        - name: TURN_CREDENTIAL
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: TURN_CREDENTIAL
-        - name: ICE_SERVERS
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: ICE_SERVERS
-        - name: STUNNER_GATEWAY_URL
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: STUNNER_GATEWAY_URL
-
----
-# Updated ingress to include TURN domain
-# ADD this rule to your existing june-ingress in k8s/complete-manifests.yaml:
-
-  rules:
-  # ... existing rules ...
   - host: TURN_DOMAIN_PLACEHOLDER
     http:
       paths:
