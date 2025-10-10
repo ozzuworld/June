@@ -464,45 +464,330 @@ EOF
     2)
         log_info "Certificate backup restoration..."
         echo ""
-        echo "📋 Paste your certificate backup YAML below."
-        echo "This should include both the Certificate and Secret resources."
+        echo "📋 Certificate Backup Restoration"
+        echo "================================="
+        echo ""
+        echo "Requirements:"
+        echo "  - Valid Kubernetes YAML containing Certificate and/or Secret resources"
+        echo "  - Resources should be for cert-manager (apiVersion: cert-manager.io/v1)"
+        echo "  - Secrets should be of type: kubernetes.io/tls"
+        echo ""
+        echo "Paste your certificate backup YAML below."
         echo "Press Ctrl+D on a new line when finished:"
         echo ""
         echo "--- (paste below this line) ---"
         
-        # Create temporary file for the backup
-        BACKUP_FILE=$(mktemp)
+        # Create secure temporary file with proper cleanup
+        BACKUP_FILE=$(mktemp -t cert-backup-XXXXXX.yaml)
+        chmod 600 "$BACKUP_FILE"
         
-        # Read multiline input until EOF
-        cat > "$BACKUP_FILE"
+        # Setup cleanup trap
+        cleanup_backup() {
+            rm -f "$BACKUP_FILE"
+        }
+        trap cleanup_backup EXIT ERR
         
-        echo ""
-        log_info "Applying certificate backup..."
-        
-        # Apply the backup
-        if kubectl apply -f "$BACKUP_FILE"; then
-            log_success "Certificate restored successfully!"
-            
-            # Verify the certificate exists
-            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-                log_success "Certificate secret '$CERT_SECRET_NAME' found in june-services namespace"
-            else
-                log_warning "Certificate secret not found with expected name '$CERT_SECRET_NAME'"
-                echo "Available secrets in june-services:"
-                kubectl get secrets -n june-services | grep tls || echo "No TLS secrets found"
-            fi
-        else
-            log_error "Failed to apply certificate backup!"
-            log_error "Please check the YAML format and try again."
+        # Read multiline input with timeout
+        if ! timeout 300 cat > "$BACKUP_FILE"; then
+            log_error "Input timeout (5 minutes) or interrupted"
+            exit 1
         fi
         
-        # Clean up temp file
-        rm -f "$BACKUP_FILE"
+        echo ""
+        log_info "Validating certificate backup..."
+        
+        # Validate the backup file is not empty
+        if [ ! -s "$BACKUP_FILE" ]; then
+            log_error "Empty backup file provided"
+            echo ""
+            echo "Expected format example:"
+            echo "---"
+            echo "apiVersion: cert-manager.io/v1"
+            echo "kind: Certificate"
+            echo "metadata:"
+            echo "  name: $CERT_SECRET_NAME"
+            echo "  namespace: june-services"
+            echo "spec:"
+            echo "  secretName: $CERT_SECRET_NAME"
+            echo "  dnsNames:"
+            echo "  - \"$PRIMARY_DOMAIN\""
+            echo "  - \"*.${PRIMARY_DOMAIN}\""
+            echo "---"
+            echo "apiVersion: v1"
+            echo "kind: Secret"
+            echo "metadata:"
+            echo "  name: $CERT_SECRET_NAME"
+            echo "  namespace: june-services"
+            echo "type: kubernetes.io/tls"
+            echo "data:"
+            echo "  tls.crt: <base64-encoded-certificate>"
+            echo "  tls.key: <base64-encoded-key>"
+            exit 1
+        fi
+        
+        # Validate YAML syntax using kubectl dry-run
+        if ! kubectl --dry-run=client -f "$BACKUP_FILE" > /dev/null 2>&1; then
+            log_error "Invalid YAML format detected!"
+            echo ""
+            echo "Common issues:"
+            echo "• Missing or incorrect indentation"
+            echo "• Invalid characters in YAML"
+            echo "• Missing required fields"
+            echo ""
+            echo "Please check your YAML syntax and try again."
+            exit 1
+        fi
+        
+        # Check for required resource types
+        CERT_FOUND=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | grep -c "Certificate" || echo "0")
+        SECRET_FOUND=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | grep -c "Secret" || echo "0")
+        
+        if [ "$CERT_FOUND" -eq 0 ] && [ "$SECRET_FOUND" -eq 0 ]; then
+            log_error "Neither Certificate nor Secret resources found in backup!"
+            echo ""
+            echo "Please ensure your backup contains valid cert-manager resources:"
+            echo "• Certificate (apiVersion: cert-manager.io/v1)"
+            echo "• Secret (apiVersion: v1, type: kubernetes.io/tls)"
+            exit 1
+        fi
+        
+        if [ "$CERT_FOUND" -eq 0 ]; then
+            log_warning "No Certificate resource found - only Secret will be restored"
+        fi
+        
+        if [ "$SECRET_FOUND" -eq 0 ]; then
+            log_warning "No Secret resource found - only Certificate will be restored"
+        fi
+        
+        # Check namespace consistency
+        NAMESPACES=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | awk '/namespace:/ {print $2}' | sort -u)
+        NAMESPACE_COUNT=$(echo "$NAMESPACES" | wc -l)
+        
+        if [ "$NAMESPACE_COUNT" -gt 1 ]; then
+            log_warning "Multiple namespaces detected in backup:"
+            echo "$NAMESPACES"
+            echo ""
+            read -p "Continue with restoration? (y/n): " CONTINUE_MULTI_NS
+            if [[ ! $CONTINUE_MULTI_NS =~ ^[Yy]$ ]]; then
+                log_info "Restoration cancelled"
+                exit 0
+            fi
+        fi
+        
+        # Backup existing resources if they exist
+        BACKUP_DIR="$CONFIG_DIR/cert-backup-$(date +%Y%m%d-%H%M%S)"
+        
+        log_info "Backing up existing certificate resources..."
+        mkdir -p "$BACKUP_DIR"
+        
+        # Backup existing certificate if it exists
+        if kubectl get certificate "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+            kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o yaml > "$BACKUP_DIR/existing-certificate.yaml"
+            log_info "Existing certificate backed up"
+        fi
+        
+        # Backup existing secret if it exists
+        if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+            kubectl get secret "$CERT_SECRET_NAME" -n june-services -o yaml > "$BACKUP_DIR/existing-secret.yaml"
+            log_info "Existing secret backed up"
+        fi
+        
+        # Backup all TLS secrets for safety
+        kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls -o yaml > "$BACKUP_DIR/all-tls-secrets.yaml" 2>/dev/null || true
+        
+        log_success "Existing resources backed up to: $BACKUP_DIR"
+        
+        # Apply with server-side validation first
+        log_info "Performing server-side validation..."
+        if ! kubectl apply --dry-run=server -f "$BACKUP_FILE" 2>&1; then
+            log_error "Server-side validation failed!"
+            echo ""
+            echo "This could indicate:"
+            echo "• Missing permissions in the cluster"
+            echo "• Invalid resource specifications"
+            echo "• Missing cert-manager CRDs"
+            echo "• Namespace doesn't exist"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Verify cert-manager is installed:"
+            echo "   kubectl get pods -n cert-manager"
+            echo ""
+            echo "2. Check namespace exists:"
+            echo "   kubectl get namespace june-services"
+            echo ""
+            echo "3. Verify permissions:"
+            echo "   kubectl auth can-i create certificates --namespace=june-services"
+            echo "   kubectl auth can-i create secrets --namespace=june-services"
+            exit 1
+        fi
+        
+        log_success "Server-side validation passed!"
+        
+        # Apply the backup
+        log_info "Applying certificate backup..."
+        if kubectl apply -f "$BACKUP_FILE"; then
+            log_success "Certificate backup applied successfully!"
+            
+            # Wait a moment for resources to be created
+            sleep 3
+            
+            # Comprehensive verification
+            log_info "Verifying restored certificate resources..."
+            
+            VERIFICATION_FAILED=false
+            
+            # Check for certificate resource
+            if kubectl get certificate "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+                log_success "Certificate resource found: $CERT_SECRET_NAME"
+                
+                # Check certificate status
+                CERT_STATUS=$(kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+                case "$CERT_STATUS" in
+                    "True")
+                        log_success "Certificate is in Ready state"
+                        ;;
+                    "False")
+                        CERT_REASON=$(kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "Unknown")
+                        log_warning "Certificate not ready. Reason: $CERT_REASON"
+                        VERIFICATION_FAILED=true
+                        ;;
+                    *)
+                        log_warning "Certificate status: $CERT_STATUS"
+                        VERIFICATION_FAILED=true
+                        ;;
+                esac
+            else
+                # Check for any certificate in the namespace
+                CERT_COUNT=$(kubectl get certificates -n june-services --no-headers 2>/dev/null | wc -l)
+                if [ "$CERT_COUNT" -gt 0 ]; then
+                    log_info "Found $CERT_COUNT certificate(s) in june-services namespace:"
+                    kubectl get certificates -n june-services
+                else
+                    log_warning "No certificates found in june-services namespace"
+                    VERIFICATION_FAILED=true
+                fi
+            fi
+            
+            # Check for TLS secret
+            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+                log_success "Certificate secret found: $CERT_SECRET_NAME"
+                
+                # Verify it's a TLS secret with required keys
+                SECRET_TYPE=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.type}')
+                if [ "$SECRET_TYPE" = "kubernetes.io/tls" ]; then
+                    log_success "Secret is of type kubernetes.io/tls"
+                    
+                    # Check for required TLS keys
+                    TLS_CRT=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null)
+                    TLS_KEY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.key}' 2>/dev/null)
+                    
+                    if [ -n "$TLS_CRT" ] && [ -n "$TLS_KEY" ]; then
+                        log_success "TLS certificate and key present in secret"
+                        
+                        # Additional validation: check if certificate is valid
+                        CERT_DATA=$(echo "$TLS_CRT" | base64 -d)
+                        if echo "$CERT_DATA" | openssl x509 -noout -text &>/dev/null; then
+                            CERT_EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate | cut -d= -f2)
+                            log_success "Certificate is valid, expires: $CERT_EXPIRY"
+                        else
+                            log_warning "Certificate data may be corrupted or invalid"
+                            VERIFICATION_FAILED=true
+                        fi
+                    else
+                        log_warning "TLS certificate or key missing in secret"
+                        VERIFICATION_FAILED=true
+                    fi
+                else
+                    log_warning "Secret type is '$SECRET_TYPE', expected 'kubernetes.io/tls'"
+                    VERIFICATION_FAILED=true
+                fi
+            else
+                # List available TLS secrets for troubleshooting
+                TLS_SECRETS=$(kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls --no-headers 2>/dev/null | awk '{print $1}')
+                if [ -n "$TLS_SECRETS" ]; then
+                    log_info "Available TLS secrets in june-services namespace:"
+                    echo "$TLS_SECRETS"
+                    log_warning "Expected secret '$CERT_SECRET_NAME' not found"
+                    VERIFICATION_FAILED=true
+                else
+                    log_warning "No TLS secrets found in june-services namespace"
+                    VERIFICATION_FAILED=true
+                fi
+            fi
+            
+            # Final verification summary
+            if [ "$VERIFICATION_FAILED" = true ]; then
+                log_warning "Certificate restoration completed with warnings"
+                echo ""
+                echo "🔍 Manual verification steps:"
+                echo "1. Check certificate status:"
+                echo "   kubectl get certificates -n june-services"
+                echo "   kubectl describe certificate $CERT_SECRET_NAME -n june-services"
+                echo ""
+                echo "2. Check secrets:"
+                echo "   kubectl get secrets -n june-services | grep tls"
+                echo "   kubectl describe secret $CERT_SECRET_NAME -n june-services"
+                echo ""
+                echo "3. Check cert-manager logs if issues persist:"
+                echo "   kubectl logs -n cert-manager deployment/cert-manager --tail=50"
+                echo ""
+            else
+                log_success "Certificate restoration completed successfully!"
+                echo ""
+                echo "✅ Verification summary:"
+                echo "• Certificate resource: Found and ready"
+                echo "• TLS secret: Found with valid certificate and key"
+                echo "• Certificate expiry: Checked and valid"
+            fi
+            
+        else
+            log_error "Failed to apply certificate backup!"
+            echo ""
+            echo "🔍 Troubleshooting steps:"
+            echo ""
+            echo "1. Check if the june-services namespace exists:"
+            echo "   kubectl get namespace june-services"
+            echo ""
+            echo "2. Verify cluster permissions:"
+            echo "   kubectl auth can-i create certificates --namespace=june-services"
+            echo "   kubectl auth can-i create secrets --namespace=june-services"
+            echo ""
+            echo "3. Check cert-manager is running:"
+            echo "   kubectl get pods -n cert-manager"
+            echo ""
+            echo "4. Validate the backup YAML manually:"
+            echo "   kubectl --dry-run=client -f <your-backup-file>"
+            echo ""
+            echo "5. Check for resource conflicts:"
+            echo "   kubectl get certificates,secrets -n june-services"
+            exit 1
+        fi
+        
+        # Clean up temp file (trap will also handle this)
+        cleanup_backup
+        trap - EXIT ERR
         ;;
         
     3)
         log_info "Skipping certificate creation."
         log_warning "You'll need to create the certificate '$CERT_SECRET_NAME' manually in the june-services namespace."
+        echo ""
+        echo "Manual certificate creation example:"
+        echo "kubectl apply -f - <<EOF"
+        echo "apiVersion: cert-manager.io/v1"
+        echo "kind: Certificate"
+        echo "metadata:"
+        echo "  name: $CERT_SECRET_NAME"
+        echo "  namespace: june-services"
+        echo "spec:"
+        echo "  secretName: $CERT_SECRET_NAME"
+        echo "  issuerRef:"
+        echo "    name: letsencrypt-prod"
+        echo "    kind: ClusterIssuer"
+        echo "  dnsNames:"
+        echo "  - \"$PRIMARY_DOMAIN\""
+        echo "  - \"*.${PRIMARY_DOMAIN}\""
+        echo "EOF"
         ;;
         
     *)
