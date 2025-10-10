@@ -164,19 +164,77 @@ helm repo update
 if helm list -n stunner-system | grep -q stunner-gateway-operator; then
     log_success "STUNner operator already installed"
 else
+    log_info "Installing STUNner operator (this may take 5-10 minutes)..."
+    
+    # First, try to install without --wait (faster feedback)
     helm install stunner-gateway-operator stunner/stunner-gateway-operator \
         --namespace=stunner-system \
         --set stunnerGatewayOperator.dataplane.spec.replicas=1 \
-        --wait \
-        --timeout=5m
+        --timeout=15m
     
-    log_success "STUNner operator installed!"
+    log_info "Operator installation initiated, waiting for pods..."
+    
+    # Wait for deployment with better error handling
+    TIMEOUT=600  # 10 minutes
+    ELAPSED=0
+    INTERVAL=10
+    
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        # Check if deployment exists
+        if kubectl get deployment stunner-gateway-operator -n stunner-system &>/dev/null; then
+            # Check if deployment is available
+            AVAILABLE=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+            
+            if [ "$AVAILABLE" = "1" ]; then
+                log_success "STUNner operator is ready!"
+                break
+            fi
+            
+            # Show progress
+            READY=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            echo "  Progress: $READY/1 replicas ready... (${ELAPSED}s elapsed)"
+        else
+            echo "  Waiting for deployment to be created... (${ELAPSED}s elapsed)"
+        fi
+        
+        sleep $INTERVAL
+        ELAPSED=$((ELAPSED + INTERVAL))
+    done
+    
+    if [ $ELAPSED -ge $TIMEOUT ]; then
+        log_error "Operator installation timed out after ${TIMEOUT}s"
+        echo ""
+        echo "Debugging information:"
+        echo "====================" 
+        kubectl get all -n stunner-system
+        echo ""
+        echo "Pod details:"
+        kubectl describe pods -n stunner-system
+        echo ""
+        echo "Events:"
+        kubectl get events -n stunner-system --sort-by='.lastTimestamp' | tail -20
+        exit 1
+    fi
 fi
 
-# Wait for operator
+# Wait for operator with explicit check
+log_info "Verifying operator is fully ready..."
 kubectl wait --for=condition=available deployment/stunner-gateway-operator \
     -n stunner-system \
-    --timeout=180s
+    --timeout=180s 2>/dev/null || {
+    log_warning "Wait command had issues, checking manually..."
+    
+    # Manual check
+    AVAILABLE=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+    if [ "$AVAILABLE" = "1" ]; then
+        log_success "Operator verified as ready"
+    else
+        log_error "Operator not ready. Checking status..."
+        kubectl get deployment stunner-gateway-operator -n stunner-system
+        kubectl get pods -n stunner-system
+        exit 1
+    fi
+}
 
 # ============================================================================
 # STUNNER GATEWAY CONFIGURATION
