@@ -22,12 +22,14 @@ log_step()    { echo -e "${CYAN}🔹 $1${NC}"; }
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="/root/.june-config"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Parse arguments
 SKIP_CORE=false
 SKIP_NETWORKING=false
 SKIP_GPU=false
 SKIP_GITHUB=false
+SKIP_DEPLOY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -35,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --skip-networking) SKIP_NETWORKING=true; shift ;;
         --skip-gpu) SKIP_GPU=true; shift ;;
         --skip-github) SKIP_GITHUB=true; shift ;;
+        --skip-deploy) SKIP_DEPLOY=true; shift ;;
         --help)
             echo "Usage: $0 [options]"
             echo ""
@@ -43,6 +46,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-networking  Skip networking (MetalLB, STUNner)"
             echo "  --skip-gpu         Skip GPU operator installation"
             echo "  --skip-github      Skip GitHub Actions runner setup"
+            echo "  --skip-deploy      Skip manifest generation and deployment"
             echo "  --help             Show this help message"
             exit 0
             ;;
@@ -67,7 +71,7 @@ else
 fi
 
 if [ "$SKIP_NETWORKING" = false ]; then
-    echo "  ✓ Networking (MetalLB, STUNner with Gateway API v1alpha2)"
+    echo "  ✓ Networking (MetalLB, STUNner with Gateway API v1)"
 else
     echo "  ⊘ Networking (skipped)"
 fi
@@ -79,9 +83,15 @@ else
 fi
 
 if [ "$SKIP_GITHUB" = false ]; then
-    echo "  ✓ GitHub Actions Runner"
+    echo "  ✓ GitHub Actions Runner (optional)"
 else
     echo "  ⊘ GitHub Actions Runner (skipped)"
+fi
+
+if [ "$SKIP_DEPLOY" = false ]; then
+    echo "  ✓ Manifest Processing & Deployment"
+else
+    echo "  ⊘ Manifest Processing & Deployment (skipped)"
 fi
 
 echo ""
@@ -181,7 +191,7 @@ else
 fi
 
 # ============================================================================
-# STEP 5: GITHUB ACTIONS RUNNER
+# STEP 5: GITHUB ACTIONS RUNNER (OPTIONAL)
 # ============================================================================
 
 if [ "$SKIP_GITHUB" = false ]; then
@@ -203,98 +213,12 @@ else
 fi
 
 # ============================================================================
-# STEP 6: DOMAIN & CERTIFICATES
+# STEP 6: APPLICATION SECRETS
 # ============================================================================
 
-log_step "Step 6: Domain and certificate configuration..."
+log_step "Step 6: Creating application secrets..."
 
-if [ -f "$CONFIG_DIR/infrastructure.env" ]; then
-    source "$CONFIG_DIR/infrastructure.env"
-fi
-
-# Check if domain config exists
-if [ -f "$CONFIG_DIR/domain-config.env" ]; then
-    log_info "Loading existing domain configuration..."
-    source "$CONFIG_DIR/domain-config.env"
-else
-    log_info "Collecting domain configuration..."
-    
-    read -p "Primary domain (e.g., example.com) [ozzu.world]: " PRIMARY_DOMAIN
-    PRIMARY_DOMAIN=${PRIMARY_DOMAIN:-ozzu.world}
-    
-    read -p "API subdomain [api]: " API_SUBDOMAIN
-    API_SUBDOMAIN=${API_SUBDOMAIN:-api}
-    
-    read -p "IDP subdomain [idp]: " IDP_SUBDOMAIN
-    IDP_SUBDOMAIN=${IDP_SUBDOMAIN:-idp}
-    
-    read -p "STT subdomain [stt]: " STT_SUBDOMAIN
-    STT_SUBDOMAIN=${STT_SUBDOMAIN:-stt}
-    
-    read -p "TTS subdomain [tts]: " TTS_SUBDOMAIN
-    TTS_SUBDOMAIN=${TTS_SUBDOMAIN:-tts}
-    
-    # Construct full domains
-    API_DOMAIN="${API_SUBDOMAIN}.${PRIMARY_DOMAIN}"
-    IDP_DOMAIN="${IDP_SUBDOMAIN}.${PRIMARY_DOMAIN}"
-    STT_DOMAIN="${STT_SUBDOMAIN}.${PRIMARY_DOMAIN}"
-    TTS_DOMAIN="${TTS_SUBDOMAIN}.${PRIMARY_DOMAIN}"
-    WILDCARD_DOMAIN="*.${PRIMARY_DOMAIN}"
-    CERT_SECRET_NAME="${PRIMARY_DOMAIN//./-}-wildcard-tls"
-    
-    # Save domain config
-    cat > "$CONFIG_DIR/domain-config.env" << EOF
-PRIMARY_DOMAIN=$PRIMARY_DOMAIN
-API_DOMAIN=$API_DOMAIN
-IDP_DOMAIN=$IDP_DOMAIN
-STT_DOMAIN=$STT_DOMAIN
-TTS_DOMAIN=$TTS_DOMAIN
-WILDCARD_DOMAIN=$WILDCARD_DOMAIN
-CERT_SECRET_NAME=$CERT_SECRET_NAME
-EOF
-    chmod 600 "$CONFIG_DIR/domain-config.env"
-fi
-
-# Create ClusterIssuers
-log_info "Creating Let's Encrypt ClusterIssuers..."
-
-if [ -z "$LETSENCRYPT_EMAIL" ]; then
-    read -p "Let's Encrypt email: " LETSENCRYPT_EMAIL
-fi
-
-# Production issuer
-cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: $LETSENCRYPT_EMAIL
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - dns01:
-        cloudflare:
-          apiTokenSecretRef:
-            name: cloudflare-api-token
-            key: api-token
-      selector:
-        dnsNames:
-        - "${PRIMARY_DOMAIN}"
-        - "*.${PRIMARY_DOMAIN}"
-EOF
-
-log_success "ClusterIssuer created for ${PRIMARY_DOMAIN}"
-
-# ============================================================================
-# STEP 7: APPLICATION SECRETS
-# ============================================================================
-
-log_step "Step 7: Creating application secrets..."
-
-# Gemini API key
+# Load existing config
 if [ -f "$CONFIG_DIR/secrets.env" ]; then
     source "$CONFIG_DIR/secrets.env"
 fi
@@ -313,6 +237,9 @@ EOF
     chmod 600 "$CONFIG_DIR/secrets.env"
 fi
 
+# Ensure june-services namespace exists
+kubectl create namespace june-services || true
+
 # Create Kubernetes secret
 kubectl create secret generic june-secrets \
     --from-literal=gemini-api-key="$GEMINI_API_KEY" \
@@ -323,51 +250,59 @@ kubectl create secret generic june-secrets \
 log_success "Application secrets created!"
 
 # ============================================================================
-# STEP 8: CONFIGURE MANIFESTS
+# STEP 7: MANIFEST PROCESSING AND DEPLOYMENT
 # ============================================================================
 
-log_step "Step 8: Configuring Kubernetes manifests..."
-
-# Load networking config if available
-if [ -f "$CONFIG_DIR/networking.env" ]; then
-    source "$CONFIG_DIR/networking.env"
-fi
-
-# Update complete-manifests.yaml with actual values
-if [ -f "$SCRIPT_DIR/../k8s/complete-manifests.yaml" ]; then
-    log_info "Updating complete-manifests.yaml with your configuration..."
+if [ "$SKIP_DEPLOY" = false ]; then
+    log_step "Step 7: Processing manifests and deploying June services..."
     
-    # This will be done by your CI/CD, but we can create a ready-to-deploy version
-    cp "$SCRIPT_DIR/../k8s/complete-manifests.yaml" "$CONFIG_DIR/complete-manifests-configured.yaml"
-    
-    log_success "Manifests configured at: $CONFIG_DIR/complete-manifests-configured.yaml"
+    # Check if template processing script exists
+    TEMPLATE_SCRIPT="$REPO_ROOT/scripts/generate-manifests.sh"
+    if [ -f "$TEMPLATE_SCRIPT" ]; then
+        log_info "Running manifest template processing..."
+        bash "$TEMPLATE_SCRIPT"
+        
+        # Check if processed manifest was created
+        PROCESSED_MANIFEST="$REPO_ROOT/k8s/complete-manifests-processed.yaml"
+        if [ -f "$PROCESSED_MANIFEST" ]; then
+            log_info "Deploying June services..."
+            kubectl apply -f "$PROCESSED_MANIFEST"
+            log_success "June services deployed!"
+        else
+            log_error "Processed manifest not found at: $PROCESSED_MANIFEST"
+            exit 1
+        fi
+    else
+        log_warning "Template processing script not found: $TEMPLATE_SCRIPT"
+        log_info "Attempting to deploy original manifest..."
+        
+        ORIGINAL_MANIFEST="$REPO_ROOT/k8s/complete-manifests.yaml"
+        if [ -f "$ORIGINAL_MANIFEST" ]; then
+            kubectl apply -f "$ORIGINAL_MANIFEST"
+            log_warning "Deployed original manifest - may need manual domain configuration"
+        else
+            log_error "No manifest found to deploy!"
+            exit 1
+        fi
+    fi
 else
-    log_warning "complete-manifests.yaml not found, skipping manifest configuration"
-fi
-
-# Update stunner-manifests.yaml
-if [ -f "$SCRIPT_DIR/../k8s/stunner-manifests.yaml" ]; then
-    log_info "Updating stunner-manifests.yaml..."
-    
-    cp "$SCRIPT_DIR/../k8s/stunner-manifests.yaml" "$CONFIG_DIR/stunner-manifests-configured.yaml"
-    
-    # Replace placeholders
-    if [ -n "$TURN_DOMAIN" ]; then
-        sed -i "s/STUNNER_REALM_PLACEHOLDER/${TURN_DOMAIN}/g" "$CONFIG_DIR/stunner-manifests-configured.yaml"
-    fi
-    if [ -n "$TURN_USERNAME" ]; then
-        sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${TURN_USERNAME}/g" "$CONFIG_DIR/stunner-manifests-configured.yaml"
-    fi
-    if [ -n "$TURN_PASSWORD" ]; then
-        sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${TURN_PASSWORD}/g" "$CONFIG_DIR/stunner-manifests-configured.yaml"
-    fi
-    
-    log_success "STUNner manifests configured at: $CONFIG_DIR/stunner-manifests-configured.yaml"
+    log_info "Skipping manifest processing and deployment (--skip-deploy)"
 fi
 
 # ============================================================================
 # FINAL SUMMARY
 # ============================================================================
+
+# Load all configuration for summary
+if [ -f "$CONFIG_DIR/infrastructure.env" ]; then
+    source "$CONFIG_DIR/infrastructure.env"
+fi
+if [ -f "$CONFIG_DIR/domain-config.env" ]; then
+    source "$CONFIG_DIR/domain-config.env"
+fi
+if [ -f "$CONFIG_DIR/networking.env" ]; then
+    source "$CONFIG_DIR/networking.env"
+fi
 
 EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
 
@@ -378,12 +313,17 @@ echo "════════════════════════�
 echo ""
 echo "✅ Installed Components:"
 echo "  • Core Infrastructure (K8s, ingress-nginx, cert-manager)"
-echo "  • Networking (MetalLB, STUNner with Gateway API v1alpha2)"
+echo "  • Networking (MetalLB, STUNner with Gateway API v1)"
 if [[ $INSTALL_GPU =~ ^[Yy]$ ]]; then
     echo "  • GPU Operator with time-slicing"
 fi
 if [[ $INSTALL_RUNNER =~ ^[Yy]$ ]]; then
     echo "  • GitHub Actions Runner"
+fi
+if [ "$SKIP_DEPLOY" = false ]; then
+    echo "  • June Services (deployed)"
+else
+    echo "  • June Services (ready for deployment)"
 fi
 echo "  • Application secrets"
 echo ""
@@ -397,6 +337,7 @@ echo "  API: ${API_DOMAIN:-not configured}"
 echo "  IDP: ${IDP_DOMAIN:-not configured}"
 echo "  STT: ${STT_DOMAIN:-not configured}"
 echo "  TTS: ${TTS_DOMAIN:-not configured}"
+echo "  Certificate: ${CERT_SECRET_NAME:-not configured}"
 echo ""
 echo "🔗 STUNner Configuration:"
 echo "  TURN Domain: ${TURN_DOMAIN:-not configured}"
@@ -411,7 +352,9 @@ echo "  Infrastructure: $CONFIG_DIR/infrastructure.env"
 echo "  Networking: $CONFIG_DIR/networking.env"
 echo "  Domains: $CONFIG_DIR/domain-config.env"
 echo "  Secrets: $CONFIG_DIR/secrets.env"
-echo "  ICE Servers: $CONFIG_DIR/ice-servers.json"
+if [ -f "$CONFIG_DIR/ice-servers.json" ]; then
+    echo "  ICE Servers: $CONFIG_DIR/ice-servers.json"
+fi
 echo ""
 echo "📋 Next Steps:"
 echo ""
@@ -419,20 +362,22 @@ echo "1. Configure DNS records to point to $EXTERNAL_IP:"
 echo "   ${PRIMARY_DOMAIN:-your-domain.com} A $EXTERNAL_IP"
 echo "   *.${PRIMARY_DOMAIN:-your-domain.com} A $EXTERNAL_IP"
 echo ""
-echo "2. Apply STUNner UDPRoutes (after DNS is ready):"
-echo "   kubectl apply -f $CONFIG_DIR/stunner-manifests-configured.yaml"
-echo ""
-echo "3. Deploy June services:"
-echo "   kubectl apply -f k8s/complete-manifests.yaml"
-echo "   # Or use your configured version:"
-echo "   # kubectl apply -f $CONFIG_DIR/complete-manifests-configured.yaml"
-echo ""
-echo "4. Monitor deployment:"
+if [ "$SKIP_DEPLOY" = true ]; then
+    echo "2. Process and deploy manifests:"
+    echo "   bash scripts/generate-manifests.sh"
+    echo "   kubectl apply -f k8s/complete-manifests-processed.yaml"
+    echo ""
+    echo "3. Monitor deployment:"
+else
+    echo "2. Monitor deployment:"
+fi
 echo "   kubectl get pods -n june-services -w"
 echo ""
-echo "5. Test STUNner connectivity:"
-echo "   python3 scripts/test-turn-server.py"
-echo ""
+if [ "$SKIP_NETWORKING" = false ]; then
+    echo "3. Test STUNner connectivity:"
+    echo "   python3 scripts/test-turn-server.py"
+    echo ""
+fi
 echo "🔍 Useful Commands:"
 echo "  # Check cluster status"
 echo "  kubectl cluster-info"
@@ -440,20 +385,25 @@ echo ""
 echo "  # Check all services"
 echo "  kubectl get all -n june-services"
 echo ""
-echo "  # Check STUNner Gateway"
-echo "  kubectl get gateway -n stunner"
-echo "  kubectl get svc -n stunner"
-echo ""
+if [ "$SKIP_NETWORKING" = false ]; then
+    echo "  # Check STUNner Gateway"
+    echo "  kubectl get gateway -n stunner"
+    echo "  kubectl get svc -n stunner"
+    echo ""
+fi
 echo "  # View logs"
 echo "  kubectl logs -n june-services -l app=june-orchestrator --tail=50"
-echo "  kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator"
+if [ "$SKIP_NETWORKING" = false ]; then
+    echo "  kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator"
+fi
 echo ""
-echo "  # Get LoadBalancer IP"
-echo "  kubectl get svc -n stunner -o wide"
+echo "  # Check certificates"
+echo "  kubectl get certificates -n june-services"
+echo "  kubectl describe certificate ${CERT_SECRET_NAME:-allsafe-wildcard} -n june-services"
 echo ""
 echo "══════════════════════════════════════════════════"
 echo "📖 Documentation:"
-echo "  June: https://github.com/YOUR_REPO/docs"
+echo "  June: https://github.com/ozzuworld/June"
 echo "  STUNner: https://docs.l7mp.io"
 echo "  Gateway API: https://gateway-api.sigs.k8s.io"
 echo "══════════════════════════════════════════════════"
