@@ -10,12 +10,14 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; }
+log_debug()   { echo -e "${MAGENTA}🔎 DEBUG: $1${NC}"; }
 
 echo "======================================================"
 echo "🏗️  Core Infrastructure Setup"
@@ -34,6 +36,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MANIFEST_PATH="$REPO_ROOT/k8s/complete-manifests.yaml"
 
+log_debug "Script paths:"
+log_debug "  SCRIPT_DIR: $SCRIPT_DIR"
+log_debug "  REPO_ROOT: $REPO_ROOT"
+log_debug "  MANIFEST_PATH: $MANIFEST_PATH"
+log_debug "  CONFIG_DIR: $CONFIG_DIR"
+
 # ============================================================================
 # CONFIGURATION COLLECTION (MOVED TO TOP)
 # ============================================================================
@@ -44,11 +52,13 @@ log_info "📋 Loading/Collecting Configuration..."
 if [ -f "$CONFIG_DIR/infrastructure.env" ]; then
     log_info "Loading infrastructure config..."
     source "$CONFIG_DIR/infrastructure.env"
+    log_debug "Loaded infrastructure config: POD_NETWORK_CIDR=$POD_NETWORK_CIDR, EMAIL=$LETSENCRYPT_EMAIL"
 fi
 
 if [ -f "$CONFIG_DIR/domain-config.env" ]; then
     log_info "Loading domain config..."
     source "$CONFIG_DIR/domain-config.env"
+    log_debug "Loaded domain config: PRIMARY_DOMAIN=$PRIMARY_DOMAIN, CERT_SECRET_NAME=$CERT_SECRET_NAME"
 fi
 
 # Collect missing infrastructure configuration
@@ -99,6 +109,7 @@ if [ -z "$PRIMARY_DOMAIN" ]; then
     DOMAIN_CONFIG_NEW=true
 else
     DOMAIN_CONFIG_NEW=false
+    log_debug "Using existing domain config: $PRIMARY_DOMAIN"
 fi
 
 # Construct full domains
@@ -124,6 +135,8 @@ else
     CERT_SECRET_NAME="${CERT_NAME}-tls"
     log_warning "Custom domain detected: $PRIMARY_DOMAIN"
 fi
+
+log_debug "Certificate naming: CERT_NAME=$CERT_NAME, CERT_SECRET_NAME=$CERT_SECRET_NAME"
 
 # Save or update domain configuration
 cat > "$CONFIG_DIR/domain-config.env" << EOF
@@ -170,10 +183,14 @@ CERT_BACKUP_DIR="/root/.june-certs"
 CERT_RESTORE_CHOICE=false
 SELECTED_CERT_BACKUP=""
 
+log_debug "Checking for backups in: $CERT_BACKUP_DIR"
+
 # Check for existing certificates first
 if [ -d "$CERT_BACKUP_DIR" ]; then
     # Look for certificate backups
     AVAILABLE_BACKUPS=($(find "$CERT_BACKUP_DIR" -name "*wildcard*tls*.yaml" -o -name "*${CERT_SECRET_NAME}*.yaml" -o -name "allsafe*.yaml" 2>/dev/null | head -5))
+    
+    log_debug "Found ${#AVAILABLE_BACKUPS[@]} backup files: ${AVAILABLE_BACKUPS[*]}"
     
     if [ ${#AVAILABLE_BACKUPS[@]} -gt 0 ]; then
         echo ""
@@ -183,6 +200,7 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
             BACKUP_DATE=$(stat -c %y "$BACKUP_FILE" 2>/dev/null | cut -d' ' -f1 || echo "unknown")
             BACKUP_NAME=$(basename "$BACKUP_FILE" .yaml)
             echo "  $((i+1)). $BACKUP_NAME (from $BACKUP_DATE)"
+            log_debug "  Backup file: $BACKUP_FILE"
         done
         echo "  $((${#AVAILABLE_BACKUPS[@]}+1)). Create new certificate with Let's Encrypt"
         echo ""
@@ -192,6 +210,7 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
         if [[ "$CERT_CHOICE" -ge 1 && "$CERT_CHOICE" -le "${#AVAILABLE_BACKUPS[@]}" ]]; then
             SELECTED_CERT_BACKUP="${AVAILABLE_BACKUPS[$((CERT_CHOICE-1))]}"
             log_info "Selected backup: $(basename "$SELECTED_CERT_BACKUP")"
+            log_debug "Full backup path: $SELECTED_CERT_BACKUP"
             
             # Validate the selected backup
             if grep -q "kind: Secret" "$SELECTED_CERT_BACKUP" && grep -q "tls.crt" "$SELECTED_CERT_BACKUP"; then
@@ -199,6 +218,8 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
                 CERT_RESTORE_CHOICE=true
             else
                 log_error "❌ ❌ Invalid backup file structure"
+                log_debug "Backup file contents:"
+                head -10 "$SELECTED_CERT_BACKUP"
                 log_info "Will create new certificate instead"
             fi
         else
@@ -234,15 +255,19 @@ if [ "$PRIMARY_DOMAIN" != "allsafe.world" ]; then
     case $DOMAIN_OPTION in
         1)
             log_info "🔄 Automatically updating manifests for $PRIMARY_DOMAIN..."
+            log_debug "Manifest path: $MANIFEST_PATH"
             
             # FIXED: Use proper path detection and consistent file operations
             if [ -f "$MANIFEST_PATH" ]; then
                 # Create backup with timestamp using full path
                 BACKUP_FILE="${MANIFEST_PATH}.backup-$(date +%Y%m%d-%H%M%S)"
+                log_debug "Creating backup: $BACKUP_FILE"
                 cp "$MANIFEST_PATH" "$BACKUP_FILE"
                 
                 # Update domains and certificate names in the actual manifest file
+                log_debug "Updating allsafe.world -> $PRIMARY_DOMAIN"
                 sed -i "s/allsafe\.world/$PRIMARY_DOMAIN/g" "$MANIFEST_PATH"
+                log_debug "Updating allsafe-wildcard-tls -> $CERT_SECRET_NAME"
                 sed -i "s/allsafe-wildcard-tls/$CERT_SECRET_NAME/g" "$MANIFEST_PATH"
                 
                 log_success "✅ ✅ Manifests updated automatically"
@@ -459,122 +484,198 @@ kubectl create secret generic cloudflare-api-token \
 log_success "cert-manager ready!"
 
 # ============================================================================
-# IMPROVED CERTIFICATE MANAGEMENT WITH FIXED VALIDATION
+# IMPROVED CERTIFICATE MANAGEMENT WITH DETAILED DEBUG
 # ============================================================================
 
 log_info "🔐 Processing Certificate Configuration..."
 
 # Ensure june-services namespace exists
+log_debug "Creating june-services namespace..."
 kubectl create namespace june-services || true
 
 CERT_RESTORED=false
 
-# FIXED: Certificate validation function with retry logic
-validate_restored_certificate() {
-    local expected_secret_name="$1"
-    local max_attempts=30
-    local attempt=1
+# ENHANCED: Check if certificate already exists before attempting restore
+log_debug "Checking if certificate already exists in cluster..."
+EXISTING_CERTS=$(kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls -o name 2>/dev/null || echo "")
+if [ -n "$EXISTING_CERTS" ]; then
+    log_info "Found existing TLS certificates:"
+    kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls
+    echo ""
     
-    log_info "Validating certificate restoration (max ${max_attempts}s)..."
-    
-    while [ $attempt -le $max_attempts ]; do
-        # Check if the expected secret exists
-        if kubectl get secret "$expected_secret_name" -n june-services >/dev/null 2>&1; then
-            log_success "Certificate secret '$expected_secret_name' found in namespace 'june-services'"
-            
-            # Additional validation - check if it contains certificate data
-            local cert_data=$(kubectl get secret "$expected_secret_name" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
-            if [ -n "$cert_data" ] && [ "$cert_data" != "null" ]; then
-                log_success "Certificate contains valid TLS data"
-                return 0
+    # Check if our target certificate already exists
+    if kubectl get secret "$CERT_SECRET_NAME" -n june-services >/dev/null 2>&1; then
+        log_success "Target certificate '$CERT_SECRET_NAME' already exists!"
+        
+        # Validate the existing certificate
+        CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+        if [ -n "$CERT_DATA" ] && [ "$CERT_DATA" != "null" ]; then
+            # Decode and check certificate
+            echo "$CERT_DATA" | base64 -d > /tmp/existing_cert_check.crt 2>/dev/null || true
+            if [ -f /tmp/existing_cert_check.crt ]; then
+                EXPIRY=$(openssl x509 -in /tmp/existing_cert_check.crt -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
+                CERT_DOMAINS=$(openssl x509 -in /tmp/existing_cert_check.crt -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ' || echo "unknown")
+                
+                log_success "Existing certificate is valid!"
+                log_info "Certificate Details:"
+                echo "  Secret Name: $CERT_SECRET_NAME"
+                echo "  Domains: $CERT_DOMAINS"
+                echo "  Expires: $EXPIRY"
+                
+                # Check if certificate covers our domain
+                if [[ "$CERT_DOMAINS" == *"$PRIMARY_DOMAIN"* ]]; then
+                    log_success "Certificate covers required domain: $PRIMARY_DOMAIN"
+                    CERT_RESTORED=true
+                    rm -f /tmp/existing_cert_check.crt
+                else
+                    log_warning "Certificate does not cover domain $PRIMARY_DOMAIN"
+                    log_warning "Certificate covers: $CERT_DOMAINS"
+                    log_info "Will attempt to create new certificate..."
+                    rm -f /tmp/existing_cert_check.crt
+                fi
             else
-                log_warning "Certificate secret exists but missing TLS data"
+                log_warning "Could not validate existing certificate data"
             fi
+        else
+            log_warning "Existing certificate secret has no TLS data"
         fi
-        
-        if [ $attempt -le 5 ]; then
-            log_info "Attempt $attempt/$max_attempts - waiting for secret..."
-        elif [ $((attempt % 5)) -eq 0 ]; then
-            log_info "Still waiting... ($attempt/$max_attempts attempts)"
-        fi
-        
-        sleep 1
-        ((attempt++))
-    done
-    
-    log_error "Certificate validation failed after $max_attempts attempts"
-    log_info "Checking what certificates exist:"
-    kubectl get secrets -n june-services | grep -E "(tls|cert)" || echo "No TLS secrets found"
-    return 1
-}
+    fi
+fi
 
-# Handle certificate restoration if user chose it during setup
-if [ "$CERT_RESTORE_CHOICE" = true ] && [ -n "$SELECTED_CERT_BACKUP" ]; then
+# Handle certificate restoration if user chose it during setup AND certificate doesn't already exist
+if [ "$CERT_RESTORE_CHOICE" = true ] && [ -n "$SELECTED_CERT_BACKUP" ] && [ "$CERT_RESTORED" = false ]; then
     log_info "🔄 Restoring selected certificate backup..."
+    log_debug "Processing backup file: $SELECTED_CERT_BACKUP"
     
-    # FIXED: Better secret name extraction from backup
-    # Try multiple methods to get the actual Kubernetes secret name
+    # ENHANCED: Multiple methods to extract secret name with detailed debugging
     BACKUP_SECRET_NAME=""
     
-    # Method 1: Look for metadata.name in YAML
-    BACKUP_SECRET_NAME=$(grep -A1 "^metadata:" "$SELECTED_CERT_BACKUP" | grep "name:" | awk '{print $2}' | tr -d '"' | head -1)
+    log_debug "Attempting to extract secret name from backup..."
     
-    # Method 2: If that fails, try direct name field
+    # Method 1: Look for metadata.name in YAML structure
+    BACKUP_SECRET_NAME=$(awk '/^metadata:/,/^[a-zA-Z]/ {if(/^  name:/) print $2}' "$SELECTED_CERT_BACKUP" | tr -d '"' | head -1)
+    log_debug "Method 1 (metadata.name): '$BACKUP_SECRET_NAME'"
+    
+    # Method 2: If that fails, try any name field that's not nested deep
     if [ -z "$BACKUP_SECRET_NAME" ]; then
         BACKUP_SECRET_NAME=$(grep "^[[:space:]]*name:" "$SELECTED_CERT_BACKUP" | grep -v "certificate-name" | head -1 | awk '{print $2}' | tr -d '"')
+        log_debug "Method 2 (any name field): '$BACKUP_SECRET_NAME'"
     fi
     
     # Method 3: Use filename as fallback
     if [ -z "$BACKUP_SECRET_NAME" ]; then
         BACKUP_SECRET_NAME=$(basename "$SELECTED_CERT_BACKUP" .yaml | sed 's/-backup$//')
+        log_debug "Method 3 (filename): '$BACKUP_SECRET_NAME'"
     fi
+    
+    # Debug: Show first few lines of backup file
+    log_debug "First 10 lines of backup file:"
+    head -10 "$SELECTED_CERT_BACKUP" | while IFS= read -r line; do
+        log_debug "  $line"
+    done
     
     if [ -n "$BACKUP_SECRET_NAME" ]; then
         log_info "Restoring certificate secret: $BACKUP_SECRET_NAME"
+        log_debug "Target namespace: june-services"
         
         # Create a temporary file with the correct namespace
         TEMP_RESTORE_FILE="/tmp/cert_restore_$(date +%s).yaml"
+        log_debug "Creating temporary restore file: $TEMP_RESTORE_FILE"
         
-        # Update namespace in backup and apply
-        sed "s/namespace:.*/namespace: june-services/g" "$SELECTED_CERT_BACKUP" > "$TEMP_RESTORE_FILE"
+        # Clean up the backup file and set correct namespace
+        {
+            # Remove server-side fields that cause conflicts
+            grep -v "resourceVersion:" "$SELECTED_CERT_BACKUP" | \
+            grep -v "uid:" | \
+            grep -v "selfLink:" | \
+            grep -v "creationTimestamp:" | \
+            sed "s/namespace:.*/namespace: june-services/g"
+        } > "$TEMP_RESTORE_FILE"
         
-        if kubectl apply -f "$TEMP_RESTORE_FILE" 2>/dev/null; then
+        log_debug "Cleaned backup file contents (first 15 lines):"
+        head -15 "$TEMP_RESTORE_FILE" | while IFS= read -r line; do
+            log_debug "  $line"
+        done
+        
+        # Validate YAML syntax before applying
+        log_debug "Validating YAML syntax..."
+        if ! kubectl apply --dry-run=client -f "$TEMP_RESTORE_FILE" >/dev/null 2>&1; then
+            log_error "YAML validation failed!"
+            log_error "kubectl apply --dry-run output:"
+            kubectl apply --dry-run=client -f "$TEMP_RESTORE_FILE" 2>&1 || true
             rm -f "$TEMP_RESTORE_FILE"
+            CERT_RESTORED=false
+        else
+            log_debug "YAML syntax is valid"
             
-            # FIXED: Use improved validation function
-            if validate_restored_certificate "$BACKUP_SECRET_NAME"; then
-                log_success "✅ Certificate restored successfully: $BACKUP_SECRET_NAME"
+            # Apply the certificate with detailed error reporting
+            log_debug "Attempting to apply certificate backup..."
+            if kubectl apply -f "$TEMP_RESTORE_FILE" 2>/tmp/kubectl_apply_error.log; then
+                log_debug "kubectl apply succeeded"
+                rm -f "$TEMP_RESTORE_FILE"
                 
-                # Update certificate secret name in config
-                CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
-                CERT_RESTORED=true
+                # Wait a moment for Kubernetes to process
+                log_debug "Waiting for Kubernetes to process the secret..."
+                sleep 5
                 
-                # Update config file with restored certificate name
-                sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" 2>/dev/null || {
-                    echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
-                }
-                
-                # Optional: Validate certificate expiry and domains
-                CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | base64 -d 2>/dev/null || echo "")
-                if [ -n "$CERT_DATA" ]; then
-                    EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
-                    CERT_DOMAINS=$(echo "$CERT_DATA" | openssl x509 -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ' || echo "unknown")
+                # Check if the secret now exists
+                log_debug "Checking for secret existence..."
+                if kubectl get secret "$BACKUP_SECRET_NAME" -n june-services >/dev/null 2>&1; then
+                    log_success "✅ Certificate restored successfully: $BACKUP_SECRET_NAME"
                     
-                    log_info "Certificate Details:"
-                    echo "  Domains: $CERT_DOMAINS"
-                    echo "  Expires: $EXPIRY"
+                    # Update certificate secret name in config
+                    CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                    CERT_RESTORED=true
+                    
+                    log_debug "Updating config file with restored certificate name: $CERT_SECRET_NAME"
+                    
+                    # Update config file with restored certificate name
+                    if grep -q "^CERT_SECRET_NAME=" "$CONFIG_DIR/domain-config.env"; then
+                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env"
+                    else
+                        echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
+                    fi
+                    
+                    # Validate certificate content
+                    CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+                    if [ -n "$CERT_DATA" ] && [ "$CERT_DATA" != "null" ]; then
+                        echo "$CERT_DATA" | base64 -d > /tmp/restored_cert_check.crt 2>/dev/null || true
+                        if [ -f /tmp/restored_cert_check.crt ]; then
+                            EXPIRY=$(openssl x509 -in /tmp/restored_cert_check.crt -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
+                            CERT_DOMAINS=$(openssl x509 -in /tmp/restored_cert_check.crt -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ' || echo "unknown")
+                            
+                            log_info "Restored Certificate Details:"
+                            echo "  Secret Name: $CERT_SECRET_NAME"
+                            echo "  Domains: $CERT_DOMAINS"
+                            echo "  Expires: $EXPIRY"
+                            
+                            rm -f /tmp/restored_cert_check.crt
+                        else
+                            log_warning "Could not decode certificate for validation"
+                        fi
+                    else
+                        log_warning "Certificate secret exists but contains no TLS data"
+                        log_debug "Certificate data length: ${#CERT_DATA}"
+                    fi
+                else
+                    log_error "Certificate secret not found after restoration!"
+                    log_debug "Available secrets in june-services:"
+                    kubectl get secrets -n june-services
+                    CERT_RESTORED=false
                 fi
             else
-                log_error "Certificate validation failed"
+                log_error "kubectl apply failed!"
+                log_error "Error details:"
+                cat /tmp/kubectl_apply_error.log
+                rm -f "$TEMP_RESTORE_FILE"
+                rm -f /tmp/kubectl_apply_error.log
                 CERT_RESTORED=false
             fi
-        else
-            rm -f "$TEMP_RESTORE_FILE"
-            log_error "Failed to apply certificate backup"
-            CERT_RESTORED=false
         fi
     else
         log_error "❌ ❌ Could not extract certificate name from backup"
+        log_error "Available backup files:"
+        ls -la "$CERT_BACKUP_DIR/"
         CERT_RESTORED=false
     fi
 fi
@@ -585,6 +686,7 @@ fi
 
 if [ "$CERT_RESTORED" = false ]; then
     log_info "🔐 Creating new Certificate resource..."
+    log_debug "Certificate creation triggered because CERT_RESTORED=$CERT_RESTORED"
     
     # Verify prerequisites
     if [ -z "$PRIMARY_DOMAIN" ]; then
@@ -604,6 +706,8 @@ if [ "$CERT_RESTORED" = false ]; then
         log_error "cert-manager CRDs not found! Please wait for cert-manager to be fully ready."
         exit 1
     fi
+    
+    log_debug "cert-manager CRDs are available"
     
     # Create ClusterIssuer with validation
     log_info "Creating ClusterIssuer..."
@@ -631,6 +735,8 @@ spec:
         - "*.${PRIMARY_DOMAIN}"
 EOF
     
+    log_debug "ClusterIssuer applied"
+    
     # Wait for ClusterIssuer to be ready
     log_info "Waiting for ClusterIssuer to be ready..."
     sleep 10
@@ -638,6 +744,8 @@ EOF
     # Verify ClusterIssuer
     for i in {1..30}; do
         ISSUER_READY=$(kubectl get clusterissuer letsencrypt-prod -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+        log_debug "ClusterIssuer ready check $i: $ISSUER_READY"
+        
         if [ "$ISSUER_READY" = "True" ]; then
             log_success "ClusterIssuer is ready"
             break
@@ -645,6 +753,7 @@ EOF
         
         if [ $i -eq 30 ]; then
             log_warning "ClusterIssuer not ready yet, but proceeding..."
+            log_debug "ClusterIssuer status:"
             kubectl describe clusterissuer letsencrypt-prod | tail -10 || true
         fi
         
@@ -653,6 +762,7 @@ EOF
     
     # Create Certificate resource
     log_info "Creating Certificate resource..."
+    log_debug "Certificate spec: name=$CERT_NAME, secret=$CERT_SECRET_NAME, domain=$PRIMARY_DOMAIN"
     
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
@@ -681,6 +791,7 @@ EOF
     
     while [ $CERT_WAIT_COUNT -lt $MAX_CERT_WAIT ]; do
         CERT_READY=$(kubectl get certificate "${CERT_NAME}" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+        log_debug "Certificate ready check: $CERT_READY (${CERT_WAIT_COUNT}s elapsed)"
         
         if [ "$CERT_READY" = "True" ]; then
             log_success "✅ ✅ Certificate issued successfully!"
@@ -692,6 +803,7 @@ EOF
                 # Quick validation of the issued certificate
                 CERT_DOMAINS=$(kubectl get secret "${CERT_SECRET_NAME}" -n june-services -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | head -2 | sed 's/.*DNS://' | tr '\n' ' ' || echo "unknown")
                 log_success "Certificate covers domains: $CERT_DOMAINS"
+                CERT_RESTORED=true
             else
                 log_error "Certificate secret not found after successful issuance!"
             fi
@@ -707,6 +819,12 @@ EOF
             CERT_STATUS=$(kubectl get certificate "${CERT_NAME}" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "No status available")
             if [ "$CERT_STATUS" != "No status available" ] && [ -n "$CERT_STATUS" ]; then
                 log_info "Certificate status: $CERT_STATUS"
+            fi
+            
+            # Debug: Show certificate events
+            if [ $((CERT_WAIT_COUNT % 30)) -eq 0 ]; then
+                log_debug "Certificate events:"
+                kubectl describe certificate "${CERT_NAME}" -n june-services | tail -5 || true
             fi
         fi
         
@@ -733,11 +851,11 @@ EOF
         echo "  Certificate: $CERT_NAME"
         echo "  Secret: $CERT_SECRET_NAME"
         echo "  Namespace: june-services"
+        CERT_RESTORED=true
     fi
-else
-    log_success "Certificate management complete (restored from backup)!"
 fi
 
+log_debug "Final certificate status: CERT_RESTORED=$CERT_RESTORED, CERT_SECRET_NAME=$CERT_SECRET_NAME"
 log_success "Using certificate secret: ${CERT_SECRET_NAME}"
 
 # ============================================================================
@@ -755,9 +873,11 @@ STORAGE_DIRS=(
 for dir in "${STORAGE_DIRS[@]}"; do
     mkdir -p "$dir"
     chmod 755 "$dir"
+    log_debug "Created storage directory: $dir"
 done
 
 # Create StorageClass
+log_debug "Creating local-storage StorageClass..."
 cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -769,6 +889,10 @@ reclaimPolicy: Retain
 EOF
 
 # Create PostgreSQL PV
+log_debug "Creating PostgreSQL PersistentVolume..."
+HOST_NAME=$(hostname)
+log_debug "Using hostname for nodeAffinity: $HOST_NAME"
+
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -793,7 +917,7 @@ spec:
         - key: kubernetes.io/hostname
           operator: In
           values:
-          - $(hostname)
+          - $HOST_NAME
 EOF
 
 log_success "Storage infrastructure ready!"
@@ -852,9 +976,15 @@ echo "  2. Install GPU Operator (optional):"
 echo "     ./install-gpu-operator.sh"
 echo ""
 echo "  3. Deploy June services:"
-echo "     kubectl apply -f k8s/complete-manifests.yaml"
+echo "     bash ../generate-manifests.sh"
+echo "     kubectl apply -f k8s/complete-manifests-processed.yaml"
 echo ""
 echo "  4. Create certificate backup:"
-echo "     ./scripts/install-k8s/backup-restore-cert.sh backup"
+echo "     ./backup-restore-cert.sh backup"
 echo ""
 echo "======================================================"
+
+log_debug "Script execution completed. Final state:"
+log_debug "  CERT_RESTORED: $CERT_RESTORED"
+log_debug "  CERT_SECRET_NAME: $CERT_SECRET_NAME"
+log_debug "  PRIMARY_DOMAIN: $PRIMARY_DOMAIN"
