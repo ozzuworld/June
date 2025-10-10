@@ -132,11 +132,14 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/downloa
 
 
 # Wait for CRDs
+# Wait for CRDs
 log_info "Waiting for Gateway API CRDs..."
 kubectl wait --for condition=established --timeout=60s \
     crd/gatewayclasses.gateway.networking.k8s.io \
     crd/gateways.gateway.networking.k8s.io \
-    crd/httproutes.gateway.networking.k8s.io 2>/dev/null || log_warning "CRDs taking longer"
+    crd/httproutes.gateway.networking.k8s.io \
+    crd/referencegrants.gateway.networking.k8s.io 2>/dev/null || log_warning "CRDs taking longer"
+
 
 sleep 5
 log_success "Gateway API v1alpha2 installed!"
@@ -260,7 +263,7 @@ EOF
 
 # GatewayClass
 cat <<EOF | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1alpha2
+apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: stunner-gatewayclass
@@ -276,7 +279,7 @@ EOF
 
 # Gateway with LoadBalancer
 cat <<EOF | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1alpha2
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: june-stunner-gateway
@@ -310,7 +313,7 @@ kubectl wait --for=condition=Ready gateway/june-stunner-gateway \
 
 log_info "🔐 Creating ReferenceGrant for cross-namespace access..."
 cat <<EOF | kubectl apply -f -
-apiVersion: gateway.networking.k8s.io/v1alpha2
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
   name: stunner-to-june-services
