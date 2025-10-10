@@ -515,7 +515,7 @@ log_info "📝 Creating WebRTC ConfigMap for June services..."
 # Create june-services namespace if it doesn't exist
 kubectl create namespace june-services || true
 
-# Create the WebRTC ConfigMap with all required keys
+# ✅ FIXED: Added STUNNER_GATEWAY_URL key
 kubectl create configmap june-webrtc-config \
   --from-literal=APP_ENV="production" \
   --from-literal=LOG_LEVEL="info" \
