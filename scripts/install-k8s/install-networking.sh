@@ -58,12 +58,12 @@ else
     TURN_PASSWORD=${TURN_PASSWORD:-Pokemon123!}
     
     # Save configuration
-    cat > "$CONFIG_DIR/networking.env" << EOF
+cat > "$CONFIG_DIR/networking.env" << EOF
 EXTERNAL_IP=$EXTERNAL_IP
 TURN_DOMAIN=$TURN_DOMAIN
 TURN_USERNAME=$TURN_USERNAME
 TURN_PASSWORD=$TURN_PASSWORD
-INSTALL_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+INSTALL_DATE="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
 EOF
     chmod 600 "$CONFIG_DIR/networking.env"
 fi

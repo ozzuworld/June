@@ -41,11 +41,11 @@ else
     read -p "Cloudflare API Token: " CF_API_TOKEN
     
     # Save configuration
-    cat > "$CONFIG_DIR/infrastructure.env" << EOF
+cat > "$CONFIG_DIR/infrastructure.env" << EOF
 POD_NETWORK_CIDR=$POD_NETWORK_CIDR
 LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
 CF_API_TOKEN=$CF_API_TOKEN
-INSTALL_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+INSTALL_DATE="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
 EOF
     chmod 600 "$CONFIG_DIR/infrastructure.env"
 fi
