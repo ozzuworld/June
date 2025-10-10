@@ -27,12 +27,26 @@ echo ""
 CONFIG_DIR="/root/.june-config"
 mkdir -p "$CONFIG_DIR"
 
-# Load existing config if available
+# ============================================================================
+# CONFIGURATION COLLECTION (MOVED TO TOP)
+# ============================================================================
+
+log_info "📋 Loading/Collecting Configuration..."
+
+# Load existing configs if available
 if [ -f "$CONFIG_DIR/infrastructure.env" ]; then
-    log_info "Loading existing configuration..."
+    log_info "Loading infrastructure config..."
     source "$CONFIG_DIR/infrastructure.env"
-else
-    log_info "First time setup - collecting configuration..."
+fi
+
+if [ -f "$CONFIG_DIR/domain-config.env" ]; then
+    log_info "Loading domain config..."
+    source "$CONFIG_DIR/domain-config.env"
+fi
+
+# Collect missing infrastructure configuration
+if [ -z "$POD_NETWORK_CIDR" ] || [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
+    log_info "Collecting infrastructure configuration..."
     
     read -p "Pod network CIDR [10.244.0.0/16]: " POD_NETWORK_CIDR
     POD_NETWORK_CIDR=${POD_NETWORK_CIDR:-10.244.0.0/16}
@@ -48,7 +62,69 @@ CF_API_TOKEN=$CF_API_TOKEN
 INSTALL_DATE="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
 EOF
     chmod 600 "$CONFIG_DIR/infrastructure.env"
+    log_success "Infrastructure config saved"
 fi
+
+# Collect missing domain configuration
+if [ -z "$PRIMARY_DOMAIN" ]; then
+    log_info "Collecting domain configuration..."
+    
+    read -p "Primary domain [ozzu.world]: " PRIMARY_DOMAIN
+    PRIMARY_DOMAIN=${PRIMARY_DOMAIN:-ozzu.world}
+    
+    read -p "API subdomain [api]: " API_SUBDOMAIN
+    API_SUBDOMAIN=${API_SUBDOMAIN:-api}
+    
+    read -p "IDP subdomain [idp]: " IDP_SUBDOMAIN
+    IDP_SUBDOMAIN=${IDP_SUBDOMAIN:-idp}
+    
+    read -p "STT subdomain [stt]: " STT_SUBDOMAIN
+    STT_SUBDOMAIN=${STT_SUBDOMAIN:-stt}
+    
+    read -p "TTS subdomain [tts]: " TTS_SUBDOMAIN
+    TTS_SUBDOMAIN=${TTS_SUBDOMAIN:-tts}
+    
+    # Construct full domains
+    API_DOMAIN="${API_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+    IDP_DOMAIN="${IDP_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+    STT_DOMAIN="${STT_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+    TTS_DOMAIN="${TTS_SUBDOMAIN}.${PRIMARY_DOMAIN}"
+    WILDCARD_DOMAIN="*.${PRIMARY_DOMAIN}"
+    CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
+    CERT_SECRET_NAME="${CERT_NAME}-tls"
+    
+    # Save domain config
+cat > "$CONFIG_DIR/domain-config.env" << EOF
+PRIMARY_DOMAIN=$PRIMARY_DOMAIN
+API_DOMAIN=$API_DOMAIN
+IDP_DOMAIN=$IDP_DOMAIN
+STT_DOMAIN=$STT_DOMAIN
+TTS_DOMAIN=$TTS_DOMAIN
+WILDCARD_DOMAIN=$WILDCARD_DOMAIN
+CERT_NAME=$CERT_NAME
+CERT_SECRET_NAME=$CERT_SECRET_NAME
+EOF
+    chmod 600 "$CONFIG_DIR/domain-config.env"
+    log_success "Domain config saved"
+else
+    # Recalculate cert names if not set
+    if [ -z "$CERT_SECRET_NAME" ]; then
+        CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
+        CERT_SECRET_NAME="${CERT_NAME}-tls"
+        echo "CERT_NAME=$CERT_NAME" >> "$CONFIG_DIR/domain-config.env"
+        echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
+    fi
+    log_success "Configuration loaded"
+fi
+
+# Display summary
+echo ""
+log_info "Configuration:"
+echo "  Pod Network: $POD_NETWORK_CIDR"
+echo "  Domain: $PRIMARY_DOMAIN"
+echo "  Certificate Secret: $CERT_SECRET_NAME"
+echo "  Email: $LETSENCRYPT_EMAIL"
+echo ""
 
 # ============================================================================
 # DOCKER
@@ -151,20 +227,20 @@ if ! kubectl get namespace ingress-nginx &>/dev/null; then
             {"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}
         ]'
     
-    # Wait for rollout to complete (handles pod replacement gracefully)
+    # Wait for rollout
     log_info "Waiting for ingress controller rollout..."
     kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
 else
     log_success "ingress-nginx already installed"
 fi
 
-# Final verification - wait for any ready pod
-log_info "Verifying ingress controller is ready..."
+# Verify
+log_info "Verifying ingress controller..."
 kubectl wait --namespace ingress-nginx \
     --for=condition=ready pod \
     --selector=app.kubernetes.io/component=controller \
     --timeout=120s 2>/dev/null || {
-    log_warning "Wait command timed out, checking pod status..."
+    log_warning "Wait timed out, checking status..."
     kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller
 }
 
@@ -196,8 +272,6 @@ kubectl create secret generic cloudflare-api-token \
 
 log_success "cert-manager ready!"
 
-# At line 191, add this block:
-
 # ============================================================================
 # CERTIFICATE MANAGEMENT (RESTORE OR CREATE)
 # ============================================================================
@@ -205,12 +279,10 @@ log_success "cert-manager ready!"
 log_info "🔐 Certificate Management: Checking for backup..."
 
 CERT_BACKUP_DIR="/root/.june-certs"
-CERT_RESTORED=false  # ← Initialize here
-CERT_SECRET_NAME=""  # Track what name we're using
+CERT_RESTORED=false
 
 kubectl create namespace june-services || true
 
-# Check for backup first
 if [ -d "$CERT_BACKUP_DIR" ]; then
     CERT_BACKUP=$(find "$CERT_BACKUP_DIR" -name "*wildcard-tls-backup.yaml" -type f | head -1)
     
@@ -220,18 +292,15 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
         if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
             log_success "Backup file is valid"
             
-            # Apply backup
             kubectl apply -f "$CERT_BACKUP"
             
-            # Extract the secret name from backup
-            CERT_SECRET_NAME=$(grep -A1 "kind: Secret" "$CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}')
+            BACKUP_SECRET_NAME=$(grep -A1 "kind: Secret" "$CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}')
             sleep 2
             
-            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-                log_success "Certificate restored from backup: $CERT_SECRET_NAME"
+            if kubectl get secret "$BACKUP_SECRET_NAME" -n june-services &>/dev/null; then
+                log_success "Certificate restored from backup: $BACKUP_SECRET_NAME"
                 
-                # Check expiration
-                EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
+                EXPIRY=$(kubectl get secret "$BACKUP_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
                          base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
                 
                 if [ -n "$EXPIRY" ]; then
@@ -242,19 +311,25 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
                     DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
                     
                     if [ $DAYS_LEFT -lt 0 ]; then
-                        log_error "Certificate has EXPIRED! Will create new one..."
-                        kubectl delete secret "$CERT_SECRET_NAME" -n june-services
+                        log_error "Certificate has EXPIRED! Creating new one..."
+                        kubectl delete secret "$BACKUP_SECRET_NAME" -n june-services
                         CERT_RESTORED=false
                     elif [ $DAYS_LEFT -lt 30 ]; then
                         log_warning "Certificate expires in $DAYS_LEFT days"
                         CERT_RESTORED=true
+                        CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
                     else
                         log_success "Certificate is valid ($DAYS_LEFT days remaining)"
                         CERT_RESTORED=true
+                        CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
                     fi
                 else
                     log_warning "Could not check expiration, assuming valid"
                     CERT_RESTORED=true
+                    CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                    sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
                 fi
             else
                 log_error "Certificate restoration failed"
@@ -264,20 +339,56 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
             log_error "Backup file is invalid or corrupted"
             CERT_RESTORED=false
         fi
+    else
+        log_info "No certificate backup found"
     fi
+else
+    log_info "Certificate backup directory does not exist (first-time setup)"
 fi
 
-# If no valid backup, create new Certificate resource
+# If no valid backup, create Certificate resource
 if [ "$CERT_RESTORED" = false ]; then
-    log_info "🔐 Creating new Certificate resource..."
+    log_info "🔐 Creating Certificate resource for cert-manager..."
     
-    # Use consistent naming
-    CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
-    CERT_SECRET_NAME="${CERT_NAME}-tls"
+    # Verify PRIMARY_DOMAIN is set
+    if [ -z "$PRIMARY_DOMAIN" ]; then
+        log_error "PRIMARY_DOMAIN is not set! Cannot create certificate."
+        exit 1
+    fi
     
-    # Save the secret name to config for later use
-    echo "CERT_SECRET_NAME=${CERT_SECRET_NAME}" >> "$CONFIG_DIR/domain-config.env"
+    log_info "Using domain: $PRIMARY_DOMAIN"
+    log_info "Certificate name: $CERT_NAME"
+    log_info "Secret name: $CERT_SECRET_NAME"
     
+    # Create ClusterIssuers first
+    log_info "Creating ClusterIssuers..."
+    
+    cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: $LETSENCRYPT_EMAIL
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - dns01:
+        cloudflare:
+          apiTokenSecretRef:
+            name: cloudflare-api-token
+            key: api-token
+      selector:
+        dnsNames:
+        - "${PRIMARY_DOMAIN}"
+        - "*.${PRIMARY_DOMAIN}"
+EOF
+    
+    log_success "ClusterIssuer created"
+    
+    # Create Certificate
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -295,10 +406,7 @@ spec:
   - "*.${PRIMARY_DOMAIN}"
 EOF
     
-    log_success "Certificate resource created: ${CERT_NAME}"
-    log_success "Will create secret: ${CERT_SECRET_NAME}"
-    
-    # Wait for certificate
+    log_success "Certificate resource created"
     log_warning "⏳ Waiting for cert-manager to issue certificate (2-5 minutes)..."
     
     for i in {1..60}; do
@@ -317,8 +425,8 @@ EOF
     done
     
     if [ "$CERT_READY" = "True" ]; then
-        log_success "Certificate is ready: ${CERT_SECRET_NAME}"
-        log_warning "💾 IMPORTANT: Run backup script after deployment:"
+        log_success "Certificate is ready to use"
+        log_warning "💾 IMPORTANT: Run after deployment:"
         log_warning "   ./scripts/install-k8s/backup-wildcard-cert.sh"
     else
         log_error "Certificate issuance timed out"
@@ -326,8 +434,7 @@ EOF
     fi
 fi
 
-# Export for use in manifests
-export CERT_SECRET_NAME
+log_success "Certificate management complete!"
 log_success "Using certificate secret: ${CERT_SECRET_NAME}"
 
 # ============================================================================
@@ -357,9 +464,6 @@ provisioner: kubernetes.io/no-provisioner
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 EOF
-
-# Create namespace
-kubectl create namespace june-services || true
 
 # Create PostgreSQL PV
 cat <<EOF | kubectl apply -f -
@@ -412,8 +516,9 @@ echo "  • Local storage infrastructure"
 echo ""
 echo "🌍 Cluster Info:"
 echo "  External IP: $EXTERNAL_IP"
+echo "  Domain: $PRIMARY_DOMAIN"
+echo "  Certificate: $CERT_SECRET_NAME"
 echo "  Namespace: june-services"
-echo "  Storage: local-storage (local volumes)"
 echo ""
 echo "📝 Next Steps:"
 echo "  1. Install MetalLB + STUNner:"
