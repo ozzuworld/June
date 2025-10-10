@@ -292,47 +292,93 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
         if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
             log_success "Backup file is valid"
             
+            # Extract secret name BEFORE applying
+            BACKUP_SECRET_NAME=$(grep "name:" "$CERT_BACKUP" | grep -v "namespace:" | head -1 | awk '{print $2}')
+            log_info "Backup contains secret: $BACKUP_SECRET_NAME"
+            
+            # Apply the backup
+            log_info "Applying certificate backup..."
             kubectl apply -f "$CERT_BACKUP"
             
-            BACKUP_SECRET_NAME=$(grep -A1 "kind: Secret" "$CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}')
-            sleep 2
+            # Wait for secret to be fully created
+            log_info "Waiting for secret to be available..."
+            sleep 5
             
-            if kubectl get secret "$BACKUP_SECRET_NAME" -n june-services &>/dev/null; then
-                log_success "Certificate restored from backup: $BACKUP_SECRET_NAME"
+            # Check multiple times with proper wait
+            SECRET_READY=false
+            for i in {1..10}; do
+                if kubectl get secret "$BACKUP_SECRET_NAME" -n june-services &>/dev/null; then
+                    SECRET_READY=true
+                    break
+                fi
+                log_info "Attempt $i/10 - waiting for secret..."
+                sleep 2
+            done
+            
+            if [ "$SECRET_READY" = true ]; then
+                log_success "Certificate secret is available: $BACKUP_SECRET_NAME"
                 
-                EXPIRY=$(kubectl get secret "$BACKUP_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
-                         base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+                # Verify it has certificate data
+                CERT_DATA=$(kubectl get secret "$BACKUP_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
                 
-                if [ -n "$EXPIRY" ]; then
-                    log_info "Certificate expires: $EXPIRY"
+                if [ -n "$CERT_DATA" ]; then
+                    log_success "Certificate data verified"
                     
-                    EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
-                    NOW_EPOCH=$(date +%s)
-                    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                    # Check expiration
+                    EXPIRY=$(echo "$CERT_DATA" | base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
                     
-                    if [ $DAYS_LEFT -lt 0 ]; then
-                        log_error "Certificate has EXPIRED! Creating new one..."
-                        kubectl delete secret "$BACKUP_SECRET_NAME" -n june-services
-                        CERT_RESTORED=false
-                    elif [ $DAYS_LEFT -lt 30 ]; then
-                        log_warning "Certificate expires in $DAYS_LEFT days"
-                        CERT_RESTORED=true
-                        CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
-                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                    if [ -n "$EXPIRY" ]; then
+                        log_info "Certificate expires: $EXPIRY"
+                        
+                        EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
+                        NOW_EPOCH=$(date +%s)
+                        DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                        
+                        if [ $DAYS_LEFT -lt 0 ]; then
+                            log_error "Certificate has EXPIRED! Will create new one..."
+                            kubectl delete secret "$BACKUP_SECRET_NAME" -n june-services
+                            CERT_RESTORED=false
+                        else
+                            if [ $DAYS_LEFT -lt 30 ]; then
+                                log_warning "Certificate expires in $DAYS_LEFT days"
+                            else
+                                log_success "Certificate is valid ($DAYS_LEFT days remaining)"
+                            fi
+                            
+                            # RESTORATION SUCCESS
+                            CERT_RESTORED=true
+                            CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                            
+                            # Update config to use restored secret name
+                            if grep -q "^CERT_SECRET_NAME=" "$CONFIG_DIR/domain-config.env" 2>/dev/null; then
+                                sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env"
+                            else
+                                echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
+                            fi
+                            
+                            log_success "✅ CERTIFICATE RESTORED SUCCESSFULLY!"
+                            log_success "Using restored secret: $CERT_SECRET_NAME"
+                        fi
                     else
-                        log_success "Certificate is valid ($DAYS_LEFT days remaining)"
+                        log_warning "Could not check expiration, but certificate data exists"
                         CERT_RESTORED=true
                         CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
-                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                        
+                        if grep -q "^CERT_SECRET_NAME=" "$CONFIG_DIR/domain-config.env" 2>/dev/null; then
+                            sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env"
+                        else
+                            echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
+                        fi
+                        
+                        log_success "✅ CERTIFICATE RESTORED SUCCESSFULLY!"
                     fi
                 else
-                    log_warning "Could not check expiration, assuming valid"
-                    CERT_RESTORED=true
-                    CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
-                    sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                    log_error "Secret exists but has no certificate data!"
+                    CERT_RESTORED=false
                 fi
             else
-                log_error "Certificate restoration failed"
+                log_error "Secret was not created after applying backup"
+                log_error "This should not happen - check backup file format"
                 CERT_RESTORED=false
             fi
         else
