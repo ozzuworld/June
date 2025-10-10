@@ -1,10 +1,10 @@
-# STUNner Gateway API Configuration - CORRECTED
-# Based on official STUNner documentation
+# STUNner Gateway API Configuration - FIXED API VERSIONS
+# Compatible with Gateway API v1.0.0 and STUNner operator
 # https://docs.l7mp.io/en/latest/
 
 ---
-# GatewayConfig: Core STUNner configuration
-apiVersion: gateway.networking.k8s.io/v1  # ✅ New
+# GatewayConfig: Core STUNner configuration (STUNner CRD)
+apiVersion: stunner.l7mp.io/v1
 kind: GatewayConfig
 metadata:
   name: stunner-gatewayconfig
@@ -17,8 +17,8 @@ spec:
   logLevel: all:INFO
 
 ---
-# GatewayClass: Links Gateway to STUNner operator
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# GatewayClass: Links Gateway to STUNner operator (Gateway API v1)
+apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: stunner-gatewayclass
@@ -32,28 +32,25 @@ spec:
   description: "STUNner Gateway for June WebRTC Services"
 
 ---
-# Gateway: The actual TURN server (operator creates deployment)
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# Gateway: The actual TURN server (Gateway API v1)
+apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: june-stunner-gateway
   namespace: stunner
   annotations:
     stunner.l7mp.io/service-type: LoadBalancer
-    stunner.l7mp.io/enable-mixed-protocol-lb: "true"
-    # ✅ MetalLB specific annotation
-    metallb.universe.tf/address-pool: june-pool
 spec:
   gatewayClassName: stunner-gatewayclass
   listeners:
-  # ✅ UDP listener for STUN/TURN
+  # UDP listener for STUN/TURN
   - name: udp-listener
     port: 3478
     protocol: UDP
     allowedRoutes:
       namespaces:
         from: All
-  # ✅ TCP listener for TURN-TCP (optional but recommended)
+  # TCP listener for TURN-TCP (optional but recommended)
   - name: tcp-listener
     port: 3478
     protocol: TCP
@@ -62,8 +59,8 @@ spec:
         from: All
 
 ---
-# ReferenceGrant: Allow cross-namespace access from stunner to june-services
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# ReferenceGrant: Allow cross-namespace access (Gateway API v1beta1)
+apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
   name: stunner-to-june-services
@@ -78,8 +75,8 @@ spec:
     kind: Service
 
 ---
-# UDPRoute: Routes traffic to June orchestrator
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# UDPRoute: Routes traffic to June orchestrator (STUNner CRD)
+apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
   name: june-orchestrator-route
@@ -90,14 +87,13 @@ spec:
     namespace: stunner
   rules:
   - backendRefs:
-    - kind: Service
-      name: june-orchestrator
+    - name: june-orchestrator
       namespace: june-services
       port: 8080
 
 ---
-# UDPRoute: STT service
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# UDPRoute: STT service (STUNner CRD)
+apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
   name: june-stt-route
@@ -108,14 +104,13 @@ spec:
     namespace: stunner
   rules:
   - backendRefs:
-    - kind: Service
-      name: june-stt
+    - name: june-stt
       namespace: june-services
       port: 8080
 
 ---
-# UDPRoute: TTS service
-apiVersion: gateway.networking.k8s.io/v1alpha2
+# UDPRoute: TTS service (STUNner CRD)
+apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
   name: june-tts-route
@@ -126,7 +121,6 @@ spec:
     namespace: stunner
   rules:
   - backendRefs:
-    - kind: Service
-      name: june-tts
+    - name: june-tts
       namespace: june-services
       port: 8000
