@@ -205,38 +205,31 @@ log_info "🔐 Certificate Management: Checking for backup..."
 CERT_BACKUP_DIR="/root/.june-certs"
 CERT_RESTORED=false
 
-# Create june-services namespace if not exists
 kubectl create namespace june-services || true
 
 if [ -d "$CERT_BACKUP_DIR" ]; then
-    # Find wildcard cert backup
     CERT_BACKUP=$(find "$CERT_BACKUP_DIR" -name "*wildcard-tls-backup.yaml" -type f | head -1)
     
     if [ -n "$CERT_BACKUP" ] && [ -f "$CERT_BACKUP" ]; then
         log_info "Found certificate backup: $CERT_BACKUP"
         
-        # Verify backup is valid
         if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
             log_success "Backup file is valid"
             
-            # Apply the certificate secret
             kubectl apply -f "$CERT_BACKUP"
             
-            # Verify it was created
             CERT_SECRET_NAME=$(grep 'name:' "$CERT_BACKUP" | head -1 | awk '{print $2}')
             sleep 2
             
             if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
                 log_success "Certificate restored from backup: $CERT_SECRET_NAME"
                 
-                # Check expiration
                 EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
                          base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
                 
                 if [ -n "$EXPIRY" ]; then
                     log_info "Certificate expires: $EXPIRY"
                     
-                    # Check if expired
                     EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
                     NOW_EPOCH=$(date +%s)
                     DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
@@ -246,7 +239,7 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
                         kubectl delete secret "$CERT_SECRET_NAME" -n june-services
                         CERT_RESTORED=false
                     elif [ $DAYS_LEFT -lt 30 ]; then
-                        log_warning "Certificate expires in $DAYS_LEFT days - consider renewal"
+                        log_warning "Certificate expires in $DAYS_LEFT days"
                         CERT_RESTORED=true
                     else
                         log_success "Certificate is valid ($DAYS_LEFT days remaining)"
@@ -273,15 +266,13 @@ else
     CERT_RESTORED=false
 fi
 
-# If no valid backup, create Certificate resource for cert-manager
+# If no valid backup, create Certificate resource
 if [ "$CERT_RESTORED" = false ]; then
-    log_info "🔐 Creating Certificate resource for cert-manager to issue..."
+    log_info "🔐 Creating Certificate resource for cert-manager..."
     
-    # Determine certificate name from domain
     CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
     CERT_SECRET_NAME="${CERT_NAME}-tls"
     
-    # Create Certificate resource
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -301,10 +292,7 @@ EOF
     
     log_success "Certificate resource created"
     log_warning "⏳ Waiting for cert-manager to issue certificate (2-5 minutes)..."
-    log_warning "⚠️  This may hit Let's Encrypt rate limits on frequent rebuilds"
     
-    # Wait for certificate to be ready (with timeout)
-    log_info "Waiting for certificate to be issued..."
     for i in {1..60}; do
         CERT_READY=$(kubectl get certificate "${CERT_NAME}" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
         
@@ -315,7 +303,6 @@ EOF
         
         if [ $((i % 10)) -eq 0 ]; then
             log_info "Still waiting for certificate... (${i}/60)"
-            kubectl get certificate -n june-services
         fi
         
         sleep 5
@@ -323,13 +310,11 @@ EOF
     
     if [ "$CERT_READY" = "True" ]; then
         log_success "Certificate is ready to use"
-        log_warning "💾 IMPORTANT: Run this command after deployment completes:"
+        log_warning "💾 IMPORTANT: Run after deployment:"
         log_warning "   ./scripts/install-k8s/backup-wildcard-cert.sh"
-        log_warning "   This prevents hitting Let's Encrypt rate limits on rebuilds!"
     else
-        log_error "Certificate issuance timed out (5 minutes)"
-        log_error "Check cert-manager logs: kubectl logs -n cert-manager -l app=cert-manager"
-        log_warning "Services will fail until certificate is issued"
+        log_error "Certificate issuance timed out"
+        log_error "Check: kubectl logs -n cert-manager -l app=cert-manager"
     fi
 fi
 
