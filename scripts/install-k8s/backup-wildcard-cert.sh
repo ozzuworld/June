@@ -1,9 +1,8 @@
 #!/bin/bash
-# Backup Wildcard Certificate Script
-# Creates a backup of the current wildcard certificate for disaster recovery
-# Usage: ./backup-wildcard-cert.sh [certificate-secret-name]
+# Certificate Backup Script for June Platform
+# Usage: ./backup-wildcard-cert.sh [certificate-name] [namespace]
 
-set -e
+set -euo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -17,246 +16,181 @@ log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; }
 
-echo "======================================================"
-echo "💾  Certificate Backup Utility"
-echo "======================================================"
-echo ""
-
-# Configuration
 CONFIG_DIR="/root/.june-config"
-CERT_BACKUP_DIR="/root/.june-certs"
-NAMESPACE="june-services"
+BACKUP_DIR="/root/.june-certs"
 
-# Create backup directory
-mkdir -p "$CERT_BACKUP_DIR"
-chmod 700 "$CERT_BACKUP_DIR"
-
-# Load domain configuration if available
+# Load configuration if available
 if [ -f "$CONFIG_DIR/domain-config.env" ]; then
-    log_info "Loading domain configuration..."
     source "$CONFIG_DIR/domain-config.env"
 fi
 
-# Determine certificate secret name
-if [ -n "$1" ]; then
-    CERT_SECRET_NAME="$1"
-    log_info "Using provided certificate name: $CERT_SECRET_NAME"
-elif [ -n "$CERT_SECRET_NAME" ]; then
-    log_info "Using certificate name from config: $CERT_SECRET_NAME"
-else
-    log_info "Auto-detecting certificate secrets..."
+# Use provided arguments or try to detect from configuration
+CERT_NAME="${1:-${CERT_NAME:-}}"
+NAMESPACE="${2:-june-services}"
+
+# If no certificate name provided, try to find one
+if [ -z "$CERT_NAME" ]; then
+    log_info "No certificate name provided, scanning for certificates..."
     
-    # Look for wildcard certificate secrets
-    WILDCARD_SECRETS=$(kubectl get secrets -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep -E '(wildcard|tls)' | head -5)
+    # Try to find certificates by pattern
+    FOUND_CERTS=($(kubectl get certificates -n "$NAMESPACE" -o name 2>/dev/null | grep -E "(wildcard|allsafe)" | head -5 || echo ""))
     
-    if [ -z "$WILDCARD_SECRETS" ]; then
-        log_error "No wildcard certificate secrets found in namespace $NAMESPACE"
-        log_info "Available secrets:"
-        kubectl get secrets -n "$NAMESPACE" | grep -v "Opaque\|kubernetes.io" || echo "  No TLS secrets found"
+    if [ ${#FOUND_CERTS[@]} -gt 0 ]; then
+        echo ""
+        log_info "Found certificates:"
+        for i in "${!FOUND_CERTS[@]}"; do
+            CERT_RESOURCE="${FOUND_CERTS[$i]#certificate.cert-manager.io/}"
+            echo "  $((i+1)). $CERT_RESOURCE"
+        done
+        echo ""
+        
+        if [ ${#FOUND_CERTS[@]} -eq 1 ]; then
+            CERT_NAME="${FOUND_CERTS[0]#certificate.cert-manager.io/}"
+            log_info "Using certificate: $CERT_NAME"
+        else
+            read -p "Select certificate [1-${#FOUND_CERTS[@]}]: " CERT_CHOICE
+            if [[ "$CERT_CHOICE" -ge 1 && "$CERT_CHOICE" -le "${#FOUND_CERTS[@]}" ]]; then
+                CERT_NAME="${FOUND_CERTS[$((CERT_CHOICE-1))]#certificate.cert-manager.io/}"
+                log_info "Selected certificate: $CERT_NAME"
+            else
+                log_error "Invalid selection"
+                exit 1
+            fi
+        fi
+    else
+        log_error "No certificates found in namespace '$NAMESPACE'"
+        log_info "Available certificates:"
+        kubectl get certificates -n "$NAMESPACE" 2>/dev/null || echo "None found"
         exit 1
     fi
+fi
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+
+# Create backup directory
+mkdir -p "$BACKUP_DIR"
+
+echo "======================================================"
+log_info "🔐 Certificate Backup Utility"
+echo "======================================================"
+echo ""
+
+log_info "Backing up certificate: $CERT_NAME from namespace: $NAMESPACE"
+
+# Check if certificate resource exists
+if kubectl get certificate "$CERT_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    # Get the secret name from the certificate
+    SECRET_NAME=$(kubectl get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.secretName}' 2>/dev/null || echo "unknown")
     
-    echo "Found potential certificate secrets:"
-    echo "$WILDCARD_SECRETS" | nl
-    echo ""
+    if [ "$SECRET_NAME" = "unknown" ]; then
+        log_warning "Could not determine secret name from certificate"
+        SECRET_NAME="${CERT_NAME}-tls"
+        log_info "Using default secret name: $SECRET_NAME"
+    fi
     
-    if [ $(echo "$WILDCARD_SECRETS" | wc -l) -eq 1 ]; then
-        CERT_SECRET_NAME="$WILDCARD_SECRETS"
-        log_info "Auto-selected: $CERT_SECRET_NAME"
-    else
-        echo "Multiple certificate secrets found. Please specify one:"
-        echo "$WILDCARD_SECRETS" | nl
-        echo ""
-        read -p "Enter the number or full name of the certificate to backup: " SELECTION
+    log_info "Certificate secret name: $SECRET_NAME"
+    
+    # Backup certificate resource
+    kubectl get certificate "$CERT_NAME" -n "$NAMESPACE" -o yaml > \
+        "$BACKUP_DIR/${CERT_NAME}-resource-${TIMESTAMP}.yaml"
+    log_success "Certificate resource backed up"
+    
+    # Backup certificate secret
+    if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o yaml > \
+            "$BACKUP_DIR/${SECRET_NAME}-secret-${TIMESTAMP}.yaml"
+        log_success "Certificate secret backed up"
         
-        if [[ "$SELECTION" =~ ^[0-9]+$ ]]; then
-            CERT_SECRET_NAME=$(echo "$WILDCARD_SECRETS" | sed -n "${SELECTION}p")
+        # Create a restore-friendly backup (main backup file)
+        cp "$BACKUP_DIR/${SECRET_NAME}-secret-${TIMESTAMP}.yaml" \
+           "$BACKUP_DIR/${SECRET_NAME}-backup-${TIMESTAMP}.yaml"
+        
+        # Validate certificate and show info
+        CERT_DATA=$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || echo "")
+        if [ -n "$CERT_DATA" ]; then
+            echo "$CERT_DATA" | base64 -d > "/tmp/cert_info.crt"
+            
+            # Show certificate info
+            log_info "Certificate Information:"
+            CERT_SUBJECT=$(openssl x509 -in "/tmp/cert_info.crt" -noout -subject 2>/dev/null | cut -d= -f2- || echo "unknown")
+            CERT_EXPIRY=$(openssl x509 -in "/tmp/cert_info.crt" -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
+            CERT_DOMAINS=$(openssl x509 -in "/tmp/cert_info.crt" -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ' || echo "unknown")
+            
+            echo "  Subject: $CERT_SUBJECT"
+            echo "  Expiry: $CERT_EXPIRY"
+            echo "  Domains: $CERT_DOMAINS"
+            
+            # Calculate days until expiry
+            if [ "$CERT_EXPIRY" != "unknown" ]; then
+                EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || echo "0")
+                NOW_EPOCH=$(date +%s)
+                DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                
+                if [ $DAYS_LEFT -lt 0 ]; then
+                    log_error "Certificate has expired!"
+                elif [ $DAYS_LEFT -lt 30 ]; then
+                    log_warning "Certificate expires in $DAYS_LEFT days"
+                else
+                    log_success "Certificate is valid ($DAYS_LEFT days remaining)"
+                fi
+            fi
+            
+            rm -f "/tmp/cert_info.crt"
+            
+            # Also save raw certificate files
+            echo "$CERT_DATA" | base64 -d > "$BACKUP_DIR/${SECRET_NAME}-${TIMESTAMP}.crt"
+            kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d > \
+                "$BACKUP_DIR/${SECRET_NAME}-${TIMESTAMP}.key"
+            
+            log_success "Raw certificate files saved"
+            
+            # Create symlink to latest backup for easy access
+            cd "$BACKUP_DIR"
+            ln -sf "${SECRET_NAME}-backup-${TIMESTAMP}.yaml" "${SECRET_NAME}-latest-backup.yaml" 2>/dev/null || true
+            
+            # Cleanup old backups (keep last 10)
+            ls -t ${SECRET_NAME}-backup-*.yaml 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+            
         else
-            CERT_SECRET_NAME="$SELECTION"
+            log_warning "Certificate secret exists but contains no certificate data"
         fi
-        
-        if [ -z "$CERT_SECRET_NAME" ]; then
-            log_error "Invalid selection"
-            exit 1
-        fi
-    fi
-fi
-
-log_info "Selected certificate secret: $CERT_SECRET_NAME"
-
-# Verify the secret exists and is a TLS secret
-log_info "Validating certificate secret..."
-
-if ! kubectl get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
-    log_error "Certificate secret '$CERT_SECRET_NAME' not found in namespace '$NAMESPACE'"
-    log_info "Available secrets:"
-    kubectl get secrets -n "$NAMESPACE"
-    exit 1
-fi
-
-# Check if it's a TLS secret
-SECRET_TYPE=$(kubectl get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.type}')
-if [ "$SECRET_TYPE" != "kubernetes.io/tls" ]; then
-    log_error "Secret '$CERT_SECRET_NAME' is not a TLS secret (type: $SECRET_TYPE)"
-    exit 1
-fi
-
-# Verify it has the required TLS fields
-TLS_CRT=$(kubectl get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' 2>/dev/null)
-TLS_KEY=$(kubectl get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' 2>/dev/null)
-
-if [ -z "$TLS_CRT" ] || [ -z "$TLS_KEY" ]; then
-    log_error "Certificate secret is missing tls.crt or tls.key data"
-    exit 1
-fi
-
-log_success "Certificate secret validation passed"
-
-# Extract certificate information for validation
-log_info "Analyzing certificate..."
-
-# Decode certificate and extract information
-echo "$TLS_CRT" | base64 -d > /tmp/cert_analysis.crt 2>/dev/null || {
-    log_error "Failed to decode certificate data"
-    exit 1
-}
-
-# Get certificate details
-CERT_SUBJECT=$(openssl x509 -in /tmp/cert_analysis.crt -noout -subject 2>/dev/null | sed 's/subject=//')
-CERT_ISSUER=$(openssl x509 -in /tmp/cert_analysis.crt -noout -issuer 2>/dev/null | sed 's/issuer=//')
-CERT_EXPIRY=$(openssl x509 -in /tmp/cert_analysis.crt -noout -enddate 2>/dev/null | cut -d= -f2)
-CERT_DOMAINS=$(openssl x509 -in /tmp/cert_analysis.crt -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ' | sed 's/ $//')
-
-# Calculate days until expiry
-if [ -n "$CERT_EXPIRY" ]; then
-    EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null)
-    NOW_EPOCH=$(date +%s)
-    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
-else
-    DAYS_LEFT="unknown"
-fi
-
-echo ""
-log_info "📋 Certificate Information:"
-echo "  Subject: $CERT_SUBJECT"
-echo "  Issuer: $CERT_ISSUER"
-echo "  Expires: $CERT_EXPIRY"
-if [ "$DAYS_LEFT" != "unknown" ]; then
-    if [ $DAYS_LEFT -lt 0 ]; then
-        echo "  Status: ❌ EXPIRED ($((0-DAYS_LEFT)) days ago)"
-    elif [ $DAYS_LEFT -lt 30 ]; then
-        echo "  Status: ⚠️  Expires soon ($DAYS_LEFT days)"
     else
-        echo "  Status: ✅ Valid ($DAYS_LEFT days remaining)"
+        log_error "Certificate secret '$SECRET_NAME' not found"
     fi
+    
 else
-    echo "  Status: ❓ Could not determine expiry"
-fi
-echo "  Domains: $CERT_DOMAINS"
-echo ""
-
-# Warn about expired certificates
-if [ "$DAYS_LEFT" != "unknown" ] && [ $DAYS_LEFT -lt 0 ]; then
-    log_warning "This certificate has expired! Consider renewing before backup."
-    read -p "Continue with backup anyway? [y/N]: " CONTINUE_EXPIRED
-    if [[ ! "$CONTINUE_EXPIRED" =~ ^[Yy]$ ]]; then
-        log_info "Backup cancelled"
-        rm -f /tmp/cert_analysis.crt
-        exit 0
+    log_error "Certificate '$CERT_NAME' not found in namespace '$NAMESPACE'"
+    
+    # Try to find certificates by pattern
+    log_info "Searching for certificates with 'wildcard' in name..."
+    FOUND_CERTS=($(kubectl get certificates -n "$NAMESPACE" -o name 2>/dev/null | grep -i wildcard | head -5 || echo ""))
+    
+    if [ ${#FOUND_CERTS[@]} -gt 0 ]; then
+        log_info "Found certificates:"
+        for cert in "${FOUND_CERTS[@]}"; do
+            echo "  - ${cert#certificate.cert-manager.io/}"
+        done
+        echo ""
+        log_info "Retry with: $0 <certificate-name> $NAMESPACE"
+    else
+        log_info "No wildcard certificates found in namespace $NAMESPACE"
     fi
-fi
-
-# Generate backup filename with timestamp
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-BACKUP_FILENAME="${CERT_SECRET_NAME}-backup-${TIMESTAMP}.yaml"
-BACKUP_PATH="$CERT_BACKUP_DIR/$BACKUP_FILENAME"
-
-log_info "Creating certificate backup..."
-log_info "Backup file: $BACKUP_PATH"
-
-# Create the backup with metadata
-cat > "$BACKUP_PATH" << EOF
-# Certificate Backup Created: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-# Original Secret: $CERT_SECRET_NAME
-# Namespace: $NAMESPACE
-# Domains: $CERT_DOMAINS
-# Expires: $CERT_EXPIRY
-# Backup Script Version: 1.0
-#
-# To restore this certificate:
-#   kubectl apply -f $BACKUP_FILENAME
-#
-# Note: You may need to update the namespace if restoring to a different cluster
-
-EOF
-
-# Export the secret
-kubectl get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" -o yaml >> "$BACKUP_PATH" 2>/dev/null || {
-    log_error "Failed to export certificate secret"
-    rm -f "$BACKUP_PATH"
-    rm -f /tmp/cert_analysis.crt
-    exit 1
-}
-
-# Clean up temporary files
-rm -f /tmp/cert_analysis.crt
-
-# Set secure permissions on backup
-chmod 600 "$BACKUP_PATH"
-
-# Verify backup file
-if [ -f "$BACKUP_PATH" ] && grep -q "tls.crt" "$BACKUP_PATH" && grep -q "tls.key" "$BACKUP_PATH"; then
-    BACKUP_SIZE=$(stat -f%z "$BACKUP_PATH" 2>/dev/null || stat -c%s "$BACKUP_PATH" 2>/dev/null)
-    log_success "Certificate backup created successfully!"
-    log_info "Backup details:"
-    echo "  File: $BACKUP_PATH"
-    echo "  Size: ${BACKUP_SIZE} bytes"
-    echo "  Permissions: $(ls -la \"$BACKUP_PATH\" | awk '{print $1}')"
-else
-    log_error "Backup verification failed"
-    rm -f "$BACKUP_PATH"
+    
     exit 1
 fi
 
-# Clean up old backups (keep last 5)
-log_info "Cleaning up old backups..."
-OLD_BACKUPS=$(find "$CERT_BACKUP_DIR" -name "*-backup-*.yaml" -type f | sort -r | tail -n +6)
-if [ -n "$OLD_BACKUPS" ]; then
-    echo "$OLD_BACKUPS" | while read -r old_backup; do
-        log_info "Removing old backup: $(basename \"$old_backup\")"
-        rm -f "$old_backup"
-    done
-else
-    log_info "No old backups to clean up"
-fi
-
-# Show all current backups
-log_info "Current certificate backups:"
-ls -la "$CERT_BACKUP_DIR"/*.yaml 2>/dev/null | while read -r line; do
-    echo "  $line"
-done || echo "  No backup files found"
+echo ""
+log_success "🎉 Backup completed successfully!"
+echo "Backup location: $BACKUP_DIR"
+echo "Files created:"
+ls -la "$BACKUP_DIR/" | grep "$TIMESTAMP" | awk '{print "  " $9 " (" $5 " bytes)"}'
 
 echo ""
-echo "======================================================"
-log_success "🎉 Certificate Backup Complete!"
-echo "======================================================"
+log_info "💡 Restore instructions:"
+echo "  kubectl apply -f $BACKUP_DIR/${SECRET_NAME}-backup-${TIMESTAMP}.yaml"
 echo ""
-echo "💾 Backup Information:"
-echo "  Certificate: $CERT_SECRET_NAME"
-echo "  Backup File: $BACKUP_FILENAME"
-echo "  Location: $CERT_BACKUP_DIR"
-echo "  Domains: $CERT_DOMAINS"
-if [ "$DAYS_LEFT" != "unknown" ]; then
-    echo "  Expires: in $DAYS_LEFT days"
-fi
-echo ""
-echo "🔒 Security Notes:"
-echo "  • Backup files contain private keys - keep secure!"
-echo "  • Files are stored with 600 permissions (owner read/write only)"
-echo "  • Consider encrypting backups for long-term storage"
-echo ""
-echo "🔄 Restoration:"
-echo "  To restore this certificate:"
-echo "    kubectl apply -f $CERT_BACKUP_DIR/$BACKUP_FILENAME"
+log_info "Latest backup symlink:"
+echo "  $BACKUP_DIR/${SECRET_NAME}-latest-backup.yaml"
+
 echo ""
 echo "======================================================"
