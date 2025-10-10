@@ -229,7 +229,7 @@ if [ "$PRIMARY_DOMAIN" != "allsafe.world" ]; then
             log_info "🔄 Automatically updating manifests for $PRIMARY_DOMAIN..."
             
             # Check if manifest file exists
-            if [ -f "k8s/complete-manifests.yaml" ]; then
+            if [ -f "../../k8s/complete-manifests.yaml" ]; then
                 # Create backup
                 cp "k8s/complete-manifests.yaml" "k8s/complete-manifests.yaml.backup-$(date +%Y%m%d-%H%M%S)"
                 
