@@ -400,6 +400,30 @@ jobs:
           else
             echo "⚠️  stunner-manifests.yaml not found"
           fi
+      - name: ✅ Verify Certificate Exists
+        run: |
+          echo "Verifying wildcard certificate is available..."
+          
+          # Get certificate secret name from config
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            source /root/.june-config/domain-config.env
+            CERT_SECRET_NAME="${CERT_SECRET_NAME:-ozzu-world-wildcard-tls}"
+          else
+            CERT_SECRET_NAME="ozzu-world-wildcard-tls"
+          fi
+          
+          if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+            echo "✅ Certificate secret exists: $CERT_SECRET_NAME"
+            
+            # Check expiration
+            EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
+                    base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
+            echo "📅 Certificate expires: $EXPIRY"
+          else
+            echo "❌ Certificate secret not found: $CERT_SECRET_NAME"
+            echo "⚠️  Services may fail to start until certificate is available"
+            exit 1
+          fi
 
       - name: 🚀 Deploy June Services
         run: |

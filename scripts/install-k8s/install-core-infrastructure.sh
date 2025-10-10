@@ -197,6 +197,145 @@ kubectl create secret generic cloudflare-api-token \
 log_success "cert-manager ready!"
 
 # ============================================================================
+# CERTIFICATE MANAGEMENT (Restore or Create)
+# ============================================================================
+
+log_info "🔐 Certificate Management: Checking for backup..."
+
+CERT_BACKUP_DIR="/root/.june-certs"
+CERT_RESTORED=false
+
+# Create june-services namespace if not exists
+kubectl create namespace june-services || true
+
+if [ -d "$CERT_BACKUP_DIR" ]; then
+    # Find wildcard cert backup
+    CERT_BACKUP=$(find "$CERT_BACKUP_DIR" -name "*wildcard-tls-backup.yaml" -type f | head -1)
+    
+    if [ -n "$CERT_BACKUP" ] && [ -f "$CERT_BACKUP" ]; then
+        log_info "Found certificate backup: $CERT_BACKUP"
+        
+        # Verify backup is valid
+        if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
+            log_success "Backup file is valid"
+            
+            # Apply the certificate secret
+            kubectl apply -f "$CERT_BACKUP"
+            
+            # Verify it was created
+            CERT_SECRET_NAME=$(grep 'name:' "$CERT_BACKUP" | head -1 | awk '{print $2}')
+            sleep 2
+            
+            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+                log_success "Certificate restored from backup: $CERT_SECRET_NAME"
+                
+                # Check expiration
+                EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
+                         base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+                
+                if [ -n "$EXPIRY" ]; then
+                    log_info "Certificate expires: $EXPIRY"
+                    
+                    # Check if expired
+                    EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
+                    NOW_EPOCH=$(date +%s)
+                    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                    
+                    if [ $DAYS_LEFT -lt 0 ]; then
+                        log_error "Certificate has EXPIRED! Creating new one..."
+                        kubectl delete secret "$CERT_SECRET_NAME" -n june-services
+                        CERT_RESTORED=false
+                    elif [ $DAYS_LEFT -lt 30 ]; then
+                        log_warning "Certificate expires in $DAYS_LEFT days - consider renewal"
+                        CERT_RESTORED=true
+                    else
+                        log_success "Certificate is valid ($DAYS_LEFT days remaining)"
+                        CERT_RESTORED=true
+                    fi
+                else
+                    log_warning "Could not check expiration, assuming valid"
+                    CERT_RESTORED=true
+                fi
+            else
+                log_error "Certificate restoration failed"
+                CERT_RESTORED=false
+            fi
+        else
+            log_error "Backup file is invalid or corrupted"
+            CERT_RESTORED=false
+        fi
+    else
+        log_info "No certificate backup found"
+        CERT_RESTORED=false
+    fi
+else
+    log_info "Certificate backup directory does not exist (first-time setup)"
+    CERT_RESTORED=false
+fi
+
+# If no valid backup, create Certificate resource for cert-manager
+if [ "$CERT_RESTORED" = false ]; then
+    log_info "🔐 Creating Certificate resource for cert-manager to issue..."
+    
+    # Determine certificate name from domain
+    CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
+    CERT_SECRET_NAME="${CERT_NAME}-tls"
+    
+    # Create Certificate resource
+    cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${CERT_NAME}
+  namespace: june-services
+spec:
+  secretName: ${CERT_SECRET_NAME}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: "${PRIMARY_DOMAIN}"
+  dnsNames:
+  - "${PRIMARY_DOMAIN}"
+  - "*.${PRIMARY_DOMAIN}"
+EOF
+    
+    log_success "Certificate resource created"
+    log_warning "⏳ Waiting for cert-manager to issue certificate (2-5 minutes)..."
+    log_warning "⚠️  This may hit Let's Encrypt rate limits on frequent rebuilds"
+    
+    # Wait for certificate to be ready (with timeout)
+    log_info "Waiting for certificate to be issued..."
+    for i in {1..60}; do
+        CERT_READY=$(kubectl get certificate "${CERT_NAME}" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+        
+        if [ "$CERT_READY" = "True" ]; then
+            log_success "Certificate issued successfully!"
+            break
+        fi
+        
+        if [ $((i % 10)) -eq 0 ]; then
+            log_info "Still waiting for certificate... (${i}/60)"
+            kubectl get certificate -n june-services
+        fi
+        
+        sleep 5
+    done
+    
+    if [ "$CERT_READY" = "True" ]; then
+        log_success "Certificate is ready to use"
+        log_warning "💾 IMPORTANT: Run this command after deployment completes:"
+        log_warning "   ./scripts/install-k8s/backup-wildcard-cert.sh"
+        log_warning "   This prevents hitting Let's Encrypt rate limits on rebuilds!"
+    else
+        log_error "Certificate issuance timed out (5 minutes)"
+        log_error "Check cert-manager logs: kubectl logs -n cert-manager -l app=cert-manager"
+        log_warning "Services will fail until certificate is issued"
+    fi
+fi
+
+log_success "Certificate management complete!"
+
+# ============================================================================
 # STORAGE SETUP
 # ============================================================================
 
