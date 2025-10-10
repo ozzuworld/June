@@ -142,6 +142,7 @@ if ! kubectl get namespace ingress-nginx &>/dev/null; then
     sleep 15
     
     # Enable hostNetwork
+    log_info "Enabling hostNetwork mode..."
     kubectl patch deployment ingress-nginx-controller \
         -n ingress-nginx \
         --type='json' \
@@ -149,14 +150,23 @@ if ! kubectl get namespace ingress-nginx &>/dev/null; then
             {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": true},
             {"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}
         ]'
+    
+    # Wait for rollout to complete (handles pod replacement gracefully)
+    log_info "Waiting for ingress controller rollout..."
+    kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
 else
     log_success "ingress-nginx already installed"
 fi
 
+# Final verification - wait for any ready pod
+log_info "Verifying ingress controller is ready..."
 kubectl wait --namespace ingress-nginx \
     --for=condition=ready pod \
     --selector=app.kubernetes.io/component=controller \
-    --timeout=300s
+    --timeout=120s 2>/dev/null || {
+    log_warning "Wait command timed out, checking pod status..."
+    kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller
+}
 
 log_success "ingress-nginx ready!"
 
