@@ -1,7 +1,7 @@
 #!/bin/bash
-# June Platform Installation Orchestrator
-# Coordinates all installation steps in the correct order
-# Usage: ./install-june-platform.sh [options]
+# Core Infrastructure Setup: K8s + Docker + ingress-nginx + cert-manager
+# This is the foundation - run this first
+# Usage: ./install-core-infrastructure.sh
 
 set -e
 
@@ -10,238 +10,67 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m'
 
 log_info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
 log_success() { echo -e "${GREEN}✅ $1${NC}"; }
 log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 log_error()   { echo -e "${RED}❌ $1${NC}"; }
-log_step()    { echo -e "${CYAN}🔹 $1${NC}"; }
 
-# Script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "======================================================"
+echo "🏗️  Core Infrastructure Setup"
+echo "   Docker + Kubernetes + Ingress + Cert-Manager"
+echo "======================================================"
+echo ""
+
+# Configuration
 CONFIG_DIR="/root/.june-config"
-
-# Parse arguments
-SKIP_CORE=false
-SKIP_NETWORKING=false
-SKIP_GPU=false
-SKIP_GITHUB=false
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --skip-core) SKIP_CORE=true; shift ;;
-        --skip-networking) SKIP_NETWORKING=true; shift ;;
-        --skip-gpu) SKIP_GPU=true; shift ;;
-        --skip-github) SKIP_GITHUB=true; shift ;;
-        --help)
-            echo "Usage: $0 [options]"
-            echo ""
-            echo "Options:"
-            echo "  --skip-core        Skip core infrastructure (K8s, ingress, cert-manager)"
-            echo "  --skip-networking  Skip networking (MetalLB, STUNner)"
-            echo "  --skip-gpu         Skip GPU operator installation"
-            echo "  --skip-github      Skip GitHub Actions runner setup"
-            echo "  --help             Show this help message"
-            exit 0
-            ;;
-        *)
-            log_error "Unknown option: $1"
-            echo "Use --help for usage information"
-            exit 1
-            ;;
-    esac
-done
-
-echo ""
-echo "══════════════════════════════════════════════════"
-echo "🚀 June Platform Installation Orchestrator"
-echo "══════════════════════════════════════════════════"
-echo ""
-echo "This will install:"
-if [ "$SKIP_CORE" = false ]; then
-    echo "  ✓ Core Infrastructure (Docker, K8s, ingress, cert-manager)"
-else
-    echo "  ⊘ Core Infrastructure (skipped)"
-fi
-
-if [ "$SKIP_NETWORKING" = false ]; then
-    echo "  ✓ Networking (MetalLB, STUNner with Gateway API v1alpha2)"
-else
-    echo "  ⊘ Networking (skipped)"
-fi
-
-if [ "$SKIP_GPU" = false ]; then
-    echo "  ✓ GPU Operator (optional)"
-else
-    echo "  ⊘ GPU Operator (skipped)"
-fi
-
-if [ "$SKIP_GITHUB" = false ]; then
-    echo "  ✓ GitHub Actions Runner"
-else
-    echo "  ⊘ GitHub Actions Runner (skipped)"
-fi
-
-echo ""
-read -p "Continue with installation? (y/n): " CONFIRM
-if [[ ! $CONFIRM =~ ^[Yy]$ ]]; then
-    echo "Installation cancelled."
-    exit 0
-fi
-
-# Create config directory
 mkdir -p "$CONFIG_DIR"
 
 # ============================================================================
-# STEP 1: PREREQUISITES CHECK
+# CONFIGURATION COLLECTION (MOVED TO TOP)
 # ============================================================================
 
-log_step "Step 1: Checking prerequisites..."
+log_info "📋 Loading/Collecting Configuration..."
 
-# Check OS
-if [ ! -f /etc/os-release ]; then
-    log_error "Cannot detect OS"
-    exit 1
-fi
-
-source /etc/os-release
-if [[ "$ID" != "ubuntu" ]]; then
-    log_warning "This script is designed for Ubuntu. Detected: $ID"
-    read -p "Continue anyway? (y/n): " CONTINUE
-    [[ ! $CONTINUE =~ ^[Yy]$ ]] && exit 0
-fi
-
-# Install basic tools
-log_info "Installing basic tools..."
-apt-get update -qq
-apt-get install -y curl wget git jq bc apt-transport-https ca-certificates gnupg lsb-release
-
-log_success "Prerequisites OK"
-
-# ============================================================================
-# STEP 2: CORE INFRASTRUCTURE
-# ============================================================================
-
-if [ "$SKIP_CORE" = false ]; then
-    log_step "Step 2: Installing core infrastructure..."
-    
-    if [ -f "$SCRIPT_DIR/install-core-infrastructure.sh" ]; then
-        bash "$SCRIPT_DIR/install-core-infrastructure.sh"
-    else
-        log_error "install-core-infrastructure.sh not found!"
-        exit 1
-    fi
-    
-    log_success "Core infrastructure installed!"
-else
-    log_info "Skipping core infrastructure (--skip-core)"
-fi
-
-# ============================================================================
-# STEP 3: NETWORKING (METALLB + STUNNER)
-# ============================================================================
-
-if [ "$SKIP_NETWORKING" = false ]; then
-    log_step "Step 3: Installing networking (MetalLB + STUNner)..."
-    
-    if [ -f "$SCRIPT_DIR/install-networking.sh" ]; then
-        bash "$SCRIPT_DIR/install-networking.sh"
-    else
-        log_error "install-networking.sh not found!"
-        exit 1
-    fi
-    
-    log_success "Networking installed!"
-else
-    log_info "Skipping networking (--skip-networking)"
-fi
-
-# ============================================================================
-# STEP 4: GPU OPERATOR (OPTIONAL)
-# ============================================================================
-
-if [ "$SKIP_GPU" = false ]; then
-    log_step "Step 4: GPU Operator installation..."
-    
-    read -p "Install GPU Operator with time-slicing? (y/n): " INSTALL_GPU
-    
-    if [[ $INSTALL_GPU =~ ^[Yy]$ ]]; then
-        if [ -f "$SCRIPT_DIR/install-gpu-operator.sh" ]; then
-            bash "$SCRIPT_DIR/install-gpu-operator.sh"
-        else
-            log_warning "install-gpu-operator.sh not found, skipping GPU setup"
-        fi
-    else
-        log_info "Skipping GPU Operator installation"
-    fi
-else
-    log_info "Skipping GPU Operator (--skip-gpu)"
-fi
-
-# ============================================================================
-# STEP 5: GITHUB ACTIONS RUNNER
-# ============================================================================
-
-if [ "$SKIP_GITHUB" = false ]; then
-    log_step "Step 5: GitHub Actions Runner setup..."
-    
-    read -p "Install GitHub Actions Runner? (y/n): " INSTALL_RUNNER
-    
-    if [[ $INSTALL_RUNNER =~ ^[Yy]$ ]]; then
-        if [ -f "$SCRIPT_DIR/install-github-runner.sh" ]; then
-            bash "$SCRIPT_DIR/install-github-runner.sh"
-        else
-            log_warning "install-github-runner.sh not found, skipping runner setup"
-        fi
-    else
-        log_info "Skipping GitHub Actions Runner installation"
-    fi
-else
-    log_info "Skipping GitHub Actions Runner (--skip-github)"
-fi
-
-# ============================================================================
-# STEP 6: DOMAIN & CERTIFICATES CONFIGURATION
-# ============================================================================
-
-log_step "Step 6: Domain and certificate configuration..."
-
+# Load existing configs if available
 if [ -f "$CONFIG_DIR/infrastructure.env" ]; then
+    log_info "Loading infrastructure config..."
     source "$CONFIG_DIR/infrastructure.env"
 fi
 
-# Ensure june-services namespace exists
-kubectl create namespace june-services || true
-
-# Check if domain config exists
 if [ -f "$CONFIG_DIR/domain-config.env" ]; then
-    log_info "Loading existing domain configuration..."
+    log_info "Loading domain config..."
     source "$CONFIG_DIR/domain-config.env"
-    echo ""
-    echo "Current domain configuration:"
-    echo "  Primary domain: $PRIMARY_DOMAIN"
-    echo "  API domain: $API_DOMAIN"
-    echo "  IDP domain: $IDP_DOMAIN"
-    echo ""
-    read -p "Use existing configuration? (y/n): " USE_EXISTING
-    if [[ ! $USE_EXISTING =~ ^[Yy]$ ]]; then
-        rm -f "$CONFIG_DIR/domain-config.env"
-    fi
 fi
 
-if [ ! -f "$CONFIG_DIR/domain-config.env" ]; then
-    log_info "Domain configuration setup..."
-    echo ""
-    echo "🌐 Enter your domain information:"
-    echo ""
+# Collect missing infrastructure configuration
+if [ -z "$POD_NETWORK_CIDR" ] || [ -z "$LETSENCRYPT_EMAIL" ] || [ -z "$CF_API_TOKEN" ]; then
+    log_info "Collecting infrastructure configuration..."
     
-    read -p "Primary domain (e.g., example.com): " PRIMARY_DOMAIN
-    while [ -z "$PRIMARY_DOMAIN" ]; do
-        echo "Primary domain is required!"
-        read -p "Primary domain (e.g., example.com): " PRIMARY_DOMAIN
-    done
+    read -p "Pod network CIDR [10.244.0.0/16]: " POD_NETWORK_CIDR
+    POD_NETWORK_CIDR=${POD_NETWORK_CIDR:-10.244.0.0/16}
+    
+    read -p "Let's Encrypt email: " LETSENCRYPT_EMAIL
+    read -p "Cloudflare API Token: " CF_API_TOKEN
+    
+    # Save configuration
+cat > "$CONFIG_DIR/infrastructure.env" << EOF
+POD_NETWORK_CIDR=$POD_NETWORK_CIDR
+LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
+CF_API_TOKEN=$CF_API_TOKEN
+INSTALL_DATE="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+EOF
+    chmod 600 "$CONFIG_DIR/infrastructure.env"
+    log_success "Infrastructure config saved"
+fi
+
+# Collect missing domain configuration
+if [ -z "$PRIMARY_DOMAIN" ]; then
+    log_info "Collecting domain configuration..."
+    
+    read -p "Primary domain [ozzu.world]: " PRIMARY_DOMAIN
+    PRIMARY_DOMAIN=${PRIMARY_DOMAIN:-ozzu.world}
     
     read -p "API subdomain [api]: " API_SUBDOMAIN
     API_SUBDOMAIN=${API_SUBDOMAIN:-api}
@@ -261,87 +90,279 @@ if [ ! -f "$CONFIG_DIR/domain-config.env" ]; then
     STT_DOMAIN="${STT_SUBDOMAIN}.${PRIMARY_DOMAIN}"
     TTS_DOMAIN="${TTS_SUBDOMAIN}.${PRIMARY_DOMAIN}"
     WILDCARD_DOMAIN="*.${PRIMARY_DOMAIN}"
-    CERT_SECRET_NAME="${PRIMARY_DOMAIN//./-}-wildcard-tls"
+    CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
+    CERT_SECRET_NAME="${CERT_NAME}-tls"
     
     # Save domain config
-    cat > "$CONFIG_DIR/domain-config.env" << EOF
+cat > "$CONFIG_DIR/domain-config.env" << EOF
 PRIMARY_DOMAIN=$PRIMARY_DOMAIN
-API_SUBDOMAIN=$API_SUBDOMAIN
-IDP_SUBDOMAIN=$IDP_SUBDOMAIN
-STT_SUBDOMAIN=$STT_SUBDOMAIN
-TTS_SUBDOMAIN=$TTS_SUBDOMAIN
 API_DOMAIN=$API_DOMAIN
 IDP_DOMAIN=$IDP_DOMAIN
 STT_DOMAIN=$STT_DOMAIN
 TTS_DOMAIN=$TTS_DOMAIN
 WILDCARD_DOMAIN=$WILDCARD_DOMAIN
+CERT_NAME=$CERT_NAME
 CERT_SECRET_NAME=$CERT_SECRET_NAME
 EOF
     chmod 600 "$CONFIG_DIR/domain-config.env"
+    log_success "Domain config saved"
+else
+    # Recalculate cert names if not set
+    if [ -z "$CERT_SECRET_NAME" ]; then
+        CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
+        CERT_SECRET_NAME="${CERT_NAME}-tls"
+        echo "CERT_NAME=$CERT_NAME" >> "$CONFIG_DIR/domain-config.env"
+        echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> "$CONFIG_DIR/domain-config.env"
+    fi
+    log_success "Configuration loaded"
+fi
+
+# Display summary
+echo ""
+log_info "Configuration:"
+echo "  Pod Network: $POD_NETWORK_CIDR"
+echo "  Domain: $PRIMARY_DOMAIN"
+echo "  Certificate Secret: $CERT_SECRET_NAME"
+echo "  Email: $LETSENCRYPT_EMAIL"
+echo ""
+
+# ============================================================================
+# DOCKER
+# ============================================================================
+
+log_info "🐳 Installing Docker..."
+if ! command -v docker &> /dev/null; then
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update -qq
+    apt-get install -y docker-ce docker-ce-cli containerd.io
+else
+    log_success "Docker already installed"
+fi
+
+# Configure containerd
+systemctl stop containerd
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+systemctl restart containerd
+systemctl enable containerd
+
+log_success "Docker configured!"
+
+# ============================================================================
+# KUBERNETES
+# ============================================================================
+
+log_info "☸️  Installing Kubernetes..."
+
+# Kernel modules
+modprobe br_netfilter
+cat <<EOF | tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+
+cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+sysctl --system
+
+# Install K8s packages
+if ! command -v kubeadm &> /dev/null; then
+    rm -f /etc/apt/sources.list.d/kubernetes.list
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list
+    apt-get update -qq
+    apt-get install -y kubelet kubeadm kubectl
+    apt-mark hold kubelet kubeadm kubectl
+else
+    log_success "Kubernetes packages already installed"
+fi
+
+# Initialize cluster if not already done
+if [ ! -f /etc/kubernetes/admin.conf ]; then
+    log_info "Initializing Kubernetes cluster..."
+    INTERNAL_IP=$(hostname -I | awk '{print $1}')
+    kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR --apiserver-advertise-address=$INTERNAL_IP --cri-socket=unix:///var/run/containerd/containerd.sock
     
-    log_success "Domain configuration saved!"
+    mkdir -p /root/.kube
+    cp /etc/kubernetes/admin.conf /root/.kube/config
+    chown root:root /root/.kube/config
+else
+    log_success "Kubernetes already initialized"
 fi
 
-# Load the domain config
-source "$CONFIG_DIR/domain-config.env"
+# Install Flannel
+log_info "Installing Flannel network..."
+kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
 
-echo ""
-echo "🌐 Using domains:"
-echo "  Primary: $PRIMARY_DOMAIN"
-echo "  Wildcard: $WILDCARD_DOMAIN"
-echo "  API: $API_DOMAIN"
-echo "  IDP: $IDP_DOMAIN"
-echo "  STT: $STT_DOMAIN"
-echo "  TTS: $TTS_DOMAIN"
-echo "  Certificate secret: $CERT_SECRET_NAME"
-echo ""
+# Remove taints
+kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
+kubectl taint nodes --all node-role.kubernetes.io/master- || true
+
+# Wait for cluster
+kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+log_success "Kubernetes cluster ready!"
 
 # ============================================================================
-# STEP 7: LET'S ENCRYPT CONFIGURATION
+# INGRESS-NGINX
 # ============================================================================
 
-log_info "Setting up Let's Encrypt ClusterIssuer..."
-
-if [ -z "$LETSENCRYPT_EMAIL" ]; then
-    read -p "Let's Encrypt email address: " LETSENCRYPT_EMAIL
-    while [ -z "$LETSENCRYPT_EMAIL" ]; do
-        echo "Email is required for Let's Encrypt!"
-        read -p "Let's Encrypt email address: " LETSENCRYPT_EMAIL
-    done
+log_info "🌐 Installing ingress-nginx..."
+if ! kubectl get namespace ingress-nginx &>/dev/null; then
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/baremetal/deploy.yaml
+    sleep 15
+    
+    # Enable hostNetwork
+    log_info "Enabling hostNetwork mode..."
+    kubectl patch deployment ingress-nginx-controller \
+        -n ingress-nginx \
+        --type='json' \
+        -p='[
+            {"op": "add", "path": "/spec/template/spec/hostNetwork", "value": true},
+            {"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}
+        ]'
+    
+    # Wait for rollout
+    log_info "Waiting for ingress controller rollout..."
+    kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
+else
+    log_success "ingress-nginx already installed"
 fi
 
-# Check if we need Cloudflare API token for wildcard
-echo ""
-echo "For wildcard certificates (*.${PRIMARY_DOMAIN}), we need DNS validation."
-echo "This requires a Cloudflare API token if your domain uses Cloudflare DNS."
-echo ""
-read -p "Is your domain (${PRIMARY_DOMAIN}) using Cloudflare DNS? (y/n): " USES_CLOUDFLARE
+# Verify
+log_info "Verifying ingress controller..."
+kubectl wait --namespace ingress-nginx \
+    --for=condition=ready pod \
+    --selector=app.kubernetes.io/component=controller \
+    --timeout=120s 2>/dev/null || {
+    log_warning "Wait timed out, checking status..."
+    kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller
+}
 
-if [[ $USES_CLOUDFLARE =~ ^[Yy]$ ]]; then
-    # Cloudflare setup
-    if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-        echo ""
-        echo "📋 To get your Cloudflare API token:"
-        echo "   1. Go to https://dash.cloudflare.com/profile/api-tokens"
-        echo "   2. Click 'Create Token'"
-        echo "   3. Use 'Edit zone DNS' template"
-        echo "   4. Select your domain zone"
-        echo "   5. Copy the token"
-        echo ""
-        read -p "Cloudflare API Token: " CLOUDFLARE_API_TOKEN
-        while [ -z "$CLOUDFLARE_API_TOKEN" ]; do
-            echo "API token is required for DNS validation!"
-            read -p "Cloudflare API Token: " CLOUDFLARE_API_TOKEN
-        done
+log_success "ingress-nginx ready!"
+
+# ============================================================================
+# CERT-MANAGER
+# ============================================================================
+
+log_info "🔐 Installing cert-manager..."
+if ! kubectl get namespace cert-manager &>/dev/null; then
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.crds.yaml
+    kubectl create namespace cert-manager
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml
+    
+    kubectl wait --for=condition=ready pod \
+        -l app.kubernetes.io/instance=cert-manager \
+        -n cert-manager \
+        --timeout=180s
+else
+    log_success "cert-manager already installed"
+fi
+
+# Create Cloudflare secret
+kubectl create secret generic cloudflare-api-token \
+    --from-literal=api-token="$CF_API_TOKEN" \
+    --namespace=cert-manager \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+log_success "cert-manager ready!"
+
+# ============================================================================
+# CERTIFICATE MANAGEMENT (RESTORE OR CREATE)
+# ============================================================================
+
+log_info "🔐 Certificate Management: Checking for backup..."
+
+CERT_BACKUP_DIR="/root/.june-certs"
+CERT_RESTORED=false
+
+kubectl create namespace june-services || true
+
+if [ -d "$CERT_BACKUP_DIR" ]; then
+    CERT_BACKUP=$(find "$CERT_BACKUP_DIR" -name "*wildcard-tls-backup.yaml" -type f | head -1)
+    
+    if [ -n "$CERT_BACKUP" ] && [ -f "$CERT_BACKUP" ]; then
+        log_info "Found certificate backup: $CERT_BACKUP"
+        
+        if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
+            log_success "Backup file is valid"
+            
+            kubectl apply -f "$CERT_BACKUP"
+            
+            BACKUP_SECRET_NAME=$(grep -A1 "kind: Secret" "$CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}')
+            sleep 2
+            
+            if kubectl get secret "$BACKUP_SECRET_NAME" -n june-services &>/dev/null; then
+                log_success "Certificate restored from backup: $BACKUP_SECRET_NAME"
+                
+                EXPIRY=$(kubectl get secret "$BACKUP_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
+                         base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+                
+                if [ -n "$EXPIRY" ]; then
+                    log_info "Certificate expires: $EXPIRY"
+                    
+                    EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s 2>/dev/null)
+                    NOW_EPOCH=$(date +%s)
+                    DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+                    
+                    if [ $DAYS_LEFT -lt 0 ]; then
+                        log_error "Certificate has EXPIRED! Creating new one..."
+                        kubectl delete secret "$BACKUP_SECRET_NAME" -n june-services
+                        CERT_RESTORED=false
+                    elif [ $DAYS_LEFT -lt 30 ]; then
+                        log_warning "Certificate expires in $DAYS_LEFT days"
+                        CERT_RESTORED=true
+                        CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                    else
+                        log_success "Certificate is valid ($DAYS_LEFT days remaining)"
+                        CERT_RESTORED=true
+                        CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                        sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                    fi
+                else
+                    log_warning "Could not check expiration, assuming valid"
+                    CERT_RESTORED=true
+                    CERT_SECRET_NAME="$BACKUP_SECRET_NAME"
+                    sed -i "s/^CERT_SECRET_NAME=.*/CERT_SECRET_NAME=$CERT_SECRET_NAME/" "$CONFIG_DIR/domain-config.env" || true
+                fi
+            else
+                log_error "Certificate restoration failed"
+                CERT_RESTORED=false
+            fi
+        else
+            log_error "Backup file is invalid or corrupted"
+            CERT_RESTORED=false
+        fi
+    else
+        log_info "No certificate backup found"
+    fi
+else
+    log_info "Certificate backup directory does not exist (first-time setup)"
+fi
+
+# If no valid backup, create Certificate resource
+if [ "$CERT_RESTORED" = false ]; then
+    log_info "🔐 Creating Certificate resource for cert-manager..."
+    
+    # Verify PRIMARY_DOMAIN is set
+    if [ -z "$PRIMARY_DOMAIN" ]; then
+        log_error "PRIMARY_DOMAIN is not set! Cannot create certificate."
+        exit 1
     fi
     
-    # Create Cloudflare API token secret
-    kubectl create secret generic cloudflare-api-token \
-        --from-literal=api-token="$CLOUDFLARE_API_TOKEN" \
-        --namespace=cert-manager \
-        --dry-run=client -o yaml | kubectl apply -f -
+    log_info "Using domain: $PRIMARY_DOMAIN"
+    log_info "Certificate name: $CERT_NAME"
+    log_info "Secret name: $CERT_SECRET_NAME"
     
-    # Production issuer with Cloudflare DNS
+    # Create ClusterIssuers first
+    log_info "Creating ClusterIssuers..."
+    
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -365,607 +386,148 @@ spec:
         - "*.${PRIMARY_DOMAIN}"
 EOF
     
-    log_success "ClusterIssuer created with Cloudflare DNS validation"
+    log_success "ClusterIssuer created"
     
-else
-    # HTTP validation only (no wildcard support)
-    log_warning "Without DNS validation, wildcard certificates are not possible."
-    log_warning "Using HTTP validation - you'll need individual certificates for each subdomain."
-    
+    # Create Certificate
     cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: $LETSENCRYPT_EMAIL
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOF
-    
-    log_success "ClusterIssuer created with HTTP validation"
-fi
-
-# ============================================================================
-# STEP 8: CERTIFICATE MANAGEMENT
-# ============================================================================
-
-log_step "Step 8: Certificate setup..."
-
-echo ""
-echo "🔐 Certificate options:"
-echo "1) Create new wildcard certificate for *.${PRIMARY_DOMAIN}"
-echo "2) Restore certificate from backup (paste YAML)"
-echo "3) Skip certificate creation (manual setup later)"
-echo ""
-read -p "Choose option (1/2/3): " CERT_CHOICE
-
-case $CERT_CHOICE in
-    1)
-        log_info "Creating new wildcard certificate..."
-        
-        if [[ ! $USES_CLOUDFLARE =~ ^[Yy]$ ]]; then
-            log_error "Wildcard certificates require DNS validation (Cloudflare)!"
-            log_error "Please choose option 2 to restore a certificate or configure Cloudflare."
-            exit 1
-        fi
-        
-        # Delete existing certificate if it exists
-        kubectl delete certificate "$CERT_SECRET_NAME" -n june-services 2>/dev/null || true
-        kubectl delete secret "$CERT_SECRET_NAME" -n june-services 2>/dev/null || true
-        
-        # Create wildcard certificate
-        cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: $CERT_SECRET_NAME
+  name: ${CERT_NAME}
   namespace: june-services
 spec:
-  secretName: $CERT_SECRET_NAME
+  secretName: ${CERT_SECRET_NAME}
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
+  commonName: "${PRIMARY_DOMAIN}"
   dnsNames:
-  - "$PRIMARY_DOMAIN"
+  - "${PRIMARY_DOMAIN}"
   - "*.${PRIMARY_DOMAIN}"
 EOF
-        
-        log_success "Wildcard certificate created! Waiting for issuance..."
-        
-        # Wait for certificate to be ready
-        log_info "Waiting for certificate to be issued (this may take 2-5 minutes)..."
-        for i in {1..60}; do
-            CERT_READY=$(kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
-            if [ "$CERT_READY" = "True" ]; then
-                log_success "Certificate issued successfully!"
-                break
-            fi
-            
-            if [ $((i % 10)) -eq 0 ]; then
-                log_info "Still waiting for certificate... (${i}/60)"
-                kubectl describe certificate "$CERT_SECRET_NAME" -n june-services | grep -A 5 "Events:"
-            fi
-            sleep 10
-        done
-        
-        if [ "$CERT_READY" != "True" ]; then
-            log_warning "Certificate is taking longer than expected to issue."
-            log_warning "You can check the status with: kubectl describe certificate $CERT_SECRET_NAME -n june-services"
-        fi
-        ;;
-        
-    2)
-        log_info "Certificate backup restoration..."
-        echo ""
-        echo "📋 Certificate Backup Restoration"
-        echo "================================="
-        echo ""
-        echo "Requirements:"
-        echo "  - Valid Kubernetes YAML containing Certificate and/or Secret resources"
-        echo "  - Resources should be for cert-manager (apiVersion: cert-manager.io/v1)"
-        echo "  - Secrets should be of type: kubernetes.io/tls"
-        echo ""
-        echo "Paste your certificate backup YAML below."
-        echo "Press Ctrl+D on a new line when finished:"
-        echo ""
-        echo "--- (paste below this line) ---"
-        
-        # Create secure temporary file with proper cleanup
-        BACKUP_FILE=$(mktemp -t cert-backup-XXXXXX.yaml)
-        chmod 600 "$BACKUP_FILE"
-        
-        # Setup cleanup trap
-        cleanup_backup() {
-            rm -f "$BACKUP_FILE"
-        }
-        trap cleanup_backup EXIT ERR
-        
-        # Read multiline input with timeout
-        if ! timeout 300 cat > "$BACKUP_FILE"; then
-            log_error "Input timeout (5 minutes) or interrupted"
-            exit 1
-        fi
-        
-        echo ""
-        log_info "Validating certificate backup..."
-        
-        # Validate the backup file is not empty
-        if [ ! -s "$BACKUP_FILE" ]; then
-            log_error "Empty backup file provided"
-            echo ""
-            echo "Expected format example:"
-            echo "---"
-            echo "apiVersion: cert-manager.io/v1"
-            echo "kind: Certificate"
-            echo "metadata:"
-            echo "  name: $CERT_SECRET_NAME"
-            echo "  namespace: june-services"
-            echo "spec:"
-            echo "  secretName: $CERT_SECRET_NAME"
-            echo "  dnsNames:"
-            echo "  - \"$PRIMARY_DOMAIN\""
-            echo "  - \"*.${PRIMARY_DOMAIN}\""
-            echo "---"
-            echo "apiVersion: v1"
-            echo "kind: Secret"
-            echo "metadata:"
-            echo "  name: $CERT_SECRET_NAME"
-            echo "  namespace: june-services"
-            echo "type: kubernetes.io/tls"
-            echo "data:"
-            echo "  tls.crt: <base64-encoded-certificate>"
-            echo "  tls.key: <base64-encoded-key>"
-            exit 1
-        fi
-        
-        # Validate YAML syntax using kubectl dry-run
-        if ! kubectl --dry-run=client -f "$BACKUP_FILE" > /dev/null 2>&1; then
-            log_error "Invalid YAML format detected!"
-            echo ""
-            echo "Common issues:"
-            echo "• Missing or incorrect indentation"
-            echo "• Invalid characters in YAML"
-            echo "• Missing required fields"
-            echo ""
-            echo "Please check your YAML syntax and try again."
-            exit 1
-        fi
-        
-        # Check for required resource types
-        CERT_FOUND=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | grep -c "Certificate" || echo "0")
-        SECRET_FOUND=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | grep -c "Secret" || echo "0")
-        
-        if [ "$CERT_FOUND" -eq 0 ] && [ "$SECRET_FOUND" -eq 0 ]; then
-            log_error "Neither Certificate nor Secret resources found in backup!"
-            echo ""
-            echo "Please ensure your backup contains valid cert-manager resources:"
-            echo "• Certificate (apiVersion: cert-manager.io/v1)"
-            echo "• Secret (apiVersion: v1, type: kubernetes.io/tls)"
-            exit 1
-        fi
-        
-        if [ "$CERT_FOUND" -eq 0 ]; then
-            log_warning "No Certificate resource found - only Secret will be restored"
-        fi
-        
-        if [ "$SECRET_FOUND" -eq 0 ]; then
-            log_warning "No Secret resource found - only Certificate will be restored"
-        fi
-        
-        # Check namespace consistency
-        NAMESPACES=$(kubectl --dry-run=client -f "$BACKUP_FILE" 2>/dev/null | awk '/namespace:/ {print $2}' | sort -u)
-        NAMESPACE_COUNT=$(echo "$NAMESPACES" | wc -l)
-        
-        if [ "$NAMESPACE_COUNT" -gt 1 ]; then
-            log_warning "Multiple namespaces detected in backup:"
-            echo "$NAMESPACES"
-            echo ""
-            read -p "Continue with restoration? (y/n): " CONTINUE_MULTI_NS
-            if [[ ! $CONTINUE_MULTI_NS =~ ^[Yy]$ ]]; then
-                log_info "Restoration cancelled"
-                exit 0
-            fi
-        fi
-        
-        # Backup existing resources if they exist
-        BACKUP_DIR="$CONFIG_DIR/cert-backup-$(date +%Y%m%d-%H%M%S)"
-        
-        log_info "Backing up existing certificate resources..."
-        mkdir -p "$BACKUP_DIR"
-        
-        # Backup existing certificate if it exists
-        if kubectl get certificate "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-            kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o yaml > "$BACKUP_DIR/existing-certificate.yaml"
-            log_info "Existing certificate backed up"
-        fi
-        
-        # Backup existing secret if it exists
-        if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-            kubectl get secret "$CERT_SECRET_NAME" -n june-services -o yaml > "$BACKUP_DIR/existing-secret.yaml"
-            log_info "Existing secret backed up"
-        fi
-        
-        # Backup all TLS secrets for safety
-        kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls -o yaml > "$BACKUP_DIR/all-tls-secrets.yaml" 2>/dev/null || true
-        
-        log_success "Existing resources backed up to: $BACKUP_DIR"
-        
-        # Apply with server-side validation first
-        log_info "Performing server-side validation..."
-        if ! kubectl apply --dry-run=server -f "$BACKUP_FILE" 2>&1; then
-            log_error "Server-side validation failed!"
-            echo ""
-            echo "This could indicate:"
-            echo "• Missing permissions in the cluster"
-            echo "• Invalid resource specifications"
-            echo "• Missing cert-manager CRDs"
-            echo "• Namespace doesn't exist"
-            echo ""
-            echo "Troubleshooting steps:"
-            echo "1. Verify cert-manager is installed:"
-            echo "   kubectl get pods -n cert-manager"
-            echo ""
-            echo "2. Check namespace exists:"
-            echo "   kubectl get namespace june-services"
-            echo ""
-            echo "3. Verify permissions:"
-            echo "   kubectl auth can-i create certificates --namespace=june-services"
-            echo "   kubectl auth can-i create secrets --namespace=june-services"
-            exit 1
-        fi
-        
-        log_success "Server-side validation passed!"
-        
-        # Apply the backup
-        log_info "Applying certificate backup..."
-        if kubectl apply -f "$BACKUP_FILE"; then
-            log_success "Certificate backup applied successfully!"
-            
-            # Wait a moment for resources to be created
-            sleep 3
-            
-            # Comprehensive verification
-            log_info "Verifying restored certificate resources..."
-            
-            VERIFICATION_FAILED=false
-            
-            # Check for certificate resource
-            if kubectl get certificate "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-                log_success "Certificate resource found: $CERT_SECRET_NAME"
-                
-                # Check certificate status
-                CERT_STATUS=$(kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-                case "$CERT_STATUS" in
-                    "True")
-                        log_success "Certificate is in Ready state"
-                        ;;
-                    "False")
-                        CERT_REASON=$(kubectl get certificate "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "Unknown")
-                        log_warning "Certificate not ready. Reason: $CERT_REASON"
-                        VERIFICATION_FAILED=true
-                        ;;
-                    *)
-                        log_warning "Certificate status: $CERT_STATUS"
-                        VERIFICATION_FAILED=true
-                        ;;
-                esac
-            else
-                # Check for any certificate in the namespace
-                CERT_COUNT=$(kubectl get certificates -n june-services --no-headers 2>/dev/null | wc -l)
-                if [ "$CERT_COUNT" -gt 0 ]; then
-                    log_info "Found $CERT_COUNT certificate(s) in june-services namespace:"
-                    kubectl get certificates -n june-services
-                else
-                    log_warning "No certificates found in june-services namespace"
-                    VERIFICATION_FAILED=true
-                fi
-            fi
-            
-            # Check for TLS secret
-            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-                log_success "Certificate secret found: $CERT_SECRET_NAME"
-                
-                # Verify it's a TLS secret with required keys
-                SECRET_TYPE=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.type}')
-                if [ "$SECRET_TYPE" = "kubernetes.io/tls" ]; then
-                    log_success "Secret is of type kubernetes.io/tls"
-                    
-                    # Check for required TLS keys
-                    TLS_CRT=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' 2>/dev/null)
-                    TLS_KEY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.key}' 2>/dev/null)
-                    
-                    if [ -n "$TLS_CRT" ] && [ -n "$TLS_KEY" ]; then
-                        log_success "TLS certificate and key present in secret"
-                        
-                        # Additional validation: check if certificate is valid
-                        CERT_DATA=$(echo "$TLS_CRT" | base64 -d)
-                        if echo "$CERT_DATA" | openssl x509 -noout -text &>/dev/null; then
-                            CERT_EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate | cut -d= -f2)
-                            log_success "Certificate is valid, expires: $CERT_EXPIRY"
-                        else
-                            log_warning "Certificate data may be corrupted or invalid"
-                            VERIFICATION_FAILED=true
-                        fi
-                    else
-                        log_warning "TLS certificate or key missing in secret"
-                        VERIFICATION_FAILED=true
-                    fi
-                else
-                    log_warning "Secret type is '$SECRET_TYPE', expected 'kubernetes.io/tls'"
-                    VERIFICATION_FAILED=true
-                fi
-            else
-                # List available TLS secrets for troubleshooting
-                TLS_SECRETS=$(kubectl get secrets -n june-services --field-selector type=kubernetes.io/tls --no-headers 2>/dev/null | awk '{print $1}')
-                if [ -n "$TLS_SECRETS" ]; then
-                    log_info "Available TLS secrets in june-services namespace:"
-                    echo "$TLS_SECRETS"
-                    log_warning "Expected secret '$CERT_SECRET_NAME' not found"
-                    VERIFICATION_FAILED=true
-                else
-                    log_warning "No TLS secrets found in june-services namespace"
-                    VERIFICATION_FAILED=true
-                fi
-            fi
-            
-            # Final verification summary
-            if [ "$VERIFICATION_FAILED" = true ]; then
-                log_warning "Certificate restoration completed with warnings"
-                echo ""
-                echo "🔍 Manual verification steps:"
-                echo "1. Check certificate status:"
-                echo "   kubectl get certificates -n june-services"
-                echo "   kubectl describe certificate $CERT_SECRET_NAME -n june-services"
-                echo ""
-                echo "2. Check secrets:"
-                echo "   kubectl get secrets -n june-services | grep tls"
-                echo "   kubectl describe secret $CERT_SECRET_NAME -n june-services"
-                echo ""
-                echo "3. Check cert-manager logs if issues persist:"
-                echo "   kubectl logs -n cert-manager deployment/cert-manager --tail=50"
-                echo ""
-            else
-                log_success "Certificate restoration completed successfully!"
-                echo ""
-                echo "✅ Verification summary:"
-                echo "• Certificate resource: Found and ready"
-                echo "• TLS secret: Found with valid certificate and key"
-                echo "• Certificate expiry: Checked and valid"
-            fi
-            
-        else
-            log_error "Failed to apply certificate backup!"
-            echo ""
-            echo "🔍 Troubleshooting steps:"
-            echo ""
-            echo "1. Check if the june-services namespace exists:"
-            echo "   kubectl get namespace june-services"
-            echo ""
-            echo "2. Verify cluster permissions:"
-            echo "   kubectl auth can-i create certificates --namespace=june-services"
-            echo "   kubectl auth can-i create secrets --namespace=june-services"
-            echo ""
-            echo "3. Check cert-manager is running:"
-            echo "   kubectl get pods -n cert-manager"
-            echo ""
-            echo "4. Validate the backup YAML manually:"
-            echo "   kubectl --dry-run=client -f <your-backup-file>"
-            echo ""
-            echo "5. Check for resource conflicts:"
-            echo "   kubectl get certificates,secrets -n june-services"
-            exit 1
-        fi
-        
-        # Clean up temp file (trap will also handle this)
-        cleanup_backup
-        trap - EXIT ERR
-        ;;
-        
-    3)
-        log_info "Skipping certificate creation."
-        log_warning "You'll need to create the certificate '$CERT_SECRET_NAME' manually in the june-services namespace."
-        echo ""
-        echo "Manual certificate creation example:"
-        echo "kubectl apply -f - <<EOF"
-        echo "apiVersion: cert-manager.io/v1"
-        echo "kind: Certificate"
-        echo "metadata:"
-        echo "  name: $CERT_SECRET_NAME"
-        echo "  namespace: june-services"
-        echo "spec:"
-        echo "  secretName: $CERT_SECRET_NAME"
-        echo "  issuerRef:"
-        echo "    name: letsencrypt-prod"
-        echo "    kind: ClusterIssuer"
-        echo "  dnsNames:"
-        echo "  - \"$PRIMARY_DOMAIN\""
-        echo "  - \"*.${PRIMARY_DOMAIN}\""
-        echo "EOF"
-        ;;
-        
-    *)
-        log_error "Invalid choice. Exiting."
-        exit 1
-        ;;
-esac
-
-# ============================================================================
-# STEP 9: APPLICATION SECRETS
-# ============================================================================
-
-log_step "Step 9: Creating application secrets..."
-
-# Gemini API key
-if [ -f "$CONFIG_DIR/secrets.env" ]; then
-    source "$CONFIG_DIR/secrets.env"
-fi
-
-if [ -z "$GEMINI_API_KEY" ]; then
-    echo ""
-    echo "🤖 Get your Gemini API key from:"
-    echo "   https://makersuite.google.com/app/apikey"
-    echo ""
-    read -p "Gemini API Key (or press Enter to skip): " GEMINI_API_KEY
     
-    # Save to config if provided
-    if [ -n "$GEMINI_API_KEY" ]; then
-        cat > "$CONFIG_DIR/secrets.env" << EOF
-GEMINI_API_KEY=$GEMINI_API_KEY
-LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
-CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN
-EOF
-        chmod 600 "$CONFIG_DIR/secrets.env"
+    log_success "Certificate resource created"
+    log_warning "⏳ Waiting for cert-manager to issue certificate (2-5 minutes)..."
+    
+    for i in {1..60}; do
+        CERT_READY=$(kubectl get certificate "${CERT_NAME}" -n june-services -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+        
+        if [ "$CERT_READY" = "True" ]; then
+            log_success "Certificate issued successfully!"
+            break
+        fi
+        
+        if [ $((i % 10)) -eq 0 ]; then
+            log_info "Still waiting for certificate... (${i}/60)"
+        fi
+        
+        sleep 5
+    done
+    
+    if [ "$CERT_READY" = "True" ]; then
+        log_success "Certificate is ready to use"
+        log_warning "💾 IMPORTANT: Run after deployment:"
+        log_warning "   ./scripts/install-k8s/backup-wildcard-cert.sh"
+    else
+        log_error "Certificate issuance timed out"
+        log_error "Check: kubectl describe certificate ${CERT_NAME} -n june-services"
     fi
 fi
 
-# Create Kubernetes secret
-kubectl create secret generic june-secrets \
-    --from-literal=gemini-api-key="${GEMINI_API_KEY:-PLACEHOLDER}" \
-    --from-literal=keycloak-client-secret="PLACEHOLDER" \
-    --namespace=june-services \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-log_success "Application secrets created!"
+log_success "Certificate management complete!"
+log_success "Using certificate secret: ${CERT_SECRET_NAME}"
 
 # ============================================================================
-# STEP 10: UPDATE MANIFESTS
+# STORAGE SETUP
 # ============================================================================
 
-log_step "Step 10: Configuring deployment manifests..."
+log_info "📁 Setting up storage infrastructure..."
 
-# Load networking config if available
-if [ -f "$CONFIG_DIR/networking.env" ]; then
-    source "$CONFIG_DIR/networking.env"
-fi
+# Create storage directories
+STORAGE_DIRS=(
+    "/opt/june-postgresql-data"
+    "/opt/june-data"
+)
 
-# Create updated complete-manifests.yaml
-if [ -f "$SCRIPT_DIR/../k8s/complete-manifests.yaml" ]; then
-    log_info "Creating customized manifests for your domain..."
-    
-    CUSTOM_MANIFEST="$CONFIG_DIR/complete-manifests-${PRIMARY_DOMAIN//./-}.yaml"
-    
-    # Copy and customize the manifest
-    cp "$SCRIPT_DIR/../k8s/complete-manifests.yaml" "$CUSTOM_MANIFEST"
-    
-    # Replace domains in the manifest
-    sed -i "s/api\.allsafe\.world/${API_DOMAIN}/g" "$CUSTOM_MANIFEST"
-    sed -i "s/idp\.allsafe\.world/${IDP_DOMAIN}/g" "$CUSTOM_MANIFEST"
-    sed -i "s/stt\.allsafe\.world/${STT_DOMAIN}/g" "$CUSTOM_MANIFEST"
-    sed -i "s/tts\.allsafe\.world/${TTS_DOMAIN}/g" "$CUSTOM_MANIFEST"
-    sed -i "s/\*\.allsafe\.world/\*.${PRIMARY_DOMAIN}/g" "$CUSTOM_MANIFEST"
-    sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" "$CUSTOM_MANIFEST"
-    
-    log_success "Custom manifest created: $CUSTOM_MANIFEST"
-else
-    log_warning "complete-manifests.yaml not found, skipping manifest customization"
-fi
+for dir in "${STORAGE_DIRS[@]}"; do
+    mkdir -p "$dir"
+    chmod 755 "$dir"
+done
+
+# Create StorageClass
+cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+EOF
+
+# Create PostgreSQL PV
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgresql-pv
+  labels:
+    type: local
+    app: postgresql
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/june-postgresql-data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - $(hostname)
+EOF
+
+log_success "Storage infrastructure ready!"
 
 # ============================================================================
-# FINAL SUMMARY
+# SUMMARY
 # ============================================================================
 
-EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
+EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ || hostname -I | awk '{print $1}')
 
 echo ""
-echo "══════════════════════════════════════════════════"
-log_success "🎉 June Platform Installation Complete!"
-echo "══════════════════════════════════════════════════"
+echo "======================================================"
+log_success "Core Infrastructure Ready!"
+echo "======================================================"
 echo ""
 echo "✅ Installed Components:"
-echo "  • Core Infrastructure (K8s, ingress-nginx, cert-manager)"
-echo "  • Networking (MetalLB, STUNner with Gateway API v1alpha2)"
-if [[ $INSTALL_GPU =~ ^[Yy]$ ]]; then
-    echo "  • GPU Operator with time-slicing"
-fi
-if [[ $INSTALL_RUNNER =~ ^[Yy]$ ]]; then
-    echo "  • GitHub Actions Runner"
-fi
-echo "  • Let's Encrypt ClusterIssuer"
-echo "  • SSL Certificate for ${PRIMARY_DOMAIN}"
-echo "  • Application secrets"
+echo "  • Docker + containerd"
+echo "  • Kubernetes 1.28 cluster"
+echo "  • Flannel networking ($POD_NETWORK_CIDR)"
+echo "  • ingress-nginx (hostNetwork mode)"
+echo "  • cert-manager with Cloudflare DNS"
+echo "  • Local storage infrastructure"
 echo ""
-echo "🌍 Cluster Information:"
+echo "🌍 Cluster Info:"
 echo "  External IP: $EXTERNAL_IP"
+echo "  Domain: $PRIMARY_DOMAIN"
+echo "  Certificate: $CERT_SECRET_NAME"
 echo "  Namespace: june-services"
 echo ""
-echo "🌐 Your Domains:"
-echo "  Primary: ${PRIMARY_DOMAIN}"
-echo "  API: ${API_DOMAIN}"
-echo "  Identity: ${IDP_DOMAIN}"
-echo "  Speech-to-Text: ${STT_DOMAIN}"
-echo "  Text-to-Speech: ${TTS_DOMAIN}"
-echo "  Certificate: ${CERT_SECRET_NAME}"
+echo "📝 Next Steps:"
+echo "  1. Install MetalLB + STUNner:"
+echo "     ./install-networking.sh"
 echo ""
-echo "🔗 STUNner Configuration:"
-echo "  TURN Domain: ${TURN_DOMAIN:-not configured}"
-echo "  Username: ${TURN_USERNAME:-not configured}"
-echo "  Password: ${TURN_PASSWORD:0:3}***"
-if [ -n "$STUNNER_LB_IP" ] && [ "$STUNNER_LB_IP" != "pending" ]; then
-    echo "  LoadBalancer IP: $STUNNER_LB_IP"
-fi
+echo "  2. Install GPU Operator (optional):"
+echo "     ./install-gpu-operator.sh"
 echo ""
-echo "📁 Configuration Files:"
-echo "  All configs: $CONFIG_DIR/"
-if [ -f "$CUSTOM_MANIFEST" ]; then
-    echo "  Custom manifest: $CUSTOM_MANIFEST"
-fi
+echo "  3. Deploy June services:"
+echo "     kubectl apply -f k8s/complete-manifests.yaml"
 echo ""
-echo "📋 Next Steps:"
-echo ""
-echo "1. 🌐 Configure DNS records to point to $EXTERNAL_IP:"
-echo "   ${PRIMARY_DOMAIN} A $EXTERNAL_IP"
-echo "   *.${PRIMARY_DOMAIN} A $EXTERNAL_IP"
-echo ""
-echo "2. 🔍 Verify certificate status:"
-echo "   kubectl get certificate $CERT_SECRET_NAME -n june-services"
-echo "   kubectl describe certificate $CERT_SECRET_NAME -n june-services"
-echo ""
-echo "3. 🚀 Deploy June services:"
-if [ -f "$CUSTOM_MANIFEST" ]; then
-    echo "   kubectl apply -f $CUSTOM_MANIFEST"
-else
-    echo "   kubectl apply -f k8s/complete-manifests.yaml"
-fi
-echo ""
-echo "4. 📊 Monitor deployment:"
-echo "   kubectl get pods -n june-services -w"
-echo ""
-echo "5. 🔗 Test your services:"
-echo "   curl https://${API_DOMAIN}/healthz"
-echo "   curl https://${IDP_DOMAIN}/health"
-echo ""
-echo "🔍 Useful Commands:"
-echo "  # Check certificate status"
-echo "  kubectl get certificates -n june-services"
-echo "  kubectl get secrets -n june-services | grep tls"
-echo ""
-echo "  # Check all services"
-echo "  kubectl get all -n june-services"
-echo ""
-echo "  # View service logs"
-echo "  kubectl logs -n june-services -l app=june-orchestrator --tail=50"
-echo ""
-echo "  # Check ingress status"
-echo "  kubectl get ingress -n june-services"
-echo "  kubectl describe ingress june-ingress -n june-services"
-echo ""
-echo "══════════════════════════════════════════════════"
-echo "🆘 Troubleshooting:"
-echo ""
-echo "If certificates aren't working:"
-echo "  kubectl describe certificate $CERT_SECRET_NAME -n june-services"
-echo "  kubectl logs -n cert-manager deployment/cert-manager"
-echo ""
-echo "If services show temp certificates:"
-echo "  kubectl delete certificate $CERT_SECRET_NAME -n june-services"
-echo "  kubectl delete secret $CERT_SECRET_NAME -n june-services"
-echo "  # Then re-run this script to recreate"
-echo ""
-echo "══════════════════════════════════════════════════"
+echo "======================================================"
