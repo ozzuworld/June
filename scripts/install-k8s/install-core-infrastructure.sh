@@ -707,6 +707,31 @@ EOF
 log_success "Storage infrastructure ready!"
 
 # ============================================================================
+# GENERATE DYNAMIC MANIFESTS
+# ============================================================================
+
+log_info "🔧 Generating dynamic manifests..."
+
+# Create the generate script if it doesn't exist
+if [ ! -f "scripts/generate-manifests.sh" ]; then
+    log_warning "Manifest generator script not found - manifests will need manual updates"
+    MANIFESTS_READY=false
+else
+    # Make sure script is executable
+    chmod +x scripts/generate-manifests.sh
+    
+    # Generate manifests with current configuration
+    if ./scripts/generate-manifests.sh; then
+        log_success "✅ Dynamic manifests generated successfully"
+        MANIFESTS_READY=true
+    else
+        log_error "❌ Failed to generate dynamic manifests"
+        MANIFESTS_READY=false
+    fi
+fi
+
+
+# ============================================================================
 # FINAL VALIDATION AND SUMMARY
 # ============================================================================
 
