@@ -196,17 +196,21 @@ kubectl create secret generic cloudflare-api-token \
 
 log_success "cert-manager ready!"
 
+# At line 191, add this block:
+
 # ============================================================================
-# CERTIFICATE MANAGEMENT (Restore or Create)
+# CERTIFICATE MANAGEMENT (RESTORE OR CREATE)
 # ============================================================================
 
 log_info "🔐 Certificate Management: Checking for backup..."
 
 CERT_BACKUP_DIR="/root/.june-certs"
-CERT_RESTORED=false
+CERT_RESTORED=false  # ← Initialize here
+CERT_SECRET_NAME=""  # Track what name we're using
 
 kubectl create namespace june-services || true
 
+# Check for backup first
 if [ -d "$CERT_BACKUP_DIR" ]; then
     CERT_BACKUP=$(find "$CERT_BACKUP_DIR" -name "*wildcard-tls-backup.yaml" -type f | head -1)
     
@@ -216,14 +220,17 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
         if grep -q "kind: Secret" "$CERT_BACKUP" && grep -q "tls.crt" "$CERT_BACKUP"; then
             log_success "Backup file is valid"
             
+            # Apply backup
             kubectl apply -f "$CERT_BACKUP"
             
-            CERT_SECRET_NAME=$(grep 'name:' "$CERT_BACKUP" | head -1 | awk '{print $2}')
+            # Extract the secret name from backup
+            CERT_SECRET_NAME=$(grep -A1 "kind: Secret" "$CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}')
             sleep 2
             
             if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
                 log_success "Certificate restored from backup: $CERT_SECRET_NAME"
                 
+                # Check expiration
                 EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
                          base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
                 
@@ -235,7 +242,7 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
                     DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
                     
                     if [ $DAYS_LEFT -lt 0 ]; then
-                        log_error "Certificate has EXPIRED! Creating new one..."
+                        log_error "Certificate has EXPIRED! Will create new one..."
                         kubectl delete secret "$CERT_SECRET_NAME" -n june-services
                         CERT_RESTORED=false
                     elif [ $DAYS_LEFT -lt 30 ]; then
@@ -257,21 +264,19 @@ if [ -d "$CERT_BACKUP_DIR" ]; then
             log_error "Backup file is invalid or corrupted"
             CERT_RESTORED=false
         fi
-    else
-        log_info "No certificate backup found"
-        CERT_RESTORED=false
     fi
-else
-    log_info "Certificate backup directory does not exist (first-time setup)"
-    CERT_RESTORED=false
 fi
 
-# If no valid backup, create Certificate resource
+# If no valid backup, create new Certificate resource
 if [ "$CERT_RESTORED" = false ]; then
-    log_info "🔐 Creating Certificate resource for cert-manager..."
+    log_info "🔐 Creating new Certificate resource..."
     
+    # Use consistent naming
     CERT_NAME="${PRIMARY_DOMAIN//./-}-wildcard"
     CERT_SECRET_NAME="${CERT_NAME}-tls"
+    
+    # Save the secret name to config for later use
+    echo "CERT_SECRET_NAME=${CERT_SECRET_NAME}" >> "$CONFIG_DIR/domain-config.env"
     
     cat <<EOF | kubectl apply -f -
 apiVersion: cert-manager.io/v1
@@ -290,7 +295,10 @@ spec:
   - "*.${PRIMARY_DOMAIN}"
 EOF
     
-    log_success "Certificate resource created"
+    log_success "Certificate resource created: ${CERT_NAME}"
+    log_success "Will create secret: ${CERT_SECRET_NAME}"
+    
+    # Wait for certificate
     log_warning "⏳ Waiting for cert-manager to issue certificate (2-5 minutes)..."
     
     for i in {1..60}; do
@@ -309,16 +317,18 @@ EOF
     done
     
     if [ "$CERT_READY" = "True" ]; then
-        log_success "Certificate is ready to use"
-        log_warning "💾 IMPORTANT: Run after deployment:"
+        log_success "Certificate is ready: ${CERT_SECRET_NAME}"
+        log_warning "💾 IMPORTANT: Run backup script after deployment:"
         log_warning "   ./scripts/install-k8s/backup-wildcard-cert.sh"
     else
         log_error "Certificate issuance timed out"
-        log_error "Check: kubectl logs -n cert-manager -l app=cert-manager"
+        log_error "Check: kubectl describe certificate ${CERT_NAME} -n june-services"
     fi
 fi
 
-log_success "Certificate management complete!"
+# Export for use in manifests
+export CERT_SECRET_NAME
+log_success "Using certificate secret: ${CERT_SECRET_NAME}"
 
 # ============================================================================
 # STORAGE SETUP

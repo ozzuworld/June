@@ -432,8 +432,10 @@ jobs:
           # Generate configured manifests
           cp k8s/complete-manifests.yaml /tmp/june-services.yaml
           
+          # Replace certificate secret name (FROM hardcoded TO actual)
+          sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
+          
           # Replace domain placeholders
-          sed -i "s/${CERT_SECRET_NAME:-allsafe-wildcard-tls}/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
           sed -i "s/api.allsafe.world/${API_DOMAIN}/g" /tmp/june-services.yaml
           sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/june-services.yaml
           sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/june-services.yaml
