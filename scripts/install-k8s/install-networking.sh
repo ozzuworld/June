@@ -192,29 +192,42 @@ else
         log_warning "Deployment availability check failed, checking pods directly..."
     fi
     
-    # Wait for pods to be ready (this is the main wait time)
+    # Wait for pods to be ready using multiple approaches
     log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
-    if kubectl wait --for=condition=ready --timeout=600s \
-        pod -l app.kubernetes.io/name=stunner-gateway-operator -n stunner-system; then
-        log_success "STUNner operator pod is ready!"
-    else
-        log_error "Timeout waiting for STUNner operator pods to be ready"
-        show_stunner_debug
-        exit 1
-    fi
     
-    # Wait for auth service to be ready
-    log_info "Waiting for STUNner auth service..."
-    if kubectl wait --for=condition=ready --timeout=120s \
-        pod -l app.kubernetes.io/name=stunner-auth -n stunner-system 2>/dev/null; then
-        log_success "STUNner auth service is ready!"
+    # Try multiple label selectors and approaches
+    if kubectl wait --for=condition=ready --timeout=600s \
+        pod -l control-plane=controller-manager -n stunner-system 2>/dev/null; then
+        log_success "STUNner operator pods are ready!"
+    elif kubectl wait --for=condition=ready --timeout=600s \
+        pod -l app.kubernetes.io/name=stunner-gateway-operator -n stunner-system 2>/dev/null; then
+        log_success "STUNner operator pods are ready!"
     else
-        log_warning "STUNner auth service taking longer than expected, continuing..."
+        # Check if pods are actually running despite wait failure
+        RUNNING_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+        TOTAL_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | wc -l || echo "0")
+        
+        if [ "$RUNNING_PODS" -gt 0 ] && [ "$RUNNING_PODS" -eq "$TOTAL_PODS" ]; then
+            log_success "STUNner operator pods are ready!"
+        else
+            log_error "Timeout waiting for STUNner operator pods to be ready"
+            show_stunner_debug
+            exit 1
+        fi
     fi
     
     # Verify STUNner operator is functional
     log_info "Verifying STUNner operator functionality..."
     sleep 5  # Give operator a moment to register controllers
+    
+    # Check for STUNner CRDs
+    if kubectl get crd | grep -q "stunner.l7mp.io"; then
+        log_success "STUNner CRDs are available - operator is functional"
+    else
+        log_warning "STUNner CRDs not immediately available, but continuing..."
+    fi
+    
+    # Check Gateway API accessibility
     if kubectl get gatewayclass >/dev/null 2>&1; then
         log_success "Gateway API resources accessible - STUNner operator is functional"
     else
@@ -285,17 +298,92 @@ EOF
 
 log_success "STUNner Gateway created!"
 
-# Wait for Gateway
-log_info "Waiting for Gateway to be ready (may take 2-3 minutes)..."
-kubectl wait --for=condition=Ready gateway/june-stunner-gateway \
-    -n stunner \
-    --timeout=300s || log_warning "Gateway taking longer than expected"
+# ============================================================================
+# FIXED GATEWAY READINESS CHECK
+# ============================================================================
+
+# Function to wait for Gateway readiness properly
+wait_for_gateway_ready() {
+    local namespace=$1
+    local gateway_name=$2
+    local timeout=${3:-300}
+    
+    log_info "Waiting for Gateway to be ready (may take 2-3 minutes)..."
+    
+    local count=0
+    local max_attempts=$((timeout / 10))
+    
+    while [ $count -lt $max_attempts ]; do
+        # Check if Gateway is Accepted and Programmed (correct conditions for Gateway API v1)
+        local accepted=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' 2>/dev/null)
+        local programmed=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
+        local external_ip=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+        
+        if [[ "$accepted" == "True" && "$programmed" == "True" && -n "$external_ip" ]]; then
+            log_success "Gateway is ready! External IP: $external_ip"
+            return 0
+        fi
+        
+        # Show progress every 30 seconds
+        if [ $((count % 3)) -eq 0 ]; then
+            log_info "Gateway status: Accepted=$accepted, Programmed=$programmed, IP=$external_ip"
+        fi
+        
+        sleep 10
+        count=$((count + 1))
+    done
+    
+    log_warning "Gateway readiness check timed out, but checking if it's actually working..."
+    
+    # Final verification - sometimes the gateway works even if conditions aren't perfect
+    local final_accepted=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' 2>/dev/null)
+    local final_programmed=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null)
+    local final_ip=$(kubectl get gateway $gateway_name -n $namespace -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+    
+    if [[ "$final_accepted" == "True" && -n "$final_ip" ]]; then
+        log_success "Gateway is actually working despite timeout! IP: $final_ip"
+        return 0
+    else
+        log_error "Gateway failed to become ready within ${timeout}s"
+        echo "=== Gateway Debug Information ==="
+        kubectl describe gateway $gateway_name -n $namespace
+        return 1
+    fi
+}
+
+# Use the fixed wait function
+wait_for_gateway_ready "stunner" "june-stunner-gateway" 300
+
+if [ $? -eq 0 ]; then
+    # Get the external IP for confirmation
+    GATEWAY_EXTERNAL_IP=$(kubectl get gateway june-stunner-gateway -n stunner -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+    log_success "STUNner Gateway is ready with external IP: $GATEWAY_EXTERNAL_IP"
+    
+    # Verify dataplane pod is running
+    log_info "Verifying STUNner dataplane..."
+    if kubectl wait --for=condition=Ready pod -l stunner.l7mp.io/related-gateway-name=june-stunner-gateway -n stunner --timeout=60s 2>/dev/null; then
+        log_success "STUNner dataplane is running successfully"
+        log_success "TURN Server available at: $GATEWAY_EXTERNAL_IP:3478"
+        log_success "STUN Server available at: $GATEWAY_EXTERNAL_IP:3478"
+    else
+        log_warning "STUNner dataplane pod not ready yet, but Gateway is configured"
+        log_info "Checking if dataplane pod exists..."
+        kubectl get pods -n stunner -l stunner.l7mp.io/related-gateway-name=june-stunner-gateway || log_warning "No dataplane pods found yet"
+    fi
+else
+    log_error "STUNner Gateway setup failed"
+    exit 1
+fi
 
 # ============================================================================
 # REFERENCEGRANT FOR CROSS-NAMESPACE ACCESS
 # ============================================================================
 
 log_info "🔐 Creating ReferenceGrant for cross-namespace access..."
+
+# Ensure june-services namespace exists
+kubectl create namespace june-services || true
+
 cat <<EOF | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
@@ -330,6 +418,7 @@ if [ -n "$STUNNER_SVC" ]; then
     log_success "LoadBalancer IP: $STUNNER_LB_IP"
 else
     log_warning "LoadBalancer service not found yet"
+    STUNNER_LB_IP="pending"
 fi
 
 # Check dataplane pods
@@ -346,14 +435,21 @@ fi
 
 log_info "📝 Generating ICE servers configuration..."
 
+# Use the Gateway IP if available, otherwise use configured external IP
+ICE_SERVER_IP=${GATEWAY_EXTERNAL_IP:-$STUNNER_LB_IP}
+if [ "$ICE_SERVER_IP" = "pending" ] || [ -z "$ICE_SERVER_IP" ]; then
+    ICE_SERVER_IP=$EXTERNAL_IP
+    log_warning "Using configured external IP for ICE servers: $ICE_SERVER_IP"
+fi
+
 # Create ICE servers JSON for orchestrator
 ICE_SERVERS_JSON=$(cat <<EOF
 [
   {
-    "urls": ["stun:${TURN_DOMAIN}:3478"]
+    "urls": ["stun:${TURN_DOMAIN}:3478", "stun:${ICE_SERVER_IP}:3478"]
   },
   {
-    "urls": ["turn:${TURN_DOMAIN}:3478"],
+    "urls": ["turn:${TURN_DOMAIN}:3478", "turn:${ICE_SERVER_IP}:3478"],
     "username": "${TURN_USERNAME}",
     "credential": "${TURN_PASSWORD}"
   }
@@ -386,7 +482,7 @@ echo "  • ReferenceGrant for cross-namespace routing"
 echo ""
 echo "🔗 STUNner Configuration:"
 echo "  Gateway: june-stunner-gateway"
-echo "  LoadBalancer IP: ${STUNNER_LB_IP:-pending}"
+echo "  LoadBalancer IP: ${STUNNER_LB_IP:-$ICE_SERVER_IP}"
 echo "  STUN URI: stun:${TURN_DOMAIN}:3478"
 echo "  TURN URI: turn:${TURN_DOMAIN}:3478"
 echo "  Username: $TURN_USERNAME"
@@ -406,7 +502,7 @@ echo ""
 echo "🔍 Debug Commands:"
 echo "  kubectl get gateway -n stunner"
 echo "  kubectl get svc -n stunner"
-echo "  kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator"
+echo "  kubectl logs -n stunner-system -l control-plane=controller-manager"
 echo "  kubectl get pods -n stunner"
 echo ""
 echo "======================================================"
