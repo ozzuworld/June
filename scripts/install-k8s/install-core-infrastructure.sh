@@ -28,6 +28,13 @@ CONFIG_DIR="/root/.june-config"
 mkdir -p "$CONFIG_DIR"
 
 # ============================================================================
+# FIXED: PROPER PATH DETECTION
+# ============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+MANIFEST_PATH="$REPO_ROOT/k8s/complete-manifests.yaml"
+
+# ============================================================================
 # CONFIGURATION COLLECTION (MOVED TO TOP)
 # ============================================================================
 
@@ -205,7 +212,7 @@ else
 fi
 
 # ============================================================================
-# ENHANCED DOMAIN VALIDATION WITH AUTOMATIC FIXES
+# ENHANCED DOMAIN VALIDATION WITH AUTOMATIC FIXES - COMPLETELY FIXED
 # ============================================================================
 
 log_info "🔍 Validating domain compatibility with existing manifests..."
@@ -228,20 +235,24 @@ if [ "$PRIMARY_DOMAIN" != "allsafe.world" ]; then
         1)
             log_info "🔄 Automatically updating manifests for $PRIMARY_DOMAIN..."
             
-            # Check if manifest file exists
-            if [ -f "../../k8s/complete-manifests.yaml" ]; then
-                # Create backup
-                cp "k8s/complete-manifests.yaml" "k8s/complete-manifests.yaml.backup-$(date +%Y%m%d-%H%M%S)"
+            # FIXED: Use proper path detection and consistent file operations
+            if [ -f "$MANIFEST_PATH" ]; then
+                # Create backup with timestamp using full path
+                BACKUP_FILE="${MANIFEST_PATH}.backup-$(date +%Y%m%d-%H%M%S)"
+                cp "$MANIFEST_PATH" "$BACKUP_FILE"
                 
-                # Update domains and certificate names
-                sed -i "s/allsafe\.world/$PRIMARY_DOMAIN/g" "k8s/complete-manifests.yaml"
-                sed -i "s/allsafe-wildcard-tls/$CERT_SECRET_NAME/g" "k8s/complete-manifests.yaml"
+                # Update domains and certificate names in the actual manifest file
+                sed -i "s/allsafe\.world/$PRIMARY_DOMAIN/g" "$MANIFEST_PATH"
+                sed -i "s/allsafe-wildcard-tls/$CERT_SECRET_NAME/g" "$MANIFEST_PATH"
                 
                 log_success "✅ Manifests updated automatically"
-                log_info "   Backup saved as: k8s/complete-manifests.yaml.backup-$(date +%Y%m%d-%H%M%S)"
+                log_info "   Backup saved as: $BACKUP_FILE"
             else
-                log_error "❌ Manifest file not found: k8s/complete-manifests.yaml"
-                log_error "   Please ensure you're running from the correct directory"
+                log_error "❌ Manifest file not found: $MANIFEST_PATH"
+                log_error "   Expected at: $MANIFEST_PATH"
+                log_error "   Current directory: $(pwd)"
+                log_error "   Script directory: $SCRIPT_DIR"
+                log_error "   Repository root: $REPO_ROOT"
                 exit 1
             fi
             ;;
@@ -262,7 +273,7 @@ if [ "$PRIMARY_DOMAIN" != "allsafe.world" ]; then
             ;;
         3)
             log_warning "⚠️  Continuing with manual updates required"
-            log_warning "   Remember to update k8s/complete-manifests.yaml after installation!"
+            log_warning "   Remember to update $MANIFEST_PATH after installation!"
             ;;
         4)
             log_info "❌ Installation cancelled by user"
