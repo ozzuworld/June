@@ -80,28 +80,25 @@ class AppConfig:
     def _load_webrtc_config(self) -> WebRTCConfig:
         """Load WebRTC configuration from environment"""
         
-def _load_webrtc_config(self) -> WebRTCConfig:
-    """Load WebRTC configuration from environment"""
-    
-    # Check for K8s-style single server URLs first
-    stun_server_url = os.getenv("STUN_SERVER_URL")
-    turn_server_url = os.getenv("TURN_SERVER_URL")
-    
-    # Check for legacy comma-separated format FIRST
-    stun_servers_str = os.getenv("STUN_SERVERS", "")  # ✅ FIXED: Define before use
-    turn_servers_str = os.getenv("TURN_SERVERS", "")
-    
-    # Build STUN servers list
-    stun_servers = []
-    if stun_server_url:
-        stun_servers.append(stun_server_url)
-        logger.info(f"Using K8s STUN server: {stun_server_url}")
-    elif stun_servers_str:  # ✅ Now this variable exists
-        stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
-        logger.info(f"Using legacy STUN servers: {stun_servers}")
-    else:
-        stun_servers = ["stun:stun.l.google.com:19302"]
-        logger.info("Using fallback Google STUN server")
+        # Check for K8s-style single server URLs first
+        stun_server_url = os.getenv("STUN_SERVER_URL")
+        turn_server_url = os.getenv("TURN_SERVER_URL")
+        
+        # Check for legacy comma-separated format
+        stun_servers_str = os.getenv("STUN_SERVERS", "")
+        turn_servers_str = os.getenv("TURN_SERVERS", "")
+        
+        # Build STUN servers list
+        stun_servers = []
+        if stun_server_url:
+            stun_servers.append(stun_server_url)
+            logger.info(f"Using K8s STUN server: {stun_server_url}")
+        elif stun_servers_str:
+            stun_servers = [s.strip() for s in stun_servers_str.split(",") if s.strip()]
+            logger.info(f"Using legacy STUN servers: {stun_servers}")
+        else:
+            stun_servers = ["stun:stun.l.google.com:19302"]
+            logger.info("Using fallback Google STUN server")
         
         # Build TURN servers list
         turn_servers = []
@@ -114,7 +111,7 @@ def _load_webrtc_config(self) -> WebRTCConfig:
         
         # ✅ FIX: Support both TURN_CREDENTIAL (K8s) and TURN_PASSWORD (legacy)
         turn_username = os.getenv("TURN_USERNAME")
-        turn_password = os.getenv("TURN_CREDENTIAL") or os.getenv("TURN_PASSWORD")  # K8s first, legacy fallback
+        turn_password = os.getenv("TURN_CREDENTIAL") or os.getenv("TURN_PASSWORD")
         
         # Get ICE servers JSON if available (for direct client use)
         ice_servers_json = os.getenv("ICE_SERVERS")
