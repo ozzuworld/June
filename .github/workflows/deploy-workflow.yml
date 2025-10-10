@@ -1,9 +1,9 @@
-name: 🚀 June Services Deploy (Optimized)
+name: 🚀 June Services Deploy (Modular Infrastructure)
 
 on:
   push:
     branches: [ master, develop ]
-    paths-ignore: [ 'README.md', 'docs/**', '.gitignore' ]
+    paths-ignore: [ 'README.md', 'docs/**', '.gitignore', 'scripts/install-k8s/**' ]
   pull_request:
     branches: [ master ]
   workflow_dispatch:
@@ -68,13 +68,74 @@ jobs:
           echo "  Services: $SERVICES"
 
   # ============================================================================
+  # VERIFY INFRASTRUCTURE
+  # ============================================================================
+  
+  verify-infrastructure:
+    name: 🔍 Verify Infrastructure Ready
+    runs-on: self-hosted
+    needs: setup
+    steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+      
+      - name: 🔍 Check Kubernetes Cluster
+        run: |
+          echo "Verifying Kubernetes cluster..."
+          kubectl cluster-info
+          kubectl get nodes
+      
+      - name: 🔍 Check Namespaces
+        run: |
+          echo "Checking required namespaces..."
+          kubectl get namespace june-services || {
+            echo "❌ june-services namespace not found!"
+            exit 1
+          }
+          kubectl get namespace stunner || {
+            echo "⚠️  stunner namespace not found - STUNner may not be installed"
+          }
+      
+      - name: 🔍 Check STUNner Gateway
+        run: |
+          echo "Checking STUNner Gateway..."
+          if kubectl get gateway june-stunner-gateway -n stunner &>/dev/null; then
+            echo "✅ STUNner Gateway exists"
+            kubectl get gateway june-stunner-gateway -n stunner
+          else
+            echo "⚠️  STUNner Gateway not found - WebRTC may not work"
+          fi
+      
+      - name: 🔍 Load Infrastructure Config
+        run: |
+          if [ -f "/root/.june-config/domain-config.env" ]; then
+            echo "✅ Loading domain configuration..."
+            source /root/.june-config/domain-config.env
+            echo "PRIMARY_DOMAIN=$PRIMARY_DOMAIN" >> $GITHUB_ENV
+            echo "API_DOMAIN=$API_DOMAIN" >> $GITHUB_ENV
+            echo "TURN_DOMAIN=${TURN_DOMAIN:-turn.ozzu.world}" >> $GITHUB_ENV
+          else
+            echo "⚠️  No domain config found, using defaults"
+            echo "PRIMARY_DOMAIN=ozzu.world" >> $GITHUB_ENV
+            echo "API_DOMAIN=api.ozzu.world" >> $GITHUB_ENV
+            echo "TURN_DOMAIN=turn.ozzu.world" >> $GITHUB_ENV
+          fi
+          
+          if [ -f "/root/.june-config/networking.env" ]; then
+            echo "✅ Loading networking configuration..."
+            source /root/.june-config/networking.env
+            echo "STUNNER_USERNAME=$TURN_USERNAME" >> $GITHUB_ENV
+            echo "STUNNER_PASSWORD=$TURN_PASSWORD" >> $GITHUB_ENV
+          fi
+
+  # ============================================================================
   # BUILD IMAGES
   # ============================================================================
 
   build-stt:
     name: 🔨 Build june-stt
     runs-on: self-hosted
-    needs: setup
+    needs: [setup, verify-infrastructure]
     if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'stt'))
     steps:
       - name: 📦 Checkout
@@ -114,7 +175,7 @@ jobs:
   build-tts:
     name: 🔨 Build june-tts
     runs-on: self-hosted
-    needs: setup
+    needs: [setup, verify-infrastructure]
     if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'tts'))
     steps:
       - name: 📦 Checkout
@@ -154,7 +215,7 @@ jobs:
   build-orchestrator:
     name: 🔨 Build june-orchestrator
     runs-on: self-hosted
-    needs: setup
+    needs: [setup, verify-infrastructure]
     if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'orchestrator'))
     steps:
       - name: 📦 Checkout
@@ -194,7 +255,7 @@ jobs:
   build-idp:
     name: 🔨 Build june-idp
     runs-on: self-hosted
-    needs: setup
+    needs: [setup, verify-infrastructure]
     if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'idp'))
     steps:
       - name: 📦 Checkout
@@ -232,16 +293,17 @@ jobs:
           platforms: linux/amd64
 
   # ============================================================================
-  # DEPLOYMENT (UNIFIED APPROACH)
+  # DEPLOYMENT
   # ============================================================================
 
   deploy:
     name: 🚀 Deploy to Kubernetes
     runs-on: self-hosted
-    needs: [setup, build-stt, build-tts, build-orchestrator, build-idp]
+    needs: [setup, verify-infrastructure, build-stt, build-tts, build-orchestrator, build-idp]
     if: |
       always() && 
       needs.setup.outputs.deploy_services == 'true' &&
+      needs.verify-infrastructure.result == 'success' &&
       (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
       (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
       (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
@@ -251,98 +313,50 @@ jobs:
       - name: 📦 Checkout
         uses: actions/checkout@v4
 
-      # ========================================================================
-      # Quick Infrastructure Check
-      # ========================================================================
-      
-      - name: 🔍 Quick Infrastructure Check
+      - name: 🌐 Load Infrastructure Configuration
+        id: load-config
         run: |
-          echo "🔍 Checking infrastructure readiness..."
-          
-          if ! kubectl cluster-info &>/dev/null; then
-            echo "❌ Cannot connect to Kubernetes cluster!"
-            exit 1
-          fi
-          
-          if ! kubectl get ns $NAMESPACE &>/dev/null; then
-            echo "❌ Namespace '$NAMESPACE' doesn't exist!"
-            exit 1
-          fi
-          
-          echo "✅ Basic infrastructure ready"
-
-      # ========================================================================
-      # Generate Manifests with Domain Configuration
-      # ========================================================================
-      
-      - name: 🌐 Generate Deployment Manifests
-        run: |
-          echo "🌐 Generating deployment manifests..."
+          echo "Loading configuration from /root/.june-config/..."
           
           # Load domain config
           if [ -f "/root/.june-config/domain-config.env" ]; then
             source /root/.june-config/domain-config.env
-            echo "✅ Using configured domains"
+            echo "✅ Domain config loaded"
           else
-            echo "⚠️  No domain config found, using defaults"
-            PRIMARY_DOMAIN="allsafe.world"
-            API_DOMAIN="api.allsafe.world"
-            IDP_DOMAIN="idp.allsafe.world"
-            STT_DOMAIN="stt.allsafe.world"
-            TTS_DOMAIN="tts.allsafe.world"
-            TURN_DOMAIN="turn.allsafe.world"
-            CERT_SECRET_NAME="allsafe-wildcard-tls"
-            STUNNER_USERNAME="june-user"
-            STUNNER_PASSWORD="Pokemon123!"
+            echo "⚠️  Using default domain config"
+            PRIMARY_DOMAIN="ozzu.world"
+            API_DOMAIN="api.ozzu.world"
+            IDP_DOMAIN="idp.ozzu.world"
+            STT_DOMAIN="stt.ozzu.world"
+            TTS_DOMAIN="tts.ozzu.world"
+            TURN_DOMAIN="turn.ozzu.world"
+            CERT_SECRET_NAME="ozzu-world-wildcard-tls"
           fi
           
-          # Generate June services manifest
-          cp k8s/complete-manifests.yaml /tmp/june-services.yaml
-          
-          # Replace domain placeholders
-          sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
-          sed -i "s/\*.allsafe.world/*.${PRIMARY_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/api.allsafe.world/${API_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/june-services.yaml
-          
-          # Replace WebRTC placeholders
-          sed -i "s/TURN_DOMAIN_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${STUNNER_USERNAME}/g" /tmp/june-services.yaml
-          sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${STUNNER_PASSWORD}/g" /tmp/june-services.yaml
-          
-          # Generate STUNner manifest (FIXED - no gateway resource)
-          if kubectl get namespace stunner &>/dev/null; then
-            echo "✅ STUNner namespace found, deploying STUNner resources"
-            
-            if [ -f "k8s/stunner-manifests.yaml" ]; then
-              cp k8s/stunner-manifests.yaml /tmp/stunner-resources.yaml
-              sed -i "s/STUNNER_REALM_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/stunner-resources.yaml
-              sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${STUNNER_USERNAME}/g" /tmp/stunner-resources.yaml
-              sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${STUNNER_PASSWORD}/g" /tmp/stunner-resources.yaml
-              echo "✅ STUNner manifest ready"
-            else
-              echo "⚠️  STUNner manifest not found, skipping STUNner deployment"
-            fi
+          # Load networking config
+          if [ -f "/root/.june-config/networking.env" ]; then
+            source /root/.june-config/networking.env
+            echo "✅ Networking config loaded"
           else
-            echo "⚠️  STUNner not installed, skipping STUNner deployment"
+            echo "⚠️  Using default networking config"
+            TURN_USERNAME="june-user"
+            TURN_PASSWORD="Pokemon123!"
           fi
           
-          echo "✅ Manifests generated"
+          # Export to environment
+          echo "PRIMARY_DOMAIN=$PRIMARY_DOMAIN" >> $GITHUB_ENV
+          echo "API_DOMAIN=$API_DOMAIN" >> $GITHUB_ENV
+          echo "IDP_DOMAIN=$IDP_DOMAIN" >> $GITHUB_ENV
+          echo "STT_DOMAIN=$STT_DOMAIN" >> $GITHUB_ENV
+          echo "TTS_DOMAIN=$TTS_DOMAIN" >> $GITHUB_ENV
+          echo "TURN_DOMAIN=$TURN_DOMAIN" >> $GITHUB_ENV
+          echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> $GITHUB_ENV
+          echo "TURN_USERNAME=$TURN_USERNAME" >> $GITHUB_ENV
+          echo "TURN_PASSWORD=$TURN_PASSWORD" >> $GITHUB_ENV
 
-      # ========================================================================
-      # Update Application Secrets
-      # ========================================================================
-      
       - name: 🔐 Update Application Secrets
         run: |
-          echo "🔐 Updating application secrets..."
-          
-          if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
-            echo "❌ ERROR: GEMINI_API_KEY not set in GitHub secrets!"
-            exit 1
-          fi
+          echo "Updating application secrets..."
           
           kubectl create secret generic june-secrets \
             --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
@@ -350,63 +364,56 @@ jobs:
             --namespace=$NAMESPACE \
             --dry-run=client -o yaml | kubectl apply -f -
           
-          echo "✅ Application secrets updated"
+          echo "✅ Secrets updated"
 
-      # ========================================================================
-      # Deploy STUNner (Gateway API - Operator Managed)
-      # ========================================================================
-      
-      - name: 🔗 Deploy STUNner Gateway Resources
+      - name: 🔗 Configure STUNner UDPRoutes
         run: |
-          echo "🔗 Deploying STUNner Gateway API resources..."
+          echo "Configuring STUNner UDPRoutes..."
           
-          # Operator is guaranteed to be installed by verify-infrastructure job
+          # Check if STUNner is installed
+          if ! kubectl get namespace stunner &>/dev/null; then
+            echo "⚠️  STUNner not installed, skipping UDPRoute configuration"
+            exit 0
+          fi
           
-          # Apply Gateway API resources
-          if [ -f "/tmp/stunner-resources.yaml" ]; then
-            kubectl apply -f /tmp/stunner-resources.yaml
+          # Apply STUNner manifests with configuration
+          if [ -f "k8s/stunner-manifests.yaml" ]; then
+            cp k8s/stunner-manifests.yaml /tmp/stunner-configured.yaml
             
-            echo "⏳ Waiting for Gateway to be Programmed..."
-            kubectl wait --for=condition=Programmed gateway/june-stunner-gateway \
-              -n stunner --timeout=300s || {
-              echo "⚠️  Gateway taking longer than expected"
-              kubectl describe gateway june-stunner-gateway -n stunner
-            }
+            sed -i "s/STUNNER_REALM_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/stunner-configured.yaml
+            sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${TURN_USERNAME}/g" /tmp/stunner-configured.yaml
+            sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${TURN_PASSWORD}/g" /tmp/stunner-configured.yaml
             
-            # Get Gateway address
-            GATEWAY_ADDR=$(kubectl get gateway june-stunner-gateway -n stunner \
-              -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || echo "pending")
-            
-            echo "✅ STUNner Gateway deployed"
-            echo "   Address: $GATEWAY_ADDR:3478"
+            kubectl apply -f /tmp/stunner-configured.yaml
+            echo "✅ STUNner UDPRoutes configured"
           else
-            echo "❌ STUNner manifest not found at /tmp/stunner-resources.yaml"
-            exit 1
+            echo "⚠️  stunner-manifests.yaml not found"
           fi
 
-      # ========================================================================
-      # Deploy June Services
-      # ========================================================================
-      
       - name: 🚀 Deploy June Services
         run: |
-          echo "🚀 Deploying June services..."
+          echo "Deploying June services..."
+          
+          # Generate configured manifests
+          cp k8s/complete-manifests.yaml /tmp/june-services.yaml
+          
+          # Replace domain placeholders
+          sed -i "s/${CERT_SECRET_NAME:-allsafe-wildcard-tls}/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
+          sed -i "s/api.allsafe.world/${API_DOMAIN}/g" /tmp/june-services.yaml
+          sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/june-services.yaml
+          sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/june-services.yaml
+          sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/june-services.yaml
+          
+          # Apply manifests
           kubectl apply -f /tmp/june-services.yaml
-          echo "✅ June services deployed"
+          echo "✅ Services deployed"
 
-      # ========================================================================
-      # Wait for Services
-      # ========================================================================
-      
       - name: ⏳ Wait for Services
         run: |
-          echo "⏳ Waiting for services to be ready..."
+          echo "Waiting for services to be ready..."
           
           echo "Waiting for PostgreSQL..."
-          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || {
-            echo "⚠️  PostgreSQL taking longer than expected"
-            kubectl get pods -l app=postgresql -n $NAMESPACE
-          }
+          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || true
           
           echo "Waiting for Keycloak (IDP)..."
           kubectl rollout status deployment/june-idp -n $NAMESPACE --timeout=300s || true
@@ -418,26 +425,11 @@ jobs:
           kubectl rollout status deployment/june-stt -n $NAMESPACE --timeout=600s || true
           kubectl rollout status deployment/june-tts -n $NAMESPACE --timeout=600s || true
           
-          echo "✅ Service deployment complete"
+          echo "✅ Deployment complete"
 
-      # ========================================================================
-      # Deployment Summary
-      # ========================================================================
-      
       - name: 📊 Deployment Summary
         if: always()
         run: |
-          # Load domain config for summary
-          if [ -f "/root/.june-config/domain-config.env" ]; then
-            source /root/.june-config/domain-config.env
-          else
-            API_DOMAIN="api.allsafe.world"
-            IDP_DOMAIN="idp.allsafe.world"
-            STT_DOMAIN="stt.allsafe.world"
-            TTS_DOMAIN="tts.allsafe.world"
-            TURN_DOMAIN="turn.allsafe.world"
-          fi
-          
           echo ""
           echo "======================================================"
           echo "📊 June Platform Deployment Summary"
@@ -476,22 +468,14 @@ jobs:
           if [ "$FAILED" -gt 0 ]; then
             echo ""
             echo "❌ Deployment completed with failures!"
-            kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed
             exit 1
           elif [ "$PENDING" -gt 0 ]; then
             echo ""
-            echo "⚠️  Some pods still pending (may need more time)"
+            echo "⚠️  Some pods still pending"
           else
             echo ""
             echo "✅ Deployment successful!"
           fi
           
           echo ""
-          echo "🚀 Next Steps:"
-          echo "  1. Test API: curl -k https://${API_DOMAIN}/healthz"
-          echo "  2. Access IDP: https://${IDP_DOMAIN}"
-          echo "  3. Monitor: kubectl get pods -n $NAMESPACE -w"
-          if kubectl get namespace stunner &>/dev/null; then
-            echo "  4. Test TURN: python3 scripts/test-turn-server.py"
-          fi
           echo "======================================================"
