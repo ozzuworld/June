@@ -161,6 +161,9 @@ helm repo add stunner https://l7mp.io/stunner
 helm repo update
 
 # Install operator
+# Find and replace this section in your script (around line 190-200):
+
+# Install operator
 if helm list -n stunner-system | grep -q stunner-gateway-operator; then
     log_success "STUNner operator already installed"
 else
@@ -182,8 +185,9 @@ else
         echo "=== Recent Events ==="
         kubectl get events -n stunner-system --sort-by='.lastTimestamp' | tail -10
         echo "=== Operator Logs ==="
-        kubectl logs -n stunner-system -l control-plane=controller-manager --tail=20 2>/dev/null || echo "No logs available"
+        kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator --tail=20 2>/dev/null || echo "No logs available"
     }
+
     
     # Wait for deployment to be available (should be quick after Helm)
     log_info "Waiting for STUNner deployment to be available..."
