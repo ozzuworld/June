@@ -58,13 +58,20 @@ else
     TURN_PASSWORD=${TURN_PASSWORD:-Pokemon123!}
     
     # Save configuration
-cat > "$CONFIG_DIR/networking.env" << EOF
+    cat > "$CONFIG_DIR/networking.env" << 'NETWORKING_ENV_EOF'
 EXTERNAL_IP=$EXTERNAL_IP
 TURN_DOMAIN=$TURN_DOMAIN
 TURN_USERNAME=$TURN_USERNAME
 TURN_PASSWORD=$TURN_PASSWORD
 INSTALL_DATE="$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-EOF
+NETWORKING_ENV_EOF
+    
+    # Replace variables in the saved file
+    sed -i "s/\$EXTERNAL_IP/$EXTERNAL_IP/g" "$CONFIG_DIR/networking.env"
+    sed -i "s/\$TURN_DOMAIN/$TURN_DOMAIN/g" "$CONFIG_DIR/networking.env"
+    sed -i "s/\$TURN_USERNAME/$TURN_USERNAME/g" "$CONFIG_DIR/networking.env"
+    sed -i "s/\$TURN_PASSWORD/$TURN_PASSWORD/g" "$CONFIG_DIR/networking.env"
+    
     chmod 600 "$CONFIG_DIR/networking.env"
 fi
 
@@ -99,7 +106,7 @@ fi
 
 # Configure IP pool
 log_info "Configuring MetalLB IP pool..."
-cat <<EOF | kubectl apply -f -
+cat <<METALLB_CONFIG_EOF | kubectl apply -f -
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -117,7 +124,7 @@ metadata:
 spec:
   ipAddressPools:
   - june-pool
-EOF
+METALLB_CONFIG_EOF
 
 log_success "MetalLB configured with IP: $EXTERNAL_IP"
 
@@ -161,9 +168,6 @@ helm repo add stunner https://l7mp.io/stunner
 helm repo update
 
 # Install operator
-# Find and replace this section in your script (around line 190-200):
-
-# Install operator
 if helm list -n stunner-system | grep -q stunner-gateway-operator; then
     log_success "STUNner operator already installed"
 else
@@ -185,9 +189,8 @@ else
         echo "=== Recent Events ==="
         kubectl get events -n stunner-system --sort-by='.lastTimestamp' | tail -10
         echo "=== Operator Logs ==="
-        kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator --tail=20 2>/dev/null || echo "No logs available"
+        kubectl logs -n stunner-system -l control-plane=controller-manager --tail=20 2>/dev/null || echo "No logs available"
     }
-
     
     # Wait for deployment to be available (should be quick after Helm)
     log_info "Waiting for STUNner deployment to be available..."
@@ -196,30 +199,7 @@ else
         log_warning "Deployment availability check failed, checking pods directly..."
     fi
     
-<<<<<<< HEAD
     # Wait for pods to be ready using multiple approaches
-    log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
-    
-    # Try multiple label selectors and approaches
-    if kubectl wait --for=condition=ready --timeout=600s \
-        pod -l control-plane=controller-manager -n stunner-system 2>/dev/null; then
-        log_success "STUNner operator pods are ready!"
-    elif kubectl wait --for=condition=ready --timeout=600s \
-        pod -l app.kubernetes.io/name=stunner-gateway-operator -n stunner-system 2>/dev/null; then
-        log_success "STUNner operator pods are ready!"
-    else
-        # Check if pods are actually running despite wait failure
-        RUNNING_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
-        TOTAL_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | wc -l || echo "0")
-        
-        if [ "$RUNNING_PODS" -gt 0 ] && [ "$RUNNING_PODS" -eq "$TOTAL_PODS" ]; then
-            log_success "STUNner operator pods are ready!"
-        else
-            log_error "Timeout waiting for STUNner operator pods to be ready"
-            show_stunner_debug
-            exit 1
-=======
-    # FIXED: Wait for pods using correct approach
     log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
     
     # Check if pods exist and are running - use multiple approaches for reliability
@@ -282,7 +262,6 @@ else
             show_stunner_debug
             # Don't exit - let's continue and see if it works
             log_warning "Continuing anyway - sometimes the installation works despite check failures..."
->>>>>>> 8511e4cb37bf072103059e8199a8781891e6e3f2
         fi
     fi
     
@@ -290,23 +269,14 @@ else
     log_info "Verifying STUNner operator functionality..."
     sleep 5  # Give operator a moment to register controllers
     
-<<<<<<< HEAD
-    # Check for STUNner CRDs
-    if kubectl get crd | grep -q "stunner.l7mp.io"; then
-=======
     # Check if STUNner CRDs are available
     if kubectl get crd dataplanes.stunner.l7mp.io >/dev/null 2>&1; then
->>>>>>> 8511e4cb37bf072103059e8199a8781891e6e3f2
         log_success "STUNner CRDs are available - operator is functional"
     else
         log_warning "STUNner CRDs not immediately available, but continuing..."
     fi
     
-<<<<<<< HEAD
-    # Check Gateway API accessibility
-=======
     # Try to access gateway resources
->>>>>>> 8511e4cb37bf072103059e8199a8781891e6e3f2
     if kubectl get gatewayclass >/dev/null 2>&1; then
         log_success "Gateway API resources accessible - STUNner operator is functional"
     else
@@ -323,7 +293,7 @@ fi
 log_info "⚙️  Configuring STUNner Gateway..."
 
 # GatewayConfig
-cat <<EOF | kubectl apply -f -
+cat <<GATEWAY_CONFIG_EOF | kubectl apply -f -
 apiVersion: stunner.l7mp.io/v1alpha1
 kind: GatewayConfig
 metadata:
@@ -335,10 +305,10 @@ spec:
   userName: ${TURN_USERNAME}
   password: ${TURN_PASSWORD}
   logLevel: all:INFO
-EOF
+GATEWAY_CONFIG_EOF
 
 # GatewayClass
-cat <<EOF | kubectl apply -f -
+cat <<GATEWAY_CLASS_EOF | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
@@ -351,10 +321,10 @@ spec:
     name: stunner-gatewayconfig
     namespace: stunner-system
   description: "STUNner Gateway for June WebRTC"
-EOF
+GATEWAY_CLASS_EOF
 
 # Gateway with LoadBalancer
-cat <<EOF | kubectl apply -f -
+cat <<GATEWAY_MANIFEST_EOF | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -373,7 +343,7 @@ spec:
   - name: tcp-listener
     port: 3478
     protocol: TCP
-EOF
+GATEWAY_MANIFEST_EOF
 
 log_success "STUNner Gateway created!"
 
@@ -463,7 +433,7 @@ log_info "🔐 Creating ReferenceGrant for cross-namespace access..."
 # Ensure june-services namespace exists
 kubectl create namespace june-services || true
 
-cat <<EOF | kubectl apply -f -
+cat <<REFERENCE_GRANT_EOF | kubectl apply -f -
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -477,7 +447,7 @@ spec:
   to:
   - group: ""
     kind: Service
-EOF
+REFERENCE_GRANT_EOF
 
 log_success "ReferenceGrant created!"
 
@@ -522,7 +492,7 @@ if [ "$ICE_SERVER_IP" = "pending" ] || [ -z "$ICE_SERVER_IP" ]; then
 fi
 
 # Create ICE servers JSON for orchestrator
-ICE_SERVERS_JSON=$(cat <<EOF
+ICE_SERVERS_JSON=$(cat <<ICE_SERVERS_JSON_EOF
 [
   {
     "urls": ["stun:${TURN_DOMAIN}:3478", "stun:${ICE_SERVER_IP}:3478"]
@@ -533,13 +503,13 @@ ICE_SERVERS_JSON=$(cat <<EOF
     "credential": "${TURN_PASSWORD}"
   }
 ]
-EOF
+ICE_SERVERS_JSON_EOF
 )
 
 # Save to config
-cat > "$CONFIG_DIR/ice-servers.json" << EOF
+cat > "$CONFIG_DIR/ice-servers.json" << ICE_SERVERS_FILE_EOF
 $ICE_SERVERS_JSON
-EOF
+ICE_SERVERS_FILE_EOF
 
 log_success "ICE servers configuration saved to $CONFIG_DIR/ice-servers.json"
 
