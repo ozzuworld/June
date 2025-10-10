@@ -432,7 +432,7 @@ jobs:
           # Generate configured manifests
           cp k8s/complete-manifests.yaml /tmp/june-services.yaml
           
-          # Replace certificate secret name (FROM hardcoded TO actual)
+          # Replace certificate secret name (hardcoded → actual)
           sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
           
           # Replace domain placeholders
@@ -440,6 +440,10 @@ jobs:
           sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/june-services.yaml
           sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/june-services.yaml
           sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/june-services.yaml
+          
+          # Verify replacements (optional debugging)
+          echo "🔍 Verifying certificate secret name in manifest:"
+          grep -n "secretName.*tls" /tmp/june-services.yaml | head -3
           
           # Apply manifests
           kubectl apply -f /tmp/june-services.yaml
