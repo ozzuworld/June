@@ -463,7 +463,7 @@ if [ "$CERT_RESTORE_CHOICE" = true ] && [ -n "$SELECTED_CERT_BACKUP" ]; then
     log_info "🔄 Restoring selected certificate backup..."
     
     # Extract secret name from backup
-    BACKUP_SECRET_NAME=$(grep -A1 "kind: Secret" "$SELECTED_CERT_BACKUP" | grep "name:" | head -1 | awk '{print $2}' | tr -d '"')
+    BACKUP_SECRET_NAME=$(grep "name:" "$SELECTED_CERT_BACKUP" | grep -v "certificate-name" | head -1 | awk '{print $2}' | tr -d '"')
     
     if [ -n "$BACKUP_SECRET_NAME" ]; then
         log_info "Restoring certificate secret: $BACKUP_SECRET_NAME"
