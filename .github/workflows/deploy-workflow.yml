@@ -380,11 +380,22 @@ jobs:
           if [ -f "k8s/stunner-manifests.yaml" ]; then
             cp k8s/stunner-manifests.yaml /tmp/stunner-configured.yaml
             
+            # Use TURN_DOMAIN from environment or fallback
+            TURN_DOMAIN="${TURN_DOMAIN:-turn.ozzu.world}"
+            TURN_USERNAME="${TURN_USERNAME:-june-user}"
+            TURN_PASSWORD="${TURN_PASSWORD:-Pokemon123!}"
+            
             sed -i "s/STUNNER_REALM_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/stunner-configured.yaml
             sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${TURN_USERNAME}/g" /tmp/stunner-configured.yaml
             sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${TURN_PASSWORD}/g" /tmp/stunner-configured.yaml
             
-            kubectl apply -f /tmp/stunner-configured.yaml
+            # Apply with better error handling
+            kubectl apply -f /tmp/stunner-configured.yaml || {
+              echo "⚠️  Some STUNner resources failed to apply, checking details..."
+              kubectl get crd | grep -E "(gateway|stunner)" || echo "Missing CRDs!"
+              exit 1
+            }
+            
             echo "✅ STUNner UDPRoutes configured"
           else
             echo "⚠️  stunner-manifests.yaml not found"
