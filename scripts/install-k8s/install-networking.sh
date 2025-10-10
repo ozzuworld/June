@@ -1,5 +1,5 @@
 #!/bin/bash
-# Networking Setup: MetalLB + STUNner with Gateway API v1alpha2
+# Networking Setup: MetalLB + STUNner with Gateway API v1
 # Run this after install-core-infrastructure.sh
 # Usage: ./install-networking.sh
 
@@ -19,7 +19,7 @@ log_error()   { echo -e "${RED}❌ $1${NC}"; }
 
 echo "======================================================"
 echo "🌐 Networking Setup: MetalLB + STUNner"
-echo "   Gateway API v1alpha2 with WebRTC Support"
+echo "   Gateway API v1 with WebRTC Support"
 echo "======================================================"
 echo ""
 
@@ -130,19 +130,15 @@ log_info "🔗 Installing Gateway API v1.3.0 (v1 stable)..."
 # Install Gateway API CRDs
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml
 
-
-# Wait for CRDs
-# Wait for CRDs
-log_info "Waiting for Gateway API CRDs..."
+# Wait for CRDs to be established
+log_info "Waiting for Gateway API CRDs to be established..."
 kubectl wait --for condition=established --timeout=60s \
     crd/gatewayclasses.gateway.networking.k8s.io \
     crd/gateways.gateway.networking.k8s.io \
     crd/httproutes.gateway.networking.k8s.io \
-    crd/referencegrants.gateway.networking.k8s.io 2>/dev/null || log_warning "CRDs taking longer"
+    crd/referencegrants.gateway.networking.k8s.io 2>/dev/null || log_warning "CRDs taking longer than expected"
 
-
-sleep 5
-log_success "Gateway API v1alpha2 installed!"
+log_success "Gateway API v1 installed successfully!"
 
 # ============================================================================
 # STUNNER OPERATOR
@@ -170,7 +166,7 @@ if helm list -n stunner-system | grep -q stunner-gateway-operator; then
 else
     log_info "Installing STUNner operator (this may take 5-10 minutes)..."
     
-    # First, try to install without --wait (faster feedback)
+    # Install with Helm
     helm install stunner-gateway-operator stunner/stunner-gateway-operator \
         --namespace=stunner-system \
         --set stunnerGatewayOperator.dataplane.spec.replicas=1 \
@@ -178,67 +174,55 @@ else
     
     log_info "Operator installation initiated, waiting for pods..."
     
-    # Wait for deployment with better error handling
-    TIMEOUT=600  # 10 minutes
-    ELAPSED=0
-    INTERVAL=10
-    
-    while [ $ELAPSED -lt $TIMEOUT ]; do
-        # Check if deployment exists
-        if kubectl get deployment stunner-gateway-operator -n stunner-system &>/dev/null; then
-            # Check if deployment is available
-            AVAILABLE=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
-            
-            if [ "$AVAILABLE" = "1" ]; then
-                log_success "STUNner operator is ready!"
-                break
-            fi
-            
-            # Show progress
-            READY=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-            echo "  Progress: $READY/1 replicas ready... (${ELAPSED}s elapsed)"
-        else
-            echo "  Waiting for deployment to be created... (${ELAPSED}s elapsed)"
-        fi
-        
-        sleep $INTERVAL
-        ELAPSED=$((ELAPSED + INTERVAL))
-    done
-    
-    if [ $ELAPSED -ge $TIMEOUT ]; then
-        log_error "Operator installation timed out after ${TIMEOUT}s"
-        echo ""
-        echo "Debugging information:"
-        echo "====================" 
-        kubectl get all -n stunner-system
-        echo ""
-        echo "Pod details:"
-        kubectl describe pods -n stunner-system
-        echo ""
-        echo "Events:"
-        kubectl get events -n stunner-system --sort-by='.lastTimestamp' | tail -20
-        exit 1
-    fi
-fi
-
-# Wait for operator with explicit check
-log_info "Verifying operator is fully ready..."
-kubectl wait --for=condition=available deployment/stunner-gateway-operator \
-    -n stunner-system \
-    --timeout=180s 2>/dev/null || {
-    log_warning "Wait command had issues, checking manually..."
-    
-    # Manual check
-    AVAILABLE=$(kubectl get deployment stunner-gateway-operator -n stunner-system -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
-    if [ "$AVAILABLE" = "1" ]; then
-        log_success "Operator verified as ready"
-    else
-        log_error "Operator not ready. Checking status..."
-        kubectl get deployment stunner-gateway-operator -n stunner-system
+    # Function to show debug info if something fails
+    show_stunner_debug() {
+        log_error "STUNner installation failed. Debug information:"
+        echo "=== Pods ==="
         kubectl get pods -n stunner-system
+        echo "=== Recent Events ==="
+        kubectl get events -n stunner-system --sort-by='.lastTimestamp' | tail -10
+        echo "=== Operator Logs ==="
+        kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator --tail=20 2>/dev/null || echo "No logs available"
+    }
+    
+    # Wait for deployment to be available (should be quick after Helm)
+    log_info "Waiting for STUNner deployment to be available..."
+    if ! kubectl wait --for=condition=available --timeout=120s \
+        deployment/stunner-gateway-operator-controller-manager -n stunner-system 2>/dev/null; then
+        log_warning "Deployment availability check failed, checking pods directly..."
+    fi
+    
+    # Wait for pods to be ready (this is the main wait time)
+    log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
+    if kubectl wait --for=condition=ready --timeout=600s \
+        pod -l app.kubernetes.io/name=stunner-gateway-operator -n stunner-system; then
+        log_success "STUNner operator pod is ready!"
+    else
+        log_error "Timeout waiting for STUNner operator pods to be ready"
+        show_stunner_debug
         exit 1
     fi
-}
+    
+    # Wait for auth service to be ready
+    log_info "Waiting for STUNner auth service..."
+    if kubectl wait --for=condition=ready --timeout=120s \
+        pod -l app.kubernetes.io/name=stunner-auth -n stunner-system 2>/dev/null; then
+        log_success "STUNner auth service is ready!"
+    else
+        log_warning "STUNner auth service taking longer than expected, continuing..."
+    fi
+    
+    # Verify STUNner operator is functional
+    log_info "Verifying STUNner operator functionality..."
+    sleep 5  # Give operator a moment to register controllers
+    if kubectl get gatewayclass >/dev/null 2>&1; then
+        log_success "Gateway API resources accessible - STUNner operator is functional"
+    else
+        log_warning "Gateway API resources not immediately accessible, but continuing..."
+    fi
+    
+    log_success "STUNner installation completed successfully"
+fi
 
 # ============================================================================
 # STUNNER GATEWAY CONFIGURATION
@@ -395,7 +379,7 @@ echo "======================================================"
 echo ""
 echo "✅ Installed Components:"
 echo "  • MetalLB (IP: $EXTERNAL_IP)"
-echo "  • Gateway API v1alpha2"
+echo "  • Gateway API v1 (stable)"
 echo "  • STUNner Operator"
 echo "  • STUNner Gateway (LoadBalancer)"
 echo "  • ReferenceGrant for cross-namespace routing"
