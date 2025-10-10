@@ -187,40 +187,17 @@ else
         echo "=== Operator Logs ==="
         kubectl logs -n stunner-system -l app.kubernetes.io/name=stunner-gateway-operator --tail=20 2>/dev/null || echo "No logs available"
     }
-
     
-    # Wait for deployment to be available (should be quick after Helm)
+    # Wait for deployment to be available
     log_info "Waiting for STUNner deployment to be available..."
     if ! kubectl wait --for=condition=available --timeout=120s \
         deployment/stunner-gateway-operator-controller-manager -n stunner-system 2>/dev/null; then
         log_warning "Deployment availability check failed, checking pods directly..."
     fi
     
-    # Wait for pods to be ready using multiple approaches
+    # Wait for pods using multiple approaches
     log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
     
-    # Try multiple label selectors and approaches
-    if kubectl wait --for=condition=ready --timeout=600s \
-        pod -l control-plane=controller-manager -n stunner-system 2>/dev/null; then
-        log_success "STUNner operator pods are ready!"
-    elif kubectl wait --for=condition=ready --timeout=600s \
-        pod -l app.kubernetes.io/name=stunner-gateway-operator -n stunner-system 2>/dev/null; then
-        log_success "STUNner operator pods are ready!"
-    else
-        # Check if pods are actually running despite wait failure
-        RUNNING_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | grep -c "Running" || echo "0")
-        TOTAL_PODS=$(kubectl get pods -n stunner-system --no-headers 2>/dev/null | wc -l || echo "0")
-        
-        if [ "$RUNNING_PODS" -gt 0 ] && [ "$RUNNING_PODS" -eq "$TOTAL_PODS" ]; then
-            log_success "STUNner operator pods are ready!"
-        else
-            log_error "Timeout waiting for STUNner operator pods to be ready"
-            show_stunner_debug
-            exit 1
-    # FIXED: Wait for pods using correct approach
-    log_info "Waiting for STUNner operator pods to be ready (this may take 5-10 minutes for image pulling)..."
-    
-    # Check if pods exist and are running - use multiple approaches for reliability
     STUNNER_OPERATOR_READY=false
     STUNNER_AUTH_READY=false
     
@@ -241,7 +218,7 @@ else
             STUNNER_OPERATOR_READY=true
         fi
         
-        # Method 3: Direct pod name check (most reliable)
+        # Method 3: Direct pod name check
         if kubectl get pod -n stunner-system 2>/dev/null | grep -E "stunner-gateway-operator-controller-manager.*1/1.*Running" >/dev/null; then
             STUNNER_OPERATOR_READY=true
         fi
@@ -278,17 +255,14 @@ else
         else
             log_error "STUNner installation appears to have failed"
             show_stunner_debug
-            # Don't exit - let's continue and see if it works
             log_warning "Continuing anyway - sometimes the installation works despite check failures..."
         fi
     fi
     
     # Verify STUNner operator is functional
     log_info "Verifying STUNner operator functionality..."
-    sleep 5  # Give operator a moment to register controllers
+    sleep 5
     
-    # Check for STUNner CRDs
-    if kubectl get crd | grep -q "stunner.l7mp.io"; then
     # Check if STUNner CRDs are available
     if kubectl get crd dataplanes.stunner.l7mp.io >/dev/null 2>&1; then
         log_success "STUNner CRDs are available - operator is functional"
@@ -296,7 +270,6 @@ else
         log_warning "STUNner CRDs not immediately available, but continuing..."
     fi
     
-    # Check Gateway API accessibility
     # Try to access gateway resources
     if kubectl get gatewayclass >/dev/null 2>&1; then
         log_success "Gateway API resources accessible - STUNner operator is functional"
