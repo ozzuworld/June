@@ -68,7 +68,10 @@ data:
       }
     ]
   
-  # ✅ NEW: STUNner Gateway Service URL (managed by operator)
+  # ✅ FIXED: Added missing STUNNER_GATEWAY_URL key that orchestrator expects
+  STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
+  
+  # ✅ EXISTING: STUNner Gateway Service URL (managed by operator) - kept for compatibility
   STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
 
 ---
