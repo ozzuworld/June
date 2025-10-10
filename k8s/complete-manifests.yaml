@@ -1,10 +1,10 @@
 ---
-# COMPLETE JUNE SERVICES MANIFEST (FIXED FOR AUTOMATED DEPLOYMENT)
-# This is the ONLY k8s manifest file you need - all others can be deleted
+# COMPLETE JUNE SERVICES MANIFEST TEMPLATE
+# This template gets processed by generate-manifests.sh to create the final manifest
 # 
-# Prerequisites (created by stage2-install-k8s-ubuntu.sh):
+# Prerequisites (created by install-core-infrastructure.sh):
 #   - june-services namespace
-#   - local-storage StorageClass
+#   - local-storage StorageClass  
 #   - postgresql-pv PersistentVolume at /opt/june-postgresql-data
 #   - GPU Operator with time-slicing (2+ virtual GPUs)
 #   - ingress-nginx with hostNetwork
@@ -15,8 +15,8 @@
 #   - stunner namespace created
 #
 # Usage:
-#   kubectl apply -f stunner-manifests.yaml
-#   kubectl apply -f complete-manifests.yaml
+#   ./scripts/generate-manifests.sh
+#   kubectl apply -f k8s/complete-manifests.yaml
 
 apiVersion: v1
 kind: Namespace
@@ -48,10 +48,9 @@ data:
   LOG_LEVEL: info
   REGION: us-central1
   
-  # ✅ UPDATED: STUNner Gateway API format
-  # The operator manages the actual TURN server, we just need to reference it
-  STUN_SERVER_URL: "stun:turn.ozzu.world:3478"
-  TURN_SERVER_URL: "turn:turn.ozzu.world:3478"
+  # STUNner Gateway API format - uses dynamic domain
+  STUN_SERVER_URL: "stun:turn.{{PRIMARY_DOMAIN}}:3478"
+  TURN_SERVER_URL: "turn:turn.{{PRIMARY_DOMAIN}}:3478"
   TURN_USERNAME: "june-user"
   TURN_CREDENTIAL: "Pokemon123!"
   
@@ -59,19 +58,17 @@ data:
   ICE_SERVERS: |
     [
       {
-        "urls": ["stun:turn.ozzu.world:3478"]
+        "urls": ["stun:turn.{{PRIMARY_DOMAIN}}:3478"]
       },
       {
-        "urls": ["turn:turn.ozzu.world:3478"],
+        "urls": ["turn:turn.{{PRIMARY_DOMAIN}}:3478"],
         "username": "june-user",
         "credential": "Pokemon123!"
       }
     ]
   
-  # ✅ FIXED: Added missing STUNNER_GATEWAY_URL key that orchestrator expects
+  # STUNner Gateway URL (internal cluster communication)
   STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
-  
-  # ✅ EXISTING: STUNner Gateway Service URL (managed by operator) - kept for compatibility
   STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
 
 ---
@@ -472,7 +469,7 @@ spec:
         - name: KEYCLOAK_URL
           value: "http://june-idp.june-services.svc.cluster.local:8080"
         - name: KEYCLOAK_REALM
-          value: "allsafe"
+          value: "{{KEYCLOAK_REALM}}"
         - name: KEYCLOAK_CLIENT_ID
           value: "june-orchestrator"
         - name: TTS_SERVICE_URL
@@ -480,7 +477,7 @@ spec:
         - name: STT_SERVICE_URL
           value: "http://june-stt.june-services.svc.cluster.local:8080"
         
-        # WebRTC/STUNner Configuration (Fixed environment variable names)
+        # WebRTC/STUNner Configuration
         - name: STUN_SERVER_URL
           valueFrom:
             configMapKeyRef:
@@ -617,7 +614,7 @@ spec:
         - name: KC_HTTP_ENABLED
           value: "true"
         - name: KC_HOSTNAME
-          value: "idp.allsafe.world"
+          value: "{{IDP_DOMAIN}}"
         - name: KC_HOSTNAME_STRICT
           value: "false"
         - name: KC_HOSTNAME_STRICT_HTTPS
@@ -694,10 +691,11 @@ spec:
   ingressClassName: nginx
   tls:
   - hosts:
-    - "*.allsafe.world"
-    secretName: allsafe-wildcard-tls
+    - "{{WILDCARD_DOMAIN}}"
+    - "{{PRIMARY_DOMAIN}}"
+    secretName: {{CERT_SECRET_NAME}}
   rules:
-  - host: api.allsafe.world
+  - host: {{API_DOMAIN}}
     http:
       paths:
       - path: /
@@ -707,7 +705,7 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  - host: idp.allsafe.world
+  - host: {{IDP_DOMAIN}}
     http:
       paths:
       - path: /
@@ -717,7 +715,7 @@ spec:
             name: june-idp
             port:
               number: 8080
-  - host: stt.allsafe.world
+  - host: {{STT_DOMAIN}}
     http:
       paths:
       - path: /
@@ -727,7 +725,7 @@ spec:
             name: june-stt
             port:
               number: 8080
-  - host: tts.allsafe.world
+  - host: {{TTS_DOMAIN}}
     http:
       paths:
       - path: /
