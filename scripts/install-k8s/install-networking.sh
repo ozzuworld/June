@@ -122,13 +122,14 @@ EOF
 log_success "MetalLB configured with IP: $EXTERNAL_IP"
 
 # ============================================================================
-# GATEWAY API (v1alpha2)
+# GATEWAY API (v1 - STABLE)
 # ============================================================================
 
-log_info "🔗 Installing Gateway API v0.8.0 (v1alpha2)..."
+log_info "🔗 Installing Gateway API v1.3.0 (v1 stable)..."
 
 # Install Gateway API CRDs
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v0.8.0/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml
+
 
 # Wait for CRDs
 log_info "Waiting for Gateway API CRDs..."
