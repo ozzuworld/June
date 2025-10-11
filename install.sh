@@ -338,6 +338,12 @@ restore_certificate_if_exists() {
     
     kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
+    # Clean up any conflicting certificate resources first
+    log_info "Cleaning up any existing certificate conflicts..."
+    kubectl delete certificate "$CERT_SECRET_NAME" -n cert-manager &>/dev/null || true
+    kubectl delete certificaterequest -n cert-manager --all &>/dev/null || true
+    sleep 5
+    
     TEMP_CERT_FILE="/tmp/cert-restore-temp.yaml"
     sed 's/namespace: june-services/namespace: cert-manager/g' "$LATEST_BACKUP" > "$TEMP_CERT_FILE"
     
@@ -577,6 +583,14 @@ EOF
         kubectl annotate namespace june-services meta.helm.sh/release-namespace=june-services --overwrite > /dev/null 2>&1
     fi
     
+    # Clean up any existing certificate conflicts in june-services before deployment
+    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+        log_info "Cleaning up certificate conflicts in june-services..."
+        kubectl delete certificate --all -n june-services &>/dev/null || true
+        kubectl delete certificaterequest --all -n june-services &>/dev/null || true
+        sleep 3
+    fi
+    
     # Detect GPU availability
     GPU_AVAILABLE="false"
     
@@ -627,14 +641,14 @@ EOF
         --timeout 15m
     )
     
-    # Don't use --wait flag to avoid blocking on GPU services
-    
+    # Configure certificate handling based on backup availability
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Using restored certificate"
-        HELM_ARGS+=(--set certificate.enabled=true)   
-        HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
+        log_info "Using restored certificate (disabling cert-manager certificate creation)"
+        HELM_ARGS+=(--set certificate.enabled=false)  # Disable automatic cert creation
+    else
+        log_info "Will create new certificate via cert-manager"
+        HELM_ARGS+=(--set certificate.enabled=true)
     fi
-
     
     log "Deploying services..."
     
@@ -642,6 +656,14 @@ EOF
     helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log
     HELM_EXIT_CODE=$?
     set -e
+    
+    # Copy certificate from cert-manager to june-services after deployment
+    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+        log_info "Copying certificate to june-services..."
+        kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
+            sed 's/namespace: cert-manager/namespace: june-services/' | \
+            kubectl apply -f - > /dev/null 2>&1
+    fi
     
     # Wait for critical services only (not GPU-dependent ones)
     log_info "Waiting for core services to start..."
@@ -674,14 +696,6 @@ EOF
         else
             error "Deployment failed. Check /tmp/helm-deploy.log"
         fi
-    fi
-    
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Copying certificate to june-services..."
-        
-        kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
-            sed 's/namespace: cert-manager/namespace: june-services/' | \
-            kubectl apply -f - > /dev/null 2>&1
     fi
     
     # ✅ CRITICAL FIX: Create UDPRoutes after services are deployed
