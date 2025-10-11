@@ -43,3 +43,88 @@ data:
   STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
   STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
   {{- end }}
+
+---
+{{- if .Values.janus.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "june-platform.fullname" . }}-janus-config
+  namespace: {{ .Release.Namespace }}
+data:
+  # Janus Gateway configuration files
+  janus.jcfg: |
+    general: {
+      configs_folder = "/opt/janus/etc/janus"
+      plugins_folder = "/opt/janus/lib/janus/plugins"
+      transports_folder = "/opt/janus/lib/janus/transports"
+      events_folder = "/opt/janus/lib/janus/events"
+      loggers_folder = "/opt/janus/lib/janus/loggers"
+      
+      log_level = 4
+      log_timestamps = true
+      log_colors = false
+      
+      interface = "0.0.0.0"
+      debug_level = 4
+      debug_timestamps = true
+      debug_colors = false
+      
+      api_secret = "$(JANUS_API_SECRET)"
+      admin_secret = "$(JANUS_ADMIN_KEY)"
+      
+      server_name = "Janus WebRTC Server"
+      session_timeout = 60
+      candidates_timeout = 45
+      reclaim_session_timeout = 0
+      
+      rtp_port_range = "20000-40000"
+    }
+  
+  janus.transport.http.jcfg: |
+    general: {
+      json = "indented"
+      base_path = "/janus"
+      http = true
+      port = 8088
+      interface = "0.0.0.0"
+      ip = "0.0.0.0"
+      
+      https = false
+      secure_port = 8889
+      
+      admin_base_path = "/admin"
+      admin_http = true
+      admin_port = 7088
+      admin_interface = "0.0.0.0"
+      admin_ip = "0.0.0.0"
+    }
+  
+  janus.transport.websockets.jcfg: |
+    general: {
+      json = "indented"
+      ws = true
+      ws_port = 8188
+      ws_interface = "0.0.0.0"
+      ws_ip = "0.0.0.0"
+      
+      wss = false
+      wss_port = 8989
+      
+      admin_ws = true
+      admin_ws_port = 7188
+      admin_ws_interface = "0.0.0.0"
+      admin_ws_ip = "0.0.0.0"
+    }
+  
+  janus.plugin.videoroom.jcfg: |
+    general: {
+      admin_key = "$(JANUS_ADMIN_KEY)"
+      string_ids = false
+    }
+  
+  janus.plugin.echotest.jcfg: |
+    general: {
+      admin_key = "$(JANUS_ADMIN_KEY)"
+    }
+{{- end }}
