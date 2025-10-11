@@ -294,9 +294,9 @@ install_helm() {
 # ============================================================================
 
 deploy_june() {
-    log "Step 6/6: Deploying June Platform..."
+    log_info "Step 6/6: Deploying June Platform..."
     
-    HELM_CHART="$REPO_ROOT/helm/june-platform"
+    HELM_CHART="$SCRIPT_DIR/helm/june-platform"
     
     if [ ! -d "$HELM_CHART" ]; then
         error "Helm chart not found at: $HELM_CHART
