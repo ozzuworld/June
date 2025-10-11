@@ -1,0 +1,33 @@
+{
+    "general": {
+        "json": "indented",
+        "base_path": "/opt/janus",
+        "threads_per_scheduler": 4,
+        "session_timeout": 60,
+        "candidates_timeout": 45,
+        "reclaim_session_timeout": 0,
+        "debug_level": 4,
+        "debug_timestamps": true,
+        "log_to_stdout": false,
+        "log_to_file": "/var/log/janus.log"
+    },
+    "certificates": {
+        "cert_pem": "/opt/janus/share/janus/certs/mycert.pem",
+        "cert_key": "/opt/janus/share/janus/certs/mycert.key"
+    },
+    "media": {
+        "rtp_port_range": "20000-40000",
+        "force_bundle": true,
+        "force_rtcp_mux": true,
+        "ipv6_candidates": false
+    },
+    "nat": {
+        "stun_server": "stunner-gateway.stunner-system.svc.cluster.local",
+        "stun_port": 3478,
+        "nice_debug": false,
+        "full_trickle": true,
+        "ice_lite": false,
+        "ice_tcp": false,
+        "nat_1_1_mapping": ""
+    }
+}

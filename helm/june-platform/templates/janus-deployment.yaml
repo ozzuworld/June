@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "june-platform.fullname" . }}-janus
+  labels:
+    {{- include "june-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: janus-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "june-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: janus-gateway
+  template:
+    metadata:
+      labels:
+        {{- include "june-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: janus-gateway
+    spec:
+      containers:
+      - name: janus-gateway
+        image: "{{ .Values.janus.image.repository }}:{{ .Values.janus.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.janus.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: janus-http
+          containerPort: 8088
+          protocol: TCP
+        - name: janus-ws
+          containerPort: 8188
+          protocol: TCP
+        - name: rtp-start
+          containerPort: 20000
+          protocol: UDP
+        - name: rtp-end
+          containerPort: 40000
+          protocol: UDP
+        env:
+        - name: JANUS_URL
+          value: "http://localhost:8088/janus"
+        - name: JANUS_ADMIN_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-janus-secrets
+              key: admin-key
+        - name: JANUS_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-janus-secrets
+              key: api-secret
+        - name: STUN_SERVER
+          value: "stun:stunner-gateway.stunner-system.svc.cluster.local:3478"
+        - name: TURN_SERVER
+          value: "turn:stunner-gateway.stunner-system.svc.cluster.local:3478"
+        - name: TURN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: stunner-auth
+              key: username
+        - name: TURN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: stunner-auth
+              key: password
+        volumeMounts:
+        - name: janus-config
+          mountPath: /opt/janus/etc/janus
+        livenessProbe:
+          httpGet:
+            path: /api/liveness
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/readiness
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          {{- toYaml .Values.janus.resources | nindent 10 }}
+      volumes:
+      - name: janus-config
+        configMap:
+          name: {{ include "june-platform.fullname" . }}-janus-config
