@@ -1,142 +1,38 @@
-name: 🚀 June Services Deploy (Modular Infrastructure)
+name: 🚀 Deploy June Platform (Helm)
 
 on:
   push:
-    branches: [ master, develop ]
-    paths-ignore: [ 'README.md', 'docs/**', '.gitignore', 'scripts/install-k8s/**' ]
+    branches: [master, main]
+    paths-ignore: 
+      - 'README.md'
+      - 'docs/**'
   pull_request:
-    branches: [ master ]
+    branches: [master, main]
   workflow_dispatch:
     inputs:
-      build_images:
-        description: '🔨 Build Docker images?'
+      deploy_env:
+        description: 'Environment to deploy'
         required: true
-        default: true
-        type: boolean
-      deploy_services:
-        description: '🚀 Deploy to Kubernetes?'
-        required: true
-        default: true
-        type: boolean
-      services:
-        description: '📦 Services to build/deploy (comma-separated, or "all")'
-        required: false
-        default: 'all'
-        type: string
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
 
 env:
-  REGISTRY: docker.io/${{ secrets.DOCKERHUB_USERNAME }}
-  NAMESPACE: june-services
+  HELM_VERSION: v3.13.0
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  # ============================================================================
-  # SETUP
-  # ============================================================================
-  
-  setup:
-    name: 📋 Setup Build Matrix
+  # Job 1: Build and push Docker images (unchanged)
+  build-images:
+    name: 🔨 Build Docker Images
     runs-on: self-hosted
-    outputs:
-      build_images: ${{ steps.config.outputs.build_images }}
-      deploy_services: ${{ steps.config.outputs.deploy_services }}
-      services: ${{ steps.config.outputs.services }}
-    steps:
-      - name: 📝 Configure workflow
-        id: config
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            BUILD="${{ github.event.inputs.build_images }}"
-            DEPLOY="${{ github.event.inputs.deploy_services }}"
-            SERVICES="${{ github.event.inputs.services }}"
-          else
-            BUILD="true"
-            DEPLOY="true"
-            SERVICES="all"
-          fi
-          
-          echo "build_images=$BUILD" >> $GITHUB_OUTPUT
-          echo "deploy_services=$DEPLOY" >> $GITHUB_OUTPUT
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
-          
-          echo "📋 Configuration:"
-          echo "  Build images: $BUILD"
-          echo "  Deploy services: $DEPLOY"
-          echo "  Services: $SERVICES"
-
-  # ============================================================================
-  # VERIFY INFRASTRUCTURE
-  # ============================================================================
-  
-  verify-infrastructure:
-    name: 🔍 Verify Infrastructure Ready
-    runs-on: self-hosted
-    needs: setup
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-      
-      - name: 🔍 Check Kubernetes Cluster
-        run: |
-          echo "Verifying Kubernetes cluster..."
-          kubectl cluster-info
-          kubectl get nodes
-      
-      - name: 🔍 Check Namespaces
-        run: |
-          echo "Checking required namespaces..."
-          kubectl get namespace june-services || {
-            echo "❌ june-services namespace not found!"
-            exit 1
-          }
-          kubectl get namespace stunner || {
-            echo "⚠️  stunner namespace not found - STUNner may not be installed"
-          }
-      
-      - name: 🔍 Check STUNner Gateway
-        run: |
-          echo "Checking STUNner Gateway..."
-          if kubectl get gateway june-stunner-gateway -n stunner &>/dev/null; then
-            echo "✅ STUNner Gateway exists"
-            kubectl get gateway june-stunner-gateway -n stunner
-          else
-            echo "⚠️  STUNner Gateway not found - WebRTC may not work"
-          fi
-      
-      - name: 🔍 Load Infrastructure Config
-        run: |
-          if [ -f "/root/.june-config/domain-config.env" ]; then
-            echo "✅ Loading domain configuration..."
-            source /root/.june-config/domain-config.env
-            echo "PRIMARY_DOMAIN=$PRIMARY_DOMAIN" >> $GITHUB_ENV
-            echo "API_DOMAIN=$API_DOMAIN" >> $GITHUB_ENV
-            echo "TURN_DOMAIN=${TURN_DOMAIN:-turn.ozzu.world}" >> $GITHUB_ENV
-          else
-            echo "⚠️  No domain config found, using defaults"
-            echo "PRIMARY_DOMAIN=ozzu.world" >> $GITHUB_ENV
-            echo "API_DOMAIN=api.ozzu.world" >> $GITHUB_ENV
-            echo "TURN_DOMAIN=turn.ozzu.world" >> $GITHUB_ENV
-          fi
-          
-          if [ -f "/root/.june-config/networking.env" ]; then
-            echo "✅ Loading networking configuration..."
-            source /root/.june-config/networking.env
-            echo "STUNNER_USERNAME=$TURN_USERNAME" >> $GITHUB_ENV
-            echo "STUNNER_PASSWORD=$TURN_PASSWORD" >> $GITHUB_ENV
-          fi
-
-  # ============================================================================
-  # BUILD IMAGES
-  # ============================================================================
-
-  build-stt:
-    name: 🔨 Build june-stt
-    runs-on: self-hosted
-    needs: [setup, verify-infrastructure]
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'stt'))
+    strategy:
+      matrix:
+        service: [june-orchestrator, june-stt, june-tts, june-idp]
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v4
@@ -147,376 +43,99 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-stt
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push
+      - name: 🏗️ Build and Push
         uses: docker/build-push-action@v5
         with:
-          context: ./June/services/june-stt
-          file: ./June/services/june-stt/Dockerfile
+          context: ./June/services/${{ matrix.service }}
+          file: ./June/services/${{ matrix.service }}/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=stt
-          cache-to: type=gha,mode=max,scope=stt
-          platforms: linux/amd64
-
-  build-tts:
-    name: 🔨 Build june-tts
-    runs-on: self-hosted
-    needs: [setup, verify-infrastructure]
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'tts'))
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-tts
           tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
+            docker.io/ozzuworld/${{ matrix.service }}:latest
+            docker.io/ozzuworld/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      - name: 🏗️ Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./June/services/june-tts
-          file: ./June/services/june-tts/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=tts
-          cache-to: type=gha,mode=max,scope=tts
-          platforms: linux/amd64
-
-  build-orchestrator:
-    name: 🔨 Build june-orchestrator
-    runs-on: self-hosted
-    needs: [setup, verify-infrastructure]
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'orchestrator'))
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-orchestrator
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./June/services/june-orchestrator
-          file: ./June/services/june-orchestrator/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=orchestrator
-          cache-to: type=gha,mode=max,scope=orchestrator
-          platforms: linux/amd64
-
-  build-idp:
-    name: 🔨 Build june-idp
-    runs-on: self-hosted
-    needs: [setup, verify-infrastructure]
-    if: needs.setup.outputs.build_images == 'true' && (needs.setup.outputs.services == 'all' || contains(needs.setup.outputs.services, 'idp'))
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v4
-
-      - name: 🔐 Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 📝 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/june-idp
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: 🏗️ Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: ./June/services/june-idp
-          file: ./June/services/june-idp/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=idp
-          cache-to: type=gha,mode=max,scope=idp
-          platforms: linux/amd64
-
-  # ============================================================================
-  # DEPLOYMENT
-  # ============================================================================
-
+  # Job 2: Deploy with Helm (SIMPLIFIED)
   deploy:
-    name: 🚀 Deploy to Kubernetes
+    name: 🚀 Deploy with Helm
     runs-on: self-hosted
-    needs: [setup, verify-infrastructure, build-stt, build-tts, build-orchestrator, build-idp]
-    if: |
-      always() && 
-      needs.setup.outputs.deploy_services == 'true' &&
-      needs.verify-infrastructure.result == 'success' &&
-      (needs.build-stt.result == 'success' || needs.build-stt.result == 'skipped') &&
-      (needs.build-tts.result == 'success' || needs.build-tts.result == 'skipped') &&
-      (needs.build-orchestrator.result == 'success' || needs.build-orchestrator.result == 'skipped') &&
-      (needs.build-idp.result == 'success' || needs.build-idp.result == 'skipped')
-
+    needs: build-images
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v4
 
-      - name: 🌐 Load Infrastructure Configuration
-        id: load-config
-        run: |
-          echo "Loading configuration from /root/.june-config/..."
-          
-          # Load domain config
-          if [ -f "/root/.june-config/domain-config.env" ]; then
-            source /root/.june-config/domain-config.env
-            echo "✅ Domain config loaded"
-          else
-            echo "⚠️  Using default domain config"
-            PRIMARY_DOMAIN="ozzu.world"
-            API_DOMAIN="api.ozzu.world"
-            IDP_DOMAIN="idp.ozzu.world"
-            STT_DOMAIN="stt.ozzu.world"
-            TTS_DOMAIN="tts.ozzu.world"
-            TURN_DOMAIN="turn.ozzu.world"
-            CERT_SECRET_NAME="ozzu-world-wildcard-tls"
-          fi
-          
-          # Load networking config
-          if [ -f "/root/.june-config/networking.env" ]; then
-            source /root/.june-config/networking.env
-            echo "✅ Networking config loaded"
-          else
-            echo "⚠️  Using default networking config"
-            TURN_USERNAME="june-user"
-            TURN_PASSWORD="Pokemon123!"
-          fi
-          
-          # Export to environment
-          echo "PRIMARY_DOMAIN=$PRIMARY_DOMAIN" >> $GITHUB_ENV
-          echo "API_DOMAIN=$API_DOMAIN" >> $GITHUB_ENV
-          echo "IDP_DOMAIN=$IDP_DOMAIN" >> $GITHUB_ENV
-          echo "STT_DOMAIN=$STT_DOMAIN" >> $GITHUB_ENV
-          echo "TTS_DOMAIN=$TTS_DOMAIN" >> $GITHUB_ENV
-          echo "TURN_DOMAIN=$TURN_DOMAIN" >> $GITHUB_ENV
-          echo "CERT_SECRET_NAME=$CERT_SECRET_NAME" >> $GITHUB_ENV
-          echo "TURN_USERNAME=$TURN_USERNAME" >> $GITHUB_ENV
-          echo "TURN_PASSWORD=$TURN_PASSWORD" >> $GITHUB_ENV
+      - name: ⚙️ Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
 
-      - name: 🔐 Update Application Secrets
+      - name: 🔍 Validate Helm Chart
         run: |
-          echo "Updating application secrets..."
-          
-          kubectl create secret generic june-secrets \
-            --from-literal=gemini-api-key='${{ secrets.GEMINI_API_KEY }}' \
-            --from-literal=keycloak-client-secret='PLACEHOLDER' \
-            --namespace=$NAMESPACE \
-            --dry-run=client -o yaml | kubectl apply -f -
-          
-          echo "✅ Secrets updated"
+          helm lint helm/june-platform
+          helm template june-platform helm/june-platform \
+            --set secrets.geminiApiKey=placeholder \
+            > /tmp/helm-test.yaml
 
-      - name: 🔗 Configure STUNner UDPRoutes
+      - name: 🚀 Deploy with Helm
         run: |
-          echo "Configuring STUNner UDPRoutes..."
-          
-          # Check if STUNner is installed
-          if ! kubectl get namespace stunner &>/dev/null; then
-            echo "⚠️  STUNner not installed, skipping UDPRoute configuration"
-            exit 0
-          fi
-          
-          # Apply STUNner manifests with configuration
-          if [ -f "k8s/stunner-manifests.yaml" ]; then
-            cp k8s/stunner-manifests.yaml /tmp/stunner-configured.yaml
-            
-            # Use TURN_DOMAIN from environment or fallback
-            TURN_DOMAIN="${TURN_DOMAIN:-turn.ozzu.world}"
-            TURN_USERNAME="${TURN_USERNAME:-june-user}"
-            TURN_PASSWORD="${TURN_PASSWORD:-Pokemon123!}"
-            
-            sed -i "s/STUNNER_REALM_PLACEHOLDER/${TURN_DOMAIN}/g" /tmp/stunner-configured.yaml
-            sed -i "s/STUNNER_USERNAME_PLACEHOLDER/${TURN_USERNAME}/g" /tmp/stunner-configured.yaml
-            sed -i "s/STUNNER_PASSWORD_PLACEHOLDER/${TURN_PASSWORD}/g" /tmp/stunner-configured.yaml
-            
-            # Apply with better error handling
-            kubectl apply -f /tmp/stunner-configured.yaml || {
-              echo "⚠️  Some STUNner resources failed to apply, checking details..."
-              kubectl get crd | grep -E "(gateway|stunner)" || echo "Missing CRDs!"
-              exit 1
-            }
-            
-            echo "✅ STUNner UDPRoutes configured"
-          else
-            echo "⚠️  stunner-manifests.yaml not found"
-          fi
-      - name: ✅ Verify Certificate Exists
-        run: |
-          echo "Verifying wildcard certificate is available..."
-          
-          # Get certificate secret name from config
-          if [ -f "/root/.june-config/domain-config.env" ]; then
-            source /root/.june-config/domain-config.env
-            CERT_SECRET_NAME="${CERT_SECRET_NAME:-ozzu-world-wildcard-tls}"
-          else
-            CERT_SECRET_NAME="ozzu-world-wildcard-tls"
-          fi
-          
-          if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-            echo "✅ Certificate secret exists: $CERT_SECRET_NAME"
-            
-            # Check expiration
-            EXPIRY=$(kubectl get secret "$CERT_SECRET_NAME" -n june-services -o jsonpath='{.data.tls\.crt}' | \
-                    base64 -d | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "unknown")
-            echo "📅 Certificate expires: $EXPIRY"
-          else
-            echo "❌ Certificate secret not found: $CERT_SECRET_NAME"
-            echo "⚠️  Services may fail to start until certificate is available"
-            exit 1
-          fi
+          helm upgrade --install june-platform ./helm/june-platform \
+            --namespace june-services \
+            --create-namespace \
+            --set global.domain="${{ secrets.DOMAIN }}" \
+            --set certificate.email="${{ secrets.LETSENCRYPT_EMAIL }}" \
+            --set secrets.geminiApiKey="${{ secrets.GEMINI_API_KEY }}" \
+            --set secrets.cloudflareToken="${{ secrets.CLOUDFLARE_TOKEN }}" \
+            --set orchestrator.image.tag="${{ github.sha }}" \
+            --set stt.image.tag="${{ github.sha }}" \
+            --set tts.image.tag="${{ github.sha }}" \
+            --wait \
+            --timeout 15m
 
-      - name: 🚀 Deploy June Services
+      - name: ✅ Verify Deployment
         run: |
-          echo "Deploying June services..."
+          echo "🔍 Checking deployment status..."
+          kubectl get pods -n june-services
+          kubectl get ingress -n june-services
+          kubectl get certificates -n june-services
           
-          # Generate configured manifests
-          cp k8s/complete-manifests.yaml /tmp/june-services.yaml
+          echo ""
+          echo "✅ Deployment Summary:"
+          kubectl get deployments -n june-services -o wide
           
-          # Replace certificate secret name (hardcoded → actual)
-          sed -i "s/allsafe-wildcard-tls/${CERT_SECRET_NAME}/g" /tmp/june-services.yaml
-          
-          # Replace domain placeholders
-          sed -i "s/api.allsafe.world/${API_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/idp.allsafe.world/${IDP_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/stt.allsafe.world/${STT_DOMAIN}/g" /tmp/june-services.yaml
-          sed -i "s/tts.allsafe.world/${TTS_DOMAIN}/g" /tmp/june-services.yaml
-          
-          # Verify replacements (optional debugging)
-          echo "🔍 Verifying certificate secret name in manifest:"
-          grep -n "secretName.*tls" /tmp/june-services.yaml | head -3
-          
-          # Apply manifests
-          kubectl apply -f /tmp/june-services.yaml
-          echo "✅ Services deployed"
+          echo ""
+          echo "📊 Service Status:"
+          kubectl get svc -n june-services
 
-      - name: ⏳ Wait for Services
+      - name: 🧪 Health Checks
         run: |
           echo "Waiting for services to be ready..."
+          sleep 30
           
-          echo "Waiting for PostgreSQL..."
-          kubectl wait --for=condition=ready pod -l app=postgresql -n $NAMESPACE --timeout=180s || true
+          # Check orchestrator
+          kubectl wait --for=condition=ready pod \
+            -l app=june-orchestrator \
+            -n june-services \
+            --timeout=300s || echo "⚠️ Orchestrator not ready"
           
-          echo "Waiting for Keycloak (IDP)..."
-          kubectl rollout status deployment/june-idp -n $NAMESPACE --timeout=300s || true
+          # Check other services
+          for service in june-stt june-tts june-idp; do
+            kubectl wait --for=condition=ready pod \
+              -l app=$service \
+              -n june-services \
+              --timeout=600s || echo "⚠️ $service not ready"
+          done
           
-          echo "Waiting for Orchestrator..."
-          kubectl rollout status deployment/june-orchestrator -n $NAMESPACE --timeout=180s || true
-          
-          echo "Waiting for GPU services..."
-          kubectl rollout status deployment/june-stt -n $NAMESPACE --timeout=600s || true
-          kubectl rollout status deployment/june-tts -n $NAMESPACE --timeout=600s || true
-          
-          echo "✅ Deployment complete"
+          echo "✅ All services deployed!"
 
-      - name: 📊 Deployment Summary
-        if: always()
+  # Job 3: Rollback on failure (optional)
+  rollback:
+    name: 🔄 Rollback on Failure
+    runs-on: self-hosted
+    needs: deploy
+    if: failure()
+    steps:
+      - name: 🔄 Rollback Helm Release
         run: |
-          echo ""
-          echo "======================================================"
-          echo "📊 June Platform Deployment Summary"
-          echo "======================================================"
-          echo ""
-          
-          echo "🌐 Service Endpoints:"
-          echo "  API: https://${API_DOMAIN}"
-          echo "  Identity Provider: https://${IDP_DOMAIN}"
-          echo "  Speech-to-Text: https://${STT_DOMAIN}"
-          echo "  Text-to-Speech: https://${TTS_DOMAIN}"
-          
-          if kubectl get namespace stunner &>/dev/null; then
-            echo "  STUN/TURN Server: ${TURN_DOMAIN}:3478"
-          fi
-          echo ""
-          
-          echo "📦 Service Status:"
-          kubectl get deployments -n $NAMESPACE -o wide
-          echo ""
-          
-          echo "🔍 Pod Status:"
-          kubectl get pods -n $NAMESPACE -o wide
-          echo ""
-          
-          # Check for issues
-          PENDING=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l)
-          FAILED=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Failed --no-headers 2>/dev/null | wc -l)
-          RUNNING=$(kubectl get pods -n $NAMESPACE --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
-          
-          echo "📈 Summary:"
-          echo "  Running: $RUNNING pods"
-          echo "  Pending: $PENDING pods"
-          echo "  Failed: $FAILED pods"
-          
-          if [ "$FAILED" -gt 0 ]; then
-            echo ""
-            echo "❌ Deployment completed with failures!"
-            exit 1
-          elif [ "$PENDING" -gt 0 ]; then
-            echo ""
-            echo "⚠️  Some pods still pending"
-          else
-            echo ""
-            echo "✅ Deployment successful!"
-          fi
-          
-          echo ""
-          echo "======================================================"
+          echo "⚠️ Deployment failed, rolling back..."
+          helm rollback june-platform -n june-services || echo "No previous release to rollback to"

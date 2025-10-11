@@ -1,0 +1,57 @@
+---
+# helm/june-platform/templates/june-tts.yaml
+{{- if .Values.tts.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-tts
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.tts.replicas }}
+  selector:
+    matchLabels:
+      app: june-tts
+  template:
+    metadata:
+      labels:
+        app: june-tts
+    spec:
+      {{- if .Values.tts.gpu.enabled }}
+      nodeSelector:
+        gpu: "true"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      {{- end }}
+      containers:
+      - name: tts
+        image: "{{ .Values.tts.image.repository }}:{{ .Values.tts.image.tag }}"
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: PORT
+          value: "8000"
+        resources:
+          {{- if .Values.tts.gpu.enabled }}
+          requests:
+            nvidia.com/gpu: {{ .Values.tts.gpu.count }}
+          limits:
+            nvidia.com/gpu: {{ .Values.tts.gpu.count }}
+          {{- end }}
+          {{- toYaml .Values.tts.resources | nindent 10 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: june-tts
+  ports:
+  - port: 8000
+    targetPort: 8000
+{{- end }}

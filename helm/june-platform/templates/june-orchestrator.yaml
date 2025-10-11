@@ -1,0 +1,78 @@
+---
+# helm/june-platform/templates/june-orchestrator.yaml
+{{- if .Values.orchestrator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+    spec:
+      containers:
+      - name: orchestrator
+        image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+        imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: gemini-api-key
+        - name: KEYCLOAK_URL
+          value: "http://june-idp.{{ .Release.Namespace }}.svc.cluster.local:8080"
+        - name: KEYCLOAK_REALM
+          value: {{ .Values.keycloak.realm }}
+        - name: TTS_SERVICE_URL
+          value: "http://june-tts.{{ .Release.Namespace }}.svc.cluster.local:8000"
+        - name: STT_SERVICE_URL
+          value: "http://june-stt.{{ .Release.Namespace }}.svc.cluster.local:8080"
+        {{- if .Values.stunner.enabled }}
+        - name: STUN_SERVER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: STUN_SERVER_URL
+        - name: TURN_SERVER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_SERVER_URL
+        - name: TURN_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_USERNAME
+        - name: TURN_CREDENTIAL
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: TURN_CREDENTIAL
+        {{- end }}
+        resources:
+          {{- toYaml .Values.orchestrator.resources | nindent 10 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+  - port: 8080
+    targetPort: 8080
+{{- end }}

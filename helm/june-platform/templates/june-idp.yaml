@@ -1,0 +1,26 @@
+---
+# helm/june-platform/templates/june-idp.yaml
+{{- if .Values.keycloak.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      containers:
+      - name: keycloak
+        image: docker.io/ozzuworld/june-idp:latest
+        command: ["/opt/keycloak/bin/kc.sh"]
+        args: ["start", "--optimized"]
+        ports:
+        - containerPort: 8080
+        - containerPort: 
