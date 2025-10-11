@@ -1,6 +1,6 @@
 """
-WebRTC Peer Connection Manager
-Handles aiortc peer connections for real-time audio streaming
+WebRTC Peer Connection Manager - FIXED VERSION
+Handles aiortc peer connections with proper ICE candidate handling
 """
 import asyncio
 import logging
@@ -8,7 +8,13 @@ from typing import Dict, Optional, Callable, Awaitable
 from datetime import datetime
 import json
 
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from aiortc import (
+    RTCPeerConnection, 
+    RTCSessionDescription, 
+    RTCConfiguration, 
+    RTCIceServer,
+    RTCIceCandidate  # ✅ ADDED: Required for adding candidates
+)
 from aiortc.contrib.media import MediaBlackhole, MediaRecorder
 
 from ..config import config
@@ -26,29 +32,33 @@ class PeerConnectionManager:
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.audio_tracks: Dict[str, object] = {}
         self.on_track_callback: Optional[Callable] = None
+        self.websocket_manager = None
         
-        # ICE server configuration
+        # ICE server configuration - SIMPLIFIED per aiortc best practices
         self.ice_servers = self._create_ice_servers()
         self.rtc_configuration = RTCConfiguration(iceServers=self.ice_servers)
         
         logger.info(f"PeerConnectionManager initialized with {len(self.ice_servers)} ICE servers")
     
+    def set_websocket_manager(self, manager):
+        """Set the WebSocket manager for sending ICE candidates back to frontend"""
+        self.websocket_manager = manager
+        logger.info("✅ WebSocket manager registered for ICE candidate forwarding")
+    
     def _create_ice_servers(self) -> list:
-        """Create RTCIceServer list with multiple STUN servers for better connectivity"""
+        """
+        Create RTCIceServer list - SIMPLIFIED per aiortc recommendations
+        Using 1-2 reliable STUN servers is better than many
+        """
         ice_servers = []
         
-        # Add multiple STUN servers for better connectivity across internet
-        stun_servers = [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-            'stun:stun2.l.google.com:19302', 
-            'stun:stun3.l.google.com:19302',
-            'stun:stun.cloudflare.com:3478'
-        ]
+        # ✅ PRIMARY: Use Google's primary STUN (most reliable)
+        ice_servers.append(RTCIceServer(urls="stun:stun.l.google.com:19302"))
+        logger.info("Added primary STUN: stun.l.google.com:19302")
         
-        for stun_url in stun_servers:
-            ice_servers.append(RTCIceServer(urls=stun_url))
-            logger.info(f"Added STUN server: {stun_url}")
+        # ✅ BACKUP: Add one backup STUN
+        ice_servers.append(RTCIceServer(urls="stun:stun.cloudflare.com:3478"))
+        logger.info("Added backup STUN: stun.cloudflare.com:3478")
         
         # Add TURN servers if configured
         if config.webrtc.turn_servers:
@@ -63,27 +73,13 @@ class PeerConnectionManager:
         return ice_servers
     
     def set_track_handler(self, callback: Callable[[str, object], Awaitable[None]]):
-        """
-        Set callback for handling incoming media tracks
-        
-        Args:
-            callback: async function(session_id, track)
-        """
+        """Set callback for handling incoming media tracks"""
         self.on_track_callback = callback
         logger.info("Track handler registered")
     
     async def create_peer_connection(self, session_id: str) -> RTCPeerConnection:
-        """
-        Create a new RTCPeerConnection for a session
-        
-        Args:
-            session_id: WebSocket session ID
-            
-        Returns:
-            RTCPeerConnection instance
-        """
+        """Create a new RTCPeerConnection for a session"""
         logger.info(f"[{session_id[:8]}] Creating peer connection...")
-        logger.info(f"[{session_id[:8]}] ICE servers configured: {len(self.ice_servers)}")
         
         # Create peer connection with ICE servers
         pc = RTCPeerConnection(configuration=self.rtc_configuration)
@@ -97,113 +93,97 @@ class PeerConnectionManager:
             logger.info(f"[{session_id[:8]}] ICE connection state: {pc.iceConnectionState}")
             
             if pc.iceConnectionState == "connected":
-                logger.info(f"[{session_id[:8]}] ✅ ICE connection established successfully!")
-            elif pc.iceConnectionState == "checking":
-                logger.info(f"[{session_id[:8]}] 🔍 ICE connection checking...")
+                logger.info(f"[{session_id[:8]}] ✅ ICE connection established!")
             elif pc.iceConnectionState == "failed":
                 logger.error(f"[{session_id[:8]}] ❌ ICE connection failed")
-                logger.error(f"[{session_id[:8]}] This usually means:")
-                logger.error(f"[{session_id[:8]}]   1. STUN servers couldn't be reached")
-                logger.error(f"[{session_id[:8]}]   2. No server reflexive candidates generated") 
-                logger.error(f"[{session_id[:8]}]   3. Firewall blocking WebRTC traffic")
-                logger.error(f"[{session_id[:8]}]   4. May need TURN server for NAT traversal")
                 await self.close_peer_connection(session_id)
-            elif pc.iceConnectionState == "closed":
-                logger.info(f"[{session_id[:8]}] ICE connection closed")
         
         @pc.on("connectionstatechange")
         async def on_connection_state_change():
             logger.info(f"[{session_id[:8]}] Connection state: {pc.connectionState}")
             
             if pc.connectionState == "connected":
-                logger.info(f"[{session_id[:8]}] ✅ WebRTC connection established!")
+                logger.info(f"[{session_id[:8]}] ✅ WebRTC connected!")
             elif pc.connectionState == "failed":
                 logger.error(f"[{session_id[:8]}] Connection failed")
                 await self.close_peer_connection(session_id)
-            elif pc.connectionState == "closed":
-                logger.info(f"[{session_id[:8]}] Connection closed")
 
-        # Find your existing @pc.on("icecandidate") handler and replace it with:
+        # ✅ CRITICAL FIX: Proper ICE candidate handler
         @pc.on("icecandidate")
         async def on_ice_candidate(candidate):
+            """
+            Handle ICE candidates generated by aiortc
+            MUST forward these to the frontend!
+            """
             if candidate:
-                logger.info(f"[{session_id[:8]}] 🧊 Backend ICE candidate generated:")
-                logger.info(f"[{session_id[:8]}]   Foundation: {candidate.foundation}")
-                logger.info(f"[{session_id[:8]}]   Protocol: {candidate.protocol}")
-                logger.info(f"[{session_id[:8]}]   Address: {candidate.ip}")
-                logger.info(f"[{session_id[:8]}]   Port: {candidate.port}")
-                logger.info(f"[{session_id[:8]}]   Type: {candidate.type}")
+                logger.info(f"[{session_id[:8]}] 🧊 Backend ICE candidate generated")
+                logger.debug(f"[{session_id[:8]}]   Type: {candidate.type}")
+                logger.debug(f"[{session_id[:8]}]   Protocol: {candidate.protocol}")
+                logger.debug(f"[{session_id[:8]}]   Address: {candidate.ip}:{candidate.port}")
                 
                 if candidate.type == "srflx":
-                    logger.info(f"[{session_id[:8]}] ✅ Server reflexive - backend public IP discovered!")
+                    logger.info(f"[{session_id[:8]}] ✅ Server reflexive candidate (public IP discovered)")
                 
-                # ✅ CRITICAL FIX: Send to frontend via WebSocket
-                try:
-                    # Import here to avoid circular imports
-                    from ..app import manager
-                    
-                    candidate_dict = {
-                        "candidate": f"candidate:{candidate.foundation} {candidate.component} {candidate.protocol} {candidate.priority} {candidate.ip} {candidate.port} typ {candidate.type}",
-                        "sdpMLineIndex": 0,
-                        "sdpMid": "0"
-                    }
-                    
-                    ice_message = {
-                        "type": "ice_candidate", 
-                        "candidate": candidate_dict
-                    }
-                    
-                    await manager.send_message(session_id, ice_message)
-                    logger.info(f"[{session_id[:8]}] ✅ Backend ICE candidate sent to frontend")
-                    
-                except Exception as e:
-                    logger.error(f"[{session_id[:8]}] Error sending ICE candidate: {e}")
+                # ✅ CRITICAL: Send to frontend
+                if self.websocket_manager:
+                    try:
+                        # Use aiortc's native candidate attribute (already formatted)
+                        candidate_dict = {
+                            "candidate": candidate.candidate,  # ✅ Pre-formatted SDP string
+                            "sdpMLineIndex": candidate.sdpMLineIndex,
+                            "sdpMid": candidate.sdpMid
+                        }
+                        
+                        ice_message = {
+                            "type": "ice_candidate",
+                            "candidate": candidate_dict,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        await self.websocket_manager.send_message(session_id, ice_message)
+                        logger.info(f"[{session_id[:8]}] ✅ Backend ICE candidate sent to frontend")
+                        
+                    except Exception as e:
+                        logger.error(f"[{session_id[:8]}] ❌ Error sending ICE candidate: {e}")
+                else:
+                    logger.error(f"[{session_id[:8]}] ❌ No WebSocket manager - cannot send ICE!")
             else:
                 logger.info(f"[{session_id[:8]}] 🏁 Backend ICE gathering completed")
-
 
         @pc.on("icegatheringstatechange")
         async def on_ice_gathering_state_change():
             logger.info(f"[{session_id[:8]}] ICE gathering state: {pc.iceGatheringState}")
+            
+            if pc.iceGatheringState == "gathering":
+                logger.info(f"[{session_id[:8]}] 🔍 Backend starting ICE gathering...")
+            elif pc.iceGatheringState == "complete":
+                logger.info(f"[{session_id[:8]}] ✅ Backend ICE gathering complete")
         
         @pc.on("track")
         async def on_track(track):
             logger.info(f"[{session_id[:8]}] 🎤 Received {track.kind} track")
             
             if track.kind == "audio":
-                # Store the track
                 self.audio_tracks[session_id] = track
                 
-                # Call the track handler (will be AudioProcessor)
                 if self.on_track_callback:
                     await self.on_track_callback(session_id, track)
                 else:
                     logger.warning(f"[{session_id[:8]}] No track handler registered!")
                 
-                # Handle track end
                 @track.on("ended")
                 async def on_ended():
                     logger.info(f"[{session_id[:8]}] Audio track ended")
                     if session_id in self.audio_tracks:
                         del self.audio_tracks[session_id]
         
-        logger.info(f"[{session_id[:8]}] Peer connection created successfully")
+        logger.info(f"[{session_id[:8]}] ✅ Peer connection created")
         return pc
     
     async def handle_offer(self, session_id: str, sdp: str) -> str:
-        """
-        Handle WebRTC offer from client and create answer
-        
-        Args:
-            session_id: WebSocket session ID
-            sdp: SDP offer from client
-            
-        Returns:
-            SDP answer string
-        """
+        """Handle WebRTC offer from client and create answer"""
         try:
             logger.info(f"[{session_id[:8]}] Processing WebRTC offer...")
-            logger.info(f"[{session_id[:8]}] Offer SDP length: {len(sdp)} bytes")
             
             # Create or get peer connection
             if session_id not in self.peers:
@@ -217,33 +197,29 @@ class PeerConnectionManager:
             
             # Set remote description (the offer)
             await pc.setRemoteDescription(offer)
-            logger.info(f"[{session_id[:8]}] Remote description set")
+            logger.info(f"[{session_id[:8]}] ✅ Remote description set")
             
             # Create answer
             answer = await pc.createAnswer()
             
             # Set local description (our answer)
             await pc.setLocalDescription(answer)
-            logger.info(f"[{session_id[:8]}] Local description set")
+            logger.info(f"[{session_id[:8]}] ✅ Local description set")
             
             # Return the SDP answer
             answer_sdp = pc.localDescription.sdp
-            logger.info(f"[{session_id[:8]}] ✅ Answer created (SDP length: {len(answer_sdp)} bytes)")
-            logger.info(f"[{session_id[:8]}] 🔍 ICE gathering should start now on backend...")
+            logger.info(f"[{session_id[:8]}] ✅ Answer created, ICE gathering will start")
             
             return answer_sdp
             
         except Exception as e:
-            logger.error(f"[{session_id[:8]}] Error handling offer: {e}", exc_info=True)
+            logger.error(f"[{session_id[:8]}] ❌ Error handling offer: {e}", exc_info=True)
             raise
     
     async def add_ice_candidate(self, session_id: str, candidate: dict):
         """
-        Add ICE candidate from client
-        
-        Args:
-            session_id: WebSocket session ID
-            candidate: ICE candidate dictionary
+        ✅ CRITICAL FIX: Actually add ICE candidate from client
+        This was missing before!
         """
         try:
             if session_id not in self.peers:
@@ -252,22 +228,29 @@ class PeerConnectionManager:
             
             pc = self.peers[session_id]
             
-            # aiortc handles ICE candidates automatically through signaling
-            # This is mainly for logging and monitoring
-            logger.debug(f"[{session_id[:8]}] ICE candidate received from frontend")
-            logger.debug(f"[{session_id[:8]}] Candidate type: {candidate.get('type', 'unknown')}")
-            logger.debug(f"[{session_id[:8]}] Candidate address: {candidate.get('address', 'unknown')}")
+            # Handle end-of-candidates signal
+            if not candidate or not candidate.get("candidate"):
+                logger.info(f"[{session_id[:8]}] 🏁 End of frontend ICE candidates")
+                return
+            
+            # ✅ CRITICAL: Create and add the ICE candidate
+            ice_candidate = RTCIceCandidate(
+                candidate=candidate.get("candidate"),
+                sdpMLineIndex=candidate.get("sdpMLineIndex"),
+                sdpMid=candidate.get("sdpMid")
+            )
+            
+            # Add to peer connection
+            await pc.addIceCandidate(ice_candidate)
+            
+            logger.info(f"[{session_id[:8]}] ✅ Frontend ICE candidate added")
+            logger.debug(f"[{session_id[:8]}]   Candidate: {candidate.get('candidate')[:50]}...")
             
         except Exception as e:
-            logger.error(f"[{session_id[:8]}] Error adding ICE candidate: {e}")
+            logger.error(f"[{session_id[:8]}] ❌ Error adding ICE candidate: {e}", exc_info=True)
     
     async def close_peer_connection(self, session_id: str):
-        """
-        Close and cleanup peer connection
-        
-        Args:
-            session_id: WebSocket session ID
-        """
+        """Close and cleanup peer connection"""
         try:
             if session_id in self.peers:
                 pc = self.peers[session_id]
@@ -280,12 +263,12 @@ class PeerConnectionManager:
                 # Remove from tracking
                 del self.peers[session_id]
                 
-                logger.info(f"[{session_id[:8]}] Peer connection closed")
+                logger.info(f"[{session_id[:8]}] ✅ Peer connection closed")
             
             # Clean up audio track
             if session_id in self.audio_tracks:
                 del self.audio_tracks[session_id]
-                logger.info(f"[{session_id[:8]}] Audio track cleaned up")
+                logger.info(f"[{session_id[:8]}] ✅ Audio track cleaned up")
                 
         except Exception as e:
             logger.error(f"[{session_id[:8]}] Error closing peer connection: {e}")
@@ -328,7 +311,7 @@ class PeerConnectionManager:
         for session_id in session_ids:
             await self.close_peer_connection(session_id)
         
-        logger.info(f"All {len(session_ids)} peer connections closed")
+        logger.info(f"✅ All {len(session_ids)} peer connections closed")
 
 
 # Global peer connection manager instance

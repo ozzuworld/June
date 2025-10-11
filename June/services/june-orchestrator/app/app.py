@@ -438,6 +438,10 @@ async def startup_event():
     if config.webrtc.enabled:
         logger.info("🔌 Wiring WebRTC components...")
         
+        # 🚨 CRITICAL: Wire WebSocket manager to PeerConnectionManager
+        peer_connection_manager.set_websocket_manager(manager)
+        logger.info("✅ WebSocket manager wired to PeerConnectionManager")
+        
         # Audio processor callback
         async def on_audio_ready(session_id: str, audio_bytes: bytes):
             """Called when audio buffer is ready from WebRTC"""
@@ -466,7 +470,7 @@ async def startup_event():
         
         audio_processor.set_audio_ready_handler(on_audio_ready)
         
-        # Peer connection callback
+        # Peer connection callback for audio tracks
         async def on_track_received(session_id: str, track):
             """Called when audio track is received from WebRTC"""
             logger.info(f"[{session_id[:8]}] 🎤 Audio track received, starting processing...")
@@ -474,7 +478,7 @@ async def startup_event():
         
         peer_connection_manager.set_track_handler(on_track_received)
         
-        # Signaling callback
+        # Signaling callback for offers
         async def on_webrtc_offer(session_id: str, sdp: str):
             """Called when WebRTC offer is received"""
             logger.info(f"[{session_id[:8]}] 📡 Processing WebRTC offer...")
@@ -482,6 +486,15 @@ async def startup_event():
             return answer
         
         signaling_manager.set_offer_handler(on_webrtc_offer)
+        
+        # ✅ NEW: ICE candidate callback (THIS WAS MISSING!)
+        async def on_ice_candidate_from_frontend(session_id: str, candidate: dict):
+            """Called when ICE candidate is received from frontend"""
+            logger.info(f"[{session_id[:8]}] 🧊 Processing frontend ICE candidate")
+            await peer_connection_manager.add_ice_candidate(session_id, candidate)
+        
+        signaling_manager.set_ice_candidate_handler(on_ice_candidate_from_frontend)
+        logger.info("✅ ICE candidate handler wired")
         
         logger.info("✅ WebRTC components wired successfully")
 
