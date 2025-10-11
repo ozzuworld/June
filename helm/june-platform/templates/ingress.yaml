@@ -35,14 +35,14 @@ metadata:
     # WebSocket support for Janus
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/server-snippets: |
-      location ~* /ws {
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_http_version 1.1;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+    # Proper WebSocket annotations
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600" 
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_cache_bypass $http_upgrade;
       }
 spec:
   ingressClassName: nginx
