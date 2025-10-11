@@ -12,6 +12,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 log() { echo -e "${BLUE}[$(date +'%H:%M:%S')]${NC} $1"; }
+log_info() { echo -e "${BLUE}[$(date +'%H:%M:%S')]${NC} $1"; }
 success() { echo -e "${GREEN}✅${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠️${NC} $1"; }
 error() { echo -e "${RED}❌${NC} $1"; exit 1; }
