@@ -253,19 +253,29 @@ install_infrastructure() {
         success "cert-manager already installed"
     fi
     
-    # Wait for cert-manager CRDs to be ready
-    log "Waiting for cert-manager CRDs..."
-    sleep 10
-    for i in {1..30}; do
-        if kubectl get crd clusterissuers.cert-manager.io &> /dev/null; then
+    # Wait for cert-manager CRDs to be ready - CRITICAL for ClusterIssuer creation
+    log "Waiting for cert-manager CRDs (this is important)..."
+    sleep 15  # Initial wait for cert-manager to settle
+    
+    CRD_READY=false
+    for i in {1..60}; do
+        if kubectl get crd clusterissuers.cert-manager.io &> /dev/null && \
+           kubectl get crd certificates.cert-manager.io &> /dev/null; then
             success "cert-manager CRDs ready"
+            CRD_READY=true
             break
         fi
-        if [ $i -eq 30 ]; then
-            warn "cert-manager CRDs not ready yet - continuing anyway"
+        
+        # Show progress every 10 seconds
+        if [ $((i % 5)) -eq 0 ]; then
+            log "Still waiting for CRDs... ($i/60)"
         fi
         sleep 2
     done
+    
+    if [ "$CRD_READY" = false ]; then
+        error "cert-manager CRDs failed to become ready after 2 minutes. Cannot continue."
+    fi
     
     # Create Cloudflare secret
     kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
