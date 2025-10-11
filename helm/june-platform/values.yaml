@@ -44,7 +44,7 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: docker.io/ozzuworld/janus-gateway
+    repository: docker.io/ozzuworld/june-janus
     tag: latest
     pullPolicy: Always
   service:
