@@ -554,9 +554,31 @@ deploy_june() {
         fi
     fi
     
+    # Ensure june-services namespace exists with Helm labels
+    if ! kubectl get namespace june-services &>/dev/null; then
+        log_info "Creating june-services namespace..."
+        cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: june-services
+  labels:
+    name: june-services
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: june-platform
+    meta.helm.sh/release-namespace: june-services
+EOF
+    else
+        # Namespace exists, add Helm labels
+        log_info "Adding Helm management labels to existing namespace..."
+        kubectl label namespace june-services app.kubernetes.io/managed-by=Helm --overwrite > /dev/null 2>&1
+        kubectl annotate namespace june-services meta.helm.sh/release-name=june-platform --overwrite > /dev/null 2>&1
+        kubectl annotate namespace june-services meta.helm.sh/release-namespace=june-services --overwrite > /dev/null 2>&1
+    fi
+    
     HELM_ARGS=(
         --namespace june-services
-        --create-namespace
         --set global.domain="$DOMAIN"
         --set certificate.email="$LETSENCRYPT_EMAIL"
         --set secrets.geminiApiKey="$GEMINI_API_KEY"
