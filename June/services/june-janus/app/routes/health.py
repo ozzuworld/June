@@ -1,22 +1,19 @@
 from flask import Blueprint, jsonify
-import requests
 from config.settings import Config
 
 health_bp = Blueprint('health', __name__)
 
 @health_bp.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - simplified without Janus dependency"""
     try:
-        # Check if Janus is running
-        janus_response = requests.get(f"{Config.JANUS_URL}/info", timeout=5)
-        janus_healthy = janus_response.status_code == 200
-        
+        # For now, just return healthy since we're running signaling only
         return jsonify({
-            'status': 'healthy' if janus_healthy else 'unhealthy',
-            'janus_gateway': 'running' if janus_healthy else 'down',
-            'timestamp': None
-        }), 200 if janus_healthy else 503
+            'status': 'healthy',
+            'service': 'june-janus-signaling',
+            'janus_gateway': 'not_required',
+            'signaling_server': 'running'
+        }), 200
         
     except Exception as e:
         return jsonify({
@@ -32,4 +29,4 @@ def readiness_check():
 @health_bp.route('/liveness', methods=['GET'])
 def liveness_check():
     """Liveness probe for Kubernetes"""
-    return jsonify({'status': 'alive'}), 200
+    return jsonify({'status': 'alive', 'service': 'june-janus-signaling'}), 200

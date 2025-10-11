@@ -20,18 +20,20 @@ app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)
 
+# Register blueprints on the main app
+app.register_blueprint(webrtc_bp, url_prefix='/api/webrtc')
+app.register_blueprint(health_bp, url_prefix='/api')
+
+# Add simple health route on root app too
+@app.route('/health')
+def simple_health():
+    return {'status': 'healthy', 'service': 'june-janus-signaling'}, 200
+
 # Initialize SocketIO
 sio = socketio.Server(cors_allowed_origins="*", logger=True)
-app = socketio.WSGIApp(sio, app)
 
 # Initialize WebRTC handler
 webrtc_handler = WebRTCHandler()
-
-# Register blueprints
-from flask import Blueprint
-temp_app = Flask(__name__)
-temp_app.register_blueprint(webrtc_bp, url_prefix='/api/webrtc')
-temp_app.register_blueprint(health_bp, url_prefix='/api')
 
 # SocketIO event handlers
 @sio.event
@@ -54,7 +56,7 @@ def join_room(sid, data):
         sio.emit('error', {'message': 'Missing room_id or user_id'}, room=sid)
         return
     
-    # Create or join Janus session
+    # Create or join session (without Janus for now)
     session_info = webrtc_handler.create_session(sid, room_id, user_id)
     
     if session_info:
@@ -102,5 +104,7 @@ def webrtc_message(sid, data):
             sio.emit('webrtc_message', data, room=room_id, skip_sid=sid)
 
 if __name__ == '__main__':
-    # Run the SocketIO server
-    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 8080)), app)
+    # Combine Flask and SocketIO
+    wsgi_app = socketio.WSGIApp(sio, app)
+    logger.info("Starting June WebRTC Signaling Server on port 8080...")
+    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 8080)), wsgi_app)
