@@ -1,4 +1,4 @@
-# STUNner Gateway API Configuration - FIXED API VERSIONS
+# STUNner Gateway API Configuration - FIXED API VERSIONS + JANUS INTEGRATION
 # Compatible with Gateway API v1.0.0 and STUNner operator
 # https://docs.l7mp.io/en/latest/
 
@@ -88,6 +88,23 @@ spec:
   rules:
   - backendRefs:
     - name: june-orchestrator
+      namespace: june-services
+      port: 8080
+
+---
+# UDPRoute: Janus WebRTC Gateway (STUNner CRD)
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-janus-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-janus
       namespace: june-services
       port: 8080
 
