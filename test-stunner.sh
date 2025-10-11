@@ -1,5 +1,5 @@
 #!/bin/bash
-# STUNner Installation Verification Script
+# STUNner Installation Verification Script - FIXED VERSION
 # Tests STUNner Gateway, Routes, and connectivity
 
 set -e
@@ -112,8 +112,15 @@ if kubectl get gateway -n stunner june-stunner-gateway &>/dev/null; then
     echo "  Accepted: $ACCEPTED"
     echo "  Programmed: $PROGRAMMED"
     
-    # Get gateway service
-    if kubectl get svc -n stunner june-stunner-gateway-udp &>/dev/null; then
+    # Get gateway service - check multiple possible service names
+    if kubectl get svc -n stunner june-stunner-gateway &>/dev/null; then
+        SERVICE_TYPE=$(kubectl get svc -n stunner june-stunner-gateway -o jsonpath='{.spec.type}')
+        EXTERNAL_IP=$(kubectl get svc -n stunner june-stunner-gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        
+        log_success "Gateway service found"
+        echo "  Type: $SERVICE_TYPE"
+        echo "  External IP: ${EXTERNAL_IP:-<pending>}"
+    elif kubectl get svc -n stunner june-stunner-gateway-udp &>/dev/null; then
         SERVICE_TYPE=$(kubectl get svc -n stunner june-stunner-gateway-udp -o jsonpath='{.spec.type}')
         EXTERNAL_IP=$(kubectl get svc -n stunner june-stunner-gateway-udp -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
         
@@ -129,7 +136,7 @@ else
 fi
 echo ""
 
-# Test 6: Check UDPRoutes
+# Test 6: Check UDPRoutes - FIXED: Use correct STUNner API group
 log_info "Test 6: UDPRoutes Configuration"
 echo "----------------------------------"
 
@@ -141,9 +148,9 @@ ROUTES=(
 
 ALL_ROUTES_OK=true
 for route in "${ROUTES[@]}"; do
-    if kubectl get udproute -n stunner "$route" &>/dev/null; then
-        PARENTS=$(kubectl get udproute -n stunner "$route" -o jsonpath='{.spec.parentRefs[*].name}')
-        BACKENDS=$(kubectl get udproute -n stunner "$route" -o jsonpath='{.spec.rules[*].backendRefs[*].name}')
+    if kubectl get udproutes.stunner.l7mp.io -n stunner "$route" &>/dev/null; then
+        PARENTS=$(kubectl get udproutes.stunner.l7mp.io -n stunner "$route" -o jsonpath='{.spec.parentRefs[*].name}')
+        BACKENDS=$(kubectl get udproutes.stunner.l7mp.io -n stunner "$route" -o jsonpath='{.spec.rules[*].backendRefs[*].name}')
         
         log_success "UDPRoute found: $route"
         echo "  Parent: $PARENTS"
@@ -170,14 +177,17 @@ else
 fi
 echo ""
 
-# Test 8: Check STUNner dataplane pods
+# Test 8: Check STUNner dataplane pods - FIXED: Use correct labels
 log_info "Test 8: STUNner Dataplane Pods"
 echo "----------------------------------"
 
-DATAPLANE_PODS=$(kubectl get pods -n stunner -l app.kubernetes.io/name=stunner 2>/dev/null)
-if [ -n "$DATAPLANE_PODS" ]; then
+# Check for STUNner dataplane pods with multiple possible label selectors
+if kubectl get pods -n stunner -l app=stunner 2>/dev/null | grep -q "june-stunner-gateway"; then
     log_success "STUNner dataplane pods found:"
-    kubectl get pods -n stunner -l app.kubernetes.io/name=stunner
+    kubectl get pods -n stunner -l app=stunner
+elif kubectl get pods -n stunner -l "stunner.l7mp.io/related-gateway-name=june-stunner-gateway" 2>/dev/null | grep -q "june-stunner-gateway"; then
+    log_success "STUNner dataplane pods found:"
+    kubectl get pods -n stunner -l "stunner.l7mp.io/related-gateway-name=june-stunner-gateway"
 else
     log_warning "No STUNner dataplane pods found (will be created when needed)"
 fi
@@ -243,7 +253,7 @@ echo ""
 echo "🔍 Useful Commands:"
 echo "  kubectl get all -n stunner"
 echo "  kubectl get gateway -n stunner june-stunner-gateway -o yaml"
-echo "  kubectl get udproute -n stunner"
+echo "  kubectl get udproutes.stunner.l7mp.io -n stunner"
 echo "  kubectl logs -n stunner-system -l control-plane=stunner-gateway-operator-controller-manager"
 echo ""
 echo "=========================================="
