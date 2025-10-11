@@ -631,9 +631,10 @@ EOF
     
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
         log_info "Using restored certificate"
-        HELM_ARGS+=(--set certificate.enabled=false)
+        HELM_ARGS+=(--set certificate.enabled=true)   
         HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
     fi
+
     
     log "Deploying services..."
     
