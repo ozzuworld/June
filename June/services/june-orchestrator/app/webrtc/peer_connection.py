@@ -218,8 +218,8 @@ class PeerConnectionManager:
     
     async def add_ice_candidate(self, session_id: str, candidate: dict):
         """
-        ✅ CRITICAL FIX: Actually add ICE candidate from client
-        This was missing before!
+        ✅ FIXED: Add ICE candidate from client using correct aiortc API
+        aiortc expects: RTCIceCandidate(sdpMid, sdpMLineIndex, candidate_string)
         """
         try:
             if session_id not in self.peers:
@@ -233,18 +233,25 @@ class PeerConnectionManager:
                 logger.info(f"[{session_id[:8]}] 🏁 End of frontend ICE candidates")
                 return
             
-            # ✅ CRITICAL: Create and add the ICE candidate
+            # ✅ CORRECT aiortc API: RTCIceCandidate(sdpMid, sdpMLineIndex, candidate)
+            # The candidate parameter is the SDP candidate STRING, not a dict
+            candidate_string = candidate.get("candidate")
+            sdp_mid = candidate.get("sdpMid")
+            sdp_m_line_index = candidate.get("sdpMLineIndex")
+            
+            # Create ICE candidate with correct parameter order
             ice_candidate = RTCIceCandidate(
-                candidate=candidate.get("candidate"),
-                sdpMLineIndex=candidate.get("sdpMLineIndex"),
-                sdpMid=candidate.get("sdpMid")
+                sdpMid=sdp_mid,
+                sdpMLineIndex=sdp_m_line_index,
+                candidate=candidate_string
             )
             
             # Add to peer connection
             await pc.addIceCandidate(ice_candidate)
             
             logger.info(f"[{session_id[:8]}] ✅ Frontend ICE candidate added")
-            logger.debug(f"[{session_id[:8]}]   Candidate: {candidate.get('candidate')[:50]}...")
+            logger.debug(f"[{session_id[:8]}]   Type: {sdp_mid}, Index: {sdp_m_line_index}")
+            logger.debug(f"[{session_id[:8]}]   Candidate: {candidate_string[:60]}...")
             
         except Exception as e:
             logger.error(f"[{session_id[:8]}] ❌ Error adding ICE candidate: {e}", exc_info=True)
