@@ -1,4 +1,3 @@
-helm/june-platform/Chart.yaml << 'EOF'
 apiVersion: v2
 name: june-platform
 description: June AI Platform - Complete Deployment
