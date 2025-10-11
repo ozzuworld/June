@@ -67,7 +67,7 @@ log "Email: $LETSENCRYPT_EMAIL"
 # Certificate backup directory
 BACKUP_DIR="/root/.june-certs"
 CERT_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
-SKIP_CERT_CREATION="false"
+USING_BACKUP_CERT="false"
 
 # ============================================================================
 # STEP 1: Install Prerequisites
@@ -353,7 +353,7 @@ restore_certificate_if_exists() {
         
         if kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null; then
             success "Certificate restored to cert-manager namespace"
-            SKIP_CERT_CREATION="true"
+            USING_BACKUP_CERT="true"
             log_info "⚡ Avoiding Let's Encrypt rate limit!"
         else
             warn "Certificate restoration verification failed"
@@ -584,7 +584,7 @@ EOF
     fi
     
     # Clean up any existing certificate conflicts in june-services before deployment
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+    if [ "$USING_BACKUP_CERT" = "true" ]; then
         log_info "Cleaning up certificate conflicts in june-services..."
         kubectl delete certificate --all -n june-services &>/dev/null || true
         kubectl delete certificaterequest --all -n june-services &>/dev/null || true
@@ -642,12 +642,15 @@ EOF
     )
     
     # Configure certificate handling based on backup availability
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Using restored certificate (disabling cert-manager certificate creation)"
-        HELM_ARGS+=(--set certificate.enabled=false)  # Disable automatic cert creation
+    if [ "$USING_BACKUP_CERT" = "true" ]; then
+        log_info "Using restored certificate (enabling TLS with backup)"
+        HELM_ARGS+=(--set certificate.enabled=true)
+        HELM_ARGS+=(--set certificate.useBackup=true)
+        HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
     else
         log_info "Will create new certificate via cert-manager"
         HELM_ARGS+=(--set certificate.enabled=true)
+        HELM_ARGS+=(--set certificate.useBackup=false)
     fi
     
     log "Deploying services..."
@@ -658,7 +661,7 @@ EOF
     set -e
     
     # Copy certificate from cert-manager to june-services after deployment
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+    if [ "$USING_BACKUP_CERT" = "true" ]; then
         log_info "Copying certificate to june-services..."
         kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
             sed 's/namespace: cert-manager/namespace: june-services/' | \
@@ -785,7 +788,7 @@ EOF
 backup_new_certificate() {
     log "Step 8/8: Certificate backup management..."
     
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+    if [ "$USING_BACKUP_CERT" = "true" ]; then
         log_info "Using existing certificate backup"
         return
     fi
