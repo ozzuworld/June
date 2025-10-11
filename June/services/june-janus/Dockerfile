@@ -49,7 +49,7 @@ RUN pip3 install -r /app/requirements.txt
 
 # Copy application code
 COPY app/ /app/
-COPY janus-config/ /opt/janus/etc/janus/
+COPY app/janus-config/ /opt/janus/etc/janus/
 
 # Set working directory
 WORKDIR /app
