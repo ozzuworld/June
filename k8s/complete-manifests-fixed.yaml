@@ -1,5 +1,5 @@
 ---
-# COMPLETE JUNE SERVICES MANIFEST TEMPLATE - FIXED TLS CONFIGURATION
+# COMPLETE JUNE SERVICES MANIFEST TEMPLATE - FIXED TLS CONFIGURATION + JANUS
 # This template gets processed by generate-manifests.sh to create the final manifest
 # 
 # Prerequisites (created by install-core-infrastructure.sh):
@@ -86,6 +86,28 @@ data:
   # STUNner Gateway URL (internal cluster communication)
   STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
   STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
+
+---
+# Janus-specific configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: june-janus-config
+  namespace: june-services
+data:
+  # Janus Gateway configuration
+  JANUS_URL: "http://localhost:8088/janus"
+  JANUS_ADMIN_KEY: "janusoverlord"
+  JANUS_API_SECRET: "janusrocks"
+  
+  # WebRTC signaling server
+  SIGNALING_PORT: "8080"
+  
+  # STUNner integration (corrected)
+  STUN_SERVER: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
+  TURN_SERVER: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
+  TURN_USERNAME: "june-user"
+  TURN_PASSWORD: "Pokemon123!"
 
 ---
 apiVersion: v1
@@ -206,6 +228,158 @@ spec:
     name: postgres
   selector:
     app: postgresql
+
+---
+# JANUS WEBRTC SERVER DEPLOYMENT
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-janus
+  namespace: june-services
+  labels:
+    app: june-janus
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: june-janus
+  template:
+    metadata:
+      labels:
+        app: june-janus
+    spec:
+      containers:
+      - name: janus
+        image: docker.io/ozzuworld/june-janus:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: signaling
+        - containerPort: 8088
+          name: janus-http
+        - containerPort: 8089
+          name: janus-admin
+        - containerPort: 7889
+          name: janus-ws
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        env:
+        # Janus Gateway configuration
+        - name: JANUS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: JANUS_URL
+        - name: JANUS_ADMIN_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: JANUS_ADMIN_KEY
+        - name: JANUS_API_SECRET
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: JANUS_API_SECRET
+        
+        # Signaling server configuration
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: SIGNALING_PORT
+        
+        # STUNner integration
+        - name: STUN_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: STUN_SERVER
+        - name: TURN_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: TURN_SERVER
+        - name: TURN_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: TURN_USERNAME
+        - name: TURN_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: june-janus-config
+              key: TURN_PASSWORD
+        
+        # Certificate configuration (use existing wildcard cert)
+        - name: TLS_CERT_PATH
+          value: "/etc/certs/tls.crt"
+        - name: TLS_KEY_PATH
+          value: "/etc/certs/tls.key"
+        
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /etc/certs
+          readOnly: true
+        - name: janus-logs
+          mountPath: /var/log
+        
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          failureThreshold: 5
+        
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: ozzu-world-wildcard-tls
+      - name: janus-logs
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-janus
+  namespace: june-services
+  labels:
+    app: june-janus
+spec:
+  type: ClusterIP
+  selector:
+    app: june-janus
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: signaling
+  - port: 8088
+    targetPort: 8088
+    name: janus-http
+  - port: 8089
+    targetPort: 8089
+    name: janus-admin
+  - port: 7889
+    targetPort: 7889
+    name: janus-ws
 
 ---
 apiVersion: apps/v1
@@ -361,7 +535,7 @@ spec:
       containers:
       - name: tts
         image: docker.io/ozzuworld/june-tts:latest
-        imagePullPolicy: Always
+        imagePullProperty: Always
         ports:
         - containerPort: 8000
           name: http
@@ -492,6 +666,8 @@ spec:
           value: "http://june-tts.june-services.svc.cluster.local:8000"
         - name: STT_SERVICE_URL
           value: "http://june-stt.june-services.svc.cluster.local:8080"
+        - name: JANUS_SERVICE_URL
+          value: "http://june-janus.june-services.svc.cluster.local:8080"
         
         # WebRTC/STUNner Configuration
         - name: STUN_SERVER_URL
@@ -690,7 +866,7 @@ spec:
     name: management
 
 ---
-# FIXED INGRESS - Now properly configured for TLS
+# UPDATED INGRESS - Added Janus WebRTC endpoints
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -704,6 +880,9 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # WebSocket support for Janus signaling
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 spec:
   ingressClassName: nginx
   tls:
@@ -713,6 +892,8 @@ spec:
     - "stt.ozzu.world"
     - "tts.ozzu.world"
     - "turn.ozzu.world"
+    - "janus.ozzu.world"
+    - "webrtc.ozzu.world"
     secretName: ozzu-world-wildcard-tls
   rules:
   - host: api.ozzu.world
@@ -755,3 +936,32 @@ spec:
             name: june-tts
             port:
               number: 8000
+  # Janus WebRTC signaling server
+  - host: webrtc.ozzu.world
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8080
+  # Janus Gateway HTTP API
+  - host: janus.ozzu.world
+    http:
+      paths:
+      - path: /janus
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8088
+      - path: /admin
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8089
