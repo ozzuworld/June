@@ -603,6 +603,75 @@ deploy_june() {
             sed 's/namespace: cert-manager/namespace: june-services/' | \
             kubectl apply -f - > /dev/null 2>&1
     fi
+    
+    # ✅ CRITICAL FIX: Create UDPRoutes after services are deployed
+    log "Creating STUNner UDPRoutes..."
+    sleep 10  # Give services time to be created
+    
+    # Wait for services to exist
+    log_info "Waiting for June services to be created..."
+    for i in {1..30}; do
+        if kubectl get svc -n june-services june-orchestrator &>/dev/null && \
+           kubectl get svc -n june-services june-stt &>/dev/null && \
+           kubectl get svc -n june-services june-tts &>/dev/null; then
+            success "Services are ready"
+            break
+        fi
+        sleep 5
+    done
+    
+    # Create UDPRoute for Orchestrator
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-orchestrator-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-orchestrator
+      namespace: june-services
+EOF
+    
+    # Create UDPRoute for STT
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-stt-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-stt
+      namespace: june-services
+EOF
+    
+    # Create UDPRoute for TTS
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: june-tts-route
+  namespace: stunner
+spec:
+  parentRefs:
+  - name: june-stunner-gateway
+    namespace: stunner
+  rules:
+  - backendRefs:
+    - name: june-tts
+      namespace: june-services
+EOF
+    
+    success "STUNner UDPRoutes created"
 }
 
 # ============================================================================
@@ -692,7 +761,10 @@ main() {
     echo "📊 Check Status:"
     echo "  kubectl get pods -n june-services"
     echo "  kubectl get gateway -n stunner"
-    echo "  kubectl get pods -n stunner-system"
+    echo "  kubectl get udproute -n stunner"
+    echo ""
+    echo "🧪 Test STUNner:"
+    echo "  ./scripts/test-stunner.sh"
     echo ""
     echo "=========================================="
 }
