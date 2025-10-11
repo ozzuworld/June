@@ -21,6 +21,7 @@ certificate:
   issuer: letsencrypt-prod
   email: admin@ozzu.world  # CHANGE THIS
   secretName: ozzu-world-wildcard-tls
+  useBackup: false  # Set to true when using backup certificates
 
 # PostgreSQL Database
 postgresql:
