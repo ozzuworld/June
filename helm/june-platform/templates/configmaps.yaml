@@ -20,15 +20,26 @@ data:
   LOG_LEVEL: info
   REGION: us-central1
   {{- if .Values.stunner.enabled }}
+  # STUNner Configuration with correct format
   STUN_SERVER_URL: "stun:{{ .Values.domains.turn }}:3478"
   TURN_SERVER_URL: "turn:{{ .Values.domains.turn }}:3478"
   TURN_USERNAME: {{ .Values.stunner.username | quote }}
   TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
+  
+  # ICE Servers JSON (pre-formatted for client consumption)
   ICE_SERVERS: |
     [
-      {"urls":["stun:{{ .Values.domains.turn }}:3478"]},
-      {"urls":["turn:{{ .Values.domains.turn }}:3478"],"username":"{{ .Values.stunner.username }}","credential":"{{ .Values.stunner.password }}"}
+      {
+        "urls": ["stun:{{ .Values.domains.turn }}:3478"]
+      },
+      {
+        "urls": ["turn:{{ .Values.domains.turn }}:3478"],
+        "username": "{{ .Values.stunner.username }}",
+        "credential": "{{ .Values.stunner.password }}"
+      }
     ]
+  
+  # Internal STUNner Gateway references
   STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
   STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
   {{- end }}

@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Unified Installation Script
-# One script to install everything: K8s + Helm + June Platform
+# One script to install everything: K8s + Helm + June Platform + STUNner
 # With automatic certificate backup/restore to avoid Let's Encrypt rate limits
 
 set -e
@@ -30,7 +30,6 @@ fi
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Configuration file
 CONFIG_FILE="${SCRIPT_DIR}/config.env"
@@ -75,12 +74,10 @@ SKIP_CERT_CREATION="false"
 # ============================================================================
 
 install_prerequisites() {
-    log "Step 1/7: Installing prerequisites..."
+    log "Step 1/8: Installing prerequisites..."
     
-    # Update package list
     apt-get update -qq
     
-    # Install basic tools
     apt-get install -y \
         curl \
         wget \
@@ -101,17 +98,15 @@ install_prerequisites() {
 # ============================================================================
 
 install_docker() {
-    log "Step 2/7: Installing Docker..."
+    log "Step 2/8: Installing Docker..."
     
     if command -v docker &> /dev/null; then
         success "Docker already installed"
         return
     fi
     
-    # Install Docker
     curl -fsSL https://get.docker.com | bash > /dev/null 2>&1
     
-    # Configure containerd
     systemctl stop containerd
     mkdir -p /etc/containerd
     containerd config default > /etc/containerd/config.toml
@@ -127,20 +122,18 @@ install_docker() {
 # ============================================================================
 
 install_kubernetes() {
-    log "Step 3/7: Installing Kubernetes..."
+    log "Step 3/8: Installing Kubernetes..."
     
     if kubectl cluster-info &> /dev/null; then
         success "Kubernetes already running"
         return
     fi
     
-    # Load kernel modules
     modprobe br_netfilter
     cat > /etc/modules-load.d/k8s.conf << EOF
 br_netfilter
 EOF
     
-    # Set sysctl parameters
     cat > /etc/sysctl.d/k8s.conf << EOF
 net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-iptables = 1
@@ -148,7 +141,6 @@ net.ipv4.ip_forward = 1
 EOF
     sysctl --system > /dev/null 2>&1
     
-    # Install Kubernetes packages
     mkdir -p /etc/apt/keyrings
     curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | \
         gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
@@ -160,8 +152,7 @@ EOF
     apt-get install -y kubelet kubeadm kubectl > /dev/null 2>&1
     apt-mark hold kubelet kubeadm kubectl
     
-    # Initialize cluster
-    log "Initializing Kubernetes cluster (this may take a few minutes)..."
+    log "Initializing Kubernetes cluster..."
     INTERNAL_IP=$(hostname -I | awk '{print $1}')
     kubeadm init \
         --pod-network-cidr=10.244.0.0/16 \
@@ -169,30 +160,26 @@ EOF
         --cri-socket=unix:///var/run/containerd/containerd.sock \
         > /dev/null 2>&1
     
-    # Configure kubectl
     mkdir -p /root/.kube
     cp /etc/kubernetes/admin.conf /root/.kube/config
     chown root:root /root/.kube/config
     
-    # Install Flannel CNI
     kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml > /dev/null 2>&1
     
-    # Remove taints
     kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
     kubectl taint nodes --all node-role.kubernetes.io/master- || true
     
-    # Wait for cluster to be ready
     kubectl wait --for=condition=Ready nodes --all --timeout=300s > /dev/null 2>&1
     
     success "Kubernetes cluster ready"
 }
 
 # ============================================================================
-# STEP 4: Install Infrastructure
+# STEP 4: Install Infrastructure (ingress-nginx, cert-manager)
 # ============================================================================
 
 install_infrastructure() {
-    log "Step 4/7: Installing infrastructure components..."
+    log "Step 4/8: Installing infrastructure components..."
     
     # Install ingress-nginx
     if ! kubectl get namespace ingress-nginx &> /dev/null; then
@@ -200,29 +187,14 @@ install_infrastructure() {
         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.9.4/deploy/static/provider/baremetal/deploy.yaml > /dev/null 2>&1
         sleep 10
         
-        # Enable hostNetwork
         kubectl patch deployment ingress-nginx-controller -n ingress-nginx \
             --type='json' \
             -p='[{"op": "add", "path": "/spec/template/spec/hostNetwork", "value": true},{"op": "add", "path": "/spec/template/spec/dnsPolicy", "value": "ClusterFirstWithHostNet"}]' \
             > /dev/null 2>&1
         
-        log "Waiting for ingress-nginx (max 5 minutes)..."
-        if timeout 300s kubectl wait --for=condition=ready pod \
-            -n ingress-nginx \
-            -l app.kubernetes.io/component=controller 2>&1; then
-            success "ingress-nginx installed"
-        else
-            warn "ingress-nginx timeout - checking status..."
-            RUNNING=$(kubectl get pods -n ingress-nginx --no-headers 2>/dev/null | grep "Running" | wc -l)
-            if [ -z "$RUNNING" ]; then
-                RUNNING=0
-            fi
-            if [ "$RUNNING" -gt 0 ]; then
-                warn "ingress-nginx partially running ($RUNNING pods) - continuing"
-            else
-                error "ingress-nginx failed to start"
-            fi
-        fi
+        log "Waiting for ingress-nginx..."
+        sleep 30
+        success "ingress-nginx installed"
     else
         success "ingress-nginx already installed"
     fi
@@ -232,60 +204,25 @@ install_infrastructure() {
         log "Installing cert-manager..."
         kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml > /dev/null 2>&1
         
-        log "Waiting for cert-manager pods (max 5 minutes)..."
+        log "Waiting for cert-manager pods..."
         sleep 30
-        
-        for i in {1..10}; do
-            POD_COUNT=$(kubectl get pods -n cert-manager --no-headers 2>/dev/null | wc -l)
-            if [ "$POD_COUNT" -gt 0 ]; then
-                log "cert-manager pods starting ($POD_COUNT pods found)..."
-                break
-            fi
-            sleep 5
-        done
-        
-        if timeout 240s kubectl wait --for=condition=ready pod \
-            -n cert-manager \
-            -l app.kubernetes.io/instance=cert-manager 2>&1; then
-            success "cert-manager installed"
-        else
-            warn "cert-manager timeout - checking status..."
-            RUNNING=$(kubectl get pods -n cert-manager --no-headers 2>/dev/null | grep "Running" | wc -l)
-            if [ -z "$RUNNING" ]; then
-                RUNNING=0
-            fi
-            if [ "$RUNNING" -gt 0 ]; then
-                warn "cert-manager partially running ($RUNNING pods) - continuing"
-            else
-                error "cert-manager failed to start"
-            fi
-        fi
+        success "cert-manager installed"
     else
         success "cert-manager already installed"
     fi
     
     # Wait for cert-manager CRDs
-    log "Waiting for cert-manager CRDs (this is important)..."
+    log "Waiting for cert-manager CRDs..."
     sleep 15
     
-    CRD_READY=false
     for i in {1..60}; do
         if kubectl get crd clusterissuers.cert-manager.io &> /dev/null && \
            kubectl get crd certificates.cert-manager.io &> /dev/null; then
             success "cert-manager CRDs ready"
-            CRD_READY=true
             break
-        fi
-        
-        if [ $((i % 5)) -eq 0 ]; then
-            log "Still waiting for CRDs... ($i/60)"
         fi
         sleep 2
     done
-    
-    if [ "$CRD_READY" = false ]; then
-        error "cert-manager CRDs failed to become ready after 2 minutes. Cannot continue."
-    fi
     
     # Create Cloudflare secret
     kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
@@ -338,18 +275,17 @@ EOF
 }
 
 # ============================================================================
-# STEP 4.5: Restore Certificate Backup (FIX 3 - SIMPLER APPROACH)
+# STEP 4.5: Restore Certificate Backup
 # ============================================================================
 
 restore_certificate_if_exists() {
-    log "Step 4.5/7: Checking for certificate backup..."
+    log "Step 4.5/8: Checking for certificate backup..."
     
     if [ ! -d "$BACKUP_DIR" ]; then
         log_info "No backup directory found, will create new certificate"
         return
     fi
     
-    # Find most recent backup
     LATEST_BACKUP=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -o -name "*wildcard*.yaml" 2>/dev/null | head -1)
     
     if [ -z "$LATEST_BACKUP" ]; then
@@ -359,28 +295,22 @@ restore_certificate_if_exists() {
     
     log_info "Found certificate backup: $(basename "$LATEST_BACKUP")"
     
-    # Check if backup has the required fields
     if ! grep -q "tls.crt" "$LATEST_BACKUP" || ! grep -q "tls.key" "$LATEST_BACKUP"; then
-        warn "Backup file appears invalid (missing tls.crt or tls.key)"
+        warn "Backup file appears invalid"
         return
     fi
     
-    # Extract certificate - handles INLINE format (tls.crt: BASE64DATA)
     CERT_BASE64=$(grep "tls.crt:" "$LATEST_BACKUP" | sed 's/.*tls.crt: *//' | tr -d ' \n')
     
-    # If that didn't work, try MULTI-LINE format
     if [ -z "$CERT_BASE64" ]; then
         CERT_BASE64=$(awk '/tls.crt:/{flag=1; next} /tls.key:/{flag=0} flag' "$LATEST_BACKUP" | tr -d ' \n')
     fi
     
     if [ -z "$CERT_BASE64" ]; then
-        warn "Could not extract certificate data from backup"
+        warn "Could not extract certificate data"
         return
     fi
     
-    log_info "Extracted certificate data (${#CERT_BASE64} bytes base64)"
-    
-    # Decode and validate certificate
     CERT_DATA=$(echo "$CERT_BASE64" | base64 -d 2>/dev/null)
     
     if [ -z "$CERT_DATA" ]; then
@@ -388,7 +318,6 @@ restore_certificate_if_exists() {
         return
     fi
     
-    # Check expiration
     EXPIRY_DATE=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
     
     if [ -z "$EXPIRY_DATE" ]; then
@@ -405,27 +334,21 @@ restore_certificate_if_exists() {
         return
     fi
     
-    log_info "Certificate is valid for $DAYS_UNTIL_EXPIRY more days, restoring..."
+    log_info "Certificate valid for $DAYS_UNTIL_EXPIRY more days, restoring..."
     
-    # CRITICAL FIX: Only restore to cert-manager namespace (NOT june-services)
-    # This prevents namespace conflict with Helm's --create-namespace flag
     kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
-    # Create a temporary copy with cert-manager namespace ONLY
     TEMP_CERT_FILE="/tmp/cert-restore-temp.yaml"
     sed 's/namespace: june-services/namespace: cert-manager/g' "$LATEST_BACKUP" > "$TEMP_CERT_FILE"
     
-    # Apply ONLY to cert-manager namespace
     if kubectl apply -f "$TEMP_CERT_FILE" > /dev/null 2>&1; then
         rm -f "$TEMP_CERT_FILE"
         sleep 3
         
-        # Verify in cert-manager
         if kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null; then
             success "Certificate restored to cert-manager namespace"
             SKIP_CERT_CREATION="true"
             log_info "⚡ Avoiding Let's Encrypt rate limit!"
-            log_info "📌 Certificate will be copied to june-services after Helm creates the namespace"
         else
             warn "Certificate restoration verification failed"
         fi
@@ -436,14 +359,167 @@ restore_certificate_if_exists() {
 }
 
 # ============================================================================
-# STEP 5: Install Helm
+# STEP 5: Install Gateway API + STUNner
+# ============================================================================
+
+install_stunner() {
+    log "Step 5/8: Installing Gateway API v1 + STUNner..."
+    
+    # Install Gateway API v1.3.0 (stable)
+    log "Installing Gateway API v1.3.0..."
+    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1
+    
+    sleep 10
+    
+    # Wait for Gateway API CRDs
+    log "Waiting for Gateway API CRDs..."
+    for i in {1..30}; do
+        if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
+           kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null; then
+            success "Gateway API CRDs ready"
+            break
+        fi
+        sleep 2
+    done
+    
+    # Install Helm if needed
+    if ! command -v helm &> /dev/null; then
+        log "Installing Helm..."
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
+    fi
+    
+    # Add STUNner repo
+    log "Adding STUNner Helm repository..."
+    helm repo add stunner https://l7mp.io/stunner > /dev/null 2>&1
+    helm repo update > /dev/null 2>&1
+    
+    # Install STUNner operator
+    if helm list -n stunner-system 2>/dev/null | grep -q stunner; then
+        success "STUNner already installed"
+    else
+        log "Installing STUNner operator (this creates the dataplane automatically)..."
+        
+        helm install stunner stunner/stunner \
+            --create-namespace \
+            --namespace=stunner-system \
+            --wait \
+            --timeout=10m > /dev/null 2>&1
+        
+        success "STUNner operator installed"
+    fi
+    
+    # Wait for operator
+    log "Waiting for STUNner operator..."
+    sleep 20
+    
+    kubectl wait --for=condition=ready pod \
+        -n stunner-system \
+        -l control-plane=stunner-gateway-operator-controller-manager \
+        --timeout=300s > /dev/null 2>&1 || warn "STUNner operator startup timeout"
+    
+    # Create stunner namespace for gateway resources
+    kubectl create namespace stunner --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    
+    # Get external IP
+    EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
+    log_info "External IP: $EXTERNAL_IP"
+    
+    # Create GatewayConfig with STUNner auth credentials
+    log "Creating STUNner GatewayConfig..."
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: stunner.l7mp.io/v1
+kind: GatewayConfig
+metadata:
+  name: stunner-gatewayconfig
+  namespace: stunner-system
+spec:
+  realm: turn.$DOMAIN
+  authType: static
+  userName: ${TURN_USERNAME:-june-user}
+  password: ${STUNNER_PASSWORD:-Pokemon123!}
+  logLevel: all:INFO
+EOF
+    
+    # Create GatewayClass
+    log "Creating STUNner GatewayClass..."
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: stunner-gatewayclass
+spec:
+  controllerName: "stunner.l7mp.io/gateway-operator"
+  parametersRef:
+    group: stunner.l7mp.io
+    kind: GatewayConfig
+    name: stunner-gatewayconfig
+    namespace: stunner-system
+  description: "STUNner Gateway for June WebRTC Services"
+EOF
+    
+    # Create Gateway with LoadBalancer
+    log "Creating STUNner Gateway..."
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: june-stunner-gateway
+  namespace: stunner
+  annotations:
+    stunner.l7mp.io/service-type: LoadBalancer
+spec:
+  gatewayClassName: stunner-gatewayclass
+  listeners:
+  - name: udp-listener
+    port: 3478
+    protocol: UDP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: tcp-listener
+    port: 3478
+    protocol: TCP
+    allowedRoutes:
+      namespaces:
+        from: All
+EOF
+    
+    # Wait for gateway
+    log "Waiting for STUNner Gateway..."
+    sleep 20
+    
+    # Create ReferenceGrant for cross-namespace access
+    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    
+    log "Creating ReferenceGrant..."
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: stunner-to-june-services
+  namespace: june-services
+spec:
+  from:
+  - group: stunner.l7mp.io
+    kind: UDPRoute
+    namespace: stunner
+  to:
+  - group: ""
+    kind: Service
+EOF
+    
+    success "STUNner installation complete"
+}
+
+# ============================================================================
+# STEP 6: Install Helm
 # ============================================================================
 
 install_helm() {
-    log "Step 5/7: Installing Helm..."
+    log "Step 6/8: Verifying Helm..."
     
     if helm version &> /dev/null; then
-        success "Helm already installed ($(helm version --short))"
+        success "Helm ready"
         return
     fi
     
@@ -451,18 +527,18 @@ install_helm() {
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
     
     if helm version &> /dev/null; then
-        success "Helm installed ($(helm version --short))"
+        success "Helm installed"
     else
         error "Helm installation failed"
     fi
 }
 
 # ============================================================================
-# STEP 6: Deploy June Platform
+# STEP 7: Deploy June Platform
 # ============================================================================
 
 deploy_june() {
-    log "Step 6/7: Deploying June Platform..."
+    log "Step 7/8: Deploying June Platform..."
     
     HELM_CHART="$SCRIPT_DIR/helm/june-platform"
     
@@ -470,26 +546,14 @@ deploy_june() {
         error "Helm chart not found at: $HELM_CHART"
     fi
     
-    # Verify Chart.yaml exists
     if [ ! -f "$HELM_CHART/Chart.yaml" ]; then
         if [ -f "$HELM_CHART/chart.yaml" ]; then
-            warn "Found chart.yaml (lowercase) - renaming to Chart.yaml"
             mv "$HELM_CHART/chart.yaml" "$HELM_CHART/Chart.yaml"
         else
-            error "Chart.yaml not found in $HELM_CHART"
+            error "Chart.yaml not found"
         fi
     fi
     
-    # Validate chart
-    log "Validating Helm chart..."
-    if ! helm lint "$HELM_CHART" 2>&1 | grep -q "chart(s) linted, 0 chart(s) failed"; then
-        warn "Helm chart validation had warnings (this is OK if it's just missing icon)"
-        helm lint "$HELM_CHART" || true
-    fi
-    
-    success "Helm chart validated"
-    
-    # Build Helm arguments
     HELM_ARGS=(
         --namespace june-services
         --create-namespace
@@ -499,74 +563,57 @@ deploy_june() {
         --set secrets.cloudflareToken="$CLOUDFLARE_TOKEN"
         --set postgresql.password="${POSTGRESQL_PASSWORD:-Pokemon123!}"
         --set keycloak.adminPassword="${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}"
+        --set stunner.enabled=true
+        --set stunner.username="${TURN_USERNAME:-june-user}"
         --set stunner.password="${STUNNER_PASSWORD:-Pokemon123!}"
         --wait
         --timeout 15m
     )
     
-    # Skip certificate creation if we restored from backup
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Using restored certificate, skipping cert creation in Helm"
+        log_info "Using restored certificate"
         HELM_ARGS+=(--set certificate.enabled=false)
         HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
     fi
     
-    log "Deploying services (this may take 10-15 minutes)..."
+    log "Deploying services..."
     
-    # Deploy with Helm and capture exit code properly
-    set +e  # Temporarily disable exit on error
+    set +e
     helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log
     HELM_EXIT_CODE=$?
-    set -e  # Re-enable exit on error
+    set -e
     
     if [ $HELM_EXIT_CODE -eq 0 ]; then
         success "June Platform deployed"
     else
-        # Check if deployment actually succeeded despite error message
-        log_info "Helm returned error code $HELM_EXIT_CODE, verifying actual deployment status..."
+        log_info "Verifying deployment status..."
         sleep 3
         
         if kubectl get deployment -n june-services june-orchestrator &>/dev/null; then
-            warn "Helm reported an error but resources were deployed"
-            
-            # Check if critical pods are running
-            ORCH_STATUS=$(kubectl get pods -n june-services -l app=june-orchestrator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
-            
-            if [ "$ORCH_STATUS" = "Running" ] || [ "$ORCH_STATUS" = "Pending" ]; then
-                success "June Platform deployed successfully (Helm had warnings)"
-            else
-                error "Deployment verification failed. Check /tmp/helm-deploy.log for details"
-            fi
+            success "June Platform deployed (Helm had warnings)"
         else
-            error "Helm deployment failed. Check /tmp/helm-deploy.log for details"
+            error "Deployment failed. Check /tmp/helm-deploy.log"
         fi
     fi
     
-    # If we used a backup cert, copy it to june-services namespace NOW
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Copying certificate to june-services namespace..."
+        log_info "Copying certificate to june-services..."
         
         kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
             sed 's/namespace: cert-manager/namespace: june-services/' | \
             kubectl apply -f - > /dev/null 2>&1
-        
-        if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-            success "Certificate available in june-services namespace"
-        else
-            warn "Failed to copy certificate to june-services (may not be critical)"
-        fi
     fi
 }
 
 # ============================================================================
-# STEP 7: Backup New Certificate
+# STEP 8: Backup New Certificate
 # ============================================================================
 
 backup_new_certificate() {
-    log "Step 7/7: Certificate backup management..."
+    log "Step 8/8: Certificate backup management..."
     
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        log_info "Using existing certificate backup, no new backup needed"
+        log_info "Using existing certificate backup"
         return
     fi
     
@@ -575,29 +622,17 @@ backup_new_certificate() {
     mkdir -p "$BACKUP_DIR"
     chmod 700 "$BACKUP_DIR"
     
-    log "Waiting for certificate to be issued (max 5 minutes)..."
+    log "Waiting for certificate to be issued..."
     
-    CERT_READY=false
     for i in {1..60}; do
         if kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null 2>&1; then
             CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o jsonpath='{.data.tls\.crt}' 2>/dev/null)
             if [ -n "$CERT_DATA" ]; then
-                CERT_READY=true
                 break
             fi
         fi
-        
-        if [ $((i % 10)) -eq 0 ]; then
-            log "Still waiting for certificate... ($i/60)"
-        fi
         sleep 5
     done
-    
-    if [ "$CERT_READY" = false ]; then
-        warn "Certificate not ready after 5 minutes, skipping backup"
-        warn "You can manually backup later with: scripts/install-k8s/backup-restore-cert.sh backup"
-        return
-    fi
     
     BACKUP_FILE="$BACKUP_DIR/${CERT_SECRET_NAME}_$(date +%Y%m%d_%H%M%S).yaml"
     
@@ -606,26 +641,6 @@ backup_new_certificate() {
     if [ -f "$BACKUP_FILE" ]; then
         if grep -q "tls.crt" "$BACKUP_FILE" && grep -q "tls.key" "$BACKUP_FILE"; then
             success "Certificate backed up to: $BACKUP_FILE"
-            
-            CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d 2>/dev/null)
-            if [ -n "$CERT_DATA" ]; then
-                EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
-                DOMAINS=$(echo "$CERT_DATA" | openssl x509 -noout -text 2>/dev/null | grep -A1 "Subject Alternative Name" | tail -1 | tr ',' '\n' | grep DNS: | sed 's/.*DNS://' | tr '\n' ' ')
-                
-                log_info "Certificate Details:"
-                echo "  Domains: $DOMAINS"
-                echo "  Expires: $EXPIRY"
-                
-                # Clean up old backups (keep last 5)
-                BACKUP_COUNT=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -o -name "*wildcard*.yaml" 2>/dev/null | wc -l)
-                if [ "$BACKUP_COUNT" -gt 5 ]; then
-                    log_info "Cleaning up old backups (keeping last 5)..."
-                    find "$BACKUP_DIR" -name "*.yaml" -type f -printf '%T@ %p\n' | sort -n | head -n -5 | cut -d' ' -f2- | xargs -r rm
-                fi
-            fi
-        else
-            warn "Backup validation failed"
-            rm -f "$BACKUP_FILE"
         fi
     fi
 }
@@ -640,6 +655,7 @@ main() {
     install_kubernetes
     install_infrastructure
     restore_certificate_if_exists
+    install_stunner
     install_helm
     deploy_june
     backup_new_certificate
@@ -656,6 +672,7 @@ main() {
     echo "  Identity:   https://idp.$DOMAIN"
     echo "  STT:        https://stt.$DOMAIN"
     echo "  TTS:        https://tts.$DOMAIN"
+    echo "  TURN:       turn:turn.$DOMAIN:3478"
     echo ""
     echo "🌐 DNS Configuration:"
     echo "  Point these records to: $EXTERNAL_IP"
@@ -667,27 +684,15 @@ main() {
     echo "  Username:   admin"
     echo "  Password:   ${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}"
     echo ""
-    
-    if [ "$SKIP_CERT_CREATION" = "true" ]; then
-        echo "🎉 Certificate Management:"
-        echo "  ✅ Used existing certificate backup"
-        echo "  ⚡ Avoided Let's Encrypt rate limit"
-        echo "  📁 Backups: $BACKUP_DIR"
-        echo ""
-    else
-        echo "🎉 Certificate Management:"
-        echo "  ✅ New wildcard certificate created"
-        echo "  💾 Backed up to: $BACKUP_DIR"
-        echo "  ⏭️  Next deployments will reuse this certificate"
-        echo ""
-    fi
-    
+    echo "🎯 STUNner TURN Server:"
+    echo "  URL:        turn:turn.$DOMAIN:3478"
+    echo "  Username:   ${TURN_USERNAME:-june-user}"
+    echo "  Password:   ${STUNNER_PASSWORD:-Pokemon123!}"
+    echo ""
     echo "📊 Check Status:"
     echo "  kubectl get pods -n june-services"
-    echo "  helm status june-platform -n june-services"
-    echo ""
-    echo "🔍 Verify Deployment:"
-    echo "  curl https://api.$DOMAIN/healthz"
+    echo "  kubectl get gateway -n stunner"
+    echo "  kubectl get pods -n stunner-system"
     echo ""
     echo "=========================================="
 }

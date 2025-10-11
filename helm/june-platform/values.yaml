@@ -93,21 +93,17 @@ tts:
       memory: 6Gi
       cpu: "2"
 
-# STUNner WebRTC Configuration
+# STUNner WebRTC Configuration (UPDATED)
 stunner:
   enabled: true
+  # Gateway will be created in stunner namespace
+  # GatewayClass and GatewayConfig in stunner-system
   realm: turn.ozzu.world
   username: june-user
   password: Pokemon123!  # CHANGE IN PRODUCTION
-  externalIP: ""  # Auto-detected if empty
+  # UDPRoutes will be auto-created for all services
 
 # Secrets (Set via --set or separate values file)
 secrets:
   geminiApiKey: ""  # REQUIRED: Set via --set secrets.geminiApiKey=xxx
   cloudflareToken: ""  # REQUIRED for cert-manager
-
-# Networking
-networking:
-  metallb:
-    enabled: true
-    ipPool: ""  # Auto-detected if empty
