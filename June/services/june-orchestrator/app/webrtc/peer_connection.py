@@ -32,18 +32,12 @@ class PeerConnectionManager:
         self.peers: Dict[str, RTCPeerConnection] = {}
         self.audio_tracks: Dict[str, object] = {}
         self.on_track_callback: Optional[Callable] = None
-        self.websocket_manager = None
         
         # ICE server configuration - SIMPLIFIED per aiortc best practices
         self.ice_servers = self._create_ice_servers()
         self.rtc_configuration = RTCConfiguration(iceServers=self.ice_servers)
         
         logger.info(f"PeerConnectionManager initialized with {len(self.ice_servers)} ICE servers")
-    
-    def set_websocket_manager(self, manager):
-        """Set the WebSocket manager for sending ICE candidates back to frontend"""
-        self.websocket_manager = manager
-        logger.info("✅ WebSocket manager registered for ICE candidate forwarding")
     
     def _create_ice_servers(self) -> list:
         """
@@ -108,7 +102,7 @@ class PeerConnectionManager:
                 logger.error(f"[{session_id[:8]}] Connection failed")
                 await self.close_peer_connection(session_id)
 
-        # ✅ CRITICAL FIX: Proper ICE candidate handler
+        # Find your existing @pc.on("icecandidate") handler and replace it with:
         @pc.on("icecandidate")
         async def on_ice_candidate(candidate):
             """
@@ -124,40 +118,33 @@ class PeerConnectionManager:
                 if candidate.type == "srflx":
                     logger.info(f"[{session_id[:8]}] ✅ Server reflexive candidate (public IP discovered)")
                 
-                # ✅ CRITICAL: Send to frontend
-                if self.websocket_manager:
-                    try:
-                        # Use aiortc's native candidate attribute (already formatted)
-                        candidate_dict = {
-                            "candidate": candidate.candidate,  # ✅ Pre-formatted SDP string
-                            "sdpMLineIndex": candidate.sdpMLineIndex,
-                            "sdpMid": candidate.sdpMid
-                        }
-                        
-                        ice_message = {
-                            "type": "ice_candidate",
-                            "candidate": candidate_dict,
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                        
-                        await self.websocket_manager.send_message(session_id, ice_message)
-                        logger.info(f"[{session_id[:8]}] ✅ Backend ICE candidate sent to frontend")
-                        
-                    except Exception as e:
-                        logger.error(f"[{session_id[:8]}] ❌ Error sending ICE candidate: {e}")
-                else:
-                    logger.error(f"[{session_id[:8]}] ❌ No WebSocket manager - cannot send ICE!")
+                # ✅ CRITICAL FIX: Send to frontend via WebSocket
+                try:
+                    # Import here to avoid circular imports
+                    from ..app import manager
+                    
+                    candidate_dict = {
+                        "candidate": f"candidate:{candidate.foundation} {candidate.component} {candidate.protocol} {candidate.priority} {candidate.ip} {candidate.port} typ {candidate.type}",
+                        "sdpMLineIndex": 0,
+                        "sdpMid": "0"
+                    }
+                    
+                    ice_message = {
+                        "type": "ice_candidate", 
+                        "candidate": candidate_dict
+                    }
+                    
+                    await manager.send_message(session_id, ice_message)
+                    logger.info(f"[{session_id[:8]}] ✅ Backend ICE candidate sent to frontend")
+                    
+                except Exception as e:
+                    logger.error(f"[{session_id[:8]}] Error sending ICE candidate: {e}")
             else:
                 logger.info(f"[{session_id[:8]}] 🏁 Backend ICE gathering completed")
 
         @pc.on("icegatheringstatechange")
         async def on_ice_gathering_state_change():
             logger.info(f"[{session_id[:8]}] ICE gathering state: {pc.iceGatheringState}")
-            
-            if pc.iceGatheringState == "gathering":
-                logger.info(f"[{session_id[:8]}] 🔍 Backend starting ICE gathering...")
-            elif pc.iceGatheringState == "complete":
-                logger.info(f"[{session_id[:8]}] ✅ Backend ICE gathering complete")
         
         @pc.on("track")
         async def on_track(track):
