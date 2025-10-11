@@ -21,7 +21,16 @@ RUN apt-get update && apt-get install -y \
     cmake \
     python3 \
     python3-pip \
-    python3-dev
+    python3-dev \
+    # Add runtime dependencies
+    libmicrohttpd12 \
+    libjansson4 \
+    libsofia-sip-ua0 \
+    libglib2.0-0 \
+    libopus0 \
+    libogg0 \
+    libssl3 \
+    libconfig9
 
 # Install libnice
 RUN git clone https://gitlab.freedesktop.org/libnice/libnice && \
@@ -41,7 +50,9 @@ RUN git clone https://github.com/meetecho/janus-gateway.git && \
     cd janus-gateway && \
     sh autogen.sh && \
     ./configure --prefix=/opt/janus --enable-websockets --enable-post-processing && \
-    make && make install
+    make && make install && \
+    # Update library cache
+    ldconfig
 
 # Install Python dependencies
 COPY requirements.txt /app/requirements.txt
@@ -54,8 +65,8 @@ COPY app/janus-config/ /opt/janus/etc/janus/
 # Set working directory
 WORKDIR /app
 
-# Expose ports
-EXPOSE 8080 8088 8089
+# Expose ports (add 7088 for admin, 8188 for WebSocket)
+EXPOSE 8080 8088 8188 7088 7188 20000-40000/udp
 
 # Start script
 COPY start.sh /start.sh
