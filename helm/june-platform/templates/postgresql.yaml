@@ -70,59 +70,53 @@ spec:
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         ports:
-        - containerPort: 9000
-        env:
-        - name: KC_DB
-          value: postgres
-        - name: KC_DB_URL
-          value: "jdbc:postgresql://postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
-        - name: KC_DB_USERNAME
-          value: {{ .Values.postgresql.username }}
-        - name: KC_DB_PASSWORD
-          value: {{ .Values.postgresql.password }}
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: {{ .Values.keycloak.adminUsername }}
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          value: {{ .Values.keycloak.adminPassword }}
-        - name: KC_HTTP_ENABLED
-          value: "true"
-        - name: KC_HOSTNAME
-          value: {{ .Values.domains.idp }}
-        - name: KC_HOSTNAME_STRICT
-          value: "false"
-        - name: KC_PROXY_HEADERS
-          value: xforwarded
-        - name: KC_HEALTH_ENABLED
-          value: "true"
-        - name: KC_METRICS_ENABLED
-          value: "true"
-        readinessProbe:
-          httpGet:
-            path: /health/ready
-            port: 9000
-          initialDelaySeconds: 60
-          periodSeconds: 10
+        - containerPort: 5432
+          name: postgres
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
         livenessProbe:
-          httpGet:
-            path: /health/live
-            port: 9000
-          initialDelaySeconds: 90
-          periodSeconds: 20
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - keycloak
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgresql-pvc
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: june-idp
+  name: postgresql
   namespace: {{ .Release.Namespace }}
+  labels:
+    app: postgresql
 spec:
-  selector:
-    app: june-idp
+  type: ClusterIP
   ports:
-  - port: 8080
-    targetPort: 8080
-    name: http
-  - port: 9000
-    targetPort: 9000
-    name: management
+  - port: 5432
+    targetPort: 5432
+    name: postgres
+  selector:
+    app: postgresql
 {{- end }}

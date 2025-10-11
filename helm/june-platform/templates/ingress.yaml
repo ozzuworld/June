@@ -78,25 +78,4 @@ spec:
           service:
             name: june-tts
             port:
-              number: 80005432
-        volumeMounts:
-        - name: postgres-data
-          mountPath: /var/lib/postgresql/data
-      volumes:
-      - name: postgres-data
-        persistentVolumeClaim:
-          claimName: postgresql-pvc
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgresql
-  namespace: {{ .Release.Namespace }}
-spec:
-  selector:
-    app: postgresql
-  ports:
-  - port: 5432
-    targetPort: 5432
-{{- end }}
+              number: 8000

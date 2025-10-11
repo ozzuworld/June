@@ -16,6 +16,18 @@ spec:
       labels:
         app: june-idp
     spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          echo "⏳ Waiting for PostgreSQL..."
+          until pg_isready -h postgresql.{{ .Release.Namespace }}.svc.cluster.local -p 5432 -U keycloak; do
+            sleep 3
+          done
+          echo "✅ PostgreSQL ready!"
       containers:
       - name: keycloak
         image: docker.io/ozzuworld/june-idp:latest
@@ -23,4 +35,61 @@ spec:
         args: ["start", "--optimized"]
         ports:
         - containerPort: 8080
-        - containerPort: 
+          name: http
+        - containerPort: 9000
+          name: management
+        env:
+        - name: KC_DB
+          value: postgres
+        - name: KC_DB_URL
+          value: "jdbc:postgresql://postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
+        - name: KC_DB_USERNAME
+          value: {{ .Values.postgresql.username }}
+        - name: KC_DB_PASSWORD
+          value: {{ .Values.postgresql.password }}
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: {{ .Values.keycloak.adminUsername }}
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: {{ .Values.keycloak.adminPassword }}
+        - name: KC_HTTP_ENABLED
+          value: "true"
+        - name: KC_HOSTNAME
+          value: {{ .Values.domains.idp }}
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        - name: KC_PROXY_HEADERS
+          value: xforwarded
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        - name: KC_METRICS_ENABLED
+          value: "true"
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 9000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 9000
+          initialDelaySeconds: 90
+          periodSeconds: 20
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-idp
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: june-idp
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  - port: 9000
+    targetPort: 9000
+    name: management
+{{- end }}
