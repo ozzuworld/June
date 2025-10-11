@@ -1,20 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "june-platform.fullname" . }}-janus
+  name: june-janus
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "june-platform.labels" . | nindent 4 }}
+    app: june-janus
     app.kubernetes.io/component: janus-gateway
 spec:
-  replicas: 1
+  replicas: {{ .Values.janus.replicas }}
   selector:
     matchLabels:
-      {{- include "june-platform.selectorLabels" . | nindent 6 }}
+      app: june-janus
       app.kubernetes.io/component: janus-gateway
   template:
     metadata:
       labels:
-        {{- include "june-platform.selectorLabels" . | nindent 8 }}
+        app: june-janus
         app.kubernetes.io/component: janus-gateway
     spec:
       containers:
@@ -43,12 +45,12 @@ spec:
         - name: JANUS_ADMIN_KEY
           valueFrom:
             secretKeyRef:
-              name: {{ include "june-platform.fullname" . }}-janus-secrets
+              name: june-janus-secrets
               key: admin-key
         - name: JANUS_API_SECRET
           valueFrom:
             secretKeyRef:
-              name: {{ include "june-platform.fullname" . }}-janus-secrets
+              name: june-janus-secrets
               key: api-secret
         - name: STUN_SERVER
           value: "stun:stunner-gateway.stunner-system.svc.cluster.local:3478"
@@ -84,4 +86,4 @@ spec:
       volumes:
       - name: janus-config
         configMap:
-          name: {{ include "june-platform.fullname" . }}-janus-config
+          name: june-janus-config
