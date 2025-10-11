@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Configuration file
-CONFIG_FILE="${REPO_ROOT}/config.env"
+CONFIG_FILE="${SCRIPT_DIR}/config.env"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     error "Configuration file not found: $CONFIG_FILE
