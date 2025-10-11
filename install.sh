@@ -230,9 +230,8 @@ install_infrastructure() {
         kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml > /dev/null 2>&1
         
         log "Waiting for cert-manager pods (max 5 minutes)..."
-        sleep 30  # Give it time to start
+        sleep 30
         
-        # Check if pods are being created
         for i in {1..10}; do
             POD_COUNT=$(kubectl get pods -n cert-manager --no-headers 2>/dev/null | wc -l)
             if [ "$POD_COUNT" -gt 0 ]; then
@@ -242,7 +241,6 @@ install_infrastructure() {
             sleep 5
         done
         
-        # Wait for ready condition with timeout
         if timeout 240s kubectl wait --for=condition=ready pod \
             -n cert-manager \
             -l app.kubernetes.io/instance=cert-manager 2>&1; then
@@ -260,9 +258,9 @@ install_infrastructure() {
         success "cert-manager already installed"
     fi
     
-    # Wait for cert-manager CRDs to be ready - CRITICAL for ClusterIssuer creation
+    # Wait for cert-manager CRDs
     log "Waiting for cert-manager CRDs (this is important)..."
-    sleep 15  # Initial wait for cert-manager to settle
+    sleep 15
     
     CRD_READY=false
     for i in {1..60}; do
@@ -273,7 +271,6 @@ install_infrastructure() {
             break
         fi
         
-        # Show progress every 10 seconds
         if [ $((i % 5)) -eq 0 ]; then
             log "Still waiting for CRDs... ($i/60)"
         fi
@@ -335,7 +332,7 @@ EOF
 }
 
 # ============================================================================
-# STEP 4.5: Restore Certificate Backup (if exists)
+# STEP 4.5: Restore Certificate Backup (FIXED VERSION)
 # ============================================================================
 
 restore_certificate_if_exists() {
@@ -347,7 +344,7 @@ restore_certificate_if_exists() {
     fi
     
     # Find most recent backup
-    LATEST_BACKUP=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    LATEST_BACKUP=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -o -name "*wildcard*.yaml" 2>/dev/null | head -1)
     
     if [ -z "$LATEST_BACKUP" ]; then
         log_info "No certificate backups found, will create new certificate"
@@ -356,74 +353,90 @@ restore_certificate_if_exists() {
     
     log_info "Found certificate backup: $(basename "$LATEST_BACKUP")"
     
-    # Check if backup is valid and not expired
-    if grep -q "tls.crt" "$LATEST_BACKUP" && grep -q "tls.key" "$LATEST_BACKUP"; then
-        # Extract certificate data and check expiration
-        CERT_DATA=$(grep -A 500 "tls.crt:" "$LATEST_BACKUP" | grep -v "tls.crt:" | grep -v "tls.key:" | head -100 | tr -d ' ' | base64 -d 2>/dev/null)
-        
-        if [ -n "$CERT_DATA" ]; then
-            EXPIRY_DATE=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
-            
-            if [ -n "$EXPIRY_DATE" ]; then
-                EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null || echo "0")
-                NOW_EPOCH=$(date +%s)
-                DAYS_UNTIL_EXPIRY=$(( ($EXPIRY_EPOCH - $NOW_EPOCH) / 86400 ))
-                
-                if [ "$DAYS_UNTIL_EXPIRY" -gt 7 ]; then
-                    log_info "Certificate expires in $DAYS_UNTIL_EXPIRY days, restoring backup..."
-                    
-                    # Ensure namespaces exist
-                    kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-                    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-                    
-                    # Create temporary file and update namespace
-                    TEMP_FILE="/tmp/cert_restore_$(date +%s).yaml"
-                    
-                    # Update the namespace to cert-manager (where cert-manager expects it)
-                    sed "s/namespace:.*/namespace: cert-manager/g" "$LATEST_BACKUP" > "$TEMP_FILE"
-                    
-                    # Apply the certificate
-                    if kubectl apply -f "$TEMP_FILE" > /dev/null 2>&1; then
-                        rm -f "$TEMP_FILE"
-                        sleep 3
-                        
-                        # Verify restoration
-                        if kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null; then
-                            success "Certificate restored from backup (valid for $DAYS_UNTIL_EXPIRY days)"
-                            
-                            # Also copy to june-services namespace for the Ingress
-                            kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
-                                sed 's/namespace: cert-manager/namespace: june-services/' | \
-                                kubectl apply -f - > /dev/null 2>&1
-                            
-                            success "Certificate copied to june-services namespace"
-                            
-                            # Set flag to skip certificate creation in Helm
-                            SKIP_CERT_CREATION="true"
-                            
-                            log_info "⚡ Avoiding Let's Encrypt rate limit by using existing certificate"
-                            return
-                        else
-                            warn "Certificate restoration verification failed"
-                        fi
-                    else
-                        rm -f "$TEMP_FILE"
-                        warn "Failed to apply certificate backup"
-                    fi
-                else
-                    warn "Certificate expires in $DAYS_UNTIL_EXPIRY days (too soon), will create new one"
-                fi
-            else
-                warn "Could not parse certificate expiration date"
-            fi
-        else
-            warn "Could not extract certificate data from backup"
-        fi
-    else
+    # Check if backup has the required fields
+    if ! grep -q "tls.crt" "$LATEST_BACKUP" || ! grep -q "tls.key" "$LATEST_BACKUP"; then
         warn "Backup file appears invalid (missing tls.crt or tls.key)"
+        return
     fi
     
-    log_info "Will create new certificate via cert-manager"
+    # Extract certificate - handles INLINE format (tls.crt: BASE64DATA)
+    CERT_BASE64=$(grep "tls.crt:" "$LATEST_BACKUP" | sed 's/.*tls.crt: *//' | tr -d ' \n')
+    
+    # If that didn't work, try MULTI-LINE format
+    if [ -z "$CERT_BASE64" ]; then
+        CERT_BASE64=$(awk '/tls.crt:/{flag=1; next} /tls.key:/{flag=0} flag' "$LATEST_BACKUP" | tr -d ' \n')
+    fi
+    
+    if [ -z "$CERT_BASE64" ]; then
+        warn "Could not extract certificate data from backup"
+        return
+    fi
+    
+    log_info "Extracted certificate data (${#CERT_BASE64} bytes base64)"
+    
+    # Decode and validate certificate
+    CERT_DATA=$(echo "$CERT_BASE64" | base64 -d 2>/dev/null)
+    
+    if [ -z "$CERT_DATA" ]; then
+        warn "Could not decode certificate data"
+        return
+    fi
+    
+    # Check expiration
+    EXPIRY_DATE=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+    
+    if [ -z "$EXPIRY_DATE" ]; then
+        warn "Could not parse certificate expiration"
+        return
+    fi
+    
+    EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null || echo "0")
+    NOW_EPOCH=$(date +%s)
+    DAYS_UNTIL_EXPIRY=$(( ($EXPIRY_EPOCH - $NOW_EPOCH) / 86400 ))
+    
+    if [ "$DAYS_UNTIL_EXPIRY" -le 7 ]; then
+        warn "Certificate expires in $DAYS_UNTIL_EXPIRY days (too soon)"
+        return
+    fi
+    
+    log_info "Certificate is valid for $DAYS_UNTIL_EXPIRY more days, restoring..."
+    
+    # Create namespaces
+    kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    
+    # Apply the backup
+    if kubectl apply -f "$LATEST_BACKUP" > /dev/null 2>&1; then
+        sleep 3
+        
+        # Check which namespace it went to
+        if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+            success "Certificate restored to june-services namespace"
+            
+            # Also copy to cert-manager namespace
+            kubectl get secret "$CERT_SECRET_NAME" -n june-services -o yaml | \
+                sed 's/namespace: june-services/namespace: cert-manager/' | \
+                kubectl apply -f - > /dev/null 2>&1
+            
+            SKIP_CERT_CREATION="true"
+            log_info "⚡ Avoiding Let's Encrypt rate limit!"
+            
+        elif kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null; then
+            success "Certificate restored to cert-manager namespace"
+            
+            # Copy to june-services
+            kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
+                sed 's/namespace: cert-manager/namespace: june-services/' | \
+                kubectl apply -f - > /dev/null 2>&1
+            
+            SKIP_CERT_CREATION="true"
+            log_info "⚡ Avoiding Let's Encrypt rate limit!"
+        else
+            warn "Certificate restoration verification failed"
+        fi
+    else
+        warn "Failed to apply certificate backup"
+    fi
 }
 
 # ============================================================================
@@ -433,7 +446,6 @@ restore_certificate_if_exists() {
 install_helm() {
     log "Step 5/7: Installing Helm..."
     
-    # Check if helm actually works (not just exists)
     if helm version &> /dev/null; then
         success "Helm already installed ($(helm version --short))"
         return
@@ -442,7 +454,6 @@ install_helm() {
     log "Installing Helm..."
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
     
-    # Verify installation
     if helm version &> /dev/null; then
         success "Helm installed ($(helm version --short))"
     else
@@ -463,9 +474,8 @@ deploy_june() {
         error "Helm chart not found at: $HELM_CHART"
     fi
     
-    # Verify Chart.yaml exists (case-sensitive)
+    # Verify Chart.yaml exists
     if [ ! -f "$HELM_CHART/Chart.yaml" ]; then
-        # Check for lowercase variant
         if [ -f "$HELM_CHART/chart.yaml" ]; then
             warn "Found chart.yaml (lowercase) - renaming to Chart.yaml"
             mv "$HELM_CHART/chart.yaml" "$HELM_CHART/Chart.yaml"
@@ -483,7 +493,7 @@ deploy_june() {
     
     success "Helm chart validated"
     
-    # Build Helm command with conditional certificate creation
+    # Build Helm arguments
     HELM_ARGS=(
         --namespace june-services
         --create-namespace
@@ -505,7 +515,6 @@ deploy_june() {
         HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
     fi
     
-    # Deploy with Helm
     log "Deploying services (this may take 10-15 minutes)..."
     
     if helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log; then
@@ -529,17 +538,14 @@ backup_new_certificate() {
     
     log_info "Backing up newly created certificate..."
     
-    # Create backup directory
     mkdir -p "$BACKUP_DIR"
     chmod 700 "$BACKUP_DIR"
     
-    # Wait for certificate to be ready
     log "Waiting for certificate to be issued (max 5 minutes)..."
     
     CERT_READY=false
     for i in {1..60}; do
         if kubectl get secret "$CERT_SECRET_NAME" -n cert-manager &>/dev/null 2>&1; then
-            # Verify it has actual certificate data
             CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o jsonpath='{.data.tls\.crt}' 2>/dev/null)
             if [ -n "$CERT_DATA" ]; then
                 CERT_READY=true
@@ -559,17 +565,14 @@ backup_new_certificate() {
         return
     fi
     
-    # Create backup
     BACKUP_FILE="$BACKUP_DIR/${CERT_SECRET_NAME}_$(date +%Y%m%d_%H%M%S).yaml"
     
     kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml > "$BACKUP_FILE"
     
     if [ -f "$BACKUP_FILE" ]; then
-        # Validate backup
         if grep -q "tls.crt" "$BACKUP_FILE" && grep -q "tls.key" "$BACKUP_FILE"; then
             success "Certificate backed up to: $BACKUP_FILE"
             
-            # Show certificate info
             CERT_DATA=$(kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o jsonpath='{.data.tls\.crt}' | base64 -d 2>/dev/null)
             if [ -n "$CERT_DATA" ]; then
                 EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
@@ -578,21 +581,18 @@ backup_new_certificate() {
                 log_info "Certificate Details:"
                 echo "  Domains: $DOMAINS"
                 echo "  Expires: $EXPIRY"
-                echo "  Backup: $BACKUP_FILE"
                 
                 # Clean up old backups (keep last 5)
-                BACKUP_COUNT=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" | wc -l)
+                BACKUP_COUNT=$(find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -o -name "*wildcard*.yaml" 2>/dev/null | wc -l)
                 if [ "$BACKUP_COUNT" -gt 5 ]; then
                     log_info "Cleaning up old backups (keeping last 5)..."
-                    find "$BACKUP_DIR" -name "${CERT_SECRET_NAME}*.yaml" -type f -printf '%T@ %p\n' | sort -n | head -n -5 | cut -d' ' -f2- | xargs -r rm
+                    find "$BACKUP_DIR" -name "*.yaml" -type f -printf '%T@ %p\n' | sort -n | head -n -5 | cut -d' ' -f2- | xargs -r rm
                 fi
             fi
         else
-            warn "Backup validation failed - missing certificate data"
+            warn "Backup validation failed"
             rm -f "$BACKUP_FILE"
         fi
-    else
-        warn "Failed to create backup file"
     fi
 }
 
@@ -610,7 +610,6 @@ main() {
     deploy_june
     backup_new_certificate
     
-    # Get external IP
     EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
     
     echo ""
@@ -656,13 +655,7 @@ main() {
     echo "🔍 Verify Deployment:"
     echo "  curl https://api.$DOMAIN/healthz"
     echo ""
-    echo "📝 Certificate Management:"
-    echo "  List backups:   scripts/install-k8s/backup-restore-cert.sh list"
-    echo "  Restore backup: scripts/install-k8s/backup-restore-cert.sh restore"
-    echo "  Create backup:  scripts/install-k8s/backup-restore-cert.sh backup"
-    echo ""
     echo "=========================================="
 }
 
-# Run installation
 main "$@"
