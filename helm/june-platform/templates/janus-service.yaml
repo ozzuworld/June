@@ -1,9 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "june-platform.fullname" . }}-janus
+  name: june-janus
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "june-platform.labels" . | nindent 4 }}
+    app: june-janus
     app.kubernetes.io/component: janus-gateway
 spec:
   type: {{ .Values.janus.service.type }}
@@ -21,16 +23,18 @@ spec:
     protocol: TCP
     name: janus-ws
   selector:
-    {{- include "june-platform.selectorLabels" . | nindent 4 }}
+    app: june-janus
     app.kubernetes.io/component: janus-gateway
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "june-platform.fullname" . }}-janus-rtp
+  name: june-janus-rtp
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "june-platform.labels" . | nindent 4 }}
+    app: june-janus
     app.kubernetes.io/component: janus-gateway
 spec:
   type: ClusterIP
@@ -44,5 +48,5 @@ spec:
     protocol: UDP
     name: rtp-end
   selector:
-    {{- include "june-platform.selectorLabels" . | nindent 4 }}
+    app: june-janus
     app.kubernetes.io/component: janus-gateway
