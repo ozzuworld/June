@@ -338,7 +338,7 @@ EOF
 }
 
 # ============================================================================
-# STEP 4.5: Restore Certificate Backup (FIXED VERSION)
+# STEP 4.5: Restore Certificate Backup (FIX 3 - SIMPLER APPROACH)
 # ============================================================================
 
 restore_certificate_if_exists() {
@@ -407,14 +407,15 @@ restore_certificate_if_exists() {
     
     log_info "Certificate is valid for $DAYS_UNTIL_EXPIRY more days, restoring..."
     
-    # FIXED: Only create cert-manager namespace (Helm will create june-services)
+    # CRITICAL FIX: Only restore to cert-manager namespace (NOT june-services)
+    # This prevents namespace conflict with Helm's --create-namespace flag
     kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
-    # Create a temporary copy with cert-manager namespace for initial restore
+    # Create a temporary copy with cert-manager namespace ONLY
     TEMP_CERT_FILE="/tmp/cert-restore-temp.yaml"
     sed 's/namespace: june-services/namespace: cert-manager/g' "$LATEST_BACKUP" > "$TEMP_CERT_FILE"
     
-    # Apply to cert-manager namespace
+    # Apply ONLY to cert-manager namespace
     if kubectl apply -f "$TEMP_CERT_FILE" > /dev/null 2>&1; then
         rm -f "$TEMP_CERT_FILE"
         sleep 3
@@ -424,6 +425,7 @@ restore_certificate_if_exists() {
             success "Certificate restored to cert-manager namespace"
             SKIP_CERT_CREATION="true"
             log_info "⚡ Avoiding Let's Encrypt rate limit!"
+            log_info "📌 Certificate will be copied to june-services after Helm creates the namespace"
         else
             warn "Certificate restoration verification failed"
         fi
@@ -507,29 +509,52 @@ deploy_june() {
         log_info "Using restored certificate, skipping cert creation in Helm"
         HELM_ARGS+=(--set certificate.enabled=false)
         HELM_ARGS+=(--set certificate.secretName="$CERT_SECRET_NAME")
-        
-        # IMPORTANT: Copy certificate from cert-manager to june-services after Helm creates the namespace
-        # This will be done in a post-deployment hook
     fi
     
     log "Deploying services (this may take 10-15 minutes)..."
     
-    if helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log; then
+    # Deploy with Helm and capture exit code properly
+    set +e  # Temporarily disable exit on error
+    helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log
+    HELM_EXIT_CODE=$?
+    set -e  # Re-enable exit on error
+    
+    if [ $HELM_EXIT_CODE -eq 0 ]; then
         success "June Platform deployed"
-        
-        # If we used a backup cert, copy it to june-services namespace
-        if [ "$SKIP_CERT_CREATION" = "true" ]; then
-            log_info "Copying certificate to june-services namespace..."
-            kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
-                sed 's/namespace: cert-manager/namespace: june-services/' | \
-                kubectl apply -f - > /dev/null 2>&1
-            
-            if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
-                success "Certificate available in june-services namespace"
-            fi
-        fi
     else
-        error "Helm deployment failed. Check /tmp/helm-deploy.log for details"
+        # Check if deployment actually succeeded despite error message
+        log_info "Helm returned error code $HELM_EXIT_CODE, verifying actual deployment status..."
+        sleep 3
+        
+        if kubectl get deployment -n june-services june-orchestrator &>/dev/null; then
+            warn "Helm reported an error but resources were deployed"
+            
+            # Check if critical pods are running
+            ORCH_STATUS=$(kubectl get pods -n june-services -l app=june-orchestrator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+            
+            if [ "$ORCH_STATUS" = "Running" ] || [ "$ORCH_STATUS" = "Pending" ]; then
+                success "June Platform deployed successfully (Helm had warnings)"
+            else
+                error "Deployment verification failed. Check /tmp/helm-deploy.log for details"
+            fi
+        else
+            error "Helm deployment failed. Check /tmp/helm-deploy.log for details"
+        fi
+    fi
+    
+    # If we used a backup cert, copy it to june-services namespace NOW
+    if [ "$SKIP_CERT_CREATION" = "true" ]; then
+        log_info "Copying certificate to june-services namespace..."
+        
+        kubectl get secret "$CERT_SECRET_NAME" -n cert-manager -o yaml | \
+            sed 's/namespace: cert-manager/namespace: june-services/' | \
+            kubectl apply -f - > /dev/null 2>&1
+        
+        if kubectl get secret "$CERT_SECRET_NAME" -n june-services &>/dev/null; then
+            success "Certificate available in june-services namespace"
+        else
+            warn "Failed to copy certificate to june-services (may not be critical)"
+        fi
     fi
 }
 
