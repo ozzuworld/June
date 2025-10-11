@@ -438,6 +438,10 @@ async def startup_event():
     if config.webrtc.enabled:
         logger.info("🔌 Wiring WebRTC components...")
         
+        # 🚨 CRITICAL FIX: Wire WebSocket manager to PeerConnectionManager
+        peer_connection_manager.set_websocket_manager(manager)
+        logger.info("✅ WebSocket manager wired to PeerConnectionManager")
+        
         # Audio processor callback
         async def on_audio_ready(session_id: str, audio_bytes: bytes):
             """Called when audio buffer is ready from WebRTC"""
