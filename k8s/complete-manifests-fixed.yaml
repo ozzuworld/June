@@ -535,7 +535,7 @@ spec:
       containers:
       - name: tts
         image: docker.io/ozzuworld/june-tts:latest
-        imagePullProperty: Always
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
           name: http
