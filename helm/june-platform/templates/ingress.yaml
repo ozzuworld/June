@@ -32,6 +32,18 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # WebSocket support for Janus
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/server-snippets: |
+      location ~* /ws {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+      }
 spec:
   ingressClassName: nginx
   {{- if .Values.certificate.enabled }}
@@ -44,12 +56,28 @@ spec:
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
     - {{ .Values.domains.turn }}
+    - "webrtc.{{ .Values.domains.primary }}"
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
   rules:
+  # June Orchestrator - Main API with Janus proxy
   - host: {{ .Values.domains.api }}
     http:
       paths:
+      - path: /janus
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8088
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8188
       - path: /
         pathType: Prefix
         backend:
@@ -57,6 +85,8 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
+  
+  # Identity Provider (Keycloak)
   - host: {{ .Values.domains.idp }}
     http:
       paths:
@@ -67,7 +97,37 @@ spec:
             name: june-idp
             port:
               number: 8080
+  
+  {{- if .Values.janus.enabled }}
+  # WebRTC/Janus Gateway (Direct Access)
+  - host: "webrtc.{{ .Values.domains.primary }}"
+    http:
+      paths:
+      - path: /janus
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8088
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8188
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8080
+  {{- end }}
+  
   {{- if .Values.stt.enabled }}
+  # Speech-to-Text Service
   - host: {{ .Values.domains.stt }}
     http:
       paths:
@@ -79,7 +139,9 @@ spec:
             port:
               number: 8080
   {{- end }}
+  
   {{- if .Values.tts.enabled }}
+  # Text-to-Speech Service
   - host: {{ .Values.domains.tts }}
     http:
       paths:

@@ -1,304 +1,295 @@
 #!/usr/bin/env python3
 """
-WebSocket Connection Diagnostic Tool
-Checks connectivity issues step by step
+WebRTC Connectivity Test for June Platform
+Tests basic connectivity to WebRTC services from local machine
 """
 
-import asyncio
-import ssl
+import requests
 import socket
-import websockets
-import httpx
-import logging
+import ssl
+import json
+import time
+import sys
+from datetime import datetime
 from urllib.parse import urlparse
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+class Colors:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
 
-# Configuration
-API_URL = "https://api.ozzu.world"
-WS_URL = "wss://api.ozzu.world/ws"
-TEST_TOKEN = ".eyJleHAiOjE3NjAyMDg2MDYsImlhdCI6MTc2MDIwNTAwNiwiYXV0aF90aW1lIjoxNzYwMjA1MDA2LCJqdGkiOiJvbnJ0YWM6YjY3NDRkMDktNGRhMS1lNDU0LTI5MTAtYTA1NmU0NDliNjBkIiwiaXNzIjoiaHR0cHM6Ly9pZHAub3p6dS53b3JsZC9yZWFsbXMvYWxsc2FmZSIsImF1ZCI6WyJqdW5lLW9yY2hlc3RyYXRvciIsImFjY291bnQiXSwic3ViIjoiZmY1ZDRmYjUtY2Q0NS00NGJkLWE0MjUtOGJjZmVkZGExYWEzIiwidHlwIjoiQmVhcmVyIiwiYXpwIjoianVuZS1tb2JpbGUtYXBwIiwic2lkIjoiYTQ2ZGU3ZjgtNjg3My01ZDg5LWQyMDMtMWZlYjRhNzg2YmEyIiwiYWNyIjoiMSIsInJlYWxtX2FjY2VzcyI6eyJyb2xlcyI6WyJvZmZsaW5lX2FjY2VzcyIsInVtYV9hdXRob3JpemF0aW9uIiwiZGVmYXVsdC1yb2xlcy1hbGxzYWZlIl19LCJyZXNvdXJjZV9hY2Nlc3MiOnsiYWNjb3VudCI6eyJyb2xlcyI6WyJtYW5hZ2UtYWNjb3VudCIsIm1hbmFnZS1hY2NvdW50LWxpbmtzIiwidmlldy1wcm9maWxlIl19fSwic2NvcGUiOiJvcGVuaWQgb3JjaGVzdHJhdG9yLWF1ZCBwcm9maWxlIGVtYWlsIiwiZW1haWxfdmVyaWZpZWQiOmZhbHNlLCJuYW1lIjoidGVzdCB0ZXN0IiwicHJlZmVycmVkX3VzZXJuYW1lIjoidGVzdCIsImdpdmVuX25hbWUiOiJ0ZXN0IiwiZmFtaWx5X25hbWUiOiJ0ZXN0IiwiZW1haWwiOiJ0ZXN0QHRlc3QuY29tIn0.hOq4jcSAiUkBMAGiJYD2RBo3LbDiRQJo-jupN_wDoYAJ3EYVYCxgKXT5BuqS5wNArJ0QQp-0BsxXGDYCDrTAL1NmViEb7BhrruZm0eyh4BJZvZfCT4lLuKL8LwgWln-rm13s6Zr9LnRYtNcUcwNiUseTp9vJsEfDCYQ8qkr8hzaGMK94Cr-kZenKIECggBOoMaorra9mgiCVmnHeFPLnX4_Pl0dsAXhXpGTispfiIG0H0w7-6RIN3U9uhSrQHoVzA0QbCYDzunw5tDbobXtue54GjDQvuNVXL7SrKra8XT-9AUJ27LjMa8M_zynaFLm43clQfyZTDzwgRQXDvEQc5A"
-
-
-async def test_step_1_dns():
-    """Test DNS resolution"""
-    logger.info("Step 1: DNS Resolution")
-    logger.info("-" * 50)
+def print_status(status, message, details=""):
+    if status == "PASS":
+        icon = "✅"
+        color = Colors.GREEN
+    elif status == "FAIL":
+        icon = "❌"
+        color = Colors.RED
+    elif status == "WARN":
+        icon = "⚠️"
+        color = Colors.YELLOW
+    else:
+        icon = "ℹ️"
+        color = Colors.BLUE
     
+    print(f"{color}{icon} {message}{Colors.END}")
+    if details:
+        print(f"   {details}")
+
+def test_https_connectivity(domain):
+    """Test HTTPS connectivity and response time"""
+    url = f"https://{domain}"
     try:
-        domain = urlparse(API_URL).netloc
-        ip = socket.gethostbyname(domain)
-        logger.info(f"✅ DNS resolved: {domain} → {ip}")
+        start_time = time.time()
+        response = requests.get(url, timeout=10, verify=True)
+        end_time = time.time()
+        response_time = int((end_time - start_time) * 1000)
+        
+        if response.status_code == 200:
+            print_status("PASS", f"{domain} - HTTPS OK", f"Response time: {response_time}ms")
+            return True
+        else:
+            print_status("WARN", f"{domain} - HTTP {response.status_code}", f"Response time: {response_time}ms")
+            return False
+    except requests.exceptions.SSLError as e:
+        print_status("FAIL", f"{domain} - SSL Error", str(e))
+        return False
+    except requests.exceptions.ConnectionError:
+        print_status("FAIL", f"{domain} - Connection Failed", "Cannot reach server")
+        return False
+    except requests.exceptions.Timeout:
+        print_status("FAIL", f"{domain} - Timeout", "Server did not respond within 10s")
+        return False
+    except Exception as e:
+        print_status("FAIL", f"{domain} - Error", str(e))
+        return False
+
+def test_janus_api(domain):
+    """Test Janus Gateway API endpoints"""
+    base_url = f"https://{domain}"
+    
+    # Test Janus info endpoint
+    try:
+        response = requests.get(f"{base_url}/janus/info", timeout=10)
+        if response.status_code == 200:
+            info = response.json()
+            if "janus" in info:
+                print_status("PASS", "Janus Gateway Info API", f"Version: {info.get('version-string', 'Unknown')}")
+            else:
+                print_status("WARN", "Janus Gateway Info API", "Unexpected response format")
+        else:
+            print_status("FAIL", "Janus Gateway Info API", f"HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        print_status("FAIL", "Janus Gateway Info API", str(e))
+        return False
+    
+    # Test Janus session creation
+    try:
+        session_data = {"janus": "create", "transaction": "test123"}
+        response = requests.post(f"{base_url}/janus", json=session_data, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("janus") == "success":
+                print_status("PASS", "Janus Session Creation", f"Session ID: {result.get('data', {}).get('id')}")
+            else:
+                print_status("WARN", "Janus Session Creation", "Unexpected response")
+        else:
+            print_status("FAIL", "Janus Session Creation", f"HTTP {response.status_code}")
+    except Exception as e:
+        print_status("FAIL", "Janus Session Creation", str(e))
+    
+    return True
+
+def test_websocket_connection(domain):
+    """Test WebSocket connection to Janus"""
+    ws_url = f"wss://{domain}:8188/janus"
+    try:
+        # Simple socket connection test (not full WebSocket)
+        hostname = domain
+        port = 8188
+        
+        context = ssl.create_default_context()
+        sock = socket.create_connection((hostname, port), timeout=10)
+        ssock = context.wrap_socket(sock, server_hostname=hostname)
+        ssock.close()
+        
+        print_status("PASS", "WebSocket Port Reachable", f"{hostname}:{port}")
         return True
     except Exception as e:
-        logger.error(f"❌ DNS resolution failed: {e}")
+        print_status("FAIL", "WebSocket Connection", str(e))
         return False
 
-
-async def test_step_2_https():
-    """Test HTTPS connectivity"""
-    logger.info("\nStep 2: HTTPS Connectivity")
-    logger.info("-" * 50)
+def test_stun_server(domain):
+    """Test STUN server connectivity"""
+    stun_host = f"turn.{domain}"
+    stun_port = 3478
     
     try:
-        async with httpx.AsyncClient(timeout=10.0, verify=True) as client:
-            response = await client.get(f"{API_URL}/healthz")
-            
-            if response.status_code == 200:
-                logger.info(f"✅ HTTPS working: {response.status_code}")
-                data = response.json()
-                logger.info(f"   Service: {data.get('service', 'unknown')}")
-                logger.info(f"   Version: {data.get('version', 'unknown')}")
-                return True
-            else:
-                logger.warning(f"⚠️  HTTPS returned: {response.status_code}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"❌ HTTPS connection failed: {e}")
-        return False
-
-
-async def test_step_3_websocket_basic():
-    """Test basic WebSocket without token"""
-    logger.info("\nStep 3: WebSocket Basic Connection")
-    logger.info("-" * 50)
-    
-    # Try connecting without token first
-    try:
-        logger.info(f"Attempting: {WS_URL} (no token)")
+        # Test basic UDP connectivity to STUN server
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(10)
         
-        async with websockets.connect(
-            WS_URL,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-            open_timeout=10  # Explicit timeout
-        ) as ws:
-            logger.info("✅ WebSocket connected (no auth)")
-            
-            # Try to receive a message
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=3)
-                logger.info(f"   Response: {msg[:100]}...")
-                return True
-            except asyncio.TimeoutError:
-                logger.info("   No immediate response (might require auth)")
-                return True
-                
-    except websockets.exceptions.InvalidStatusCode as e:
-        logger.warning(f"⚠️  WebSocket rejected: {e.status_code}")
-        logger.info("   This is expected if auth is required")
-        return True  # Connection attempt worked, just rejected
-        
-    except asyncio.TimeoutError:
-        logger.error("❌ WebSocket connection TIMEOUT")
-        logger.error("   The server is not responding to WebSocket upgrade")
-        return False
-        
-    except Exception as e:
-        logger.error(f"❌ WebSocket connection failed: {e}")
-        logger.error(f"   Error type: {type(e).__name__}")
-        return False
-
-
-async def test_step_4_websocket_with_token():
-    """Test WebSocket with token"""
-    logger.info("\nStep 4: WebSocket with Token")
-    logger.info("-" * 50)
-    
-    try:
-        url_with_token = f"{WS_URL}?token={TEST_TOKEN}"
-        logger.info(f"Attempting: {WS_URL}?token=...")
-        
-        async with websockets.connect(
-            url_with_token,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
-            open_timeout=10
-        ) as ws:
-            logger.info("✅ WebSocket connected with token")
-            
-            # Wait for connection message
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=5)
-                import json
-                data = json.loads(msg)
-                
-                logger.info(f"   Message type: {data.get('type')}")
-                
-                if data.get('type') == 'connected':
-                    logger.info(f"   Session: {data.get('session_id', 'N/A')[:8]}...")
-                    logger.info(f"   WebRTC: {data.get('webrtc_enabled', False)}")
-                    return True
-                else:
-                    logger.warning(f"   Unexpected: {data}")
-                    return False
-                    
-            except asyncio.TimeoutError:
-                logger.error("❌ No response from server")
-                return False
-                
-    except asyncio.TimeoutError:
-        logger.error("❌ WebSocket connection TIMEOUT with token")
-        return False
-        
-    except Exception as e:
-        logger.error(f"❌ WebSocket failed: {e}")
-        logger.error(f"   Error type: {type(e).__name__}")
-        return False
-
-
-async def test_step_5_check_ingress():
-    """Check ingress configuration"""
-    logger.info("\nStep 5: Ingress Configuration Check")
-    logger.info("-" * 50)
-    
-    try:
-        # Check if WebSocket upgrade headers work
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                API_URL,
-                headers={
-                    "Upgrade": "websocket",
-                    "Connection": "Upgrade"
-                }
-            )
-            
-            logger.info(f"HTTP response: {response.status_code}")
-            
-            # Check for WebSocket support headers
-            if "upgrade" in response.headers:
-                logger.info(f"✅ Upgrade header: {response.headers.get('upgrade')}")
-            else:
-                logger.warning("⚠️  No upgrade header in response")
-            
+        # Simple connectivity test
+        try:
+            sock.connect((stun_host, stun_port))
+            print_status("PASS", "STUN Server Reachable", f"{stun_host}:{stun_port}")
+            sock.close()
             return True
-            
+        except Exception:
+            print_status("FAIL", "STUN Server Connection", f"Cannot reach {stun_host}:{stun_port}")
+            sock.close()
+            return False
     except Exception as e:
-        logger.error(f"❌ Ingress check failed: {e}")
+        print_status("FAIL", "STUN Server Test", str(e))
         return False
 
-
-async def test_step_6_backend_logs():
-    """Suggest checking backend logs"""
-    logger.info("\nStep 6: Backend Health")
-    logger.info("-" * 50)
-    
+def check_ssl_certificate(domain):
+    """Check SSL certificate validity"""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{API_URL}/status")
-            
-            if response.status_code == 200:
-                data = response.json()
-                logger.info("✅ Backend status:")
-                logger.info(f"   Connections: {data.get('websocket_connections', 0)}")
-                logger.info(f"   WebRTC enabled: {data.get('webrtc_enabled', False)}")
-                logger.info(f"   Version: {data.get('version', 'unknown')}")
-                return True
-            else:
-                logger.warning(f"⚠️  Status endpoint: {response.status_code}")
-                return False
-                
+        context = ssl.create_default_context()
+        sock = socket.create_connection((domain, 443), timeout=10)
+        ssock = context.wrap_socket(sock, server_hostname=domain)
+        
+        cert = ssock.getpeercert()
+        ssock.close()
+        
+        # Check certificate expiry
+        not_after = cert['notAfter']
+        expire_date = datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z')
+        days_until_expiry = (expire_date - datetime.now()).days
+        
+        if days_until_expiry > 7:
+            print_status("PASS", "SSL Certificate Valid", f"Expires in {days_until_expiry} days")
+        elif days_until_expiry > 0:
+            print_status("WARN", "SSL Certificate Expiring Soon", f"Expires in {days_until_expiry} days")
+        else:
+            print_status("FAIL", "SSL Certificate Expired", f"Expired {abs(days_until_expiry)} days ago")
+            return False
+        
+        # Check subject
+        subject = dict(x[0] for x in cert['subject'])
+        print_status("INFO", "Certificate Subject", f"CN: {subject.get('commonName', 'Unknown')}")
+        
+        return True
     except Exception as e:
-        logger.error(f"❌ Status check failed: {e}")
+        print_status("FAIL", "SSL Certificate Check", str(e))
         return False
 
+def test_orchestrator_api(domain):
+    """Test June Orchestrator API"""
+    url = f"https://api.{domain}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if "service" in data and data["service"] == "june-orchestrator":
+                    print_status("PASS", "June Orchestrator API", f"Version: {data.get('version', 'Unknown')}")
+                    return True
+            except:
+                pass
+        
+        print_status("WARN", "June Orchestrator API", f"HTTP {response.status_code}")
+        return False
+    except Exception as e:
+        print_status("FAIL", "June Orchestrator API", str(e))
+        return False
 
-async def main():
-    """Run all diagnostic tests"""
+def main():
+    domain = "ozzu.world"
     
-    logger.info("="*70)
-    logger.info("🔍 WebSocket Connection Diagnostics")
-    logger.info("="*70)
-    logger.info("")
+    print(f"{Colors.BOLD}🧪 Testing WebRTC Connectivity for June Platform{Colors.END}")
+    print("=" * 50)
+    print()
     
-    results = {}
+    # Test basic connectivity
+    print(f"{Colors.BLUE}🌐 Testing HTTPS Connectivity...{Colors.END}")
+    https_results = []
+    for subdomain in ["api", "idp"]:
+        result = test_https_connectivity(f"{subdomain}.{domain}")
+        https_results.append(result)
+    print()
     
-    # Run tests sequentially
-    results['dns'] = await test_step_1_dns()
-    results['https'] = await test_step_2_https()
-    results['websocket_basic'] = await test_step_3_websocket_basic()
-    results['websocket_token'] = await test_step_4_websocket_with_token()
-    results['ingress'] = await test_step_5_check_ingress()
-    results['backend'] = await test_step_6_backend_logs()
+    # Test Janus Gateway (if we have a working webrtc domain)
+    print(f"{Colors.BLUE}🎮 Testing Janus Gateway...{Colors.END}")
+    janus_domain = f"api.{domain}"  # Janus runs behind the orchestrator
+    janus_results = []
     
-    # Print summary
-    logger.info("\n" + "="*70)
-    logger.info("📊 Diagnostic Summary")
-    logger.info("="*70)
-    logger.info("")
+    # Try to connect to Janus through orchestrator proxy
+    try:
+        response = requests.get(f"https://{janus_domain}/janus/info", timeout=10)
+        if response.status_code == 200:
+            print_status("PASS", "Janus Gateway via Orchestrator", "Accessible through proxy")
+            janus_results.append(True)
+        else:
+            print_status("WARN", "Janus Gateway via Orchestrator", f"HTTP {response.status_code}")
+            janus_results.append(False)
+    except Exception as e:
+        print_status("FAIL", "Janus Gateway via Orchestrator", str(e))
+        janus_results.append(False)
+    print()
     
-    for test, passed in results.items():
-        status = "✅" if passed else "❌"
-        logger.info(f"{status} {test.replace('_', ' ').title()}")
+    # Test WebSocket connectivity
+    print(f"{Colors.BLUE}🔌 Testing WebSocket Connectivity...{Colors.END}")
+    ws_results = []
+    # Test if we can reach the Janus WebSocket port
+    try:
+        hostname = f"api.{domain}"
+        port = 443  # HTTPS port, WebSocket will be proxied
+        sock = socket.create_connection((hostname, port), timeout=10)
+        sock.close()
+        print_status("PASS", "WebSocket Port Reachable", f"HTTPS proxy available")
+        ws_results.append(True)
+    except Exception as e:
+        print_status("FAIL", "WebSocket Connection", str(e))
+        ws_results.append(False)
+    print()
     
-    logger.info("")
+    # Test STUN server
+    print(f"{Colors.BLUE}🎯 Testing STUN Server...{Colors.END}")
+    stun_results = []
+    stun_result = test_stun_server(domain)
+    stun_results.append(stun_result)
+    print()
     
-    # Diagnosis
-    if all(results.values()):
-        logger.info("✅ ALL CHECKS PASSED - WebSocket should work!")
-        logger.info("")
-        logger.info("If you're still having issues:")
-        logger.info("  1. Try a different network")
-        logger.info("  2. Check if VPN/proxy is interfering")
-        logger.info("  3. Test from browser: chrome://inspect/#devices")
-        
-    elif not results['dns']:
-        logger.error("❌ DNS ISSUE")
-        logger.error("")
-        logger.error("Cannot resolve api.ozzu.world")
-        logger.error("Fix:")
-        logger.error("  1. Check internet connection")
-        logger.error("  2. Try: ping api.ozzu.world")
-        logger.error("  3. Check DNS settings")
-        
-    elif not results['https']:
-        logger.error("❌ HTTPS CONNECTIVITY ISSUE")
-        logger.error("")
-        logger.error("Cannot connect to HTTPS endpoint")
-        logger.error("Possible causes:")
-        logger.error("  • Firewall blocking HTTPS")
-        logger.error("  • Backend service down")
-        logger.error("  • Certificate issues")
-        
-    elif not results['websocket_basic']:
-        logger.error("❌ WEBSOCKET TIMEOUT")
-        logger.error("")
-        logger.error("WebSocket upgrade is timing out")
-        logger.error("")
-        logger.error("Most likely causes:")
-        logger.error("  1. Ingress not configured for WebSocket")
-        logger.error("  2. WebSocket timeout too short")
-        logger.error("  3. Backend not handling /ws endpoint")
-        logger.error("")
-        logger.error("Check ingress annotations:")
-        logger.error("  kubectl get ingress june-ingress -n june-services -o yaml")
-        logger.error("")
-        logger.error("Should have:")
-        logger.error('  nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"')
-        logger.error('  nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"')
-        logger.error('  nginx.ingress.kubernetes.io/websocket-services: "june-orchestrator"')
-        
-    elif not results['websocket_token']:
-        logger.error("❌ WEBSOCKET WITH TOKEN FAILED")
-        logger.error("")
-        logger.error("WebSocket connects but token is rejected")
-        logger.error("Check:")
-        logger.error("  • Token format")
-        logger.error("  • Backend auth validation")
-        
-    elif not results['backend']:
-        logger.warning("⚠️  BACKEND STATUS UNAVAILABLE")
-        logger.warning("")
-        logger.warning("Cannot get backend status")
-        logger.warning("Backend might be overloaded or restarting")
+    # Test SSL certificates
+    print(f"{Colors.BLUE}🔒 Testing SSL Certificates...{Colors.END}")
+    ssl_results = []
+    for subdomain in ["api", "idp"]:
+        result = check_ssl_certificate(f"{subdomain}.{domain}")
+        ssl_results.append(result)
+    print()
     
-    logger.info("")
-    logger.info("="*70)
-
+    # Test June Orchestrator
+    print(f"{Colors.BLUE}🚀 Testing June Orchestrator...{Colors.END}")
+    orchestrator_results = []
+    orch_result = test_orchestrator_api(domain)
+    orchestrator_results.append(orch_result)
+    print()
+    
+    # Summary
+    print(f"{Colors.BOLD}📊 Test Summary{Colors.END}")
+    print("-" * 30)
+    
+    total_tests = len(https_results) + len(janus_results) + len(ws_results) + len(stun_results) + len(ssl_results) + len(orchestrator_results)
+    passed_tests = sum(https_results + janus_results + ws_results + stun_results + ssl_results + orchestrator_results)
+    
+    if passed_tests == total_tests:
+        print_status("PASS", f"All tests passed! ({passed_tests}/{total_tests})")
+        print(f"\n{Colors.GREEN}🎉 Your WebRTC infrastructure is ready!{Colors.END}")
+        sys.exit(0)
+    elif passed_tests >= total_tests * 0.7:
+        print_status("WARN", f"Most tests passed ({passed_tests}/{total_tests})")
+        print(f"\n{Colors.YELLOW}⚠️  Some issues found, but basic connectivity works{Colors.END}")
+        sys.exit(1)
+    else:
+        print_status("FAIL", f"Many tests failed ({passed_tests}/{total_tests})")
+        print(f"\n{Colors.RED}❌ WebRTC infrastructure needs attention{Colors.END}")
+        sys.exit(2)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
