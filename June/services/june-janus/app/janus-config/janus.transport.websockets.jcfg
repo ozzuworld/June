@@ -1,0 +1,17 @@
+{
+    "general": {
+        "ws": true,
+        "ws_port": 8188,
+        "ws_interface": "0.0.0.0",
+        "ws_ip": "0.0.0.0",
+        "wss": false,
+        "ws_logging": "err,warn"
+    },
+    "admin": {
+        "admin_ws": false
+    },
+    "cors": {
+        "allow_origin": "*",
+        "allow_credentials": true
+    }
+}

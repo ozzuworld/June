@@ -1,0 +1,20 @@
+{
+    "general": {
+        "admin_key": "janusoverlord",
+        "lock_rtp_forward": false,
+        "events": true
+    },
+    "rooms": [
+        {
+            "room": 1234,
+            "description": "Demo Room",
+            "publishers": 10,
+            "bitrate": 128000,
+            "fir_freq": 10,
+            "audiocodec": "opus",
+            "videocodec": "vp8",
+            "record": false,
+            "rec_dir": "/opt/janus/share/janus/recordings"
+        }
+    ]
+}
