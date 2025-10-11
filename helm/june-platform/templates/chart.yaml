@@ -1,0 +1,100 @@
+apiVersion: v2
+name: june-platform
+description: June AI Platform - Complete Deployment
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+EOF
+
+# Create minimal values.yaml with your config
+cat > helm/june-platform/values.yaml << 'EOF'
+global:
+  domain: ozzu.world
+  environment: production
+
+domains:
+  primary: ozzu.world
+  api: api.ozzu.world
+  idp: idp.ozzu.world
+  stt: stt.ozzu.world
+  tts: tts.ozzu.world
+  turn: turn.ozzu.world
+
+certificate:
+  enabled: true
+  issuer: letsencrypt-prod
+  email: admin@ozzu.world
+  secretName: ozzu-world-wildcard-tls
+
+postgresql:
+  enabled: true
+  database: keycloak
+  username: keycloak
+  password: Pokemon123!
+  storageClass: local-storage
+  storage: 10Gi
+  hostPath: /opt/june-postgresql-data
+
+keycloak:
+  enabled: true
+  adminUsername: admin
+  adminPassword: Pokemon123!
+  realm: june-realm
+
+orchestrator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-orchestrator
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 200m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+
+stt:
+  enabled: true
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-stt
+    tag: latest
+    pullPolicy: Always
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: 6Gi
+      cpu: "1"
+    limits:
+      memory: 10Gi
+      cpu: "2"
+
+tts:
+  enabled: true
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-tts
+    tag: latest
+    pullPolicy: Always
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: 4Gi
+      cpu: "1"
+    limits:
+      memory: 6Gi
+      cpu: "2"
+
+stunner:
+  enabled: false
+
+secrets:
+  geminiApiKey: ""
+  cloudflareToken: ""
