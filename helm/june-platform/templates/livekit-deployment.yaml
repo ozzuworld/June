@@ -1,0 +1,81 @@
+---
+# LiveKit Server Deployment
+{{- if .Values.livekit.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: livekit-server
+spec:
+  replicas: {{ .Values.livekit.replicas }}
+  selector:
+    matchLabels:
+      app: livekit-server
+  template:
+    metadata:
+      labels:
+        app: livekit-server
+    spec:
+      containers:
+      - name: livekit
+        image: "{{ .Values.livekit.image.repository }}:{{ .Values.livekit.image.tag }}"
+        imagePullPolicy: {{ .Values.livekit.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 7880
+          protocol: TCP
+        - name: rtc-tcp
+          containerPort: 7881
+          protocol: TCP
+        - name: rtc-udp-start
+          containerPort: 50000
+          protocol: UDP
+        env:
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: livekit-secrets
+              key: api-key
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: livekit-secrets
+              key: api-secret
+        - name: LIVEKIT_CONFIG
+          value: /etc/livekit/config.yaml
+        volumeMounts:
+        - name: config
+          mountPath: /etc/livekit
+        resources:
+          {{- toYaml .Values.livekit.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 7880
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 7880
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: livekit-config
+
+---
+# LiveKit Secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: livekit-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  api-key: {{ .Values.livekit.apiKey | required "livekit.apiKey is required" }}
+  api-secret: {{ .Values.livekit.apiSecret | required "livekit.apiSecret is required" }}
+{{- end }}

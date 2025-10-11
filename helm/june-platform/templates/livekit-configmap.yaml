@@ -1,0 +1,53 @@
+---
+{{- if .Values.livekit.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livekit-config
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    port: 7880
+    rtc:
+      port_range_start: 50000
+      port_range_end: 50100
+      use_external_ip: true
+      {{- if .Values.livekit.externalIP }}
+      node_ip: {{ .Values.livekit.externalIP }}
+      {{- end }}
+      
+      # Use STUNner for TURN/STUN
+      {{- if .Values.stunner.enabled }}
+      ice_servers:
+      - urls:
+        - stun:{{ .Values.domains.turn }}:3478
+      - urls:
+        - turn:{{ .Values.domains.turn }}:3478
+        username: {{ .Values.stunner.username }}
+        credential: {{ .Values.stunner.password }}
+      {{- else }}
+      # Fallback to Google STUN
+      ice_servers:
+      - urls:
+        - stun:stun.l.google.com:19302
+      {{- end }}
+    
+    # Logging
+    logging:
+      level: info
+      sample: false
+    
+    # Keys (set via env vars)
+    keys:
+      ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+    
+    # Room settings
+    room:
+      auto_create: true
+      empty_timeout: 300
+      max_participants: 10
+    
+    # Turn off built-in TURN (we use STUNner)
+    turn:
+      enabled: false
+{{- end }}
