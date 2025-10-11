@@ -50,6 +50,9 @@ janus:
   service:
     type: ClusterIP
     port: 8080
+  # Janus authentication secrets
+  adminKey: janusoverlord  # CHANGE IN PRODUCTION
+  apiSecret: janussecret   # CHANGE IN PRODUCTION
   resources:
     requests:
       memory: 512Mi
