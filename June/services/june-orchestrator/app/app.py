@@ -1,17 +1,13 @@
 """
-June Orchestrator - Main Application
-Slim routing layer - business logic in services/
+June Orchestrator - Janus WebRTC Edition
+Coordinates between Janus WebRTC, STT, TTS, and AI services
 """
 import logging
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import config
-from .routes import health, chat, livekit_routes, webhooks
-from .livekit import livekit_manager, audio_handler, livekit_config
-from .services import audio_service
 
 # Configure logging
 logging.basicConfig(
@@ -20,40 +16,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup/shutdown"""
-    logger.info("🚀 June Orchestrator v11.0.0 - LiveKit Edition")
+    logger.info("🚀 June Orchestrator v12.0.0 - Janus WebRTC Edition")
     logger.info(f"🔧 Environment: {config.environment}")
-    
-    # Initialize services
-    if livekit_config.is_configured:
-        logger.info("✅ LiveKit enabled")
-        logger.info(f"   URL: {livekit_config.url}")
-        
-        # Wire up audio processing
-        audio_handler.set_audio_callback(audio_service.process_livekit_audio)
-    else:
-        logger.warning("⚠️  LiveKit not configured")
-    
+    logger.info(f"🔧 Janus Gateway: webrtc.ozzu.world")
     logger.info(f"🔧 TTS: {config.services.tts_base_url}")
     logger.info(f"🔧 STT: {config.services.stt_base_url}")
-    logger.info(f"🔧 AI: {'Configured' if config.services.gemini_api_key else 'Not configured'}")
-    
     yield
-    
-    # Cleanup
     logger.info("🛑 Shutting down...")
-    if livekit_config.is_configured:
-        await audio_handler.cleanup_all()
-
 
 # Create FastAPI app
 app = FastAPI(
     title="June Orchestrator",
-    version="11.0.0",
-    description="AI Voice Chat Orchestrator with LiveKit",
+    version="12.0.0", 
+    description="AI Voice Chat Orchestrator with Janus WebRTC",
     lifespan=lifespan
 )
 
@@ -66,34 +44,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(health.router, tags=["Health"])
-app.include_router(chat.router, prefix="/v1", tags=["Chat"])
-app.include_router(livekit_routes.router, prefix="/v1/livekit", tags=["LiveKit"])
-app.include_router(webhooks.router, prefix="/v1", tags=["Webhooks"])
-
-
+# Simple routes without external dependencies
 @app.get("/")
 async def root():
     """Root endpoint"""
     return {
         "service": "june-orchestrator",
-        "version": "11.0.0",
+        "version": "12.0.0",
         "status": "running",
+        "webrtc": "janus",
         "features": {
-            "livekit": livekit_config.is_configured,
+            "janus_webrtc": True,
             "ai": bool(config.services.gemini_api_key),
             "tts": bool(config.services.tts_base_url),
             "stt": bool(config.services.stt_base_url)
         }
     }
 
+@app.get("/api/health")
+async def health():
+    """Health check"""
+    return {"status": "healthy", "service": "june-orchestrator-janus"}
+
+@app.get("/api/webrtc/config")
+async def webrtc_config():
+    """WebRTC configuration for frontend"""
+    return {
+        "janus": {
+            "url": "https://janus.ozzu.world/janus",
+            "websocket": "wss://webrtc.ozzu.world/ws"
+        },
+        "ice_servers": [
+            {"urls": "stun:stun.l.google.com:19302"},
+            {
+                "urls": "turn:31449", # NodePort from STUNner
+                "username": "june-user",
+                "credential": "Pokemon123!"
+            }
+        ]
+    }
+
+@app.post("/api/voice/process")
+async def process_voice():
+    """Voice processing endpoint"""
+    return {"message": "Voice processing with Janus + STT/TTS"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=config.host,
-        port=config.port,
-        log_level=config.log_level.lower()
-    )
+    uvicorn.run(app, host=config.host, port=config.port)
