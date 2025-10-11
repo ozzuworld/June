@@ -577,6 +577,40 @@ EOF
         kubectl annotate namespace june-services meta.helm.sh/release-namespace=june-services --overwrite > /dev/null 2>&1
     fi
     
+    # Detect GPU availability
+    GPU_AVAILABLE="false"
+    
+    # Check manual override first
+    if [ "${ENABLE_STT:-auto}" = "true" ] || [ "${ENABLE_TTS:-auto}" = "true" ]; then
+        GPU_AVAILABLE="true"
+        log_info "GPU services manually enabled"
+    elif [ "${ENABLE_STT:-auto}" = "false" ] && [ "${ENABLE_TTS:-auto}" = "false" ]; then
+        GPU_AVAILABLE="false"
+        log_info "GPU services manually disabled"
+    else
+        # Auto-detect
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+            GPU_AVAILABLE="true"
+            log_info "GPU detected - STT and TTS will be enabled"
+        else
+            GPU_AVAILABLE="false"
+            log_info "No GPU detected - STT and TTS will be disabled"
+            warn "Voice services (STT/TTS) require GPU support and will be skipped"
+        fi
+    fi
+    
+    # Determine individual service status
+    ENABLE_STT_DEPLOY="${ENABLE_STT:-auto}"
+    ENABLE_TTS_DEPLOY="${ENABLE_TTS:-auto}"
+    
+    if [ "$ENABLE_STT_DEPLOY" = "auto" ]; then
+        ENABLE_STT_DEPLOY="$GPU_AVAILABLE"
+    fi
+    
+    if [ "$ENABLE_TTS_DEPLOY" = "auto" ]; then
+        ENABLE_TTS_DEPLOY="$GPU_AVAILABLE"
+    fi
+    
     HELM_ARGS=(
         --namespace june-services
         --set global.domain="$DOMAIN"
@@ -585,12 +619,15 @@ EOF
         --set secrets.cloudflareToken="$CLOUDFLARE_TOKEN"
         --set postgresql.password="${POSTGRESQL_PASSWORD:-Pokemon123!}"
         --set keycloak.adminPassword="${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}"
+        --set stt.enabled="$GPU_AVAILABLE"
+        --set tts.enabled="$GPU_AVAILABLE"
         --set stunner.enabled=true
         --set stunner.username="${TURN_USERNAME:-june-user}"
         --set stunner.password="${STUNNER_PASSWORD:-Pokemon123!}"
-        --wait
         --timeout 15m
     )
+    
+    # Don't use --wait flag to avoid blocking on GPU services
     
     if [ "$SKIP_CERT_CREATION" = "true" ]; then
         log_info "Using restored certificate"
@@ -604,6 +641,26 @@ EOF
     helm upgrade --install june-platform "$HELM_CHART" "${HELM_ARGS[@]}" 2>&1 | tee /tmp/helm-deploy.log
     HELM_EXIT_CODE=$?
     set -e
+    
+    # Wait for critical services only (not GPU-dependent ones)
+    log_info "Waiting for core services to start..."
+    sleep 10
+    
+    # Wait for orchestrator and IDP (core services)
+    for i in {1..60}; do
+        ORCH_READY=$(kubectl get pods -n june-services -l app=june-orchestrator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+        IDP_READY=$(kubectl get pods -n june-services -l app=june-idp -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+        
+        if [ "$ORCH_READY" = "Running" ] && [ "$IDP_READY" = "Running" ]; then
+            success "Core services are running"
+            break
+        fi
+        
+        if [ $((i % 10)) -eq 0 ]; then
+            log_info "Still waiting for core services... ($i/60)"
+        fi
+        sleep 5
+    done
     
     if [ $HELM_EXIT_CODE -eq 0 ]; then
         success "June Platform deployed"
@@ -628,21 +685,19 @@ EOF
     
     # ✅ CRITICAL FIX: Create UDPRoutes after services are deployed
     log "Creating STUNner UDPRoutes..."
-    sleep 10  # Give services time to be created
+    sleep 5
     
-    # Wait for services to exist
+    # Wait for services to exist (only check orchestrator, which is always deployed)
     log_info "Waiting for June services to be created..."
     for i in {1..30}; do
-        if kubectl get svc -n june-services june-orchestrator &>/dev/null && \
-           kubectl get svc -n june-services june-stt &>/dev/null && \
-           kubectl get svc -n june-services june-tts &>/dev/null; then
-            success "Services are ready"
+        if kubectl get svc -n june-services june-orchestrator &>/dev/null; then
+            success "Orchestrator service ready"
             break
         fi
         sleep 5
     done
     
-    # Create UDPRoute for Orchestrator
+    # Create UDPRoute for Orchestrator (always created)
     cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
@@ -659,8 +714,12 @@ spec:
       namespace: june-services
 EOF
     
-    # Create UDPRoute for STT
-    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+    log_info "Orchestrator route created"
+    
+    # Create UDPRoute for STT (only if GPU available)
+    if [ "$GPU_AVAILABLE" = "true" ]; then
+        if kubectl get svc -n june-services june-stt &>/dev/null; then
+            cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
@@ -675,9 +734,14 @@ spec:
     - name: june-stt
       namespace: june-services
 EOF
+            log_info "STT route created"
+        fi
+    fi
     
-    # Create UDPRoute for TTS
-    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+    # Create UDPRoute for TTS (only if GPU available)
+    if [ "$GPU_AVAILABLE" = "true" ]; then
+        if kubectl get svc -n june-services june-tts &>/dev/null; then
+            cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
@@ -692,6 +756,9 @@ spec:
     - name: june-tts
       namespace: june-services
 EOF
+            log_info "TTS route created"
+        fi
+    fi
     
     success "STUNner UDPRoutes created"
 }
