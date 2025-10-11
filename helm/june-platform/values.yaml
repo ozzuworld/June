@@ -39,6 +39,25 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
+# Janus WebRTC Gateway Configuration
+janus:
+  enabled: true
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/janus-gateway
+    tag: latest
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 200m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+
 # June Orchestrator Service
 orchestrator:
   enabled: true
