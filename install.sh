@@ -212,9 +212,10 @@ install_infrastructure() {
             -l app.kubernetes.io/component=controller 2>&1; then
             success "ingress-nginx installed"
         else
-            warn "ingress-nginx timeout - checking status..."
-            RUNNING=$(kubectl get pods -n ingress-nginx --no-headers 2>/dev/null | grep -c "Running" || echo "0")
-            if [ "$RUNNING" -gt 0 ]; then
+            RUNNING=$(kubectl get pods -n ingress-nginx --no-headers 2>/dev/null | grep "Running" | wc -l)
+            if [ -z "$RUNNING" ]; then
+                RUNNING=0
+            fi
                 warn "ingress-nginx partially running ($RUNNING pods) - continuing"
             else
                 error "ingress-nginx failed to start"
