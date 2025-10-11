@@ -1,5 +1,8 @@
 FROM ubuntu:22.04
 
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     libmicrohttpd-dev \
@@ -30,29 +33,63 @@ RUN apt-get update && apt-get install -y \
     libopus0 \
     libogg0 \
     libssl3 \
-    libconfig9
+    libconfig9 \
+    # Add meson and ninja for libnice
+    meson \
+    ninja-build \
+    # Add autotools for older projects
+    autoconf \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install libnice
+# Install libnice (using meson build system)
 RUN git clone https://gitlab.freedesktop.org/libnice/libnice && \
     cd libnice && \
-    ./autogen.sh && \
-    make && make install
+    meson setup builddir && \
+    meson compile -C builddir && \
+    meson install -C builddir && \
+    cd .. && rm -rf libnice
 
 # Install libsrtp
 RUN wget https://github.com/cisco/libsrtp/archive/v2.4.2.tar.gz && \
     tar xfv v2.4.2.tar.gz && \
     cd libsrtp-2.4.2 && \
     ./configure --prefix=/usr --enable-openssl && \
-    make shared_library && make install
+    make shared_library && make install && \
+    cd .. && rm -rf libsrtp-2.4.2 v2.4.2.tar.gz
+
+# Install usrsctp (required for Janus)
+RUN git clone https://github.com/sctplab/usrsctp && \
+    cd usrsctp && \
+    ./bootstrap && \
+    ./configure --prefix=/usr && \
+    make && make install && \
+    cd .. && rm -rf usrsctp
+
+# Install libwebsockets (required for Janus WebSocket transport)
+RUN git clone https://github.com/warmcat/libwebsockets.git && \
+    cd libwebsockets && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr && \
+    make && make install && \
+    cd ../.. && rm -rf libwebsockets
 
 # Install Janus WebRTC Server
 RUN git clone https://github.com/meetecho/janus-gateway.git && \
     cd janus-gateway && \
     sh autogen.sh && \
-    ./configure --prefix=/opt/janus --enable-websockets --enable-post-processing && \
+    ./configure --prefix=/opt/janus \
+        --enable-websockets \
+        --enable-post-processing \
+        --enable-docs=no \
+        --enable-rest=yes \
+        --enable-datachannels=yes \
+        --enable-rabbitmq=no \
+        --enable-mqtt=no \
+        --enable-unix-sockets=no && \
     make && make install && \
     # Update library cache
-    ldconfig
+    ldconfig && \
+    cd .. && rm -rf janus-gateway
 
 # Install Python dependencies
 COPY requirements.txt /app/requirements.txt
@@ -60,16 +97,22 @@ RUN pip3 install -r /app/requirements.txt
 
 # Copy application code
 COPY app/ /app/
-COPY app/janus-config/ /opt/janus/etc/janus/
+COPY app/janus-config/ /opt/janus/etc/janus/ 2>/dev/null || true
 
 # Set working directory
 WORKDIR /app
 
-# Expose ports (add 7088 for admin, 8188 for WebSocket)
-EXPOSE 8080 8088 8188 7088 7188 20000-40000/udp
+# Expose ports
+EXPOSE 8080 8088 8188 7088 7188
+EXPOSE 20000-40000/udp
 
 # Start script
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
+
+# Create janus user and directories
+RUN useradd -r -s /bin/false janus && \
+    mkdir -p /opt/janus/var/log /opt/janus/var/run && \
+    chown -R janus:janus /opt/janus/var
 
 CMD ["/start.sh"]

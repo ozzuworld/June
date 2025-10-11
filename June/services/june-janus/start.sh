@@ -2,7 +2,7 @@
 set -e
 
 # Update library paths
-export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:$LD_LIBRARY_PATH"
 ldconfig
 
 # Create necessary directories
@@ -43,8 +43,7 @@ EOF
 fi
 
 # Configure HTTP transport
-if [ ! -f "/opt/janus/etc/janus/janus.transport.http.jcfg" ]; then
-    cat > /opt/janus/etc/janus/janus.transport.http.jcfg << EOF
+cat > /opt/janus/etc/janus/janus.transport.http.jcfg << EOF
 general: {
     json = "indented"
     base_path = "/janus"
@@ -58,11 +57,9 @@ general: {
     admin_interface = "0.0.0.0"
 }
 EOF
-fi
 
 # Configure WebSocket transport
-if [ ! -f "/opt/janus/etc/janus/janus.transport.websockets.jcfg" ]; then
-    cat > /opt/janus/etc/janus/janus.transport.websockets.jcfg << EOF
+cat > /opt/janus/etc/janus/janus.transport.websockets.jcfg << EOF
 general: {
     json = "indented"
     ws = true
@@ -74,11 +71,10 @@ general: {
     admin_ws_interface = "0.0.0.0"
 }
 EOF
-fi
 
 # Start health check server in background (if you need it)
 if [ -f "/app/health_server.py" ]; then
-    echo "Starting health check server..."
+    echo "Starting health check server on port 8080..."
     python3 /app/health_server.py &
 fi
 
@@ -88,5 +84,4 @@ exec /opt/janus/bin/janus \
     --configs-folder=/opt/janus/etc/janus \
     --log-file=/opt/janus/var/log/janus.log \
     --interface=0.0.0.0 \
-    --debug-level=4 \
-    --stun-server=stun.l.google.com:19302
+    --debug-level=4
