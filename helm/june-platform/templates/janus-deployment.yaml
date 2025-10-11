@@ -69,18 +69,23 @@ spec:
         volumeMounts:
         - name: janus-config
           mountPath: /opt/janus/etc/janus
+        # Fixed health checks for canyan/janus-gateway image
         livenessProbe:
           httpGet:
-            path: /api/liveness
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
+            path: /janus/info
+            port: 8088
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /api/readiness
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 5
+            path: /janus/info
+            port: 8088
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
         resources:
           {{- toYaml .Values.janus.resources | nindent 10 }}
       volumes:
