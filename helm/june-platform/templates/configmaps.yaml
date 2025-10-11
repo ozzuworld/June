@@ -49,7 +49,7 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "june-platform.fullname" . }}-janus-config
+  name: june-janus-config
   namespace: {{ .Release.Namespace }}
 data:
   # Janus Gateway configuration files
