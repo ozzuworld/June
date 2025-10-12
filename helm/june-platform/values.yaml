@@ -46,8 +46,8 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: canyan/janus-gateway:latest
-    tag: latest
+    repository: swmansion/janus-gateway
+    tag: 0.14.4-0   
     pullPolicy: IfNotPresent
   
   # Janus authentication secrets
