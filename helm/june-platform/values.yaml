@@ -46,8 +46,8 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: swmansion/janus-gateway
-    tag: 0.14.4-0   
+    repository: sucwangsr/janus-webrtc-gateway-docker
+    tag: latest    
     pullPolicy: IfNotPresent
   
   # Janus authentication secrets
