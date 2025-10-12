@@ -78,8 +78,8 @@ async def get_status():
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: Optional[str] = Query(None),  # Support token in query parameter
-    authorization: Optional[str] = Header(None)  # Support token in Authorization header
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
 ):
     """
     Main WebSocket endpoint for real-time voice chat
@@ -89,6 +89,8 @@ async def websocket_endpoint(
     2. Query parameter: ws.connect(url + '?token=<token>')
     
     The token can be passed with or without 'Bearer ' prefix.
+    
+    CRITICAL FIX: Accept connection FIRST, then authenticate
     """
     
     # Extract authentication token from either source
@@ -104,45 +106,65 @@ async def websocket_endpoint(
         # Fallback to query parameter (for clients that can't set headers)
         auth_token = token.replace('Bearer ', '').replace('Bearer%20', '').strip()
         auth_method = "query"
-        logger.info("🔑 Token received via query parameter")
+        logger.info(f"🔑 Token received via query parameter (length: {len(auth_token)})")
     else:
         logger.warning("⚠️ No authentication token provided")
     
-    # Authenticate the connection
+    # ✅ CRITICAL FIX: Accept WebSocket connection FIRST
+    # You cannot close a WebSocket before accepting it
+    await websocket.accept()
+    logger.info("🔌 WebSocket connection accepted")
+    
+    # Now authenticate AFTER accepting
     user = None
     if auth_token:
         try:
+            logger.info(f"🔐 Attempting to verify token (first 20 chars): {auth_token[:20]}...")
             user = await verify_websocket_token(auth_token)
             user_id = user.get("sub", "unknown")
             logger.info(f"✅ WebSocket authenticated: {user_id} (via {auth_method})")
         except Exception as e:
-            logger.error(f"❌ Authentication failed: {e}")
-            # Close connection before accepting if auth fails
+            logger.error(f"❌ Authentication failed: {e}", exc_info=True)
+            # Now we can safely send error and close
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Authentication failed",
+                    "error": str(e),
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            except:
+                pass
             await websocket.close(code=1008, reason="Authentication failed")
             return
     else:
-        logger.warning("⚠️ Allowing unauthenticated WebSocket connection (development mode)")
-        # For production, uncomment this to require authentication:
+        logger.warning("⚠️ No token provided - using anonymous mode")
+        # For production, you should require authentication:
+        # await websocket.send_json({
+        #     "type": "error",
+        #     "message": "Authentication required",
+        #     "timestamp": datetime.utcnow().isoformat()
+        # })
         # await websocket.close(code=1008, reason="Authentication required")
         # return
-    
-    # ✅ CRITICAL: Accept WebSocket connection AFTER successful authentication
-    await websocket.accept()
+        
+        # For development, allow anonymous
+        user = {"sub": "anonymous", "email": "anonymous@example.com"}
     
     # Register the connection with the manager
     session_id = await manager.connect(websocket, user)
     
     try:
         # Send connection confirmation with detailed info
-        user_id = user.get("sub", "anonymous") if user else "anonymous"
-        user_email = user.get("email", "N/A") if user else "N/A"
+        user_id = user.get("sub", "anonymous")
+        user_email = user.get("email", "N/A")
         
         await manager.send_message(session_id, {
             "type": "connected",
             "user_id": user_id,
             "email": user_email,
             "session_id": session_id,
-            "authenticated": user is not None,
+            "authenticated": auth_token is not None,
             "auth_method": auth_method,
             "message": f"✅ Connected to June AI Assistant as {user_id}",
             "server_time": datetime.utcnow().isoformat(),
@@ -175,7 +197,7 @@ async def websocket_endpoint(
 async def process_websocket_message(message: dict, session_id: str, user: dict):
     """Process incoming WebSocket messages"""
     msg_type = message.get("type", "unknown")
-    user_id = user.get("sub", "anonymous") if user else "anonymous"
+    user_id = user.get("sub", "anonymous")
     
     logger.info(f"📨 Processing message type '{msg_type}' from user {user_id}")
     
@@ -226,7 +248,7 @@ async def process_websocket_message(message: dict, session_id: str, user: dict):
 async def handle_text_input(message: dict, session_id: str, user: dict):
     """Handle text input from user"""
     text = message.get("text", "").strip()
-    user_id = user.get("sub", "anonymous") if user else "anonymous"
+    user_id = user.get("sub", "anonymous")
     
     if not text:
         await manager.send_message(session_id, {
@@ -304,7 +326,7 @@ async def handle_text_input(message: dict, session_id: str, user: dict):
 
 async def handle_audio_input(message: dict, session_id: str, user: dict):
     """Handle audio input from user"""
-    user_id = user.get("sub", "anonymous") if user else "anonymous"
+    user_id = user.get("sub", "anonymous")
     
     logger.info(f"🎤 Audio input received from {user_id}")
     
