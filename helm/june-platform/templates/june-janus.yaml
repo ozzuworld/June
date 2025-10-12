@@ -1,5 +1,5 @@
 ---
-# helm/june-platform/templates/june-janus.yaml (Updated for swmansion/janus-gateway)
+# helm/june-platform/templates/june-janus.yaml
 {{- if .Values.janus.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -43,48 +43,15 @@ spec:
         - containerPort: 7088
           name: admin-ws
           protocol: TCP
-        - containerPort: 10000
-          name: rtp-start
-          protocol: UDP
-        - containerPort: 10200
-          name: rtp-end
-          protocol: UDP
         
         env:
-        # Janus Gateway Configuration
-        - name: GATEWAY_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
-        - name: WEBSOCKETS_ENABLED
-          value: "true"
-        - name: HTTP_ENABLED
-          value: "true"
-        - name: RTP_PORT_RANGE
-          value: "10000-10200"
-        
         # Janus API secrets
-        - name: ADMIN_KEY
-          value: {{ .Values.janus.adminKey | quote }}
-        - name: API_SECRET
+        - name: JANUS_API_SECRET
           value: {{ .Values.janus.apiSecret | quote }}
+        - name: JANUS_ADMIN_SECRET
+          value: {{ .Values.janus.adminKey | quote }}
         
-        {{- if .Values.janus.turn.enabled }}
-        # Custom TURN/STUN configuration
-        - name: STUN_SERVER
-          value: "{{ .Values.janus.turn.server }}"
-        - name: STUN_PORT
-          value: "{{ .Values.janus.turn.port }}"
-        - name: TURN_SERVER
-          value: "{{ .Values.janus.turn.server }}"
-        - name: TURN_PORT
-          value: "{{ .Values.janus.turn.port }}"
-        - name: TURN_USERNAME
-          value: {{ .Values.janus.turn.username | quote }}
-        - name: TURN_PASSWORD
-          value: {{ .Values.janus.turn.password | quote }}
-        {{- else }}
-        # Fallback TURN/STUN configuration from configmap
+        # STUNner/TURN configuration
         - name: STUN_SERVER
           valueFrom:
             configMapKeyRef:
@@ -105,7 +72,6 @@ spec:
             configMapKeyRef:
               name: june-janus-config
               key: TURN_CREDENTIAL
-        {{- end }}
         
         resources:
           requests:
@@ -121,7 +87,7 @@ spec:
             port: 8088
           initialDelaySeconds: 10
           periodSeconds: 10
-          timeoutSeconds: 5
+          timeoutSeconds: 3
           failureThreshold: 3
         
         livenessProbe:
@@ -130,7 +96,7 @@ spec:
             port: 8088
           initialDelaySeconds: 30
           periodSeconds: 30
-          timeoutSeconds: 10
+          timeoutSeconds: 5
           failureThreshold: 5
 
 ---
