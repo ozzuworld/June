@@ -175,6 +175,52 @@ EOF
 }
 
 # ============================================================================
+# Enable WebSocket Support for June Platform (Secure ConfigMap Approach)
+# ============================================================================
+
+enable_ingress_websocket_support() {
+    log "Configuring ingress-nginx for optimal WebSocket support..."
+    
+    # Wait for ingress-nginx to be fully deployed
+    kubectl wait --for=condition=available --timeout=300s \
+        deployment/ingress-nginx-controller -n ingress-nginx > /dev/null 2>&1
+    
+    # Configure global WebSocket support via ConfigMap (secure approach)
+    kubectl patch configmap ingress-nginx-controller -n ingress-nginx --patch '
+    {
+      "data": {
+        "proxy-read-timeout": "3600",
+        "proxy-send-timeout": "3600",
+        "proxy-connect-timeout": "60",
+        "proxy-buffering": "off",
+        "proxy-request-buffering": "off",
+        "enable-real-ip": "true",
+        "forwarded-for-header": "X-Forwarded-For",
+        "compute-full-forwarded-for": "true"
+      }
+    }' > /dev/null 2>&1 || \
+    kubectl create configmap ingress-nginx-controller -n ingress-nginx \
+        --from-literal=proxy-read-timeout=3600 \
+        --from-literal=proxy-send-timeout=3600 \
+        --from-literal=proxy-connect-timeout=60 \
+        --from-literal=proxy-buffering=off \
+        --from-literal=proxy-request-buffering=off \
+        --from-literal=enable-real-ip=true \
+        --from-literal=forwarded-for-header=X-Forwarded-For \
+        --from-literal=compute-full-forwarded-for=true \
+        > /dev/null 2>&1
+    
+    # Restart ingress controller to apply WebSocket optimizations
+    kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx > /dev/null 2>&1
+    
+    # Wait for controller to be ready again
+    kubectl wait --for=condition=available --timeout=300s \
+        deployment/ingress-nginx-controller -n ingress-nginx > /dev/null 2>&1
+    
+    success "Ingress-nginx optimized for WebSocket/WebRTC support"
+}
+
+# ============================================================================
 # STEP 4: Install Infrastructure (ingress-nginx, cert-manager)
 # ============================================================================
 
@@ -195,8 +241,14 @@ install_infrastructure() {
         log "Waiting for ingress-nginx..."
         sleep 30
         success "ingress-nginx installed"
+        
+        # Configure WebSocket support (secure ConfigMap approach)
+        enable_ingress_websocket_support
+        
     else
         success "ingress-nginx already installed"
+        # Also configure WebSocket support for existing installations
+        enable_ingress_websocket_support
     fi
     
     # Install cert-manager
