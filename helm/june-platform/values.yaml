@@ -57,11 +57,11 @@ janus:
   # STUN/TURN Configuration (Environment Variables)
   stun:
     server: turn.ozzu.world
-    port: 3478
+    port: 30728
   
   turn:
     server: turn.ozzu.world
-    port: 3478
+    port: 30728
     username: june-user
     password: Pokemon123!  # CHANGE IN PRODUCTION
     type: udp
