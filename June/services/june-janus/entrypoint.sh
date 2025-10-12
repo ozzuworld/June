@@ -13,6 +13,11 @@ if [ -f "/opt/janus/etc/janus/janus.jcfg" ]; then
     sed -i "s/TURN_SERVER_PLACEHOLDER/${TURN_SERVER}/g" /opt/janus/etc/janus/janus.jcfg
     sed -i "s/TURN_USERNAME_PLACEHOLDER/${TURN_USERNAME}/g" /opt/janus/etc/janus/janus.jcfg
     sed -i "s/TURN_CREDENTIAL_PLACEHOLDER/${TURN_CREDENTIAL}/g" /opt/janus/etc/janus/janus.jcfg
+    
+    # Copy updated config to where Janus actually reads it
+    echo "Copying config to /usr/local/etc/janus/janus.jcfg..."
+    cp /opt/janus/etc/janus/janus.jcfg /usr/local/etc/janus/janus.jcfg
+    
     echo "Configuration updated successfully!"
 else
     echo "WARNING: janus.jcfg not found, using defaults"
