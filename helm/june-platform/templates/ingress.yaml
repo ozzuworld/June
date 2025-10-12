@@ -57,14 +57,15 @@ spec:
   tls:
   - hosts:
     - "*.{{ .Values.domains.primary }}"
-    - {{ .Values.domains.primary }}
+    # Remove this line: - {{ .Values.domains.primary }}
     - {{ .Values.domains.api }}
     - {{ .Values.domains.idp }}
-    - {{ .Values.domains.janus }}
+    - {{ .Values.domains.janus }}      # ← Add this
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
+
   rules:
   # ============================================
   # ORCHESTRATOR - Business Logic API
@@ -105,9 +106,9 @@ spec:
             port:
               number: 8088
   
+  # Add this after the IDENTITY PROVIDER section
   # ============================================
   # JANUS GATEWAY ON SUBDOMAIN - WebRTC
-  # Using subdomain to work with wildcard certificate  
   # ============================================
   - host: {{ .Values.domains.janus }}
     http:
