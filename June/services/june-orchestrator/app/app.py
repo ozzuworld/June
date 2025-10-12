@@ -1,6 +1,6 @@
 """
-June Orchestrator - Janus WebRTC Edition (Fixed Janus Protocol)
-Handles Janus async events properly
+June Orchestrator - Janus WebRTC Edition (Fixed with detailed logging)
+Handles Janus async events properly with comprehensive debugging
 """
 import logging
 import uuid
@@ -90,7 +90,7 @@ class JanusManager:
             return False
     
     async def process_offer(self, session_id: str, sdp: str) -> Optional[str]:
-        """Process WebRTC offer through Janus with proper event polling"""
+        """Process WebRTC offer through Janus with detailed logging"""
         if session_id not in self.janus_sessions:
             user_id = self.users[session_id].get("sub", "anonymous")
             if not await self.create_janus_session(session_id, user_id):
@@ -102,6 +102,7 @@ class JanusManager:
         try:
             async with aiohttp.ClientSession() as session:
                 # Join/create room
+                logger.info(f"🚪 Joining room {room_id}")
                 async with session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                     json={
@@ -116,6 +117,7 @@ class JanusManager:
                     }
                 ) as resp:
                     join_data = await resp.json()
+                    logger.info(f"📨 Join response: {join_data.get('janus')}")
                     
                     # If room doesn't exist, create it
                     if join_data.get("plugindata", {}).get("data", {}).get("error_code"):
@@ -149,8 +151,11 @@ class JanusManager:
                             }
                         )
                 
-                # Send offer and get transaction ID
+                # Send offer
                 transaction_id = str(uuid.uuid4())
+                logger.info(f"📤 Sending offer to Janus (transaction: {transaction_id})")
+                logger.info(f"📤 SDP length: {len(sdp)} chars")
+                
                 async with session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                     json={
@@ -169,35 +174,61 @@ class JanusManager:
                 ) as resp:
                     ack_data = await resp.json()
                     logger.info(f"📨 Janus ack: {ack_data.get('janus')}")
+                    logger.info(f"📨 Full ack response: {json.dumps(ack_data, indent=2)}")
                 
-                # ✅ CRITICAL FIX: Poll for the actual event with the answer
-                max_attempts = 10
+                # Poll for the actual event with the answer
+                logger.info("⏳ Polling for answer event...")
+                max_attempts = 20
+                poll_delay = 0.2
+                
                 for attempt in range(max_attempts):
-                    await asyncio.sleep(0.1)  # Wait 100ms between polls
+                    await asyncio.sleep(poll_delay)
                     
-                    async with session.get(
-                        f"{JANUS_URL}/{janus['janus_session_id']}?maxev=1"
-                    ) as resp:
+                    poll_url = f"{JANUS_URL}/{janus['janus_session_id']}?maxev=1"
+                    logger.debug(f"📡 Poll attempt {attempt + 1}/{max_attempts}")
+                    
+                    async with session.get(poll_url) as resp:
                         event_data = await resp.json()
                         
-                        # Check if this is our answer event
-                        if event_data.get("janus") == "event":
-                            jsep = event_data.get("jsep")
-                            if jsep and jsep.get("type") == "answer":
-                                answer_sdp = jsep.get("sdp")
-                                logger.info(f"✅ Got answer from Janus (attempt {attempt + 1})")
-                                return answer_sdp
+                        logger.debug(f"📨 Poll response: {json.dumps(event_data, indent=2)[:500]}...")
                         
-                        # Also check if it's in plugindata
-                        plugindata = event_data.get("plugindata", {})
-                        if plugindata:
+                        event_type = event_data.get("janus")
+                        logger.debug(f"   Event type: {event_type}")
+                        
+                        if event_type == "event":
+                            # Check direct jsep
                             jsep = event_data.get("jsep")
-                            if jsep and jsep.get("type") == "answer":
-                                answer_sdp = jsep.get("sdp")
-                                logger.info(f"✅ Got answer from Janus plugindata (attempt {attempt + 1})")
-                                return answer_sdp
+                            if jsep:
+                                logger.info(f"✅ Found JSEP in event: type={jsep.get('type')}")
+                                if jsep.get("type") == "answer":
+                                    answer_sdp = jsep.get("sdp")
+                                    logger.info(f"✅ Got answer from Janus (attempt {attempt + 1}, {len(answer_sdp)} chars)")
+                                    return answer_sdp
+                            
+                            # Check plugindata
+                            plugindata = event_data.get("plugindata", {})
+                            if plugindata:
+                                data = plugindata.get("data", {})
+                                logger.info(f"📦 Plugin data: {data.get('videoroom')}")
+                        
+                        elif event_type == "webrtcup":
+                            logger.info("🔗 WebRTC connection is up!")
+                        
+                        elif event_type == "media":
+                            media_type = event_data.get("type")
+                            receiving = event_data.get("receiving")
+                            logger.info(f"📺 Media event: type={media_type}, receiving={receiving}")
+                        
+                        elif event_type == "slowlink":
+                            logger.warning("🐌 Slow link detected")
+                        
+                        elif event_type == "hangup":
+                            reason = event_data.get("reason")
+                            logger.warning(f"📞 Hangup: {reason}")
+                            return None
                 
-                logger.error(f"❌ No answer after {max_attempts} attempts")
+                logger.error(f"❌ No answer after {max_attempts} attempts ({max_attempts * poll_delay}s)")
+                logger.error("💡 Tip: Check Janus logs with: kubectl logs -n june-services -l app=june-janus")
                 return None
                         
         except Exception as e:
@@ -233,19 +264,16 @@ class JanusManager:
         
         try:
             async with aiohttp.ClientSession() as session:
-                # Leave room
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                     json={"janus": "message", "transaction": str(uuid.uuid4()), "body": {"request": "leave"}},
                     timeout=aiohttp.ClientTimeout(total=2)
                 )
-                # Detach
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                     json={"janus": "detach", "transaction": str(uuid.uuid4())},
                     timeout=aiohttp.ClientTimeout(total=2)
                 )
-                # Destroy
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}",
                     json={"janus": "destroy", "transaction": str(uuid.uuid4())},
@@ -255,7 +283,9 @@ class JanusManager:
         except:
             pass
 
+
 manager = JanusManager()
+
 
 def decode_token(token: str) -> dict:
     """Decode JWT without verification (dev only)"""
@@ -264,12 +294,14 @@ def decode_token(token: str) -> dict:
     decoded = json.loads(base64.urlsafe_b64decode(payload))
     return decoded
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 June Orchestrator v12.0 - Janus WebRTC (Fixed)")
+    logger.info("🚀 June Orchestrator v12.0 - Janus WebRTC (Fixed with logging)")
     logger.info(f"🔧 Janus: {JANUS_URL}")
     yield
     logger.info("🛑 Shutdown")
+
 
 app = FastAPI(title="June Orchestrator", version="12.0.0", lifespan=lifespan)
 
@@ -281,6 +313,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 async def root():
     return {
@@ -290,6 +323,7 @@ async def root():
         "websocket": "/ws"
     }
 
+
 @app.get("/healthz")
 async def healthz():
     return {
@@ -297,6 +331,7 @@ async def healthz():
         "connections": len(manager.connections),
         "janus_sessions": len(manager.janus_sessions)
     }
+
 
 @app.get("/api/webrtc/config")
 async def webrtc_config():
@@ -307,6 +342,7 @@ async def webrtc_config():
             {"urls": "turn:turn.ozzu.world:3478", "username": "june-user", "credential": "Pokemon123!"}
         ]
     }
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(
@@ -372,6 +408,7 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"❌ Error: {e}", exc_info=True)
         await manager.disconnect(session_id)
+
 
 if __name__ == "__main__":
     import uvicorn
