@@ -379,7 +379,7 @@ spec:
     name: janus-admin
   - port: 7889
     targetPort: 7889
-    name: janus-ws
+    name: websocket
 
 ---
 apiVersion: apps/v1
@@ -866,7 +866,7 @@ spec:
     name: management
 
 ---
-# UPDATED INGRESS - Added WebSocket support annotations to fix 502 Bad Gateway errors
+# UPDATED INGRESS - WebSocket support without configuration snippets (disabled by admin)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -881,18 +881,15 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
     
-    # WebSocket support annotations - CRITICAL for fixing 502 Bad Gateway
+    # WebSocket support annotations - Alternative approach without snippets
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     
-    # Enable WebSocket upgrade headers
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
-      
-    # WebSocket session affinity
-    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_upgrade"
+    # Use backend-protocol and upstream-hash-by for WebSocket support
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     
 spec:
   ingressClassName: nginx
