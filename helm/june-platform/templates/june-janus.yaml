@@ -44,6 +44,13 @@ spec:
           name: admin-ws
           protocol: TCP
         
+        # Mount the Janus configuration file - FIXED
+        volumeMounts:
+        - name: janus-config
+          mountPath: /usr/local/etc/janus/janus.jcfg
+          subPath: janus.jcfg
+          readOnly: true
+        
         env:
         # Janus API secrets
         - name: JANUS_API_SECRET
@@ -80,6 +87,10 @@ spec:
         - name: FULL_TRICKLE
           value: {{ .Values.janus.webrtc.fullTrickle | quote }}
         
+        # Force Janus to use our config file
+        - name: JANUS_CONFIG_FILE
+          value: "/usr/local/etc/janus/janus.jcfg"
+        
         resources:
           requests:
             memory: {{ .Values.janus.resources.requests.memory }}
@@ -105,6 +116,15 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 5
+      
+      # Mount volumes - FIXED
+      volumes:
+      - name: janus-config
+        configMap:
+          name: june-janus-config
+          items:
+          - key: janus.jcfg
+            path: janus.jcfg
 
 ---
 apiVersion: v1
