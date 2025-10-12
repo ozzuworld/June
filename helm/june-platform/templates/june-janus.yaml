@@ -79,29 +79,6 @@ spec:
           value: {{ .Values.janus.webrtc.iceTcp | quote }}
         - name: FULL_TRICKLE
           value: {{ .Values.janus.webrtc.fullTrickle | quote }}
-
-        
-        # STUNner/TURN configuration
-        - name: STUN_SERVER
-          valueFrom:
-            configMapKeyRef:
-              name: june-janus-config
-              key: STUN_SERVER
-        - name: TURN_SERVER
-          valueFrom:
-            configMapKeyRef:
-              name: june-janus-config
-              key: TURN_SERVER
-        - name: TURN_USERNAME
-          valueFrom:
-            configMapKeyRef:
-              name: june-janus-config
-              key: TURN_USERNAME
-        - name: TURN_CREDENTIAL
-          valueFrom:
-            configMapKeyRef:
-              name: june-janus-config
-              key: TURN_CREDENTIAL
         
         resources:
           requests:
