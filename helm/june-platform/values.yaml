@@ -40,14 +40,22 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# Janus WebRTC Gateway Configuration
+# Janus WebRTC Gateway Configuration (UPDATED)
 janus:
   enabled: true
   replicas: 1
   image:
-    repository: docker.io/ozzuworld/june-janus
-    tag: latest
-    pullPolicy: Always
+    repository: swmansion/janus-gateway  # Updated from canyan to more reliable image
+    tag: "0.14.4-0"  # Use stable version instead of latest
+    pullPolicy: IfNotPresent  # Changed from Always to IfNotPresent for stability
+  
+  # Your own TURN/STUN configuration (UPDATE THESE WITH YOUR SERVER DETAILS)
+  turn:
+    enabled: true
+    server: "your-turn-server.domain.com"  # REPLACE WITH YOUR TURN SERVER
+    port: 3478
+    username: "your-turn-username"  # REPLACE WITH YOUR TURN USERNAME
+    password: "your-turn-password"  # REPLACE WITH YOUR TURN PASSWORD
   
   # Janus authentication secrets
   adminKey: janusoverlord  # CHANGE IN PRODUCTION
@@ -115,15 +123,12 @@ tts:
       memory: 6Gi
       cpu: "2"
 
-# STUNner WebRTC Configuration (UPDATED)
-stunner:
-  enabled: true
-  # Gateway will be created in stunner namespace
-  # GatewayClass and GatewayConfig in stunner-system
-  realm: turn.ozzu.world
-  username: june-user
-  password: Pokemon123!  # CHANGE IN PRODUCTION
-  # UDPRoutes will be auto-created for all services
+# STUNner WebRTC Configuration (DISABLED - Using custom TURN/STUN)
+# stunner:
+#   enabled: false  # Disabled since you're using your own TURN/STUN server
+#   realm: turn.ozzu.world
+#   username: june-user
+#   password: Pokemon123!
 
 # Secrets (Set via --set or separate values file)
 secrets:
