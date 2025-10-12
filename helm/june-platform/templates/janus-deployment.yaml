@@ -1,94 +1,86 @@
+---
+# SIMPLIFIED: Just Janus Gateway, no Python proxy
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-janus
-  namespace: {{ .Release.Namespace }}
+  namespace: june-services
   labels:
-    {{- include "june-platform.labels" . | nindent 4 }}
     app: june-janus
-    app.kubernetes.io/component: janus-gateway
 spec:
-  replicas: {{ .Values.janus.replicas }}
+  replicas: 1
   selector:
     matchLabels:
       app: june-janus
-      app.kubernetes.io/component: janus-gateway
   template:
     metadata:
       labels:
         app: june-janus
-        app.kubernetes.io/component: janus-gateway
     spec:
       containers:
+      # ONLY ONE CONTAINER - Janus Gateway
       - name: janus-gateway
-        image: "{{ .Values.janus.image.repository }}:{{ .Values.janus.image.tag | default .Chart.AppVersion }}"
-        imagePullPolicy: {{ .Values.janus.image.pullPolicy }}
+        image: canyan/janus-gateway:latest
+        imagePullPolicy: Always
         ports:
         - name: http
-          containerPort: 8080
-          protocol: TCP
-        - name: janus-http
           containerPort: 8088
           protocol: TCP
-        - name: janus-ws
+        - name: websocket
           containerPort: 8188
           protocol: TCP
-        - name: rtp-start
-          containerPort: 20000
-          protocol: UDP
-        - name: rtp-end
-          containerPort: 40000
-          protocol: UDP
+        - name: admin
+          containerPort: 7088
+          protocol: TCP
+        # Basic Janus configuration via environment
         env:
-        - name: JANUS_URL
-          value: "http://localhost:8088/janus"
-        - name: JANUS_ADMIN_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-janus-secrets
-              key: admin-key
         - name: JANUS_API_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-janus-secrets
-              key: api-secret
-        - name: STUN_SERVER
-          value: "stun:stunner-gateway.stunner-system.svc.cluster.local:3478"
-        - name: TURN_SERVER
-          value: "turn:stunner-gateway.stunner-system.svc.cluster.local:3478"
-        - name: TURN_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: stunner-auth
-              key: username
-        - name: TURN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: stunner-auth
-              key: password
-        volumeMounts:
-        - name: janus-config
-          mountPath: /opt/janus/etc/janus
-        # Fixed health checks for canyan/janus-gateway image
+          value: "janussecret"
+        - name: JANUS_ADMIN_SECRET
+          value: "janusoverlord"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "300m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        # Health checks for Janus HTTP API
         livenessProbe:
           httpGet:
             path: /janus/info
             port: 8088
-          initialDelaySeconds: 60
+          initialDelaySeconds: 30
           periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /janus/info
             port: 8088
-          initialDelaySeconds: 15
+          initialDelaySeconds: 10
           periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        resources:
-          {{- toYaml .Values.janus.resources | nindent 10 }}
-      volumes:
-      - name: janus-config
-        configMap:
-          name: june-janus-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-janus
+  namespace: june-services
+  labels:
+    app: june-janus
+spec:
+  type: ClusterIP
+  selector:
+    app: june-janus
+  ports:
+  - name: http
+    port: 8088
+    targetPort: 8088
+    protocol: TCP
+  - name: websocket
+    port: 8188
+    targetPort: 8188
+    protocol: TCP
+  - name: admin
+    port: 7088
+    targetPort: 7088
+    protocol: TCP
