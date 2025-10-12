@@ -10,8 +10,8 @@ metadata:
   name: stunner-gatewayconfig
   namespace: stunner-system
 spec:
-  realm: "june.ozzu.world"
-  authType: static
+  realm: "turn.ozzu.world"
+  authType: plaintext
   userName: "june-user"
   password: "Pokemon123!"
   logLevel: "all:INFO"
