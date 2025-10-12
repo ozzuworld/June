@@ -1,4 +1,4 @@
-# Existing dependencies
+# Core FastAPI
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 websockets==12.0
@@ -9,14 +9,20 @@ python-jose[cryptography]==3.3.0
 python-dotenv==1.0.0
 aiofiles==23.2.1
 google-generativeai==0.7.2
-PyJWT==2.8.0
 
-# Add WebSocket and HTTP clients for Janus
+# WebSocket and HTTP clients for Janus
 flask==3.0.0
 requests==2.31.0
 websockets==12.0
 python-socketio[client]==5.10.0
 
-# Audio Processing (keep these)
+# Audio Processing
 numpy==1.24.3
 soundfile==0.12.1
+
+# Authentication
+PyJWT==2.8.0
+cryptography==41.0.0
+
+# Async HTTP client for Janus
+aiohttp==3.9.1

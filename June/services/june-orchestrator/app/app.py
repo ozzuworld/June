@@ -1,14 +1,16 @@
 """
-June Orchestrator - Janus WebRTC Edition
+June Orchestrator - Janus WebRTC Edition with Full Integration
 Coordinates between Janus WebRTC, STT, TTS, and AI services
 """
 import logging
+import uuid
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict
 from datetime import datetime
-import json
+import aiohttp
 
 from .config import config
 
@@ -19,14 +21,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Simple in-memory connection manager
+# Connection Manager
 class ConnectionManager:
     def __init__(self):
         self.connections: Dict[str, WebSocket] = {}
         self.users: Dict[str, dict] = {}
+        self.janus_sessions: Dict[str, dict] = {}  # Track Janus sessions
     
     async def connect(self, websocket: WebSocket, user: Optional[dict] = None) -> str:
-        import uuid
         session_id = str(uuid.uuid4())
         self.connections[session_id] = websocket
         self.users[session_id] = user or {}
@@ -34,6 +36,11 @@ class ConnectionManager:
         return session_id
     
     async def disconnect(self, session_id: str):
+        # Cleanup Janus session if exists
+        if session_id in self.janus_sessions:
+            await cleanup_janus_session(session_id, self.janus_sessions[session_id])
+            del self.janus_sessions[session_id]
+        
         if session_id in self.connections:
             del self.connections[session_id]
         if session_id in self.users:
@@ -54,15 +61,264 @@ class ConnectionManager:
     
     def get_user(self, session_id: str) -> Optional[dict]:
         return self.users.get(session_id)
+    
+    def set_janus_session(self, session_id: str, janus_data: dict):
+        self.janus_sessions[session_id] = janus_data
+    
+    def get_janus_session(self, session_id: str) -> Optional[dict]:
+        return self.janus_sessions.get(session_id)
 
 manager = ConnectionManager()
+
+# Janus Gateway Integration
+JANUS_URL = "http://june-janus.june-services.svc.cluster.local:8088/janus"
+JANUS_WS_URL = "ws://june-janus.june-services.svc.cluster.local:8188"
+
+async def create_janus_session(client_session_id: str, user_id: str) -> Optional[dict]:
+    """Create Janus session and attach to VideoRoom plugin"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Create Janus session
+            transaction_id = str(uuid.uuid4())
+            async with session.post(JANUS_URL, json={
+                "janus": "create",
+                "transaction": transaction_id
+            }) as resp:
+                data = await resp.json()
+                if data.get("janus") != "success":
+                    logger.error(f"Failed to create Janus session: {data}")
+                    return None
+                
+                janus_session_id = data["data"]["id"]
+                logger.info(f"✅ Janus session created: {janus_session_id}")
+            
+            # Step 2: Attach to VideoRoom plugin
+            transaction_id = str(uuid.uuid4())
+            async with session.post(f"{JANUS_URL}/{janus_session_id}", json={
+                "janus": "attach",
+                "plugin": "janus.plugin.videoroom",
+                "transaction": transaction_id
+            }) as resp:
+                data = await resp.json()
+                if data.get("janus") != "success":
+                    logger.error(f"Failed to attach to VideoRoom: {data}")
+                    return None
+                
+                handle_id = data["data"]["id"]
+                logger.info(f"✅ Attached to VideoRoom plugin: {handle_id}")
+            
+            # Return session info
+            janus_info = {
+                "session_id": janus_session_id,
+                "handle_id": handle_id,
+                "user_id": user_id,
+                "client_session_id": client_session_id
+            }
+            
+            return janus_info
+            
+    except Exception as e:
+        logger.error(f"❌ Janus session creation failed: {e}", exc_info=True)
+        return None
+
+async def send_janus_message(janus_info: dict, body: dict) -> Optional[dict]:
+    """Send message to Janus Gateway"""
+    try:
+        session_id = janus_info["session_id"]
+        handle_id = janus_info["handle_id"]
+        transaction_id = str(uuid.uuid4())
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{JANUS_URL}/{session_id}/{handle_id}", json={
+                "janus": "message",
+                "transaction": transaction_id,
+                "body": body
+            }) as resp:
+                data = await resp.json()
+                logger.info(f"📡 Janus response: {data.get('janus', 'unknown')}")
+                return data
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to send Janus message: {e}")
+        return None
+
+async def handle_webrtc_offer(session_id: str, sdp: str, user_id: str) -> Optional[dict]:
+    """Process WebRTC offer through Janus"""
+    try:
+        # Get or create Janus session
+        janus_info = manager.get_janus_session(session_id)
+        
+        if not janus_info:
+            logger.info(f"🎬 Creating new Janus session for {user_id}")
+            janus_info = await create_janus_session(session_id, user_id)
+            if not janus_info:
+                return None
+            manager.set_janus_session(session_id, janus_info)
+        
+        # Join or create a room (using user_id as room identifier)
+        room_id = abs(hash(user_id)) % 10000  # Simple room ID from user
+        
+        logger.info(f"📞 Processing offer for room {room_id}")
+        
+        # Send join request to Janus
+        join_response = await send_janus_message(janus_info, {
+            "request": "join",
+            "room": room_id,
+            "ptype": "publisher",
+            "display": user_id
+        })
+        
+        if not join_response:
+            # Room doesn't exist, create it
+            logger.info(f"🏗️ Creating room {room_id}")
+            await send_janus_message(janus_info, {
+                "request": "create",
+                "room": room_id,
+                "publishers": 10,
+                "bitrate": 128000,
+                "fir_freq": 10,
+                "audiocodec": "opus",
+                "videocodec": "vp8"
+            })
+            
+            # Now join
+            join_response = await send_janus_message(janus_info, {
+                "request": "join",
+                "room": room_id,
+                "ptype": "publisher",
+                "display": user_id
+            })
+        
+        # Send the WebRTC offer to Janus
+        logger.info(f"📤 Sending offer to Janus")
+        
+        async with aiohttp.ClientSession() as session:
+            transaction_id = str(uuid.uuid4())
+            async with session.post(
+                f"{JANUS_URL}/{janus_info['session_id']}/{janus_info['handle_id']}",
+                json={
+                    "janus": "message",
+                    "transaction": transaction_id,
+                    "body": {
+                        "request": "configure",
+                        "audio": True,
+                        "video": False
+                    },
+                    "jsep": {
+                        "type": "offer",
+                        "sdp": sdp
+                    }
+                }
+            ) as resp:
+                data = await resp.json()
+                
+                # Extract answer SDP from Janus response
+                if "jsep" in data and "sdp" in data["jsep"]:
+                    answer_sdp = data["jsep"]["sdp"]
+                    logger.info(f"✅ Got answer from Janus (SDP length: {len(answer_sdp)})")
+                    return {
+                        "type": "answer",
+                        "sdp": answer_sdp
+                    }
+                else:
+                    logger.error(f"No SDP in Janus response: {data}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"❌ WebRTC offer processing failed: {e}", exc_info=True)
+        return None
+
+async def handle_ice_candidate(session_id: str, candidate: dict):
+    """Forward ICE candidate to Janus"""
+    try:
+        janus_info = manager.get_janus_session(session_id)
+        if not janus_info:
+            logger.warning("⚠️ No Janus session for ICE candidate")
+            return
+        
+        async with aiohttp.ClientSession() as session:
+            transaction_id = str(uuid.uuid4())
+            async with session.post(
+                f"{JANUS_URL}/{janus_info['session_id']}/{janus_info['handle_id']}",
+                json={
+                    "janus": "trickle",
+                    "transaction": transaction_id,
+                    "candidate": candidate
+                }
+            ) as resp:
+                data = await resp.json()
+                logger.debug(f"🧊 ICE candidate sent to Janus: {data.get('janus')}")
+                
+    except Exception as e:
+        logger.error(f"❌ ICE candidate handling failed: {e}")
+
+async def cleanup_janus_session(session_id: str, janus_info: dict):
+    """Cleanup Janus session on disconnect"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Leave room
+            await session.post(
+                f"{JANUS_URL}/{janus_info['session_id']}/{janus_info['handle_id']}",
+                json={
+                    "janus": "message",
+                    "transaction": str(uuid.uuid4()),
+                    "body": {"request": "leave"}
+                }
+            )
+            
+            # Detach from plugin
+            await session.post(
+                f"{JANUS_URL}/{janus_info['session_id']}/{janus_info['handle_id']}",
+                json={
+                    "janus": "detach",
+                    "transaction": str(uuid.uuid4())
+                }
+            )
+            
+            # Destroy session
+            await session.post(
+                f"{JANUS_URL}/{janus_info['session_id']}",
+                json={
+                    "janus": "destroy",
+                    "transaction": str(uuid.uuid4())
+                }
+            )
+            
+        logger.info(f"🧹 Cleaned up Janus session: {janus_info['session_id']}")
+        
+    except Exception as e:
+        logger.error(f"❌ Janus cleanup failed: {e}")
+
+# Simple token verification
+async def verify_token_simple(token: str) -> dict:
+    """Simple token verification - decodes JWT without verification"""
+    import base64
+    import json
+    
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            raise ValueError("Invalid JWT format")
+        
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += '=' * padding
+        
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        logger.warning(f"⚠️ Using UNVERIFIED token for: {decoded.get('sub', 'unknown')}")
+        return decoded
+        
+    except Exception as e:
+        logger.error(f"Token decode failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup/shutdown"""
     logger.info("🚀 June Orchestrator v12.0.0 - Janus WebRTC Edition")
     logger.info(f"🔧 Environment: {config.environment}")
-    logger.info(f"🔧 Janus Gateway: webrtc.ozzu.world")
+    logger.info(f"🔧 Janus Gateway: {JANUS_URL}")
     logger.info(f"🔧 TTS: {config.services.tts_base_url}")
     logger.info(f"🔧 STT: {config.services.stt_base_url}")
     yield
@@ -85,26 +341,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Simple auth helper (fallback when auth module not available)
-async def verify_token_simple(token: str) -> dict:
-    """Simple token verification - replace with proper auth"""
-    try:
-        # Try to import the real auth module
-        from .auth import verify_websocket_token
-        return await verify_websocket_token(token)
-    except ImportError:
-        # Fallback for development
-        logger.warning("⚠️ Auth module not available, using fallback")
-        import jwt
-        try:
-            # Just decode without verification for development
-            decoded = jwt.decode(token, options={"verify_signature": False})
-            return decoded
-        except Exception as e:
-            logger.error(f"Token decode failed: {e}")
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-# Simple routes without external dependencies
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -114,6 +350,7 @@ async def root():
         "status": "running",
         "webrtc": "janus",
         "websocket": "/ws",
+        "janus_url": JANUS_URL,
         "features": {
             "janus_webrtc": True,
             "ai": bool(config.services.gemini_api_key),
@@ -129,7 +366,8 @@ async def healthz():
         "status": "healthy",
         "service": "june-orchestrator",
         "version": "12.0.0",
-        "websocket_connections": len(manager.connections)
+        "websocket_connections": len(manager.connections),
+        "janus_sessions": len(manager.janus_sessions)
     }
 
 @app.get("/readyz")
@@ -145,8 +383,8 @@ async def webrtc_config():
     """WebRTC configuration for frontend"""
     return {
         "janus": {
-            "url": "https://janus.ozzu.world/janus",
-            "websocket": "wss://webrtc.ozzu.world/ws"
+            "url": JANUS_URL,
+            "websocket": JANUS_WS_URL
         },
         "ice_servers": [
             {"urls": "stun:stun.l.google.com:19302"},
@@ -158,12 +396,6 @@ async def webrtc_config():
         ]
     }
 
-@app.post("/api/voice/process")
-async def process_voice():
-    """Voice processing endpoint"""
-    return {"message": "Voice processing with Janus + STT/TTS"}
-
-# ✅ ADD WEBSOCKET ENDPOINT
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -171,11 +403,7 @@ async def websocket_endpoint(
     authorization: Optional[str] = Header(None)
 ):
     """
-    WebSocket endpoint for real-time communication
-    
-    Supports authentication via:
-    - Query parameter: /ws?token=<token>
-    - Authorization header: Authorization: Bearer <token>
+    WebSocket endpoint with Janus WebRTC integration
     """
     
     # Extract token
@@ -190,23 +418,20 @@ async def websocket_endpoint(
         auth_token = token.replace('Bearer ', '').replace('Bearer%20', '').strip()
         auth_method = "query"
         logger.info(f"🔑 Token via query (length: {len(auth_token)})")
-    else:
-        logger.warning("⚠️ No token provided")
     
-    # ✅ CRITICAL: Accept connection FIRST
+    # Accept connection first
     await websocket.accept()
     logger.info("🔌 WebSocket accepted")
     
-    # Authenticate after accepting
+    # Authenticate
     user = None
     if auth_token:
         try:
-            logger.info(f"🔐 Verifying token: {auth_token[:20]}...")
             user = await verify_token_simple(auth_token)
             user_id = user.get("sub", "unknown")
             logger.info(f"✅ Authenticated: {user_id} (via {auth_method})")
         except Exception as e:
-            logger.error(f"❌ Auth failed: {e}", exc_info=True)
+            logger.error(f"❌ Auth failed: {e}")
             try:
                 await websocket.send_json({
                     "type": "error",
@@ -218,23 +443,21 @@ async def websocket_endpoint(
             await websocket.close(code=1008, reason="Authentication failed")
             return
     else:
-        # Development: allow anonymous
-        logger.warning("⚠️ Anonymous connection allowed (development mode)")
         user = {"sub": "anonymous", "email": "anonymous@example.com"}
     
     # Register connection
     session_id = await manager.connect(websocket, user)
     
     try:
-        # Send welcome message
         user_id = user.get("sub", "anonymous")
+        
+        # Send welcome
         await manager.send_message(session_id, {
             "type": "connected",
             "user_id": user_id,
             "session_id": session_id,
             "authenticated": auth_token is not None,
-            "auth_method": auth_method,
-            "message": f"✅ Connected as {user_id}",
+            "message": f"✅ Connected to June AI with Janus WebRTC",
             "server_time": datetime.utcnow().isoformat()
         })
         
@@ -248,21 +471,45 @@ async def websocket_endpoint(
             
             logger.info(f"📨 Message '{msg_type}' from {user_id}")
             
-            # Handle different message types
             if msg_type == "ping":
                 await manager.send_message(session_id, {
                     "type": "pong",
                     "timestamp": datetime.utcnow().isoformat()
                 })
             
+            elif msg_type == "webrtc_offer":
+                sdp = message.get("sdp", "")
+                logger.info(f"📞 WebRTC offer received (SDP: {len(sdp)} chars)")
+                
+                # Process through Janus
+                answer = await handle_webrtc_offer(session_id, sdp, user_id)
+                
+                if answer:
+                    await manager.send_message(session_id, {
+                        "type": "webrtc_answer",
+                        "sdp": answer["sdp"],
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    logger.info(f"✅ Sent WebRTC answer to client")
+                else:
+                    await manager.send_message(session_id, {
+                        "type": "error",
+                        "message": "Failed to process WebRTC offer"
+                    })
+            
+            elif msg_type == "ice_candidate":
+                candidate = message.get("candidate", {})
+                logger.info(f"🧊 ICE candidate received")
+                await handle_ice_candidate(session_id, candidate)
+            
             elif msg_type == "text_input":
                 text = message.get("text", "")
                 logger.info(f"💬 Text: {text[:50]}...")
                 
-                # Echo back for now (add AI processing later)
+                # Echo back (add AI processing later)
                 await manager.send_message(session_id, {
                     "type": "text_response",
-                    "text": f"Echo: {text}",
+                    "text": f"Received: {text}",
                     "timestamp": datetime.utcnow().isoformat()
                 })
             
@@ -281,4 +528,4 @@ async def websocket_endpoint(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=config.host, port=config.port)
+    uvicorn.run(app, host=config.host, port=config.port)W
