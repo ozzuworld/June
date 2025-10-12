@@ -32,6 +32,53 @@ data:
   TURN_SERVER: "{{ .Values.domains.turn }}:3478"
   TURN_USERNAME: {{ .Values.stunner.username | quote }}
   TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
+  
+  # Janus main configuration file
+  janus.jcfg: |
+    general: {
+        configs_folder = "/usr/local/etc/janus"
+        plugins_folder = "/usr/local/lib/janus/plugins"
+        transports_folder = "/usr/local/lib/janus/transports"
+        events_folder = "/usr/local/lib/janus/events"
+        loggers_folder = "/usr/local/lib/janus/loggers"
+        
+        log_level = 4
+        log_timestamps = true
+        log_colors = true
+        
+        interface = "0.0.0.0"
+        debug_level = 4
+        
+        # STUN/TURN Configuration - FIXED
+        stun_server = "{{ .Values.janus.stun.server }}"
+        stun_port = {{ .Values.janus.stun.port }}
+        
+        turn_server = "{{ .Values.janus.turn.server }}"
+        turn_port = {{ .Values.janus.turn.port }}
+        turn_type = "{{ .Values.janus.turn.type }}"
+        turn_user = "{{ .Values.janus.turn.username }}"
+        turn_pwd = "{{ .Values.janus.turn.password }}"
+        
+        # ICE configuration
+        ice_nomination = "{{ .Values.janus.webrtc.iceNomination }}"
+        ice_tcp = {{ .Values.janus.webrtc.iceTcp }}
+        full_trickle = {{ .Values.janus.webrtc.fullTrickle }}
+        
+        # RTP port range
+        rtp_port_range = "{{ .Values.janus.webrtc.rtpPortRange }}"
+        
+        # Security
+        api_secret = "{{ .Values.janus.apiSecret }}"
+        admin_key = "{{ .Values.janus.adminKey }}"
+        
+        # Additional WebRTC settings
+        dtls_mtu = 1200
+        no_webrtc_encryption = false
+        
+        # Network settings for Kubernetes
+        ice_enforce_list = "{{ .Values.janus.stun.server }}"
+        ice_ignore_list = "vmnet"
+    }
 
 ---
 # Client configuration (what to send to mobile clients)
