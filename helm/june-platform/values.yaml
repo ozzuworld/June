@@ -64,7 +64,7 @@ janus:
 # June Orchestrator Service (NO WebRTC config)
 orchestrator:
   enabled: true
-  replicas: 2
+  replicas: 1
   image:
     repository: docker.io/ozzuworld/june-orchestrator
     tag: latest
@@ -93,7 +93,7 @@ stt:
       memory: 6Gi
       cpu: "1"
     limits:
-      memory: 10Gi
+      memory: 6Gi
       cpu: "2"
 
 # Text-to-Speech Service
