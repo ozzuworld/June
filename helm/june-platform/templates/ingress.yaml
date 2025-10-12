@@ -32,7 +32,7 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # WebSocket support without snippets
+    # WebSocket support
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "3600"
@@ -50,29 +50,15 @@ spec:
     - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
-    - {{ .Values.domains.turn }}
     - "webrtc.{{ .Values.domains.primary }}"
+    - "janus.{{ .Values.domains.primary }}"
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
   rules:
-  # June Orchestrator - Main API with Janus proxy
+  # June Orchestrator - Main API with WebSocket
   - host: {{ .Values.domains.api }}
     http:
       paths:
-      - path: /janus
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8088
-      - path: /ws
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8188
       - path: /
         pathType: Prefix
         backend:
@@ -94,8 +80,20 @@ spec:
               number: 8080
   
   {{- if .Values.janus.enabled }}
-  # WebRTC/Janus Gateway (Direct Access)
+  # WebRTC/Janus Gateway (Direct Access - Optional)
   - host: "webrtc.{{ .Values.domains.primary }}"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8080
+  
+  # Janus HTTP API (Direct Access - Optional)
+  - host: "janus.{{ .Values.domains.primary }}"
     http:
       paths:
       - path: /janus
@@ -105,20 +103,13 @@ spec:
             name: june-janus
             port:
               number: 8088
-      - path: /ws
+      - path: /admin
         pathType: Prefix
         backend:
           service:
             name: june-janus
             port:
-              number: 8188
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8080
+              number: 8089
   {{- end }}
   
   {{- if .Values.stt.enabled }}
