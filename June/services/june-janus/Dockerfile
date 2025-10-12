@@ -1,11 +1,11 @@
-# Dockerfile
 FROM sucwangsr/janus-webrtc-gateway-docker:latest
 
-# Copy custom Janus configuration that reads environment variables
+# Copy custom Janus configuration
 COPY janus.jcfg /opt/janus/etc/janus/janus.jcfg
 
-# Create startup script that substitutes environment variables
+# Copy and make executable the entrypoint script
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Use our custom entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
