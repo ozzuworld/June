@@ -46,7 +46,7 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: canyan/janus-gateway 
+    repository: sucwangsr/janus-webrtc-gateway-docker
     tag: latest    
     pullPolicy: IfNotPresent
   
@@ -56,8 +56,8 @@ janus:
   
   # STUN/TURN Configuration (Environment Variables)
   stun:
-    server: stun.l.google.com
-    port: 19302
+    server: turn.ozzu.world
+    port: 30728
     username: june-user      # Add this
     password: Pokemon123!    # Add this
   
