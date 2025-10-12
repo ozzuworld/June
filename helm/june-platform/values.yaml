@@ -46,7 +46,7 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: swmansion/janus-gateway  # Changed from sucwangsr for better env var support
+    repository: canyan/janus-gateway 
     tag: "0.11.8-0"    
     pullPolicy: IfNotPresent
   
