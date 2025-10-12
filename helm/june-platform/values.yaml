@@ -58,6 +58,9 @@ janus:
   stun:
     server: turn.ozzu.world
     port: 30728
+    username: june-user      # Add this
+    password: Pokemon123!    # Add this
+  
   
   turn:
     server: turn.ozzu.world
