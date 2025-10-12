@@ -12,7 +12,7 @@ data:
   REGION: us-central1
 
 ---
-# Janus Gateway configuration (Updated for custom TURN/STUN)
+# Janus Gateway configuration (Janus handles WebRTC, not orchestrator)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,33 +23,26 @@ data:
   JANUS_HTTP_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8088"
   JANUS_ADMIN_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8089"
   
-  # Client-facing Janus endpoints
+  # Client-facing Janus endpoints (for documentation/info endpoints)
   JANUS_PUBLIC_WS_URL: "wss://{{ .Values.domains.primary }}/janus-ws"
   JANUS_PUBLIC_HTTP_URL: "https://{{ .Values.domains.primary }}/janus"
   
-  {{- if .Values.janus.turn.enabled }}
-  # Custom TURN/STUN configuration (Your own server)
-  STUN_SERVER: "{{ .Values.janus.turn.server }}:{{ .Values.janus.turn.port }}"
-  TURN_SERVER: "{{ .Values.janus.turn.server }}:{{ .Values.janus.turn.port }}"
-  TURN_USERNAME: {{ .Values.janus.turn.username | quote }}
-  TURN_CREDENTIAL: {{ .Values.janus.turn.password | quote }}
-  {{- else }}
-  # Fallback to STUNner configuration if custom TURN is disabled
+  # STUNner/TURN configuration (for Janus to use)
   STUN_SERVER: "{{ .Values.domains.turn }}:3478"
   TURN_SERVER: "{{ .Values.domains.turn }}:3478"
   TURN_USERNAME: {{ .Values.stunner.username | quote }}
   TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
-  {{- end }}
 
 ---
-# Client configuration (Updated for custom TURN/STUN)
+# Client configuration (what to send to mobile clients)
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: june-client-config
   namespace: {{ .Release.Namespace }}
 data:
-  # WebRTC configuration for clients
+  # WebRTC configuration for clients (NOT for orchestrator)
+  # Orchestrator can return this via /api/config endpoint
   webrtc_config.json: |
     {
       "janus": {
@@ -57,16 +50,6 @@ data:
         "http_url": "https://{{ .Values.domains.primary }}/janus"
       },
       "ice_servers": [
-        {{- if .Values.janus.turn.enabled }}
-        {
-          "urls": ["stun:{{ .Values.janus.turn.server }}:{{ .Values.janus.turn.port }}"]
-        },
-        {
-          "urls": ["turn:{{ .Values.janus.turn.server }}:{{ .Values.janus.turn.port }}"],
-          "username": "{{ .Values.janus.turn.username }}",
-          "credential": "{{ .Values.janus.turn.password }}"
-        }
-        {{- else }}
         {
           "urls": ["stun:{{ .Values.domains.turn }}:3478"]
         },
@@ -75,6 +58,5 @@ data:
           "username": "{{ .Values.stunner.username }}",
           "credential": "{{ .Values.stunner.password }}"
         }
-        {{- end }}
       ]
     }
