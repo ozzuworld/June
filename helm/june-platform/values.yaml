@@ -41,18 +41,38 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# Janus WebRTC Gateway Configuration (UPDATED with latest image)
+# Janus WebRTC Gateway Configuration (UPDATED - Using swmansion/janus-gateway)
 janus:
   enabled: true
   replicas: 1
   image:
-    repository: ozzuworld/june-janus
-    tag: latest
+    repository: swmansion/janus-gateway
+    tag: 0.14.4-0
     pullPolicy: IfNotPresent
   
   # Janus authentication secrets
   adminKey: janusoverlord  # CHANGE IN PRODUCTION
   apiSecret: janussecret   # CHANGE IN PRODUCTION
+  
+  # STUN/TURN Configuration (Environment Variables)
+  stun:
+    server: turn.ozzu.world
+    port: 3478
+  
+  turn:
+    server: turn.ozzu.world
+    port: 3478
+    username: june-user
+    password: Pokemon123!  # CHANGE IN PRODUCTION
+    type: udp
+  
+  # WebRTC Configuration
+  webrtc:
+    websocketsEnabled: true
+    rtpPortRange: "20000-20099"
+    iceNomination: regular
+    iceTcp: false
+    fullTrickle: false
   
   resources:
     requests:

@@ -51,6 +51,36 @@ spec:
         - name: JANUS_ADMIN_SECRET
           value: {{ .Values.janus.adminKey | quote }}
         
+        # STUN/TURN Configuration (swmansion/janus-gateway environment variables)
+        - name: STUN_SERVER
+          value: {{ .Values.janus.stun.server | quote }}
+        - name: STUN_PORT
+          value: {{ .Values.janus.stun.port | quote }}
+        
+        - name: TURN_SERVER
+          value: {{ .Values.janus.turn.server | quote }}
+        - name: TURN_PORT
+          value: {{ .Values.janus.turn.port | quote }}
+        - name: TURN_USER
+          value: {{ .Values.janus.turn.username | quote }}
+        - name: TURN_PASSWORD
+          value: {{ .Values.janus.turn.password | quote }}
+        - name: TURN_TYPE
+          value: {{ .Values.janus.turn.type | quote }}
+        
+        # WebRTC Configuration
+        - name: WEBSOCKETS_ENABLED
+          value: {{ .Values.janus.webrtc.websocketsEnabled | quote }}
+        - name: RTP_PORT_RANGE
+          value: {{ .Values.janus.webrtc.rtpPortRange | quote }}
+        - name: ICE_NOMINATION
+          value: {{ .Values.janus.webrtc.iceNomination | quote }}
+        - name: ICE_TCP
+          value: {{ .Values.janus.webrtc.iceTcp | quote }}
+        - name: FULL_TRICKLE
+          value: {{ .Values.janus.webrtc.fullTrickle | quote }}
+
+        
         # STUNner/TURN configuration
         - name: STUN_SERVER
           valueFrom:
