@@ -1,5 +1,5 @@
 ---
-# COMPLETE JUNE SERVICES MANIFEST TEMPLATE - FIXED TLS CONFIGURATION + JANUS
+# COMPLETE JUNE SERVICES MANIFEST TEMPLATE - FIXED TLS CONFIGURATION + JANUS + WEBSOCKET SUPPORT
 # This template gets processed by generate-manifests.sh to create the final manifest
 # 
 # Prerequisites (created by install-core-infrastructure.sh):
@@ -866,7 +866,7 @@ spec:
     name: management
 
 ---
-# UPDATED INGRESS - Added Janus WebRTC endpoints
+# UPDATED INGRESS - Added WebSocket support annotations to fix 502 Bad Gateway errors
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -880,9 +880,20 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # WebSocket support for Janus signaling
+    
+    # WebSocket support annotations - CRITICAL for fixing 502 Bad Gateway
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    
+    # Enable WebSocket upgrade headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      
+    # WebSocket session affinity
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_upgrade"
+    
 spec:
   ingressClassName: nginx
   tls:
