@@ -26,6 +26,7 @@ metadata:
     {{- if .Values.certificate.enabled }}
     cert-manager.io/cluster-issuer: {{ .Values.certificate.issuer }}
     {{- end }}
+    # Core ingress configuration
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
@@ -33,7 +34,7 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
     
-    # WebSocket support for Janus
+    # Secure WebSocket support using built-in annotations (NO SNIPPETS)
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
@@ -41,26 +42,22 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     
-    # Enhanced WebSocket support (optional - enable if snippets are allowed)
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection $connection_upgrade;
-      proxy_cache_bypass $http_upgrade;
-    nginx.ingress.kubernetes.io/server-snippet: |
-      map $http_upgrade $connection_upgrade {
-        default upgrade;
-        '' close;
-      }
+    # WebSocket services - enables automatic connection upgrade
+    nginx.ingress.kubernetes.io/websocket-services: "june-janus"
+    
+    # Additional WebSocket optimization
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+
 spec:
   ingressClassName: nginx
   {{- if .Values.certificate.enabled }}
   tls:
   - hosts:
     - "*.{{ .Values.domains.primary }}"
-    # Remove this line: - {{ .Values.domains.primary }}
     - {{ .Values.domains.api }}
     - {{ .Values.domains.idp }}
-    - {{ .Values.domains.janus }}      # ← Add this
+    - {{ .Values.domains.janus }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
@@ -106,7 +103,6 @@ spec:
             port:
               number: 8088
   
-  # Add this after the IDENTITY PROVIDER section
   # ============================================
   # JANUS GATEWAY ON SUBDOMAIN - WebRTC
   # ============================================
