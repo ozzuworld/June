@@ -61,10 +61,15 @@ async def root():
         }
     }
 
-@app.get("/api/health")
-async def health():
-    """Health check"""
-    return {"status": "healthy", "service": "june-orchestrator-janus"}
+@app.get("/healthz")
+async def healthz():
+    """Kubernetes health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "june-orchestrator",
+        "version": "12.0.0"
+    }
+
 
 @app.get("/api/webrtc/config")
 async def webrtc_config():
@@ -82,6 +87,14 @@ async def webrtc_config():
                 "credential": "Pokemon123!"
             }
         ]
+    }
+
+@app.get("/readyz")
+async def readyz():
+    """Kubernetes readiness check endpoint"""
+    return {
+        "status": "ready",
+        "service": "june-orchestrator"
     }
 
 @app.post("/api/voice/process")
