@@ -1,0 +1,27 @@
+general: {
+    configs_folder = "/opt/janus/etc/janus"
+    plugins_folder = "/opt/janus/lib/janus/plugins"
+    transports_folder = "/opt/janus/lib/janus/transports"
+    events_folder = "/opt/janus/lib/janus/events"
+    loggers_folder = "/opt/janus/lib/janus/loggers"
+    log_to_stdout = true
+    debug_level = 4
+}
+
+nat: {
+    stun_server = "STUN_SERVER_PLACEHOLDER"
+    stun_port = 3478
+    turn_server = "TURN_SERVER_PLACEHOLDER" 
+    turn_port = 3478
+    turn_type = "udp"
+    turn_user = "TURN_USERNAME_PLACEHOLDER"
+    turn_pwd = "TURN_CREDENTIAL_PLACEHOLDER"
+    ice_lite = false
+    ice_tcp = false
+    full_trickle = false
+    ice_nomination = "regular"
+    keep_private_host = false
+}
+
+# Let Janus auto-generate DTLS certificates (this is fine)
+# No certificates section needed
