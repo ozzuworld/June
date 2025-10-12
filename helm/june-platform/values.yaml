@@ -11,6 +11,7 @@ domains:
   primary: ozzu.world
   api: api.ozzu.world
   idp: idp.ozzu.world
+  janus: janus.ozzu.world 
   stt: stt.ozzu.world
   tts: tts.ozzu.world
   turn: turn.ozzu.world
