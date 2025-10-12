@@ -1,27 +1,59 @@
 general: {
-    configs_folder = "/opt/janus/etc/janus"
-    plugins_folder = "/opt/janus/lib/janus/plugins"
-    transports_folder = "/opt/janus/lib/janus/transports"
-    events_folder = "/opt/janus/lib/janus/events"
-    loggers_folder = "/opt/janus/lib/janus/loggers"
-    log_to_stdout = true
-    debug_level = 4
+    configs_folder = "/usr/local/etc/janus"		# Configuration files folder
+    plugins_folder = "/usr/local/lib/janus/plugins"	# Plugins folder
+    transports_folder = "/usr/local/lib/janus/transports"	# Transports folder
+    events_folder = "/usr/local/lib/janus/events"		# Event handlers folder
+    loggers_folder = "/usr/local/lib/janus/loggers"		# External loggers folder
+    
+    log_to_stdout = true			# Log to stdout
+    debug_level = 4				# Debug/log level (0=disable debugging, 7=maximum debug level)
+    debug_timestamps = true		# Enable debug/log timestamps
+    debug_colors = true			# Enable debug/log colors
+    log_prefix = "[%Y-%m-%d %H:%M:%S]"	# Log prefix (timestamp format)
+    
+    # Interface to bind to (default=all interfaces)
+    # interface = "192.168.1.1"
+    
+    # IP to report in SDP (autodetected by default)
+    # ip = "1.2.3.4"
+    
+    # Port range for automatic port selection
+    # rtp_port_range = "20000-40000"
+    
+    # Janus can also act as a simple web server to serve static files
+    # web_root = "/usr/local/share/janus/demos"
 }
 
-nat: {
-    stun_server = "STUN_SERVER_PLACEHOLDER"
-    stun_port = 3478
-    turn_server = "TURN_SERVER_PLACEHOLDER" 
-    turn_port = 3478
-    turn_type = "udp"
-    turn_user = "TURN_USERNAME_PLACEHOLDER"
-    turn_pwd = "TURN_CREDENTIAL_PLACEHOLDER"
-    ice_lite = false
+# Certificate and key to use for DTLS (will be auto-generated if missing)
+certificates: {
+    #cert_pem = "/usr/local/etc/ssl/janus.pem"
+    #cert_key = "/usr/local/etc/ssl/janus.key"
+}
+
+# Media-related stuff
+media: {
+    # IPv6 support (still experimental)
+    ipv6 = false
+    # ICE-TCP support (still experimental)
     ice_tcp = false
+    # Full-trickle support
     full_trickle = false
+    # ICE nomination mode (regular or aggressive)
     ice_nomination = "regular"
-    keep_private_host = false
+    # ICE consent freshness
+    ice_keepalive_conncheck = false
+    # DTLS timeout
+    dtls_timeout = 10000
+    # No media timer
+    no_media_timer = 60
+    # slowlink-threshold
+    slowlink_threshold = 4
+    # TWCC period
+    twcc_period = 200
+    # DTLS MTU
+    dtls_mtu = 1200
 }
 
-# Let Janus auto-generate DTLS certificates (this is fine)
-# No certificates section needed
+# NAT-related stuff
+nat: {
+    # The gateway can work behind a NAT when STUN is used to determine
