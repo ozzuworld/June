@@ -46,7 +46,7 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: ozzuworld/june-janus # Latest Janus 1.3.2+
+    repository: ozzuworld/june-janus
     tag: latest
     pullPolicy: IfNotPresent
   
