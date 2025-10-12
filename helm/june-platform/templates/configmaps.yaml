@@ -1,4 +1,6 @@
 # helm/june-platform/templates/configmaps.yaml
+---
+# General application configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,121 +12,51 @@ data:
   REGION: us-central1
 
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: june-webrtc-config
-  namespace: {{ .Release.Namespace }}
-data:
-  APP_ENV: {{ .Values.global.environment }}
-  LOG_LEVEL: info
-  REGION: us-central1
-  {{- if .Values.stunner.enabled }}
-  # STUNner Configuration with correct format
-  STUN_SERVER_URL: "stun:{{ .Values.domains.turn }}:3478"
-  TURN_SERVER_URL: "turn:{{ .Values.domains.turn }}:3478"
-  TURN_USERNAME: {{ .Values.stunner.username | quote }}
-  TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
-  
-  # ICE Servers JSON (pre-formatted for client consumption)
-  ICE_SERVERS: |
-    [
-      {
-        "urls": ["stun:{{ .Values.domains.turn }}:3478"]
-      },
-      {
-        "urls": ["turn:{{ .Values.domains.turn }}:3478"],
-        "username": "{{ .Values.stunner.username }}",
-        "credential": "{{ .Values.stunner.password }}"
-      }
-    ]
-  
-  # Internal STUNner Gateway references
-  STUNNER_GATEWAY_URL: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
-  STUNNER_GATEWAY_SERVICE: "june-stunner-gateway-udp.stunner.svc.cluster.local:3478"
-  {{- end }}
-
----
-{{- if .Values.janus.enabled }}
+# Janus Gateway configuration (Janus handles WebRTC, not orchestrator)
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: june-janus-config
   namespace: {{ .Release.Namespace }}
 data:
-  # Janus Gateway configuration files
-  janus.jcfg: |
-    general: {
-      configs_folder = "/opt/janus/etc/janus"
-      plugins_folder = "/opt/janus/lib/janus/plugins"
-      transports_folder = "/opt/janus/lib/janus/transports"
-      events_folder = "/opt/janus/lib/janus/events"
-      loggers_folder = "/opt/janus/lib/janus/loggers"
-      
-      log_level = 4
-      log_timestamps = true
-      log_colors = false
-      
-      interface = "0.0.0.0"
-      debug_level = 4
-      debug_timestamps = true
-      debug_colors = false
-      
-      api_secret = "$(JANUS_API_SECRET)"
-      admin_secret = "$(JANUS_ADMIN_KEY)"
-      
-      server_name = "Janus WebRTC Server"
-      session_timeout = 60
-      candidates_timeout = 45
-      reclaim_session_timeout = 0
-      
-      rtp_port_range = "20000-40000"
-    }
+  # Janus connection info for orchestrator admin API only
+  JANUS_HTTP_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8088"
+  JANUS_ADMIN_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8089"
   
-  janus.transport.http.jcfg: |
-    general: {
-      json = "indented"
-      base_path = "/janus"
-      http = true
-      port = 8088
-      interface = "0.0.0.0"
-      ip = "0.0.0.0"
-      
-      https = false
-      secure_port = 8889
-      
-      admin_base_path = "/admin"
-      admin_http = true
-      admin_port = 7088
-      admin_interface = "0.0.0.0"
-      admin_ip = "0.0.0.0"
-    }
+  # Client-facing Janus endpoints (for documentation/info endpoints)
+  JANUS_PUBLIC_WS_URL: "wss://{{ .Values.domains.primary }}/janus-ws"
+  JANUS_PUBLIC_HTTP_URL: "https://{{ .Values.domains.primary }}/janus"
   
-  janus.transport.websockets.jcfg: |
-    general: {
-      json = "indented"
-      ws = true
-      ws_port = 8188
-      ws_interface = "0.0.0.0"
-      ws_ip = "0.0.0.0"
-      
-      wss = false
-      wss_port = 8989
-      
-      admin_ws = true
-      admin_ws_port = 7188
-      admin_ws_interface = "0.0.0.0"
-      admin_ws_ip = "0.0.0.0"
+  # STUNner/TURN configuration (for Janus to use)
+  STUN_SERVER: "{{ .Values.domains.turn }}:3478"
+  TURN_SERVER: "{{ .Values.domains.turn }}:3478"
+  TURN_USERNAME: {{ .Values.stunner.username | quote }}
+  TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
+
+---
+# Client configuration (what to send to mobile clients)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: june-client-config
+  namespace: {{ .Release.Namespace }}
+data:
+  # WebRTC configuration for clients (NOT for orchestrator)
+  # Orchestrator can return this via /api/config endpoint
+  webrtc_config.json: |
+    {
+      "janus": {
+        "ws_url": "wss://{{ .Values.domains.primary }}/janus-ws",
+        "http_url": "https://{{ .Values.domains.primary }}/janus"
+      },
+      "ice_servers": [
+        {
+          "urls": ["stun:{{ .Values.domains.turn }}:3478"]
+        },
+        {
+          "urls": ["turn:{{ .Values.domains.turn }}:3478"],
+          "username": "{{ .Values.stunner.username }}",
+          "credential": "{{ .Values.stunner.password }}"
+        }
+      ]
     }
-  
-  janus.plugin.videoroom.jcfg: |
-    general: {
-      admin_key = "$(JANUS_ADMIN_KEY)"
-      string_ids = false
-    }
-  
-  janus.plugin.echotest.jcfg: |
-    general: {
-      admin_key = "$(JANUS_ADMIN_KEY)"
-    }
-{{- end }}

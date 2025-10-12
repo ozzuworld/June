@@ -1,21 +1,24 @@
-"""Simple health routes without LiveKit dependencies"""
+"""Health check routes"""
 from fastapi import APIRouter
 from datetime import datetime
 
 router = APIRouter()
 
+
 @router.get("/healthz")
 async def health_check():
     return {
         "status": "healthy",
-        "service": "june-orchestrator-janus",
+        "service": "june-orchestrator",
+        "version": "2.0.0",
         "timestamp": datetime.utcnow().isoformat()
     }
 
-@router.get("/readyz") 
+
+@router.get("/readyz")
 async def readiness_check():
     return {
         "status": "ready",
-        "webrtc": "janus",
-        "timestamp": datetime.utcnow().isoformat()
+        "service": "june-orchestrator",
+        "version": "2.0.0"
     }

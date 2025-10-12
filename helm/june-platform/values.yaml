@@ -45,15 +45,14 @@ janus:
   enabled: true
   replicas: 1
   image:
-    repository: canyan/janus-gateway
+    repository: docker.io/ozzuworld/june-janus
     tag: latest
     pullPolicy: Always
-  service:
-    type: ClusterIP
-    port: 8080
+  
   # Janus authentication secrets
   adminKey: janusoverlord  # CHANGE IN PRODUCTION
   apiSecret: janussecret   # CHANGE IN PRODUCTION
+  
   resources:
     requests:
       memory: 512Mi
@@ -62,10 +61,10 @@ janus:
       memory: 1Gi
       cpu: 500m
 
-# June Orchestrator Service
+# June Orchestrator Service (NO WebRTC config)
 orchestrator:
   enabled: true
-  replicas: 1
+  replicas: 2
   image:
     repository: docker.io/ozzuworld/june-orchestrator
     tag: latest

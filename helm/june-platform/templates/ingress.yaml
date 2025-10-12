@@ -32,13 +32,14 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # WebSocket support
+    
+    # WebSocket support for Janus
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "3600"
-    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
 spec:
   ingressClassName: nginx
   {{- if .Values.certificate.enabled }}
@@ -50,12 +51,12 @@ spec:
     - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
-    - "webrtc.{{ .Values.domains.primary }}"
-    - "janus.{{ .Values.domains.primary }}"
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
   rules:
-  # June Orchestrator - Main API with WebSocket
+  # ============================================
+  # ORCHESTRATOR - Business Logic API
+  # ============================================
   - host: {{ .Values.domains.api }}
     http:
       paths:
@@ -67,7 +68,34 @@ spec:
             port:
               number: 8080
   
-  # Identity Provider (Keycloak)
+  # ============================================
+  # JANUS GATEWAY - WebRTC (WebSocket)
+  # Clients connect here directly for WebRTC
+  # ============================================
+  - host: {{ .Values.domains.primary }}
+    http:
+      paths:
+      # Janus WebSocket endpoint
+      - path: /janus-ws
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8188
+      
+      # Janus HTTP API endpoint
+      - path: /janus
+        pathType: Prefix
+        backend:
+          service:
+            name: june-janus
+            port:
+              number: 8088
+  
+  # ============================================
+  # IDENTITY PROVIDER (KEYCLOAK)
+  # ============================================
   - host: {{ .Values.domains.idp }}
     http:
       paths:
@@ -79,41 +107,10 @@ spec:
             port:
               number: 8080
   
-  {{- if .Values.janus.enabled }}
-  # WebRTC/Janus Gateway (Direct Access - Optional)
-  - host: "webrtc.{{ .Values.domains.primary }}"
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8080
-  
-  # Janus HTTP API (Direct Access - Optional)
-  - host: "janus.{{ .Values.domains.primary }}"
-    http:
-      paths:
-      - path: /janus
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8088
-      - path: /admin
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8089
-  {{- end }}
-  
   {{- if .Values.stt.enabled }}
-  # Speech-to-Text Service
+  # ============================================
+  # SPEECH-TO-TEXT SERVICE
+  # ============================================
   - host: {{ .Values.domains.stt }}
     http:
       paths:
@@ -127,7 +124,9 @@ spec:
   {{- end }}
   
   {{- if .Values.tts.enabled }}
-  # Text-to-Speech Service
+  # ============================================
+  # TEXT-TO-SPEECH SERVICE
+  # ============================================
   - host: {{ .Values.domains.tts }}
     http:
       paths:

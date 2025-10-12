@@ -1,7 +1,6 @@
-"""
-AI Service - Gemini Integration
-"""
+"""AI service - Gemini integration"""
 import logging
+import time
 from typing import Optional
 
 from ..config import config
@@ -12,72 +11,71 @@ logger = logging.getLogger(__name__)
 async def generate_response(
     text: str,
     user_id: str,
-    temperature: float = 0.7,
-    session_id: Optional[str] = None
-) -> str:
+    session_id: str,
+    conversation_history: list = None
+) -> tuple[str, int]:
     """
     Generate AI response using Gemini
-    
-    Args:
-        text: User input text
-        user_id: User identifier
-        temperature: Response randomness (0.0-1.0)
-        session_id: Optional session for context
-        
-    Returns:
-        AI generated text response
+    Returns: (response_text, processing_time_ms)
     """
+    start_time = time.time()
+    
     try:
-        logger.info(f"Generating AI response for {user_id}: {text[:50]}...")
-        
         if not config.services.gemini_api_key:
             logger.warning("Gemini API key not configured")
-            return fallback_response(text)
+            return fallback_response(text), int((time.time() - start_time) * 1000)
         
-        try:
-            from google import genai
-            from google.genai import types
-            
-            client = genai.Client(api_key=config.services.gemini_api_key)
-            
-            prompt = f"""You are JUNE, a helpful and friendly AI assistant created by OZZU.
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=config.services.gemini_api_key)
+        
+        # Build context from history
+        context = ""
+        if conversation_history:
+            recent = conversation_history[-5:]  # Last 5 messages
+            context = "\n".join([
+                f"{msg['role']}: {msg['content']}" 
+                for msg in recent
+            ])
+        
+        prompt = f"""You are JUNE, a helpful AI assistant.
+
+{f"Previous conversation:{context}" if context else ""}
 
 User says: "{text}"
 
-Please respond in a conversational, helpful manner. Keep responses concise but informative.
-If the user is greeting you, introduce yourself as JUNE from OZZU."""
-            
-            response = client.models.generate_content(
-                model='gemini-2.0-flash-exp',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=500,
-                    candidate_count=1
-                )
-            )
-            
-            if response and response.text:
-                ai_text = response.text.strip()
-                logger.info(f"✅ AI response: {ai_text[:100]}...")
-                return ai_text
-                
-        except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            return fallback_response(text)
+Respond naturally and helpfully. Keep responses concise but informative."""
         
-        return fallback_response(text)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-exp',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=500
+            )
+        )
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        if response and response.text:
+            ai_text = response.text.strip()
+            logger.info(f"✅ AI response generated in {processing_time}ms")
+            return ai_text, processing_time
+        
+        return fallback_response(text), processing_time
         
     except Exception as e:
+        processing_time = int((time.time() - start_time) * 1000)
         logger.error(f"AI service error: {e}")
-        return fallback_response(text)
+        return fallback_response(text), processing_time
 
 
 def fallback_response(text: str) -> str:
-    """Fallback response when AI is unavailable"""
+    """Fallback when AI unavailable"""
     text_lower = text.lower()
     
-    if any(greeting in text_lower for greeting in ['hello', 'hi', 'hey']):
-        return "Hello! I'm JUNE, your AI assistant from OZZU. How can I help you today?"
+    if any(g in text_lower for g in ['hello', 'hi', 'hey']):
+        return "Hello! I'm JUNE, your AI assistant. How can I help you today?"
     
-    return f"I received your message: '{text[:100]}...' I'm here to help!"
+    return f"I heard you say: '{text[:100]}...' I'm here to help!"
