@@ -41,13 +41,13 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# Janus WebRTC Gateway Configuration (FIXED - Using sucwangsr/janus-webrtc-gateway-docker)
+# Janus WebRTC Gateway Configuration - FIXED: Using Software Mansion image
 janus:
   enabled: true
   replicas: 1
   image:
-    repository: sucwangsr/janus-webrtc-gateway-docker
-    tag: latest    
+    repository: swmansion/janus-gateway  # Changed from sucwangsr for better env var support
+    tag: "0.11.8-0"    
     pullPolicy: IfNotPresent
   
   # Janus authentication secrets
@@ -72,7 +72,7 @@ janus:
     rtpPortRange: "20000-20099"
     iceNomination: regular
     iceTcp: false
-    fullTrickle: false
+    fullTrickle: true  # Changed to true for better connectivity
   
   resources:
     requests:
