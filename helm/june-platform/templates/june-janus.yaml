@@ -44,26 +44,19 @@ spec:
           name: admin-ws
           protocol: TCP
         
-        # Mount the Janus configuration file - FIXED
-        volumeMounts:
-        - name: janus-config
-          mountPath: /usr/local/etc/janus/janus.jcfg
-          subPath: janus.jcfg
-          readOnly: true
-        
+        # Environment variables only - Software Mansion image configuration
         env:
-        # Janus API secrets
-        - name: JANUS_API_SECRET
-          value: {{ .Values.janus.apiSecret | quote }}
-        - name: JANUS_ADMIN_SECRET
-          value: {{ .Values.janus.adminKey | quote }}
+        # Dynamic pod IP for GATEWAY_IP
+        - name: GATEWAY_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         
-        # STUN/TURN Configuration (swmansion/janus-gateway environment variables)
+        # STUN/TURN Configuration
         - name: STUN_SERVER
           value: {{ .Values.janus.stun.server | quote }}
         - name: STUN_PORT
           value: {{ .Values.janus.stun.port | quote }}
-        
         - name: TURN_SERVER
           value: {{ .Values.janus.turn.server | quote }}
         - name: TURN_PORT
@@ -87,9 +80,17 @@ spec:
         - name: FULL_TRICKLE
           value: {{ .Values.janus.webrtc.fullTrickle | quote }}
         
-        # Force Janus to use our config file
-        - name: JANUS_CONFIG_FILE
-          value: "/usr/local/etc/janus/janus.jcfg"
+        # Authentication
+        - name: API_SECRET
+          value: {{ .Values.janus.apiSecret | quote }}
+        - name: ADMIN_SECRET
+          value: {{ .Values.janus.adminKey | quote }}
+        
+        # Additional Software Mansion image configuration
+        - name: DEBUG_LEVEL
+          value: "4"
+        - name: SERVER_NAME
+          value: "JuneJanusGateway"
         
         resources:
           requests:
@@ -116,15 +117,6 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 5
-      
-      # Mount volumes - FIXED
-      volumes:
-      - name: janus-config
-        configMap:
-          name: june-janus-config
-          items:
-          - key: janus.jcfg
-            path: janus.jcfg
 
 ---
 apiVersion: v1
