@@ -1,6 +1,6 @@
 """
-June Orchestrator - Janus WebRTC Edition (Clean)
-Pure Janus Gateway integration for WebRTC
+June Orchestrator - Janus WebRTC Edition (Fixed Janus Protocol)
+Handles Janus async events properly
 """
 import logging
 import uuid
@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict
 from datetime import datetime
 import aiohttp
+import asyncio
 import base64
 
 from .config import config
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 JANUS_URL = "http://june-janus.june-services.svc.cluster.local:8088/janus"
 
 class JanusManager:
-    """Manages Janus sessions and WebSocket connections"""
+    """Manages Janus sessions with proper async event handling"""
     
     def __init__(self):
         self.connections: Dict[str, WebSocket] = {}
@@ -89,7 +90,7 @@ class JanusManager:
             return False
     
     async def process_offer(self, session_id: str, sdp: str) -> Optional[str]:
-        """Process WebRTC offer through Janus and return answer SDP"""
+        """Process WebRTC offer through Janus with proper event polling"""
         if session_id not in self.janus_sessions:
             user_id = self.users[session_id].get("sub", "anonymous")
             if not await self.create_janus_session(session_id, user_id):
@@ -118,6 +119,7 @@ class JanusManager:
                     
                     # If room doesn't exist, create it
                     if join_data.get("plugindata", {}).get("data", {}).get("error_code"):
+                        logger.info(f"🏗️ Creating room {room_id}")
                         await session.post(
                             f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                             json={
@@ -147,12 +149,13 @@ class JanusManager:
                             }
                         )
                 
-                # Send offer and get answer
+                # Send offer and get transaction ID
+                transaction_id = str(uuid.uuid4())
                 async with session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
                     json={
                         "janus": "message",
-                        "transaction": str(uuid.uuid4()),
+                        "transaction": transaction_id,
                         "body": {
                             "request": "configure",
                             "audio": True,
@@ -164,18 +167,41 @@ class JanusManager:
                         }
                     }
                 ) as resp:
-                    data = await resp.json()
-                    answer_sdp = data.get("jsep", {}).get("sdp")
+                    ack_data = await resp.json()
+                    logger.info(f"📨 Janus ack: {ack_data.get('janus')}")
+                
+                # ✅ CRITICAL FIX: Poll for the actual event with the answer
+                max_attempts = 10
+                for attempt in range(max_attempts):
+                    await asyncio.sleep(0.1)  # Wait 100ms between polls
                     
-                    if answer_sdp:
-                        logger.info(f"✅ Got answer from Janus")
-                        return answer_sdp
-                    else:
-                        logger.error(f"No answer SDP: {data}")
-                        return None
+                    async with session.get(
+                        f"{JANUS_URL}/{janus['janus_session_id']}?maxev=1"
+                    ) as resp:
+                        event_data = await resp.json()
+                        
+                        # Check if this is our answer event
+                        if event_data.get("janus") == "event":
+                            jsep = event_data.get("jsep")
+                            if jsep and jsep.get("type") == "answer":
+                                answer_sdp = jsep.get("sdp")
+                                logger.info(f"✅ Got answer from Janus (attempt {attempt + 1})")
+                                return answer_sdp
+                        
+                        # Also check if it's in plugindata
+                        plugindata = event_data.get("plugindata", {})
+                        if plugindata:
+                            jsep = event_data.get("jsep")
+                            if jsep and jsep.get("type") == "answer":
+                                answer_sdp = jsep.get("sdp")
+                                logger.info(f"✅ Got answer from Janus plugindata (attempt {attempt + 1})")
+                                return answer_sdp
+                
+                logger.error(f"❌ No answer after {max_attempts} attempts")
+                return None
                         
         except Exception as e:
-            logger.error(f"❌ Offer processing failed: {e}")
+            logger.error(f"❌ Offer processing failed: {e}", exc_info=True)
             return None
     
     async def handle_ice(self, session_id: str, candidate: dict):
@@ -207,17 +233,23 @@ class JanusManager:
         
         try:
             async with aiohttp.ClientSession() as session:
+                # Leave room
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
-                    json={"janus": "message", "transaction": str(uuid.uuid4()), "body": {"request": "leave"}}
+                    json={"janus": "message", "transaction": str(uuid.uuid4()), "body": {"request": "leave"}},
+                    timeout=aiohttp.ClientTimeout(total=2)
                 )
+                # Detach
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}/{janus['handle_id']}",
-                    json={"janus": "detach", "transaction": str(uuid.uuid4())}
+                    json={"janus": "detach", "transaction": str(uuid.uuid4())},
+                    timeout=aiohttp.ClientTimeout(total=2)
                 )
+                # Destroy
                 await session.post(
                     f"{JANUS_URL}/{janus['janus_session_id']}",
-                    json={"janus": "destroy", "transaction": str(uuid.uuid4())}
+                    json={"janus": "destroy", "transaction": str(uuid.uuid4())},
+                    timeout=aiohttp.ClientTimeout(total=2)
                 )
             logger.info("🧹 Janus cleaned")
         except:
@@ -234,7 +266,7 @@ def decode_token(token: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 June Orchestrator v12.0 - Janus WebRTC")
+    logger.info("🚀 June Orchestrator v12.0 - Janus WebRTC (Fixed)")
     logger.info(f"🔧 Janus: {JANUS_URL}")
     yield
     logger.info("🛑 Shutdown")
@@ -325,8 +357,9 @@ async def websocket_endpoint(
                 answer_sdp = await manager.process_offer(session_id, msg.get("sdp", ""))
                 if answer_sdp:
                     await manager.send(session_id, {"type": "webrtc_answer", "sdp": answer_sdp})
+                    logger.info("✅ Sent answer to client")
                 else:
-                    await manager.send(session_id, {"type": "error", "message": "Offer processing failed"})
+                    await manager.send(session_id, {"type": "error", "message": "Failed to get answer from Janus"})
             
             elif msg_type == "ice_candidate":
                 await manager.handle_ice(session_id, msg.get("candidate", {}))
@@ -337,7 +370,7 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         await manager.disconnect(session_id)
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {e}", exc_info=True)
         await manager.disconnect(session_id)
 
 if __name__ == "__main__":
