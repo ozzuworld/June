@@ -1,4 +1,3 @@
-# helm/june-platform/templates/ingress.yaml
 {{- if and .Values.certificate.enabled (not .Values.certificate.useBackup) }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -42,8 +41,8 @@ metadata:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     
-    # WebSocket services - enables automatic connection upgrade
-    nginx.ingress.kubernetes.io/websocket-services: "june-janus"
+    # WebSocket services - enables automatic connection upgrade for LiveKit
+    nginx.ingress.kubernetes.io/websocket-services: "livekit-livekit-server"
     
     # Additional WebSocket optimization
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -57,7 +56,6 @@ spec:
     - "*.{{ .Values.domains.primary }}"
     - {{ .Values.domains.api }}
     - {{ .Values.domains.idp }}
-    - {{ .Values.domains.janus }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
@@ -79,53 +77,29 @@ spec:
               number: 8080
   
   # ============================================
-  # JANUS GATEWAY - WebRTC (WebSocket)
+  # LIVEKIT - WebRTC (WebSocket)
   # Clients connect here directly for WebRTC
   # ============================================
   - host: {{ .Values.domains.primary }}
     http:
       paths:
-      # Janus WebSocket endpoint
-      - path: /janus-ws
+      # LiveKit WebSocket/HTTP endpoint
+      - path: /livekit
         pathType: Prefix
         backend:
           service:
-            name: june-janus
+            name: livekit-livekit-server
             port:
-              number: 8188
-      
-      # Janus HTTP API endpoint
-      - path: /janus
+              number: 7880
+              
+      # LiveKit WebRTC endpoint
+      - path: /rtc
         pathType: Prefix
         backend:
           service:
-            name: june-janus
+            name: livekit-livekit-server
             port:
-              number: 8088
-  
-  # ============================================
-  # JANUS GATEWAY ON SUBDOMAIN - WebRTC
-  # ============================================
-  - host: {{ .Values.domains.janus }}
-    http:
-      paths:
-      # Janus WebSocket endpoint
-      - path: /janus-ws
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8188
-      
-      # Janus HTTP API endpoint
-      - path: /janus
-        pathType: Prefix
-        backend:
-          service:
-            name: june-janus
-            port:
-              number: 8088
+              number: 7881
   
   # ============================================
   # IDENTITY PROVIDER (KEYCLOAK)
