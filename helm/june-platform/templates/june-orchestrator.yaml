@@ -81,21 +81,24 @@ spec:
           value: "http://june-stt.{{ .Release.Namespace }}.svc.cluster.local:8080"
         
         # ============================================
-        # JANUS GATEWAY (Admin API only - NO WebRTC)
+        # LIVEKIT WEBRTC (replaces Janus)
         # For managing rooms, getting stats, etc.
         # ============================================
-        - name: JANUS_URL
+        - name: LIVEKIT_HOST
           valueFrom:
             configMapKeyRef:
-              name: june-janus-config
-              key: JANUS_HTTP_URL
-        - name: JANUS_ADMIN_URL
+              name: june-webrtc-config
+              key: LIVEKIT_HOST
+        - name: LIVEKIT_API_KEY
           valueFrom:
             configMapKeyRef:
-              name: june-janus-config
-              key: JANUS_ADMIN_URL
-        - name: JANUS_ADMIN_SECRET
-          value: "janusoverlord"
+              name: june-webrtc-config
+              key: LIVEKIT_API_KEY
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            configMapKeyRef:
+              name: june-webrtc-config
+              key: LIVEKIT_API_SECRET
         
         # ============================================
         # SERVICE AUTHENTICATION
