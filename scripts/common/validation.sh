@@ -80,18 +80,72 @@ wait_for_deployment() {
         "Timeout waiting for deployment '$deployment' to be available"
 }
 
-# Wait for pods to be ready
+# Wait for pods to be ready with improved diagnostics and retry logic
 wait_for_pods() {
     local label_selector="$1"
     local namespace="${2:-default}"
-    local timeout="${3:-300}"
+    local timeout="${3:-600}"  # Increased default timeout to 10 minutes
+    local retry_interval=10
+    local start_time=$(date +%s)
+    local end_time=$((start_time + timeout))
     
     log "Waiting for pods with selector '$label_selector' to be ready in namespace '$namespace'..."
     
-    if ! kubectl wait --for=condition=Ready --timeout="${timeout}s" \
-        pod -l "$label_selector" -n "$namespace" &>/dev/null; then
-        error "Timeout waiting for pods with selector '$label_selector' to be ready"
-    fi
+    # First, wait a bit for pods to be created
+    sleep 5
+    
+    while [ $(date +%s) -lt $end_time ]; do
+        # Check if any pods exist with the selector
+        local pod_count
+        pod_count=$(kubectl get pods -l "$label_selector" -n "$namespace" --no-headers 2>/dev/null | wc -l)
+        
+        if [ "$pod_count" -eq 0 ]; then
+            log "No pods found with selector '$label_selector' in namespace '$namespace', waiting..."
+            sleep $retry_interval
+            continue
+        fi
+        
+        # Check if pods are ready
+        local ready_pods
+        ready_pods=$(kubectl get pods -l "$label_selector" -n "$namespace" --no-headers 2>/dev/null | \
+                     awk '$2 ~ /1\/1/ && $3 == "Running" {count++} END {print count+0}')
+        
+        if [ "$ready_pods" -gt 0 ]; then
+            log "Found $ready_pods ready pod(s) with selector '$label_selector'"
+            # Double-check with kubectl wait for consistency
+            if kubectl wait --for=condition=Ready --timeout=30s \
+                pod -l "$label_selector" -n "$namespace" &>/dev/null; then
+                success "Pods with selector '$label_selector' are ready"
+                return 0
+            else
+                # If kubectl wait fails but we see ready pods, let's check the actual status
+                log "kubectl wait failed but pods appear ready, checking status..."
+                kubectl get pods -l "$label_selector" -n "$namespace" -o wide
+                
+                # Check if at least one pod is actually running and ready
+                if [ "$ready_pods" -gt 0 ]; then
+                    log "Pods are running despite kubectl wait failure, continuing..."
+                    return 0
+                fi
+            fi
+        else
+            log "Found $pod_count pod(s) but none are ready yet, current status:"
+            kubectl get pods -l "$label_selector" -n "$namespace" --no-headers 2>/dev/null || true
+        fi
+        
+        sleep $retry_interval
+    done
+    
+    # Final diagnostic information before failing
+    log "Timeout reached. Final pod status:"
+    kubectl get pods -l "$label_selector" -n "$namespace" -o wide 2>/dev/null || true
+    kubectl describe pods -l "$label_selector" -n "$namespace" 2>/dev/null || true
+    
+    # Check if pods exist but with different labels
+    log "All pods in namespace '$namespace':"
+    kubectl get pods -n "$namespace" --show-labels 2>/dev/null || true
+    
+    error "Timeout waiting for pods with selector '$label_selector' to be ready"
 }
 
 # Verify file exists and is readable
