@@ -1,0 +1,34 @@
+server:
+  image:
+    repository: livekit/livekit-server
+    tag: latest
+  replicas: 1
+
+  # LiveKit server runtime config
+  config:
+    # Enable single-port UDP mux so we only expose one UDP port
+    rtc:
+      udp_port: 7882           # default mux port
+      tcp_port: 7881           # optional fallback; not used by STUNner path
+      use_external_ips: true   # lets LiveKit advertise public addresses if needed
+
+    # TURN: we’re using STUNner as the TURN gateway, so do NOT run LiveKit’s embedded TURN.
+    turn:
+      enabled: false
+
+service:
+  # ClusterIP for in-cluster access (STUNner routes to this via UDPRoute)
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 7880
+      targetPort: 7880
+      protocol: TCP
+    - name: ice-tcp
+      port: 7881
+      targetPort: 7881
+      protocol: TCP
+    - name: rtp-udp
+      port: 7882
+      targetPort: 7882
+      protocol: UDP

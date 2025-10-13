@@ -1,0 +1,20 @@
+
+apiVersion: stunner.l7mp.io/v1
+kind: GatewayConfig
+metadata:
+  name: stunner-gwconfig
+  namespace: stunner
+spec:
+  realm: "turn.ozzu.world"          # change to your domain
+  auth:
+    type: secret                    # REST credentials
+    secret: stunner-auth
+  listeners:
+    - name: udp
+      protocol: TURN-UDP
+      publicPort: 3478
+      minPort: 49160
+      maxPort: 49200
+    - name: tls
+      protocol: TURN-TLS
+      publicPort: 5349

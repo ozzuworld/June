@@ -52,22 +52,6 @@ spec:
             fieldRef:
               fieldPath: status.podIP
         
-        # STUN/TURN Configuration
-        - name: STUN_SERVER
-          value: {{ .Values.janus.stun.server | quote }}
-        - name: STUN_PORT
-          value: {{ .Values.janus.stun.port | quote }}
-        - name: TURN_SERVER
-          value: {{ .Values.janus.turn.server | quote }}
-        - name: TURN_PORT
-          value: {{ .Values.janus.turn.port | quote }}
-        - name: TURN_USER
-          value: {{ .Values.janus.turn.username | quote }}
-        - name: TURN_PASSWORD
-          value: {{ .Values.janus.turn.password | quote }}
-        - name: TURN_TYPE
-          value: {{ .Values.janus.turn.type | quote }}
-        
         # WebRTC Configuration
         - name: WEBSOCKETS_ENABLED
           value: {{ .Values.janus.webrtc.websocketsEnabled | quote }}

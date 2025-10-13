@@ -1,0 +1,15 @@
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: stunner-gateway
+  namespace: stunner
+spec:
+  gatewayClassName: stunner
+  listeners:
+    - name: turn-udp
+      protocol: UDP
+      port: 3478
+    - name: turn-tls
+      protocol: TLS
+      port: 5349

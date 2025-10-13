@@ -54,21 +54,6 @@ janus:
   adminKey: janusoverlord  # CHANGE IN PRODUCTION
   apiSecret: janussecret   # CHANGE IN PRODUCTION
   
-  # STUN/TURN Configuration (Environment Variables)
-  stun:
-    server: stun.l.google.com
-    port: 19302
-    username: june-user      # Add this
-    password: Pokemon123!    # Add this
-  
-  
-  turn:
-    server: turn.ozzu.world
-    port: 30728
-    username: june-user
-    password: Pokemon123!  # CHANGE IN PRODUCTION
-    type: udp
-  
   # WebRTC Configuration
   webrtc:
     websocketsEnabled: true
@@ -138,16 +123,6 @@ tts:
     limits:
       memory: 6Gi
       cpu: "2"
-
-# STUNner WebRTC Configuration (Keep your existing setup)
-stunner:
-  enabled: true
-  # Gateway will be created in stunner namespace
-  # GatewayClass and GatewayConfig in stunner-system
-  realm: turn.ozzu.world
-  username: june-user
-  password: Pokemon123!  # CHANGE IN PRODUCTION
-  # UDPRoutes will be auto-created for all services
 
 # Secrets (Set via --set or separate values file)
 secrets:
