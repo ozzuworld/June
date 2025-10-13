@@ -16,10 +16,10 @@ success() { echo -e "${GREEN}✅${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠️${NC} $1"; }
 error() { echo -e "${RED}❌${NC} $1"; exit 1; }
 
-echo "=========================================="
+echo "==========================================="
 echo "June Platform - Modular Installation"
 echo "Fresh VM -> Full June Platform + LiveKit"
-echo "=========================================="
+echo "==========================================="
 echo ""
 
 # Check if running as root
@@ -74,17 +74,18 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases
+# Define installation phases (updated to include certificates phase)
 PHASES=(
     "01-prerequisites"
     "02-docker"
     "03-kubernetes"
     "04-infrastructure"
     "05-helm"
-    "06-stunner"
-    "07-livekit"
-    "08-june-platform"
-    "09-final-setup"
+    "06-certificates"
+    "07-stunner"
+    "08-livekit"
+    "09-june-platform"
+    "10-final-setup"
 )
 
 # Function to run a phase
@@ -123,9 +124,9 @@ show_progress() {
 # Debug function for troubleshooting
 debug_info() {
     echo ""
-    echo "=========================================="
+    echo "==========================================="
     echo "Debug Information"
-    echo "=========================================="
+    echo "==========================================="
     
     echo "Kubernetes Nodes:"
     kubectl get nodes -o wide 2>/dev/null || echo "Failed to get nodes"
@@ -141,6 +142,14 @@ debug_info() {
     echo ""
     echo "Available CRDs (cert-manager):"
     kubectl get crd | grep cert-manager 2>/dev/null || echo "No cert-manager CRDs found"
+    
+    echo ""
+    echo "Certificates status:"
+    kubectl get certificates -A 2>/dev/null || echo "No certificates found"
+    
+    echo ""
+    echo "Certificate backups:"
+    ls -la /root/.june-certs/ 2>/dev/null || echo "No certificate backups found"
 }
 
 # Main execution function
@@ -190,9 +199,9 @@ main() {
     fi
     
     echo ""
-    echo "=========================================="
+    echo "==========================================="
     success "June Platform Installation Complete!"
-    echo "=========================================="
+    echo "==========================================="
     echo ""
     echo "📋 Your Services:"
     echo "  API:        https://api.$DOMAIN"
@@ -220,12 +229,18 @@ main() {
     echo "    Username: ${TURN_USERNAME:-june-user}"
     echo "    Password: ${STUNNER_PASSWORD:-Pokemon123!}"
     echo ""
+    echo "🔒 Certificate Management:"
+    echo "  Backup Directory: /root/.june-certs/"
+    echo "  Current Certificate: ${DOMAIN//\./-}-wildcard-tls"
+    echo "  Backup File: /root/.june-certs/${DOMAIN}-wildcard-tls-backup.yaml"
+    echo ""
     echo "📊 Status Check:"
     echo "  kubectl get pods -n june-services   # Core services"
     echo "  kubectl get pods -n media            # LiveKit"
     echo "  kubectl get gateway -n stunner       # STUNner"
+    echo "  kubectl get certificates -n june-services # Certificates"
     echo ""
-    echo "=========================================="
+    echo "==========================================="
 }
 
 # Show usage information
@@ -241,6 +256,7 @@ show_usage() {
     echo "  $0                              # Run all phases"
     echo "  $0 --skip 01-prerequisites     # Skip prerequisites"
     echo "  $0 --skip kubernetes docker    # Skip multiple phases"
+    echo "  $0 --skip 06-certificates      # Skip certificate management"
 }
 
 # Check for help flag
