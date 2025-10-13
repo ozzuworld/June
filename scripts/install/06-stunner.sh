@@ -132,9 +132,9 @@ install_stunner() {
     
     # Verify STUNner operator is ready
     log "Waiting for STUNner operator to be ready..."
-    wait_for_deployment "stunner" "stunner-system" 300
+    wait_for_deployment "stunner-gateway-operator-controller-manager" "stunner-system" 300
     
-    success "STUNner operator installed"
+    success "STUNner gateway operator installed"
 }
 
 wait_for_stunner_crds() {
