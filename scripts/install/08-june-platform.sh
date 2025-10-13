@@ -7,7 +7,20 @@ set -e
 source "$(dirname "$0")/../common/logging.sh"
 source "$(dirname "$0")/../common/validation.sh"
 
-ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
+# Get absolute path to avoid relative path issues
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${1:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+# Validate ROOT_DIR exists and has expected structure
+if [ ! -d "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR/scripts" ]; then
+    error "Cannot determine ROOT_DIR. Current: $ROOT_DIR"
+    error "Please run from June project directory or pass ROOT_DIR as argument"
+    error "Expected structure: ROOT_DIR/scripts/install/"
+    exit 1
+fi
+
+log "Using ROOT_DIR: $ROOT_DIR"
+
 
 # Source configuration from environment or config file
 if [ -f "${ROOT_DIR}/config.env" ]; then
@@ -232,5 +245,19 @@ main() {
     
     success "June Platform deployment phase completed"
 }
+
+# Debug path information
+debug "SCRIPT_DIR: $SCRIPT_DIR"
+debug "ROOT_DIR: $ROOT_DIR"
+debug "Current working directory: $(pwd)"
+
+# Validate key directories exist
+if [ ! -d "$ROOT_DIR/k8s" ]; then
+    warn "k8s directory not found at $ROOT_DIR/k8s"
+fi
+
+if [ ! -d "$ROOT_DIR/config" ]; then
+    warn "config directory not found at $ROOT_DIR/config"
+fi
 
 main "$@"
