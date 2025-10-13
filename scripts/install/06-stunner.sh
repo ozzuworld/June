@@ -259,7 +259,9 @@ verify_stunner() {
     
     # Check STUNner operator
     verify_namespace "stunner-system"
-    verify_k8s_resource "deployment" "stunner" "stunner-system"
+    verify_k8s_resource "deployment" "stunner-gateway-operator-controller-manager" "stunner-system"
+    verify_k8s_resource "deployment" "stunner-auth" "stunner-system"
+
     
     # Check STUNner namespace and gateway
     if kubectl get namespace stunner &>/dev/null; then
