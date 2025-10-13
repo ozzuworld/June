@@ -1,4 +1,3 @@
-# helm/june-platform/templates/configmaps.yaml
 ---
 # General application configuration
 apiVersion: v1
@@ -12,73 +11,27 @@ data:
   REGION: us-central1
 
 ---
-# Janus Gateway configuration (Janus handles WebRTC, not orchestrator)
+# LiveKit WebRTC configuration (replaces Janus)
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: june-janus-config
+  name: june-webrtc-config
   namespace: {{ .Release.Namespace }}
 data:
-  # Janus connection info for orchestrator admin API only
-  JANUS_HTTP_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8088"
-  JANUS_ADMIN_URL: "http://june-janus.{{ .Release.Namespace }}.svc.cluster.local:8089"
+  # LiveKit connection info for orchestrator
+  LIVEKIT_HOST: "livekit.media.svc.cluster.local"
+  LIVEKIT_API_KEY: "devkey"
+  LIVEKIT_API_SECRET: "secret"
   
-  # Client-facing Janus endpoints (for documentation/info endpoints)
-  JANUS_PUBLIC_WS_URL: "wss://{{ .Values.domains.primary }}/janus-ws"
-  JANUS_PUBLIC_HTTP_URL: "https://{{ .Values.domains.primary }}/janus"
+  # Client-facing LiveKit endpoints
+  LIVEKIT_PUBLIC_WS_URL: "wss://{{ .Values.domains.primary }}/livekit"
+  LIVEKIT_PUBLIC_HTTP_URL: "https://{{ .Values.domains.primary }}/livekit"
   
-  # STUNner/TURN configuration (for Janus to use)
+  # STUN/TURN configuration for LiveKit
   STUN_SERVER: "{{ .Values.domains.turn }}:3478"
   TURN_SERVER: "{{ .Values.domains.turn }}:3478"
   TURN_USERNAME: {{ .Values.stunner.username | quote }}
   TURN_CREDENTIAL: {{ .Values.stunner.password | quote }}
-  
-  # Janus main configuration file
-  janus.jcfg: |
-    general: {
-        configs_folder = "/usr/local/etc/janus"
-        plugins_folder = "/usr/local/lib/janus/plugins"
-        transports_folder = "/usr/local/lib/janus/transports"
-        events_folder = "/usr/local/lib/janus/events"
-        loggers_folder = "/usr/local/lib/janus/loggers"
-        
-        log_level = 4
-        log_timestamps = true
-        log_colors = true
-        
-        interface = "0.0.0.0"
-        debug_level = 4
-        
-        # STUN/TURN Configuration - FIXED
-        stun_server = "{{ .Values.janus.stun.server }}"
-        stun_port = {{ .Values.janus.stun.port }}
-        
-        turn_server = "{{ .Values.janus.turn.server }}"
-        turn_port = {{ .Values.janus.turn.port }}
-        turn_type = "{{ .Values.janus.turn.type }}"
-        turn_user = "{{ .Values.janus.turn.username }}"
-        turn_pwd = "{{ .Values.janus.turn.password }}"
-        
-        # ICE configuration
-        ice_nomination = "{{ .Values.janus.webrtc.iceNomination }}"
-        ice_tcp = {{ .Values.janus.webrtc.iceTcp }}
-        full_trickle = {{ .Values.janus.webrtc.fullTrickle }}
-        
-        # RTP port range
-        rtp_port_range = "{{ .Values.janus.webrtc.rtpPortRange }}"
-        
-        # Security
-        api_secret = "{{ .Values.janus.apiSecret }}"
-        admin_key = "{{ .Values.janus.adminKey }}"
-        
-        # Additional WebRTC settings
-        dtls_mtu = 1200
-        no_webrtc_encryption = false
-        
-        # Network settings for Kubernetes
-        ice_enforce_list = "{{ .Values.janus.stun.server }}"
-        ice_ignore_list = "vmnet"
-    }
 
 ---
 # Client configuration (what to send to mobile clients)
@@ -88,13 +41,13 @@ metadata:
   name: june-client-config
   namespace: {{ .Release.Namespace }}
 data:
-  # WebRTC configuration for clients (NOT for orchestrator)
-  # Orchestrator can return this via /api/config endpoint
+  # WebRTC configuration for clients using LiveKit
   webrtc_config.json: |
     {
-      "janus": {
-        "ws_url": "wss://{{ .Values.domains.primary }}/janus-ws",
-        "http_url": "https://{{ .Values.domains.primary }}/janus"
+      "livekit": {
+        "ws_url": "wss://{{ .Values.domains.primary }}/livekit",
+        "http_url": "https://{{ .Values.domains.primary }}/livekit",
+        "api_key": "devkey"
       },
       "ice_servers": [
         {
