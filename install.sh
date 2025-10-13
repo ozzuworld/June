@@ -206,29 +206,56 @@ install_infrastructure() {
     if ! kubectl get namespace cert-manager &> /dev/null; then
         log "Installing cert-manager..."
         kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.3/cert-manager.yaml > /dev/null 2>&1
+        
+        # Wait for cert-manager deployment to be available
+        log "Waiting for cert-manager deployment..."
         kubectl wait --for=condition=available --timeout=300s deployment/cert-manager -n cert-manager > /dev/null 2>&1
+        kubectl wait --for=condition=available --timeout=300s deployment/cert-manager-cainjector -n cert-manager > /dev/null 2>&1
+        kubectl wait --for=condition=available --timeout=300s deployment/cert-manager-webhook -n cert-manager > /dev/null 2>&1
+        
         success "cert-manager installed"
     else
         success "cert-manager already installed"
     fi
     
-    # Wait for CRDs to be established
+    # Wait for CRDs to be established with timeout and error handling
     log "Waiting for cert-manager CRDs..."
-    for i in {1..60}; do
+    CRD_TIMEOUT=120
+    CRD_COUNTER=0
+    
+    while [ $CRD_COUNTER -lt $CRD_TIMEOUT ]; do
         if kubectl get crd clusterissuers.cert-manager.io &> /dev/null && \
-           kubectl get crd certificates.cert-manager.io &> /dev/null; then
+           kubectl get crd certificates.cert-manager.io &> /dev/null && \
+           kubectl get crd certificaterequests.cert-manager.io &> /dev/null; then
+            success "cert-manager CRDs ready"
             break
         fi
+        
         sleep 2
+        CRD_COUNTER=$((CRD_COUNTER + 2))
+        
+        if [ $((CRD_COUNTER % 20)) -eq 0 ]; then
+            log "Still waiting for cert-manager CRDs... ($CRD_COUNTER/${CRD_TIMEOUT}s)"
+        fi
     done
     
+    if [ $CRD_COUNTER -ge $CRD_TIMEOUT ]; then
+        warn "cert-manager CRDs took longer than expected, but continuing..."
+        log "Checking cert-manager pods status:"
+        kubectl get pods -n cert-manager
+        log "Checking cert-manager logs:"
+        kubectl logs -n cert-manager deployment/cert-manager --tail=10 || true
+    fi
+    
     # Create Cloudflare secret for DNS challenges
+    log "Creating Cloudflare secret..."
     kubectl create secret generic cloudflare-api-token \
         --from-literal=api-token="$CLOUDFLARE_TOKEN" \
         --namespace=cert-manager \
         --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
     # Create ClusterIssuer for Let's Encrypt
+    log "Creating ClusterIssuer..."
     cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -253,6 +280,7 @@ spec:
 EOF
     
     # Create storage for PostgreSQL
+    log "Setting up local storage..."
     mkdir -p /opt/june-postgresql-data
     chmod 755 /opt/june-postgresql-data
     
@@ -293,21 +321,30 @@ install_stunner() {
     log "Step 6/9: Installing STUNner..."
     
     # Install Gateway API
+    log "Installing Gateway API..."
     kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1
     
-    # Wait for Gateway API CRDs
-    for i in {1..30}; do
-        if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null; then
+    # Wait for Gateway API CRDs with timeout
+    log "Waiting for Gateway API CRDs..."
+    for i in {1..60}; do
+        if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
+           kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null; then
+            success "Gateway API CRDs ready"
             break
+        fi
+        if [ $((i % 15)) -eq 0 ]; then
+            log "Still waiting for Gateway API CRDs... ($i/60)"
         fi
         sleep 2
     done
     
     # Add STUNner Helm repo
+    log "Adding STUNner Helm repository..."
     helm repo add stunner https://l7mp.io/stunner > /dev/null 2>&1
     helm repo update > /dev/null 2>&1
     
     # Install STUNner operator
+    log "Installing STUNner operator..."
     helm install stunner stunner/stunner \
         --create-namespace \
         --namespace=stunner-system \
@@ -348,10 +385,12 @@ install_livekit() {
     kubectl create namespace media --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
     # Add LiveKit Helm repo
+    log "Adding LiveKit Helm repository..."
     helm repo add livekit https://helm.livekit.io > /dev/null 2>&1
     helm repo update > /dev/null 2>&1
     
     # Install LiveKit with configuration from k8s/livekit/
+    log "Deploying LiveKit server..."
     if [ -f "${SCRIPT_DIR}/k8s/livekit/livekit-values.yaml" ]; then
         helm upgrade --install livekit livekit/livekit-server \
             --namespace media \
@@ -411,6 +450,7 @@ deploy_june_platform() {
     fi
     
     # Deploy June Platform
+    log "Deploying June services..."
     helm upgrade --install june-platform "$HELM_CHART" \
         --namespace june-services \
         --set global.domain="$DOMAIN" \
@@ -462,10 +502,39 @@ EOF
 }
 
 # ============================================================================
+# Debug function for troubleshooting
+# ============================================================================
+
+debug_info() {
+    echo ""
+    echo "=========================================="
+    echo "Debug Information"
+    echo "=========================================="
+    
+    echo "Kubernetes Nodes:"
+    kubectl get nodes -o wide 2>/dev/null || echo "Failed to get nodes"
+    
+    echo ""
+    echo "All Namespaces:"
+    kubectl get ns 2>/dev/null || echo "Failed to get namespaces"
+    
+    echo ""
+    echo "cert-manager status:"
+    kubectl get pods -n cert-manager 2>/dev/null || echo "cert-manager namespace not found"
+    
+    echo ""
+    echo "Available CRDs (cert-manager):"
+    kubectl get crd | grep cert-manager 2>/dev/null || echo "No cert-manager CRDs found"
+}
+
+# ============================================================================
 # Main Execution
 # ============================================================================
 
 main() {
+    # Trap to show debug info on error
+    trap 'echo ""; echo "Installation failed. Showing debug info:"; debug_info' ERR
+    
     install_prerequisites
     install_docker
     install_kubernetes
