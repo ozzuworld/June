@@ -21,6 +21,19 @@ fi
 
 log "Using ROOT_DIR: $ROOT_DIR"
 
+# Debug path information
+log "SCRIPT_DIR: $SCRIPT_DIR"
+log "ROOT_DIR: $ROOT_DIR"
+log "Current working directory: $(pwd)"
+
+# Validate key directories exist
+if [ ! -d "$ROOT_DIR/k8s" ]; then
+    warn "k8s directory not found at $ROOT_DIR/k8s"
+fi
+
+if [ ! -d "$ROOT_DIR/config" ]; then
+    warn "config directory not found at $ROOT_DIR/config"
+fi
 
 # Source configuration from environment or config file
 if [ -f "${ROOT_DIR}/config.env" ]; then
@@ -48,7 +61,21 @@ setup_june_namespace() {
     
     # Create june-services namespace
     kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-    kubectl wait --for=condition=Active --timeout=60s namespace/june-services > /dev/null 2>&1
+    
+    # Wait for namespace with better error handling
+    local timeout=60
+    local count=0
+    while [ $count -lt $timeout ]; do
+        if kubectl get namespace june-services --no-headers 2>/dev/null | grep -q "Active"; then
+            log "June services namespace is active"
+            break
+        fi
+        sleep 1
+        count=$((count + 1))
+        if [ $count -eq $timeout ]; then
+            error "Timeout waiting for June services namespace to become active"
+        fi
+    done
     
     success "June services namespace ready"
 }
@@ -229,13 +256,24 @@ main() {
         error "This script must be run as root"
     fi
     
+    # Verify Kubernetes connectivity with better error messages
+    if ! kubectl cluster-info &> /dev/null; then
+        error "Cannot connect to Kubernetes cluster. Please ensure kubectl is configured correctly."
+    fi
+    
+    # Check if user has sufficient permissions
+    if ! kubectl auth can-i create namespaces 2>/dev/null; then
+        error "Insufficient permissions to create namespaces. Please ensure you have cluster-admin rights."
+    fi
+    
+    # Verify Helm can communicate with cluster
+    if ! helm list -A &> /dev/null; then
+        error "Helm cannot communicate with cluster. Please ensure Helm is properly configured."
+    fi
+    
     # Verify prerequisites
     verify_command "kubectl" "kubectl must be available"
     verify_command "helm" "helm must be available"
-    
-    if ! kubectl cluster-info &> /dev/null; then
-        error "Kubernetes cluster must be running"
-    fi
     
     setup_june_namespace
     deploy_june_platform
@@ -245,19 +283,5 @@ main() {
     
     success "June Platform deployment phase completed"
 }
-
-# Debug path information
-debug "SCRIPT_DIR: $SCRIPT_DIR"
-debug "ROOT_DIR: $ROOT_DIR"
-debug "Current working directory: $(pwd)"
-
-# Validate key directories exist
-if [ ! -d "$ROOT_DIR/k8s" ]; then
-    warn "k8s directory not found at $ROOT_DIR/k8s"
-fi
-
-if [ ! -d "$ROOT_DIR/config" ]; then
-    warn "config directory not found at $ROOT_DIR/config"
-fi
 
 main "$@"
