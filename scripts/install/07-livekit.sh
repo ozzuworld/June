@@ -7,7 +7,15 @@ set -e
 source "$(dirname "$0")/../common/logging.sh"
 source "$(dirname "$0")/../common/validation.sh"
 
-ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
+# Get absolute path to avoid relative path issues
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${1:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+# Validate ROOT_DIR exists and has expected structure
+if [ ! -d "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR/scripts" ]; then
+    error "Cannot determine ROOT_DIR. Please run from June project directory or pass ROOT_DIR as argument"
+fi
+
 
 # Source configuration from environment or config file
 if [ -f "${ROOT_DIR}/config.env" ]; then
@@ -17,15 +25,28 @@ fi
 check_existing_livekit() {
     log "Checking for existing LiveKit installation..."
     
+    # First check if media namespace exists
+    if ! kubectl get namespace media &>/dev/null; then
+        log "No existing LiveKit installation found (no media namespace)"
+        return 1
+    fi
+    
     # Check if Helm release exists and is deployed
     if helm list -n media 2>/dev/null | grep -q "livekit.*deployed"; then
-        # Check if deployment is actually ready
+        log "Found existing LiveKit Helm release"
+        
+        # Check if deployment exists and is ready
         if kubectl get deployment livekit-livekit-server -n media &>/dev/null; then
             local ready_replicas
             ready_replicas=$(kubectl get deployment livekit-livekit-server -n media -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-            if [ "$ready_replicas" -gt 0 ]; then
-                success "LiveKit is already installed and running"
+            local desired_replicas
+            desired_replicas=$(kubectl get deployment livekit-livekit-server -n media -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+            
+            if [ "$ready_replicas" = "$desired_replicas" ] && [ "$ready_replicas" -gt 0 ]; then
+                success "LiveKit is already installed and running ($ready_replicas/$desired_replicas replicas ready)"
                 return 0
+            else
+                warn "LiveKit deployment exists but not all replicas are ready ($ready_replicas/$desired_replicas)"
             fi
         fi
     fi
@@ -33,6 +54,7 @@ check_existing_livekit() {
     log "No existing LiveKit installation found"
     return 1
 }
+
 
 install_livekit() {
     log "Phase 7/9: Installing LiveKit..."
@@ -46,7 +68,22 @@ install_livekit() {
     # Create media namespace
     log "Creating media namespace..."
     kubectl create namespace media --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-    kubectl wait --for=condition=Active --timeout=60s namespace/media > /dev/null 2>&1
+
+    # Wait for namespace with better error handling
+    local timeout=60
+    local count=0
+    while [ $count -lt $timeout ]; do
+        if kubectl get namespace media --no-headers 2>/dev/null | grep -q "Active"; then
+            log "Media namespace is active"
+            break
+        fi
+        sleep 1
+        count=$((count + 1))
+        if [ $count -eq $timeout ]; then
+            error "Timeout waiting for media namespace to become active"
+        fi
+    done
+
     
     # Add LiveKit Helm repo with retry logic
     log "Adding LiveKit Helm repository..."
@@ -287,6 +324,22 @@ main() {
     # Verify prerequisites
     verify_command "kubectl" "kubectl must be available"
     verify_command "helm" "helm must be available"
+
+        # Verify Kubernetes connectivity with better error messages
+    if ! kubectl cluster-info &> /dev/null; then
+        error "Cannot connect to Kubernetes cluster. Please ensure kubectl is configured correctly."
+    fi
+
+    # Check if user has sufficient permissions
+    if ! kubectl auth can-i create namespaces 2>/dev/null; then
+        error "Insufficient permissions to create namespaces. Please ensure you have cluster-admin rights."
+    fi
+
+    # Verify Helm can communicate with cluster
+    if ! helm list -A &> /dev/null; then
+        error "Helm cannot communicate with cluster. Please ensure Helm is properly configured."
+    fi
+
     
     if ! kubectl cluster-info &> /dev/null; then
         error "Kubernetes cluster must be running"
