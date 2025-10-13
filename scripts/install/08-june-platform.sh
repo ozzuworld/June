@@ -59,23 +59,23 @@ detect_gpu() {
 setup_june_namespace() {
     log "Setting up June services namespace..."
     
-    # Create june-services namespace
-    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
-    
-    # Wait for namespace with better error handling
-    local timeout=60
-    local count=0
-    while [ $count -lt $timeout ]; do
-        if kubectl get namespace june-services --no-headers 2>/dev/null | grep -q "Active"; then
-            log "June services namespace is active"
-            break
+    # Check if namespace already exists
+    if kubectl get namespace june-services >/dev/null 2>&1; then
+        # Check if it's managed by Helm
+        local managed_by=$(kubectl get namespace june-services -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || echo "")
+        
+        if [ "$managed_by" != "Helm" ]; then
+            log "Existing namespace found without Helm ownership - adding Helm labels..."
+            kubectl label namespace june-services app.kubernetes.io/managed-by=Helm --overwrite
+            kubectl annotate namespace june-services meta.helm.sh/release-name=june-platform --overwrite
+            kubectl annotate namespace june-services meta.helm.sh/release-namespace=june-services --overwrite
+            log "Namespace ownership transferred to Helm"
+        else
+            log "Namespace already managed by Helm"
         fi
-        sleep 1
-        count=$((count + 1))
-        if [ $count -eq $timeout ]; then
-            error "Timeout waiting for June services namespace to become active"
-        fi
-    done
+    else
+        log "Namespace will be created by Helm during deployment"
+    fi
     
     success "June services namespace ready"
 }
@@ -137,9 +137,10 @@ deploy_june_platform() {
     log "  GPU Available: $gpu_available"
     log "  Email: $LETSENCRYPT_EMAIL"
     
-    # Deploy June Platform using Helm
+    # Deploy June Platform using Helm with --create-namespace
     helm upgrade --install june-platform "$helm_chart" \
         --namespace june-services \
+        --create-namespace \
         --set global.domain="$DOMAIN" \
         --set certificate.email="$LETSENCRYPT_EMAIL" \
         --set secrets.geminiApiKey="$GEMINI_API_KEY" \
