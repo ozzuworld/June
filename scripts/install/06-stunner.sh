@@ -216,12 +216,26 @@ apply_stunner_config() {
         local file_path="${stunner_config_dir}/${config_file}"
         if [ -f "$file_path" ]; then
             log "Applying ${config_file}..."
-            kubectl apply -f "$file_path" > /dev/null 2>&1
+            
+            # Handle YAML files that need variable substitution
+            if [[ "$config_file" == *gateway.yaml ]]; then
+                # Get public IP for gateway configuration
+                export PUBIP=$(curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "127.0.0.1")
+                log "Using public IP: $PUBIP for gateway configuration"
+                
+                # Apply with variable substitution
+                envsubst < "$file_path" | kubectl apply -f - > /dev/null 2>&1
+            else
+                # Apply directly for other files
+                kubectl apply -f "$file_path" > /dev/null 2>&1
+            fi
+            
             sleep 5  # Allow time for resources to be processed
         else
             warn "Configuration file not found: $file_path"
         fi
     done
+
     
     # Wait for gateway class to be accepted
     if kubectl get gatewayclass stunner &>/dev/null; then
