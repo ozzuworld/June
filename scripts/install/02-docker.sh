@@ -7,7 +7,7 @@ set -e
 source "$(dirname "$0")/../common/logging.sh"
 source "$(dirname "$0")/../common/validation.sh"
 
-ROOT_DIR="${1:-$(dirname "$(dirname "$(dirname "$0")")")"}" 
+ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
 
 install_docker() {
     log "Phase 2/9: Installing Docker..."
