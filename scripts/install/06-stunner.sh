@@ -17,18 +17,20 @@ fi
 install_gateway_api() {
     log "Installing Gateway API..."
     
-    # Check if Gateway API is already installed
+    # Check if Gateway API is already installed with UDPRoute support
     if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
        kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null && \
        kubectl get crd udproutes.gateway.networking.k8s.io &>/dev/null; then
-        success "Gateway API CRDs already installed"
+        success "Gateway API CRDs already installed with UDPRoute support"
         return 0
     fi
     
-    # Install Gateway API CRDs with retry logic
+    # Install Gateway API CRDs (EXPERIMENTAL for UDPRoute support)
+    log "Installing Gateway API with experimental features (required for UDPRoute)..."
     local retries=3
     for i in $(seq 1 $retries); do
-        if kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1; then
+        # Use experimental channel to get UDPRoute CRD
+        if kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/experimental-install.yaml > /dev/null 2>&1; then
             log "Gateway API CRDs installation initiated (attempt $i/$retries)"
             break
         fi
@@ -69,7 +71,7 @@ install_gateway_api() {
         done
         
         if [ $ready_crds -eq ${#required_crds[@]} ]; then
-            success "Gateway API CRDs ready ($ready_crds/${#required_crds[@]})"
+            success "Gateway API CRDs ready ($ready_crds/${#required_crds[@]}) with UDPRoute support"
             return 0
         fi
         
@@ -86,17 +88,14 @@ install_gateway_api() {
     
     # Final diagnostic check before failing
     log "Timeout reached. Performing final diagnostic check..."
-    log "All CRDs in cluster:"
-    kubectl get crd | grep -E "gateway|stunner" || true
+    log "All Gateway API CRDs in cluster:"
+    kubectl get crd | grep -E "gateway" || true
     
-    log "Gateway API namespace status:"
-    kubectl get ns gateway-system -o wide || true
+    log "Checking for Gateway API controller pods:"
+    kubectl get pods -A | grep -E "gateway|controller" || true
     
-    log "Gateway API pods status:"
-    kubectl get pods -n gateway-system || true
-    
-    log "Recent events:"
-    kubectl get events --sort-by='.lastTimestamp' -n gateway-system --field-selector type!=Normal || true
+    log "Recent events related to CRDs:"
+    kubectl get events --sort-by='.lastTimestamp' --field-selector reason=Created | grep -i crd | tail -10 || true
     
     error "Gateway API CRDs failed to become ready within timeout"
 }
