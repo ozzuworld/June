@@ -1,25 +1,30 @@
 #!/bin/bash
 # June Platform Setup Script
-# Makes all installation scripts executable
+# Makes installation script executable and shows usage
 
-echo "June Platform - Setting up installation scripts..."
+echo "June Platform - Setting up installation..."
 
 # Make scripts executable
 chmod +x install.sh
-chmod +x install-clean.sh
-chmod +x install-livekit.sh
 chmod +x test-stunner.sh
 chmod +x setup.sh
 
-echo "✅ Installation scripts are now executable"
+echo "✅ Installation script is now executable"
 echo ""
-echo "Available installation options:"
-echo "  ./install-clean.sh    - Core services only (recommended)"
-echo "  ./install-livekit.sh  - Add LiveKit + STUNner WebRTC"
-echo "  ./install.sh          - Legacy full installation (includes old Janus)"
+echo "June Platform - Complete Installation:"
+echo "  ./install.sh    - Install everything (K8s + June + LiveKit + STUNner)"
 echo ""
-echo "For new deployments, use:"
-echo "  sudo ./install-clean.sh"
-echo "  sudo ./install-livekit.sh"
+echo "For fresh VM deployment, run:"
+echo "  sudo ./install.sh"
 echo ""
-echo "See MIGRATION.md for detailed migration instructions."
+echo "This single script will install:"
+echo "  ✓ Kubernetes cluster"
+echo "  ✓ Infrastructure (ingress, cert-manager)"
+echo "  ✓ June Platform services (API, IDP, STT, TTS)"
+echo "  ✓ LiveKit WebRTC server"
+echo "  ✓ STUNner TURN server"
+echo "  ✓ SSL certificates"
+echo ""
+echo "Total installation time: ~10-15 minutes on a fresh VM"
+echo ""
+echo "See MIGRATION.md if upgrading from old Janus setup."
