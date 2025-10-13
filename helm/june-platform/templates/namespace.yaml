@@ -1,4 +1,3 @@
-# helm/june-platform/templates/namespace.yaml
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,3 +5,9 @@ metadata:
   labels:
     name: {{ .Release.Namespace }}
     app.kubernetes.io/part-of: june
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "june-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
