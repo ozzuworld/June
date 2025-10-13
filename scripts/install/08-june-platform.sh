@@ -73,8 +73,12 @@ setup_june_namespace() {
         else
             log "Namespace already managed by Helm"
         fi
+        
+        # Set flag to indicate namespace exists
+        NAMESPACE_EXISTS=true
     else
         log "Namespace will be created by Helm during deployment"
+        NAMESPACE_EXISTS=false
     fi
     
     success "June services namespace ready"
@@ -137,20 +141,34 @@ deploy_june_platform() {
     log "  GPU Available: $gpu_available"
     log "  Email: $LETSENCRYPT_EMAIL"
     
-    # Deploy June Platform using Helm with --create-namespace
-    helm upgrade --install june-platform "$helm_chart" \
-        --namespace june-services \
-        --create-namespace \
-        --set global.domain="$DOMAIN" \
-        --set certificate.email="$LETSENCRYPT_EMAIL" \
-        --set secrets.geminiApiKey="$GEMINI_API_KEY" \
-        --set secrets.cloudflareToken="$CLOUDFLARE_TOKEN" \
-        --set postgresql.password="${POSTGRESQL_PASSWORD:-Pokemon123!}" \
-        --set keycloak.adminPassword="${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}" \
-        --set stt.enabled="$gpu_available" \
-        --set tts.enabled="$gpu_available" \
-        --set certificate.enabled=true \
-        --timeout 15m
+    # Build Helm command with conditional --create-namespace flag
+    local helm_cmd="helm upgrade --install june-platform \"$helm_chart\" \\
+        --namespace june-services"
+    
+    # Only add --create-namespace if namespace doesn't exist
+    if [ "$NAMESPACE_EXISTS" = "false" ]; then
+        helm_cmd="$helm_cmd \\
+        --create-namespace"
+        log "Using --create-namespace flag (namespace doesn't exist)"
+    else
+        log "Skipping --create-namespace flag (namespace already exists)"
+    fi
+    
+    # Add all the configuration parameters
+    helm_cmd="$helm_cmd \\
+        --set global.domain=\"$DOMAIN\" \\
+        --set certificate.email=\"$LETSENCRYPT_EMAIL\" \\
+        --set secrets.geminiApiKey=\"$GEMINI_API_KEY\" \\
+        --set secrets.cloudflareToken=\"$CLOUDFLARE_TOKEN\" \\
+        --set postgresql.password=\"${POSTGRESQL_PASSWORD:-Pokemon123!}\" \\
+        --set keycloak.adminPassword=\"${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}\" \\
+        --set stt.enabled=\"$gpu_available\" \\
+        --set tts.enabled=\"$gpu_available\" \\
+        --set certificate.enabled=true \\
+        --timeout 15m"
+    
+    # Execute the Helm command
+    eval "$helm_cmd"
     
     success "June Platform deployed"
 }
@@ -275,6 +293,9 @@ main() {
     # Verify prerequisites
     verify_command "kubectl" "kubectl must be available"
     verify_command "helm" "helm must be available"
+    
+    # Initialize global variables
+    NAMESPACE_EXISTS=false
     
     setup_june_namespace
     deploy_june_platform
