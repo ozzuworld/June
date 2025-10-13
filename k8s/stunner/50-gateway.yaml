@@ -1,0 +1,20 @@
+# NOTE: ${PUBIP} will be substituted by the deploy script (envsubst).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: stunner-gateway
+  namespace: stunner
+  annotations:
+    stunner.l7mp.io/service-type: "ClusterIP"
+spec:
+  addresses:
+    - type: IPAddress
+      value: ${PUBIP}
+  gatewayClassName: stunner-gatewayclass
+  listeners:
+    - name: turn-udp
+      port: 3478
+      protocol: TURN-UDP
+      allowedRoutes:
+        namespaces:
+          from: All

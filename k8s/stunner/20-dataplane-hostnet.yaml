@@ -1,0 +1,7 @@
+apiVersion: stunner.l7mp.io/v1
+kind: Dataplane
+metadata:
+  name: hostnet-ds
+spec:
+  dataplaneResource: DaemonSet
+  hostNetwork: true
