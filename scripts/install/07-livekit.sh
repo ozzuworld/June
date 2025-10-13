@@ -43,11 +43,20 @@ deploy_livekit_server() {
     
     if [ -f "$values_file" ]; then
         log "Using custom values file: $values_file"
-        helm upgrade --install livekit livekit/livekit-server \
+        
+        # Generate LiveKit API keys
+        export LIVEKIT_API_KEY="june-api-$(openssl rand -hex 16)"
+        export LIVEKIT_API_SECRET="$(openssl rand -base64 32)"
+        
+        log "Generated LiveKit API keys for authentication"
+        
+        # Apply with variable substitution
+        envsubst < "$values_file" | helm upgrade --install livekit livekit/livekit-server \
             --namespace media \
-            --values "$values_file" \
+            --values - \
             --wait \
             --timeout=15m > /dev/null 2>&1
+
     else
         log "Using default values for LiveKit installation"
         helm upgrade --install livekit livekit/livekit-server \

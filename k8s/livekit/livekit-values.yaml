@@ -6,6 +6,9 @@ server:
       tcp_port: 7881
     turn:
       enabled: false
+livekit:
+  keys:
+    ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
 service:
   type: ClusterIP
   ports:
@@ -17,4 +20,3 @@ service:
       port: 7881
       targetPort: 7881
       protocol: TCP
-# Chart’s default Service may not include UDP; we add a separate Service below.
