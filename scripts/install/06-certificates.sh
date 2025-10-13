@@ -17,10 +17,18 @@ fi
 # Certificate backup directory
 CERT_BACKUP_DIR="/root/.june-certs"
 
+# Function to convert domain to backup filename format
+domain_to_filename() {
+    local domain="$1"
+    # Convert dots to dashes for filename
+    echo "${domain//\./-}"
+}
+
 # Function to check if certificate backup exists
 check_certificate_backup() {
     local domain="$1"
-    local backup_file="${CERT_BACKUP_DIR}/${domain}-wildcard-tls-backup.yaml"
+    local domain_filename=$(domain_to_filename "$domain")
+    local backup_file="${CERT_BACKUP_DIR}/${domain_filename}-wildcard-tls-backup.yaml"
     
     if [ -f "$backup_file" ]; then
         log "Found certificate backup: $backup_file"
@@ -34,7 +42,8 @@ check_certificate_backup() {
 # Function to restore certificate from backup
 restore_certificate_backup() {
     local domain="$1"
-    local backup_file="${CERT_BACKUP_DIR}/${domain}-wildcard-tls-backup.yaml"
+    local domain_filename=$(domain_to_filename "$domain")
+    local backup_file="${CERT_BACKUP_DIR}/${domain_filename}-wildcard-tls-backup.yaml"
     
     log "Restoring wildcard certificate from backup for domain: $domain"
     
@@ -58,7 +67,7 @@ restore_certificate_backup() {
         success "Certificate backup restored successfully"
         
         # Wait for certificate to be ready
-        local cert_name="${domain//\./-}-wildcard-tls"
+        local cert_name="${domain_filename}-wildcard-tls"
         log "Waiting for certificate to be ready: $cert_name"
         
         # Check if certificate secret exists
@@ -82,6 +91,7 @@ restore_certificate_backup() {
 # Function to create new wildcard certificate using Cloudflare DNS01
 create_new_certificate() {
     local domain="$1"
+    local domain_filename=$(domain_to_filename "$domain")
     
     log "Creating new wildcard certificate for domain: $domain using Cloudflare DNS01"
     
@@ -100,7 +110,7 @@ create_new_certificate() {
     fi
     
     # Create certificate resource
-    local cert_name="${domain//\./-}-wildcard-tls"
+    local cert_name="${domain_filename}-wildcard-tls"
     
     cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: cert-manager.io/v1
@@ -169,8 +179,9 @@ EOF
 # Function to create certificate backup
 create_certificate_backup() {
     local domain="$1"
-    local cert_name="${domain//\./-}-wildcard-tls"
-    local backup_file="${CERT_BACKUP_DIR}/${domain}-wildcard-tls-backup.yaml"
+    local domain_filename=$(domain_to_filename "$domain")
+    local cert_name="${domain_filename}-wildcard-tls"
+    local backup_file="${CERT_BACKUP_DIR}/${domain_filename}-wildcard-tls-backup.yaml"
     
     log "Creating certificate backup for domain: $domain"
     
@@ -196,7 +207,8 @@ create_certificate_backup() {
 # Function to verify certificate is working
 verify_certificate() {
     local domain="$1"
-    local cert_name="${domain//\./-}-wildcard-tls"
+    local domain_filename=$(domain_to_filename "$domain")
+    local cert_name="${domain_filename}-wildcard-tls"
     
     log "Verifying certificate: $cert_name"
     
@@ -300,7 +312,7 @@ show_certificate_help() {
     echo ""
     echo "Backup locations:"
     echo "  Directory: $CERT_BACKUP_DIR"
-    echo "  Format: {domain}-wildcard-tls-backup.yaml"
+    echo "  Format: {domain-with-dashes}-wildcard-tls-backup.yaml"
     echo ""
 }
 
