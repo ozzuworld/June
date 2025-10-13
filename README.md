@@ -6,26 +6,44 @@ June Platform is a comprehensive microservices-based voice processing system tha
 
 ## 🚀 **Quick Start (Fresh VM)**
 
+### Using the New Modular Installation System (Recommended)
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/ozzuworld/June.git
 cd June
 
-# 2. Configure your environment
+# 2. Make scripts executable
+chmod +x scripts/make-executable.sh
+./scripts/make-executable.sh
+
+# 3. Configure your environment
 cp config.env.example config.env
 nano config.env  # Set your domain, email, API keys
 
-# 3. Run the complete installation
+# 4. Run the modular installation
+sudo ./scripts/install-orchestrator.sh
+```
+
+### Using the Legacy Installation (Alternative)
+
+```bash
+# Alternative: Use the original monolithic script
 sudo ./install.sh
 ```
 
-**That's it!** One script installs everything:
-- ✅ Kubernetes cluster
-- ✅ June Platform services (API, Identity, STT, TTS)
-- ✅ LiveKit WebRTC server
-- ✅ STUNner TURN server
-- ✅ SSL certificates
-- ✅ Infrastructure (ingress, cert-manager)
+**The modular system offers:**
+- ✅ **Better Troubleshooting**: Each phase can be run independently
+- ✅ **Selective Installation**: Skip phases you don't need
+- ✅ **Easier Maintenance**: Focused, maintainable code
+- ✅ **Better Logging**: Enhanced logging and validation
+- ✅ **Partial Updates**: Update only specific components
+
+## 📚 **Installation Documentation**
+
+For detailed installation options and troubleshooting, see:
+- **[Modular Installation Guide](scripts/README.md)** - Complete documentation for the new system
+- **[Migration Guide](MIGRATION.md)** - Upgrading from Janus to LiveKit
 
 ## 🏗️ **Architecture**
 
@@ -107,11 +125,48 @@ kubectl get pods -n stunner
 # Check STUNner gateway
 kubectl get gateway -n stunner
 
+# Check SSL certificates
+kubectl get certificates -A
+
 # Test TURN server
 ./test-stunner.sh
 ```
 
-## 🔄 **Upgrading from Old Janus Setup**
+## 🛠️ **Advanced Installation Options**
+
+### Selective Installation
+
+```bash
+# Install infrastructure only (no June Platform)
+sudo ./scripts/install-orchestrator.sh --skip june-platform final-setup
+
+# Skip phases already completed
+sudo ./scripts/install-orchestrator.sh --skip prerequisites docker
+
+# Update only June Platform
+sudo ./scripts/install-orchestrator.sh --skip prerequisites docker kubernetes infrastructure helm stunner livekit
+```
+
+### Individual Phase Installation
+
+```bash
+# Run specific phases
+sudo ./scripts/install/03-kubernetes.sh
+sudo ./scripts/install/06-stunner.sh
+sudo ./scripts/install/08-june-platform.sh
+```
+
+### Development Setup
+
+```bash
+# Install without AI services (no GPU required)
+# AI services are automatically disabled if no GPU is detected
+sudo ./scripts/install-orchestrator.sh
+```
+
+## 🔄 **Upgrading**
+
+### From Old Janus Setup
 
 If you're upgrading from the old Janus implementation:
 
@@ -121,9 +176,30 @@ If you're upgrading from the old Janus implementation:
    kubectl delete deployment june-janus -n june-services
    kubectl delete service june-janus -n june-services
    ```
-3. **Run the updated installer**: `sudo ./install.sh`
+3. **Run the updated installer**: `sudo ./scripts/install-orchestrator.sh`
+
+### Regular Updates
+
+```bash
+# Update June Platform services only
+sudo ./scripts/install-orchestrator.sh --skip prerequisites docker kubernetes infrastructure helm stunner livekit
+
+# Or update everything
+sudo ./scripts/install-orchestrator.sh
+```
 
 ## 🤼 **Troubleshooting**
+
+### Using the Modular System for Debugging
+
+```bash
+# Enable debug logging
+export DEBUG=true
+sudo -E ./scripts/install-orchestrator.sh
+
+# Run individual phases for troubleshooting
+sudo ./scripts/install/04-infrastructure.sh
+```
 
 ### Common Issues
 
@@ -145,16 +221,26 @@ kubectl describe certificate -n june-services
 kubectl logs -n cert-manager deployment/cert-manager
 ```
 
+**Phase-specific debugging:**
+```bash
+# Check specific phase logs
+sudo ./scripts/install/06-stunner.sh  # STUNner issues
+sudo ./scripts/install/04-infrastructure.sh  # Certificate issues
+```
+
 ### Getting Help
 
-1. Check service logs: `kubectl logs -n <namespace> <pod-name>`
-2. Verify configuration: Review your `config.env` file
-3. Check DNS: Ensure your domain points to the correct IP
-4. Firewall: Open ports 80, 443, and 3478
+1. **Check the modular installation docs**: `scripts/README.md`
+2. **Check service logs**: `kubectl logs -n <namespace> <pod-name>`
+3. **Verify configuration**: Review your `config.env` file
+4. **Check DNS**: Ensure your domain points to the correct IP
+5. **Firewall**: Open ports 80, 443, and 3478
+6. **Run individual phases**: Isolate the problem to a specific component
 
 ## 📚 **Documentation**
 
-- **Migration Guide**: `MIGRATION.md` - Upgrading from Janus to LiveKit
+- **[Modular Installation Guide](scripts/README.md)** - Complete installation documentation
+- **[Migration Guide](MIGRATION.md)** - Upgrading from Janus to LiveKit
 - **Configuration Files**: `k8s/` - Kubernetes manifests
 - **Helm Charts**: `helm/june-platform/` - Service definitions
 
