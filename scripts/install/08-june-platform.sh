@@ -7,7 +7,7 @@ set -e
 source "$(dirname "$0")/../common/logging.sh"
 source "$(dirname "$0")/../common/validation.sh"
 
-ROOT_DIR="${1:-$(dirname "$(dirname "$(dirname "$0")")")"}" 
+ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
 
 # Source configuration from environment or config file
 if [ -f "${ROOT_DIR}/config.env" ]; then
