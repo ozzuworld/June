@@ -218,26 +218,34 @@ install_infrastructure() {
         success "cert-manager already installed"
     fi
     
-    # Wait for CRDs to be established with timeout and error handling
-    log "Waiting for cert-manager CRDs..."
-    CRD_TIMEOUT=120
+    # Enhanced CRD waiting logic for cert-manager
+    log "Waiting for cert-manager CRDs with enhanced verification..."
+    CRD_TIMEOUT=180  # Increased from 120
     CRD_COUNTER=0
-    
+
     while [ $CRD_COUNTER -lt $CRD_TIMEOUT ]; do
+        # Check for all required cert-manager CRDs
         if kubectl get crd clusterissuers.cert-manager.io &> /dev/null && \
-           kubectl get crd certificates.cert-manager.io &> /dev/null && \
-           kubectl get crd certificaterequests.cert-manager.io &> /dev/null; then
-            success "cert-manager CRDs ready"
-            break
+        kubectl get crd certificates.cert-manager.io &> /dev/null && \
+        kubectl get crd certificaterequests.cert-manager.io &> /dev/null && \
+        kubectl get crd issuers.cert-manager.io &> /dev/null; then
+            
+            # Additional check: ensure cert-manager is actually processing resources
+            if kubectl get clusterissuers &> /dev/null; then
+                success "cert-manager CRDs ready and functional"
+                break
+            fi
         fi
         
-        sleep 2
-        CRD_COUNTER=$((CRD_COUNTER + 2))
+        sleep 3
+        CRD_COUNTER=$((CRD_COUNTER + 3))
         
-        if [ $((CRD_COUNTER % 20)) -eq 0 ]; then
+        if [ $((CRD_COUNTER % 30)) -eq 0 ]; then
             log "Still waiting for cert-manager CRDs... ($CRD_COUNTER/${CRD_TIMEOUT}s)"
+            kubectl get pods -n cert-manager --no-headers 2>/dev/null | awk '{print $1 ": " $3}' | head -3
         fi
     done
+
     
     if [ $CRD_COUNTER -ge $CRD_TIMEOUT ]; then
         warn "cert-manager CRDs took longer than expected, but continuing..."
@@ -324,38 +332,98 @@ install_stunner() {
     log "Installing Gateway API..."
     kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1
     
-    # Wait for Gateway API CRDs with timeout
+    # Wait for Gateway API CRDs with timeout and better error handling
     log "Waiting for Gateway API CRDs..."
-    for i in {1..60}; do
+    GATEWAY_CRD_TIMEOUT=120
+    GATEWAY_CRD_COUNTER=0
+    
+    while [ $GATEWAY_CRD_COUNTER -lt $GATEWAY_CRD_TIMEOUT ]; do
         if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
-           kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null; then
+           kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null && \
+           kubectl get crd udproutes.gateway.networking.k8s.io &>/dev/null; then
             success "Gateway API CRDs ready"
             break
         fi
-        if [ $((i % 15)) -eq 0 ]; then
-            log "Still waiting for Gateway API CRDs... ($i/60)"
+        if [ $((GATEWAY_CRD_COUNTER % 20)) -eq 0 ]; then
+            log "Still waiting for Gateway API CRDs... ($GATEWAY_CRD_COUNTER/${GATEWAY_CRD_TIMEOUT}s)"
         fi
         sleep 2
+        GATEWAY_CRD_COUNTER=$((GATEWAY_CRD_COUNTER + 2))
     done
     
-    # Add STUNner Helm repo
+    if [ $GATEWAY_CRD_COUNTER -ge $GATEWAY_CRD_TIMEOUT ]; then
+        error "Gateway API CRDs failed to become ready within timeout"
+    fi
+    
+    # Add STUNner Helm repo with retry logic
     log "Adding STUNner Helm repository..."
-    helm repo add stunner https://l7mp.io/stunner > /dev/null 2>&1
+    for i in {1..3}; do
+        if helm repo add stunner https://l7mp.io/stunner > /dev/null 2>&1; then
+            break
+        fi
+        if [ $i -eq 3 ]; then
+            error "Failed to add STUNner Helm repository after 3 attempts"
+        fi
+        log "Retrying Helm repo add (attempt $i/3)..."
+        sleep 5
+    done
+    
     helm repo update > /dev/null 2>&1
     
-    # Install STUNner operator
+    # Install STUNner operator with enhanced timeout and monitoring
     log "Installing STUNner operator..."
-    helm install stunner stunner/stunner \
+    helm upgrade --install stunner stunner/stunner \
         --create-namespace \
         --namespace=stunner-system \
         --wait \
-        --timeout=10m > /dev/null 2>&1
+        --timeout=15m \
+        --set image.tag=latest \
+        --set logLevel=info > /dev/null 2>&1
     
-    # Apply STUNner configuration from k8s/stunner/
+    # Verify STUNner operator is truly ready
+    log "Waiting for STUNner operator to be fully ready..."
+    kubectl wait --for=condition=available --timeout=300s \
+        deployment/stunner -n stunner-system > /dev/null 2>&1
+    
+    # Wait for STUNner CRDs to be established
+    log "Waiting for STUNner CRDs..."
+    STUNNER_CRD_TIMEOUT=120
+    STUNNER_CRD_COUNTER=0
+    
+    while [ $STUNNER_CRD_COUNTER -lt $STUNNER_CRD_TIMEOUT ]; do
+        if kubectl get crd gatewayconfigs.stunner.l7mp.io &>/dev/null && \
+           kubectl get crd dataplanes.stunner.l7mp.io &>/dev/null; then
+            success "STUNner CRDs ready"
+            break
+        fi
+        if [ $((STUNNER_CRD_COUNTER % 20)) -eq 0 ]; then
+            log "Still waiting for STUNner CRDs... ($STUNNER_CRD_COUNTER/${STUNNER_CRD_TIMEOUT}s)"
+        fi
+        sleep 2
+        STUNNER_CRD_COUNTER=$((STUNNER_CRD_COUNTER + 2))
+    done
+    
+    if [ $STUNNER_CRD_COUNTER -ge $STUNNER_CRD_TIMEOUT ]; then
+        warn "STUNner CRDs took longer than expected, checking operator status..."
+        kubectl get pods -n stunner-system
+        kubectl logs -n stunner-system deployment/stunner --tail=20 || true
+    fi
+    
+    # Apply STUNner configuration from k8s/stunner/ with proper ordering
     if [ -d "${SCRIPT_DIR}/k8s/stunner" ]; then
         log "Applying STUNner configuration..."
         
-        # Create secret with proper credentials
+        # First, create namespaces
+        if [ -f "${SCRIPT_DIR}/k8s/stunner/00-namespaces.yaml" ]; then
+            log "Creating STUNner namespaces..."
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/00-namespaces.yaml" > /dev/null 2>&1
+            
+            # Wait for namespace to be ready
+            kubectl wait --for=condition=Active --timeout=60s namespace/stunner > /dev/null 2>&1 || true
+        fi
+        
+        # Create secret with proper credentials in correct namespace
+        log "Creating STUNner authentication secret..."
         kubectl create secret generic stunner-auth-secret \
             --from-literal=type=static \
             --from-literal=username="${TURN_USERNAME:-june-user}" \
@@ -363,16 +431,56 @@ install_stunner() {
             --namespace=stunner \
             --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
         
-        # Apply other STUNner resources
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/00-namespaces.yaml" > /dev/null 2>&1 || true
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/20-dataplane-hostnet.yaml" > /dev/null 2>&1 || true
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/30-gatewayconfig.yaml" > /dev/null 2>&1 || true
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/40-gatewayclass.yaml" > /dev/null 2>&1 || true
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/50-gateway.yaml" > /dev/null 2>&1 || true
+        # Apply dataplane configuration
+        if [ -f "${SCRIPT_DIR}/k8s/stunner/20-dataplane-hostnet.yaml" ]; then
+            log "Applying STUNner dataplane configuration..."
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/20-dataplane-hostnet.yaml" > /dev/null 2>&1
+            sleep 5  # Allow dataplane to be processed
+        fi
+        
+        # Apply gateway configuration
+        if [ -f "${SCRIPT_DIR}/k8s/stunner/30-gatewayconfig.yaml" ]; then
+            log "Applying STUNner gateway configuration..."
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/30-gatewayconfig.yaml" > /dev/null 2>&1
+            sleep 5  # Allow gateway config to be processed
+        fi
+        
+        # Apply gateway class
+        if [ -f "${SCRIPT_DIR}/k8s/stunner/40-gatewayclass.yaml" ]; then
+            log "Applying STUNner gateway class..."
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/40-gatewayclass.yaml" > /dev/null 2>&1
+            
+            # Wait for gateway class to be accepted
+            kubectl wait --for=condition=Accepted --timeout=120s \
+                gatewayclass/stunner > /dev/null 2>&1 || warn "Gateway class acceptance timeout"
+        fi
+        
+        # Apply gateway
+        if [ -f "${SCRIPT_DIR}/k8s/stunner/50-gateway.yaml" ]; then
+            log "Applying STUNner gateway..."
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/50-gateway.yaml" > /dev/null 2>&1
+            
+            # Wait for gateway to be ready
+            kubectl wait --for=condition=Programmed --timeout=180s \
+                gateway/stunner-gateway -n stunner > /dev/null 2>&1 || warn "Gateway programming timeout"
+        fi
+        
+        success "STUNner configuration applied"
+    else
+        warn "STUNner configuration directory not found at ${SCRIPT_DIR}/k8s/stunner"
+    fi
+    
+    # Verify STUNner installation
+    log "Verifying STUNner installation..."
+    if kubectl get gateway stunner-gateway -n stunner &>/dev/null; then
+        success "STUNner gateway created successfully"
+    else
+        warn "STUNner gateway not found, installation may be incomplete"
     fi
     
     success "STUNner installed"
 }
+
 
 # ============================================================================
 # STEP 7: Install LiveKit
@@ -381,39 +489,66 @@ install_stunner() {
 install_livekit() {
     log "Step 7/9: Installing LiveKit..."
     
-    # Create media namespace
+    # Create media namespace and wait for it to be active
     kubectl create namespace media --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    kubectl wait --for=condition=Active --timeout=60s namespace/media > /dev/null 2>&1
     
-    # Add LiveKit Helm repo
+    # Add LiveKit Helm repo with retry logic
     log "Adding LiveKit Helm repository..."
-    helm repo add livekit https://helm.livekit.io > /dev/null 2>&1
+    for i in {1..3}; do
+        if helm repo add livekit https://helm.livekit.io > /dev/null 2>&1; then
+            break
+        fi
+        if [ $i -eq 3 ]; then
+            error "Failed to add LiveKit Helm repository after 3 attempts"
+        fi
+        log "Retrying LiveKit Helm repo add (attempt $i/3)..."
+        sleep 5
+    done
+    
     helm repo update > /dev/null 2>&1
     
-    # Install LiveKit with configuration from k8s/livekit/
+    # Install LiveKit with enhanced configuration and timeout
     log "Deploying LiveKit server..."
     if [ -f "${SCRIPT_DIR}/k8s/livekit/livekit-values.yaml" ]; then
         helm upgrade --install livekit livekit/livekit-server \
             --namespace media \
             --values "${SCRIPT_DIR}/k8s/livekit/livekit-values.yaml" \
             --wait \
-            --timeout=10m > /dev/null 2>&1
+            --timeout=15m > /dev/null 2>&1
     else
-        # Fallback basic configuration
+        # Fallback basic configuration with improved settings
         helm upgrade --install livekit livekit/livekit-server \
             --namespace media \
             --set server.replicas=1 \
+            --set server.resources.requests.cpu=100m \
+            --set server.resources.requests.memory=128Mi \
             --wait \
-            --timeout=10m > /dev/null 2>&1
+            --timeout=15m > /dev/null 2>&1
     fi
     
-    # Apply additional LiveKit resources
+    # Wait for LiveKit to be fully ready before proceeding
+    log "Waiting for LiveKit to be ready..."
+    kubectl wait --for=condition=available --timeout=300s \
+        deployment/livekit -n media > /dev/null 2>&1 || warn "LiveKit deployment timeout"
+    
+    # Apply additional LiveKit resources with verification
     if [ -f "${SCRIPT_DIR}/k8s/livekit/livekit-udp-svc.yaml" ]; then
+        log "Applying LiveKit UDP service..."
         kubectl apply -f "${SCRIPT_DIR}/k8s/livekit/livekit-udp-svc.yaml" > /dev/null 2>&1
+        sleep 5  # Allow service to be created
     fi
     
-    # Apply UDPRoute for LiveKit
+    # Apply UDPRoute for LiveKit only after STUNner gateway is ready
     if [ -f "${SCRIPT_DIR}/k8s/stunner/60-udproute-livekit.yaml" ]; then
-        kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/60-udproute-livekit.yaml" > /dev/null 2>&1
+        log "Applying UDPRoute for LiveKit..."
+        # Verify STUNner gateway exists first
+        if kubectl get gateway stunner-gateway -n stunner &>/dev/null; then
+            kubectl apply -f "${SCRIPT_DIR}/k8s/stunner/60-udproute-livekit.yaml" > /dev/null 2>&1
+            success "UDPRoute applied successfully"
+        else
+            warn "STUNner gateway not found, skipping UDPRoute creation"
+        fi
     fi
     
     success "LiveKit installed"
