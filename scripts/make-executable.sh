@@ -9,9 +9,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Making installation scripts executable..."
 
+# Make this script executable first
+chmod +x "$0"
+
 # Make orchestrator executable
-chmod +x "$SCRIPT_DIR/install-orchestrator.sh"
-echo "✅ install-orchestrator.sh"
+if [ -f "$SCRIPT_DIR/install-orchestrator.sh" ]; then
+    chmod +x "$SCRIPT_DIR/install-orchestrator.sh"
+    echo "✅ install-orchestrator.sh"
+fi
 
 # Make all phase scripts executable
 if [ -d "$SCRIPT_DIR/install" ]; then
@@ -47,6 +52,6 @@ echo ""
 echo "Usage:"
 echo "  sudo ./scripts/install-orchestrator.sh              # Full installation"
 echo "  sudo ./scripts/install-orchestrator.sh --help       # Show help"
-echo "  ./scripts/install-orchestrator.sh --skip phase1     # Skip phases"
+echo "  sudo ./scripts/install-orchestrator.sh --skip phase1# Skip phases"
 echo ""
 echo "For more information, see scripts/README.md"
