@@ -11,7 +11,6 @@ domains:
   primary: ozzu.world
   api: api.ozzu.world
   idp: idp.ozzu.world
-  janus: janus.ozzu.world 
   stt: stt.ozzu.world
   tts: tts.ozzu.world
   turn: turn.ozzu.world
@@ -41,36 +40,14 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# Janus WebRTC Gateway Configuration - FIXED: Using Software Mansion image
-janus:
-  enabled: true
-  replicas: 1
-  image:
-    repository: sucwangsr/janus-webrtc-gateway-docker
-    tag: latest    
-    pullPolicy: IfNotPresent
+# LiveKit WebRTC Server (replaces Janus)
+# Note: LiveKit is now deployed separately via k8s/ manifests
+# This section is kept for reference and future Helm integration
+livekit:
+  enabled: false  # Deployed via install-livekit.sh
+  namespace: media
   
-  # Janus authentication secrets
-  adminKey: janusoverlord  # CHANGE IN PRODUCTION
-  apiSecret: janussecret   # CHANGE IN PRODUCTION
-  
-  # WebRTC Configuration
-  webrtc:
-    websocketsEnabled: true
-    rtpPortRange: "20000-20099"
-    iceNomination: regular
-    iceTcp: false
-    fullTrickle: true  # Changed to true for better connectivity
-  
-  resources:
-    requests:
-      memory: 512Mi
-      cpu: 200m
-    limits:
-      memory: 1Gi
-      cpu: 500m
-
-# June Orchestrator Service (NO WebRTC config)
+# June Orchestrator Service
 orchestrator:
   enabled: true
   replicas: 1
@@ -123,6 +100,13 @@ tts:
     limits:
       memory: 6Gi
       cpu: "2"
+
+# STUNner Configuration (for reference)
+# Note: STUNner is now configured via k8s/stunner/ manifests
+stunner:
+  enabled: false  # Deployed via install-livekit.sh
+  username: june-user
+  password: Pokemon123!
 
 # Secrets (Set via --set or separate values file)
 secrets:
