@@ -17,27 +17,86 @@ fi
 install_gateway_api() {
     log "Installing Gateway API..."
     
-    # Install Gateway API CRDs
-    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1
+    # Check if Gateway API is already installed
+    if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
+       kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null && \
+       kubectl get crd udproutes.gateway.networking.k8s.io &>/dev/null; then
+        success "Gateway API CRDs already installed"
+        return 0
+    fi
     
-    # Wait for Gateway API CRDs with timeout
+    # Install Gateway API CRDs with retry logic
+    local retries=3
+    for i in $(seq 1 $retries); do
+        if kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml > /dev/null 2>&1; then
+            log "Gateway API CRDs installation initiated (attempt $i/$retries)"
+            break
+        fi
+        if [ $i -eq $retries ]; then
+            error "Failed to apply Gateway API CRDs after $retries attempts"
+        fi
+        log "Retrying Gateway API CRDs installation (attempt $i/$retries)..."
+        sleep 5
+    done
+    
+    # Wait for Gateway API CRDs with extended timeout and better diagnostics
     log "Waiting for Gateway API CRDs..."
-    local timeout=120
+    local timeout=300  # Increased timeout to 5 minutes
     local counter=0
+    local check_interval=5
+    
+    local required_crds=(
+        "gatewayclasses.gateway.networking.k8s.io"
+        "gateways.gateway.networking.k8s.io"
+        "udproutes.gateway.networking.k8s.io"
+    )
     
     while [ $counter -lt $timeout ]; do
-        if kubectl get crd gatewayclasses.gateway.networking.k8s.io &>/dev/null && \
-           kubectl get crd gateways.gateway.networking.k8s.io &>/dev/null && \
-           kubectl get crd udproutes.gateway.networking.k8s.io &>/dev/null; then
-            success "Gateway API CRDs ready"
+        local ready_crds=0
+        local missing_crds=()
+        
+        for crd in "${required_crds[@]}"; do
+            if kubectl get crd "$crd" &>/dev/null; then
+                # Check if CRD is actually ready/established
+                if kubectl get crd "$crd" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null | grep -q "True"; then
+                    ready_crds=$((ready_crds + 1))
+                else
+                    missing_crds+=("$crd (not established)")
+                fi
+            else
+                missing_crds+=("$crd (not found)")
+            fi
+        done
+        
+        if [ $ready_crds -eq ${#required_crds[@]} ]; then
+            success "Gateway API CRDs ready ($ready_crds/${#required_crds[@]})"
             return 0
         fi
+        
         if [ $((counter % 20)) -eq 0 ]; then
-            log "Still waiting for Gateway API CRDs... ($counter/${timeout}s)"
+            log "Still waiting for Gateway API CRDs... ($counter/${timeout}s) - Ready: $ready_crds/${#required_crds[@]}"
+            if [ ${#missing_crds[@]} -gt 0 ]; then
+                log "Missing CRDs: ${missing_crds[*]}"
+            fi
         fi
-        sleep 2
-        counter=$((counter + 2))
+        
+        sleep $check_interval
+        counter=$((counter + check_interval))
     done
+    
+    # Final diagnostic check before failing
+    log "Timeout reached. Performing final diagnostic check..."
+    log "All CRDs in cluster:"
+    kubectl get crd | grep -E "gateway|stunner" || true
+    
+    log "Gateway API namespace status:"
+    kubectl get ns gateway-system -o wide || true
+    
+    log "Gateway API pods status:"
+    kubectl get pods -n gateway-system || true
+    
+    log "Recent events:"
+    kubectl get events --sort-by='.lastTimestamp' -n gateway-system --field-selector type!=Normal || true
     
     error "Gateway API CRDs failed to become ready within timeout"
 }
@@ -81,20 +140,37 @@ install_stunner() {
 wait_for_stunner_crds() {
     log "Waiting for STUNner CRDs..."
     
-    local timeout=120
+    local timeout=180  # Increased timeout
     local counter=0
+    local check_interval=5
+    
+    local required_crds=(
+        "gatewayconfigs.stunner.l7mp.io"
+        "dataplanes.stunner.l7mp.io"
+    )
     
     while [ $counter -lt $timeout ]; do
-        if kubectl get crd gatewayconfigs.stunner.l7mp.io &>/dev/null && \
-           kubectl get crd dataplanes.stunner.l7mp.io &>/dev/null; then
-            success "STUNner CRDs ready"
+        local ready_crds=0
+        
+        for crd in "${required_crds[@]}"; do
+            if kubectl get crd "$crd" &>/dev/null; then
+                if kubectl get crd "$crd" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null | grep -q "True"; then
+                    ready_crds=$((ready_crds + 1))
+                fi
+            fi
+        done
+        
+        if [ $ready_crds -eq ${#required_crds[@]} ]; then
+            success "STUNner CRDs ready ($ready_crds/${#required_crds[@]})"
             return 0
         fi
+        
         if [ $((counter % 20)) -eq 0 ]; then
-            log "Still waiting for STUNner CRDs... ($counter/${timeout}s)"
+            log "Still waiting for STUNner CRDs... ($counter/${timeout}s) - Ready: $ready_crds/${#required_crds[@]}"
         fi
-        sleep 2
-        counter=$((counter + 2))
+        
+        sleep $check_interval
+        counter=$((counter + check_interval))
     done
     
     warn "STUNner CRDs took longer than expected, checking operator status..."
