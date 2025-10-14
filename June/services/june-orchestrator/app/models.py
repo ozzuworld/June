@@ -1,6 +1,6 @@
-"""Data models"""
+"""Data models - simplified for LiveKit auto-management"""
 from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 
@@ -11,12 +11,12 @@ class SessionCreate(BaseModel):
 
 
 class SessionResponse(BaseModel):
-    """Session information with LiveKit integration"""
+    """Session information with LiveKit connection details"""
     session_id: str
     user_id: str
     room_name: str
-    livekit_room_sid: Optional[str] = None
-    access_token: Optional[str] = None
+    access_token: str
+    livekit_url: str
     created_at: str  # ISO format datetime
     status: str
 
@@ -29,27 +29,6 @@ class LiveKitWebhook(BaseModel):
     track: Optional[Dict[str, Any]] = None
     created_at: int
     id: str
-
-
-class ParticipantInfo(BaseModel):
-    """Participant information"""
-    identity: str
-    name: str
-    sid: str
-    state: str
-    joined_at: int
-    metadata: Optional[str] = None
-
-
-class RoomInfo(BaseModel):
-    """Room information"""
-    room_name: str
-    room_sid: str
-    creation_time: int
-    max_participants: int
-    num_participants: int
-    metadata: Optional[str] = None
-    participants: List[ParticipantInfo] = []
 
 
 class GuestTokenRequest(BaseModel):
