@@ -18,14 +18,14 @@ metadata:
   name: june-webrtc-config
   namespace: {{ .Release.Namespace }}
 data:
-  # LiveKit connection info for orchestrator
-  LIVEKIT_HOST: "livekit.media.svc.cluster.local"
+  # LiveKit connection info for orchestrator (internal cluster communication)
+  LIVEKIT_HOST: "livekit-livekit-server.media.svc.cluster.local"
   LIVEKIT_API_KEY: "devkey"
   LIVEKIT_API_SECRET: "secret"
   
-  # Client-facing LiveKit endpoints
-  LIVEKIT_PUBLIC_WS_URL: "wss://{{ .Values.domains.primary }}/livekit"
-  LIVEKIT_PUBLIC_HTTP_URL: "https://{{ .Values.domains.primary }}/livekit"
+  # Client-facing LiveKit endpoints (external URLs)
+  LIVEKIT_PUBLIC_WS_URL: "wss://livekit.{{ .Values.domains.primary }}"
+  LIVEKIT_PUBLIC_HTTP_URL: "https://livekit.{{ .Values.domains.primary }}"
   
   # STUN/TURN configuration for LiveKit
   STUN_SERVER: "{{ .Values.domains.turn }}:3478"
@@ -45,8 +45,8 @@ data:
   webrtc_config.json: |
     {
       "livekit": {
-        "ws_url": "wss://{{ .Values.domains.primary }}/livekit",
-        "http_url": "https://{{ .Values.domains.primary }}/livekit",
+        "ws_url": "wss://livekit.{{ .Values.domains.primary }}",
+        "http_url": "https://livekit.{{ .Values.domains.primary }}",
         "api_key": "devkey"
       },
       "ice_servers": [
