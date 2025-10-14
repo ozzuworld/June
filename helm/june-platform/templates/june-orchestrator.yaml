@@ -8,7 +8,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     app: june-orchestrator
-    version: "2.0.0"
+    version: "3.0.0"
 spec:
   replicas: {{ .Values.orchestrator.replicas }}
   strategy:
@@ -23,7 +23,7 @@ spec:
     metadata:
       labels:
         app: june-orchestrator
-        version: "2.0.0"
+        version: "3.0.0"
     spec:
       containers:
       - name: orchestrator
@@ -82,13 +82,8 @@ spec:
         
         # ============================================
         # LIVEKIT WEBRTC (replaces Janus)
-        # For managing rooms, getting stats, etc.
+        # Updated to use correct variable names from config.py
         # ============================================
-        - name: LIVEKIT_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: june-webrtc-config
-              key: LIVEKIT_HOST
         - name: LIVEKIT_API_KEY
           valueFrom:
             configMapKeyRef:
@@ -99,6 +94,8 @@ spec:
             configMapKeyRef:
               name: june-webrtc-config
               key: LIVEKIT_API_SECRET
+        - name: LIVEKIT_WS_URL
+          value: "wss://livekit.{{ .Values.domains.primary }}"
         
         # ============================================
         # SERVICE AUTHENTICATION
