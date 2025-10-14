@@ -1,4 +1,4 @@
-"""LiveKit service - simplified to focus on token generation only"""
+"""LiveKit service - corrected with official SDK documentation"""
 import logging
 from typing import Dict, Optional
 from datetime import timedelta
@@ -50,7 +50,7 @@ class LiveKitService:
             if permissions:
                 default_permissions.update(permissions)
             
-            # Create access token
+            # Create access token using official SDK pattern
             token = api.AccessToken(
                 api_key=config.livekit.api_key,
                 api_secret=config.livekit.api_secret
@@ -60,8 +60,8 @@ class LiveKitService:
             token.with_identity(participant_name)
             token.with_name(participant_name)
             
-            # Room permissions - LiveKit enforces these automatically
-            grant = api.VideoGrant(
+            # Room permissions - use VideoGrants (plural) as per official docs
+            grant = api.VideoGrants(
                 room_join=True,
                 room=room_name,
                 can_publish=default_permissions["can_publish"],
