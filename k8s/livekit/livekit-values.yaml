@@ -8,7 +8,7 @@ server:
       enabled: false
 livekit:
   keys:
-    ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+    ${LIVEKIT_API_KEY}: bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ
 service:
   type: ClusterIP
   ports:
