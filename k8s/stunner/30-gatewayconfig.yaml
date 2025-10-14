@@ -2,10 +2,10 @@ apiVersion: stunner.l7mp.io/v1
 kind: GatewayConfig
 metadata:
   name: stunner-gatewayconfig
-  namespace: stunner
+  namespace: stunner-system
 spec:
-  realm: turn.example.com
+  realm: turn.ozzu.world
   authRef:
     name: stunner-auth-secret
-    namespace: stunner
+    namespace: stunner-system
   dataplane: hostnet-ds

@@ -8,4 +8,4 @@ spec:
     group: "stunner.l7mp.io"
     kind: GatewayConfig
     name: stunner-gatewayconfig
-    namespace: stunner
+    namespace: stunner-system

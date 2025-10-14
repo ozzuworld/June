@@ -194,13 +194,13 @@ apply_stunner_config() {
         kubectl wait --for=condition=Active --timeout=60s namespace/stunner > /dev/null 2>&1 || true
     fi
     
-    # Create authentication secret
-    log "Creating STUNner authentication secret..."
+    # Create authentication secret in CORRECT namespace (stunner-system)
+    log "Creating STUNner authentication secret in stunner-system namespace..."
     kubectl create secret generic stunner-auth-secret \
         --from-literal=type=static \
         --from-literal=username="${TURN_USERNAME:-june-user}" \
         --from-literal=password="${STUNNER_PASSWORD:-Pokemon123!}" \
-        --namespace=stunner \
+        --namespace=stunner-system \
         --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
     
     # Apply configurations in order
@@ -225,8 +225,8 @@ apply_stunner_config() {
                 # Apply with variable substitution
                 envsubst < "$file_path" | kubectl apply -f - > /dev/null 2>&1
             else
-                # Apply directly for other files
-                kubectl apply -f "$file_path" > /dev/null 2>&1
+                # Apply with environment substitution for all files
+                envsubst < "$file_path" | kubectl apply -f - > /dev/null 2>&1
             fi
             
             sleep 5  # Allow time for resources to be processed
@@ -234,13 +234,31 @@ apply_stunner_config() {
             warn "Configuration file not found: $file_path"
         fi
     done
-
+    
+    # Attempt to create GCP firewall rule automatically
+    log "Attempting to create GCP firewall rule for TURN server..."
+    if command -v gcloud &> /dev/null; then
+        if gcloud compute firewall-rules create allow-turn-server \
+            --allow udp:3478 \
+            --source-ranges 0.0.0.0/0 \
+            --description "Allow TURN server on port 3478" \
+            --quiet > /dev/null 2>&1; then
+            success "GCP firewall rule created automatically"
+        else
+            warn "Could not create GCP firewall rule automatically (may already exist)"
+            warn "If needed, create manually: gcloud compute firewall-rules create allow-turn-server --allow udp:3478 --source-ranges 0.0.0.0/0"
+        fi
+    else
+        warn "gcloud not available - please create GCP firewall rule manually:"
+        warn "Console: https://console.cloud.google.com/networking/firewalls"
+        warn "Allow UDP port 3478 from 0.0.0.0/0"
+    fi
     
     # Wait for gateway class to be accepted
-    if kubectl get gatewayclass stunner &>/dev/null; then
+    if kubectl get gatewayclass stunner-gatewayclass &>/dev/null; then
         log "Waiting for gateway class to be accepted..."
         kubectl wait --for=condition=Accepted --timeout=120s \
-            gatewayclass/stunner > /dev/null 2>&1 || warn "Gateway class acceptance timeout"
+            gatewayclass/stunner-gatewayclass > /dev/null 2>&1 || warn "Gateway class acceptance timeout"
     fi
     
     # Wait for gateway to be ready
@@ -260,7 +278,6 @@ verify_stunner() {
     verify_namespace "stunner-system"
     verify_k8s_resource "deployment" "stunner-gateway-operator-controller-manager" "stunner-system"
     verify_k8s_resource "deployment" "stunner-auth" "stunner-system"
-
     
     # Check STUNner namespace and gateway
     if kubectl get namespace stunner &>/dev/null; then
@@ -272,6 +289,13 @@ verify_stunner() {
             # Show gateway status
             log "STUNner gateway status:"
             kubectl get gateway stunner-gateway -n stunner -o wide
+            
+            # Show TURN server details for user
+            EXTERNAL_IP=$(curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "127.0.0.1")
+            log "TURN Server Details:"
+            log "  Server: turn:${EXTERNAL_IP}:3478"
+            log "  Username: ${TURN_USERNAME:-june-user}"
+            log "  Password: ${STUNNER_PASSWORD:-Pokemon123!}"
         else
             warn "STUNner gateway not found"
         fi
@@ -290,6 +314,12 @@ main() {
     if [ "$EUID" -ne 0 ]; then 
         error "This script must be run as root"
     fi
+    
+    # Stop any conflicting TURN services first
+    log "Stopping conflicting TURN services..."
+    systemctl stop coturn 2>/dev/null || true
+    systemctl disable coturn 2>/dev/null || true
+    pkill -f turnserver 2>/dev/null || true
     
     # Verify prerequisites
     verify_command "kubectl" "kubectl must be available"
