@@ -1,4 +1,4 @@
-"""LiveKit service - corrected with official SDK documentation"""
+"""LiveKit service - Updated with latest SDK patterns"""
 import logging
 from typing import Dict, Optional
 from datetime import timedelta
@@ -61,6 +61,7 @@ class LiveKitService:
             token.with_name(participant_name)
             
             # Room permissions - use VideoGrants (plural) as per official docs
+            # Updated to match latest SDK documentation
             grant = api.VideoGrants(
                 room_join=True,
                 room=room_name,
@@ -81,6 +82,11 @@ class LiveKitService:
             logger.info(f"📝 LiveKit will auto-create room '{room_name}' when participant connects")
             return access_token
             
+        except AttributeError as e:
+            if "VideoGrant" in str(e):
+                logger.error(f"LiveKit SDK version issue - VideoGrants not found: {e}")
+                logger.error("Try upgrading livekit-api: pip install --upgrade livekit-api")
+            raise
         except Exception as e:
             logger.error(f"Failed to generate access token for {participant_name}: {e}")
             raise
