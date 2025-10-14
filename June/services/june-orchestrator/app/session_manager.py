@@ -1,4 +1,4 @@
-"""Session management - business logic with LiveKit integration"""
+"""Session management - simplified to focus on business logic only"""
 import uuid
 import logging
 from typing import Dict, Optional
@@ -10,15 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 class Session:
-    """Business session with LiveKit integration"""
+    """Business session - LiveKit handles all WebRTC complexities"""
     def __init__(self, user_id: str, room_name: Optional[str] = None):
         self.session_id = str(uuid.uuid4())
         self.user_id = user_id
         self.room_name = room_name or f"room-{user_id}-{uuid.uuid4().hex[:8]}"
         self.created_at = datetime.utcnow()
-        self.status = "created"
+        self.status = "active"  # Business logic status, not WebRTC status
         self.conversation_history = []
-        self.livekit_room_sid = None
         self.access_token = None
     
     def to_dict(self):
@@ -26,34 +25,41 @@ class Session:
             "session_id": self.session_id,
             "user_id": self.user_id,
             "room_name": self.room_name,
-            "livekit_room_sid": self.livekit_room_sid,
             "access_token": self.access_token,
             "created_at": self.created_at.isoformat(),
-            "status": self.status
+            "status": self.status,
+            "livekit_url": livekit_service.get_connection_info()["livekit_url"]
         }
 
 
 class SessionManager:
-    """Manage business sessions with LiveKit integration"""
+    """Manage business sessions - let LiveKit handle WebRTC lifecycle
+    
+    This manager focuses on business logic only:
+    - User session tracking
+    - Conversation history
+    - Access token generation
+    
+    LiveKit automatically handles:
+    - Room creation/deletion
+    - Participant management
+    - Media track lifecycle
+    - Connection state management
+    """
     
     def __init__(self):
         self.sessions: Dict[str, Session] = {}
     
-    async def create_session(self, user_id: str, room_name: Optional[str] = None) -> Session:
-        """Create new business session with LiveKit room"""
+    def create_session(self, user_id: str, room_name: Optional[str] = None) -> Session:
+        """Create new business session with LiveKit access token
+        
+        No need to create LiveKit room - it will be created automatically
+        when the first participant connects with this token.
+        """
         try:
             session = Session(user_id, room_name)
             
-            # Create LiveKit room
-            room_info = await livekit_service.create_room(
-                room_name=session.room_name,
-                max_participants=10
-            )
-            
-            # Store room SID
-            session.livekit_room_sid = room_info["room_sid"]
-            
-            # Generate access token for the user
+            # Generate access token - LiveKit handles everything else
             session.access_token = livekit_service.generate_access_token(
                 room_name=session.room_name,
                 participant_name=user_id,
@@ -66,10 +72,10 @@ class SessionManager:
                 }
             )
             
-            session.status = "active"
             self.sessions[session.session_id] = session
             
-            logger.info(f"✅ Created session: {session.session_id} for user: {user_id} with LiveKit room: {session.room_name}")
+            logger.info(f"✅ Created session: {session.session_id} for user: {user_id}")
+            logger.info(f"📝 Room '{session.room_name}' will be auto-created by LiveKit")
             return session
             
         except Exception as e:
@@ -81,21 +87,22 @@ class SessionManager:
         """Get session by ID"""
         return self.sessions.get(session_id)
     
-    async def delete_session(self, session_id: str) -> bool:
-        """Delete session and cleanup LiveKit room"""
+    def delete_session(self, session_id: str) -> bool:
+        """Delete business session
+        
+        No need to cleanup LiveKit room - it will be automatically
+        deleted when the last participant leaves.
+        """
         session = self.get_session(session_id)
         if not session:
             return False
         
         try:
-            # Delete LiveKit room
-            if session.room_name:
-                await livekit_service.delete_room(session.room_name)
-            
-            # Remove from sessions
+            # Remove from business logic
             del self.sessions[session_id]
             
-            logger.info(f"🗑️ Deleted session: {session_id} and LiveKit room: {session.room_name}")
+            logger.info(f"🗑️ Deleted session: {session_id}")
+            logger.info(f"📝 LiveKit will auto-cleanup room '{session.room_name}' when empty")
             return True
             
         except Exception as e:
@@ -112,35 +119,11 @@ class SessionManager:
                 "timestamp": datetime.utcnow().isoformat()
             })
     
-    async def get_room_participants(self, session_id: str) -> list:
-        """Get participants in the session's LiveKit room"""
-        session = self.get_session(session_id)
-        if not session or not session.room_name:
-            return []
-        
-        try:
-            return await livekit_service.list_participants(session.room_name)
-        except Exception as e:
-            logger.error(f"Failed to get participants for session {session_id}: {e}")
-            return []
-    
-    async def remove_participant(self, session_id: str, participant_identity: str) -> bool:
-        """Remove a participant from the session's room"""
-        session = self.get_session(session_id)
-        if not session or not session.room_name:
-            return False
-        
-        try:
-            return await livekit_service.remove_participant(
-                session.room_name, 
-                participant_identity
-            )
-        except Exception as e:
-            logger.error(f"Failed to remove participant {participant_identity} from session {session_id}: {e}")
-            return False
-    
     def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
-        """Generate access token for a guest user"""
+        """Generate access token for a guest user
+        
+        Guest will join the same LiveKit room automatically.
+        """
         session = self.get_session(session_id)
         if not session or not session.room_name:
             return None
@@ -152,7 +135,7 @@ class SessionManager:
                 permissions={
                     "can_publish": True,
                     "can_subscribe": True,
-                    "can_publish_data": False,
+                    "can_publish_data": False,  # Guests can't send data
                     "hidden": False,
                     "recorder": False
                 }
