@@ -42,7 +42,7 @@ metadata:
     nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     
     # WebSocket services - enables automatic connection upgrade for LiveKit
-    nginx.ingress.kubernetes.io/websocket-services: "livekit-livekit-server"
+    nginx.ingress.kubernetes.io/websocket-services: "livekit-proxy"
     
     # Additional WebSocket optimization
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -58,6 +58,7 @@ spec:
     - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
+    - livekit.{{ .Values.domains.primary }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
 
@@ -79,27 +80,18 @@ spec:
   # ============================================
   # LIVEKIT - WebRTC (WebSocket)
   # Clients connect here directly for WebRTC
+  # Fixed to use cross-namespace service proxy
   # ============================================
-  - host: {{ .Values.domains.primary }}
+  - host: livekit.{{ .Values.domains.primary }}
     http:
       paths:
-      # LiveKit WebSocket/HTTP endpoint
-      - path: /livekit
+      - path: /
         pathType: Prefix
         backend:
           service:
-            name: livekit-livekit-server
+            name: livekit-proxy
             port:
-              number: 7880
-              
-      # LiveKit WebRTC endpoint
-      - path: /rtc
-        pathType: Prefix
-        backend:
-          service:
-            name: livekit-livekit-server
-            port:
-              number: 7881
+              number: 80
   
   # ============================================
   # IDENTITY PROVIDER (KEYCLOAK)
@@ -146,3 +138,19 @@ spec:
             port:
               number: 8000
   {{- end }}
+
+---
+# ExternalName service to access LiveKit in media namespace
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-proxy
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ExternalName
+  externalName: livekit-livekit-server.media.svc.cluster.local
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
