@@ -1,4 +1,4 @@
-"""LiveKit webhook handler routes"""
+"""LiveKit webhook handler - focused on AI integration only"""
 import logging
 import hmac
 import hashlib
@@ -38,15 +38,16 @@ async def handle_livekit_webhook(
     request: Request,
     livekit_signature: Optional[str] = Header(None, alias="livekit-signature")
 ):
-    """Handle LiveKit webhook events
+    """Handle LiveKit webhook events - focus on AI integration triggers
     
-    Events we handle:
-    - room_started: Room was created and first participant joined
-    - room_finished: Room was closed (all participants left)
-    - participant_joined: New participant joined
-    - participant_left: Participant left
-    - track_published: Audio/video track published
-    - track_unpublished: Audio/video track stopped
+    LiveKit automatically handles:
+    - Room lifecycle (creation, cleanup)
+    - Participant management 
+    - Connection state tracking
+    
+    We only need to handle:
+    - Audio track events for STT/AI processing
+    - Custom business logic triggers
     """
     try:
         # Get raw payload
@@ -64,21 +65,14 @@ async def handle_livekit_webhook(
         
         logger.debug(f"LiveKit webhook event: {webhook.event}")
         
-        # Handle different event types
-        if webhook.event == "room_started":
-            await handle_room_started(webhook)
-        elif webhook.event == "room_finished":
-            await handle_room_finished(webhook)
-        elif webhook.event == "participant_joined":
-            await handle_participant_joined(webhook)
-        elif webhook.event == "participant_left":
-            await handle_participant_left(webhook)
-        elif webhook.event == "track_published":
+        # Only handle events that require business logic
+        if webhook.event == "track_published":
             await handle_track_published(webhook)
         elif webhook.event == "track_unpublished":
             await handle_track_unpublished(webhook)
         else:
-            logger.debug(f"Unhandled webhook event: {webhook.event}")
+            # LiveKit handles these automatically, just log for monitoring
+            logger.debug(f"LiveKit auto-handled event: {webhook.event}")
         
         return {"status": "received", "event": webhook.event}
         
@@ -87,63 +81,8 @@ async def handle_livekit_webhook(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def handle_room_started(webhook: LiveKitWebhook):
-    """Handle room started event"""
-    if not webhook.room:
-        return
-    
-    room_name = webhook.room.get("name")
-    logger.info(f"🎆 Room started: {room_name}")
-    
-    # Could trigger additional setup here
-
-
-async def handle_room_finished(webhook: LiveKitWebhook):
-    """Handle room finished event"""
-    if not webhook.room:
-        return
-    
-    room_name = webhook.room.get("name")
-    logger.info(f"🏁 Room finished: {room_name}")
-    
-    # Find session by room name and mark as finished
-    for session_id, session in session_manager.sessions.items():
-        if session.room_name == room_name:
-            session.status = "finished"
-            logger.info(f"Marked session {session_id} as finished")
-            break
-
-
-async def handle_participant_joined(webhook: LiveKitWebhook):
-    """Handle participant joined event"""
-    if not webhook.participant or not webhook.room:
-        return
-    
-    room_name = webhook.room.get("name")
-    participant_identity = webhook.participant.get("identity")
-    participant_name = webhook.participant.get("name")
-    
-    logger.info(f"👤 Participant joined {room_name}: {participant_name} ({participant_identity})")
-    
-    # Could trigger welcome message or setup here
-
-
-async def handle_participant_left(webhook: LiveKitWebhook):
-    """Handle participant left event"""
-    if not webhook.participant or not webhook.room:
-        return
-    
-    room_name = webhook.room.get("name")
-    participant_identity = webhook.participant.get("identity")
-    participant_name = webhook.participant.get("name")
-    
-    logger.info(f"👋 Participant left {room_name}: {participant_name} ({participant_identity})")
-    
-    # Could trigger cleanup or goodbye message here
-
-
 async def handle_track_published(webhook: LiveKitWebhook):
-    """Handle track published event (audio/video started)"""
+    """Handle track published event - trigger AI processing for audio"""
     if not webhook.track or not webhook.participant or not webhook.room:
         return
     
@@ -153,14 +92,28 @@ async def handle_track_published(webhook: LiveKitWebhook):
     
     logger.info(f"🎤 Track published in {room_name}: {track_kind} from {participant_identity}")
     
-    # If audio track, this could trigger STT processing
+    # Only process audio tracks for AI pipeline
     if track_kind == "audio":
-        logger.info(f"Audio track available for STT processing from {participant_identity}")
+        logger.info(f"🤖 Audio track ready for STT processing from {participant_identity}")
+        
+        # Find session for room to add to conversation history
+        for session_id, session in session_manager.sessions.items():
+            if session.room_name == room_name:
+                session_manager.add_to_history(
+                    session_id, 
+                    "system", 
+                    f"Audio track started by {participant_identity}"
+                )
+                logger.info(f"Added audio start event to session {session_id} history")
+                break
+        
         # TODO: Integrate with STT service here
+        # The actual audio processing should be handled by your STT service
+        # when it receives the audio stream from LiveKit
 
 
 async def handle_track_unpublished(webhook: LiveKitWebhook):
-    """Handle track unpublished event (audio/video stopped)"""
+    """Handle track unpublished event - cleanup AI processing"""
     if not webhook.track or not webhook.participant or not webhook.room:
         return
     
@@ -170,4 +123,16 @@ async def handle_track_unpublished(webhook: LiveKitWebhook):
     
     logger.info(f"🔇 Track unpublished in {room_name}: {track_kind} from {participant_identity}")
     
-    # Could stop STT processing here
+    if track_kind == "audio":
+        # Find session for room to add to conversation history
+        for session_id, session in session_manager.sessions.items():
+            if session.room_name == room_name:
+                session_manager.add_to_history(
+                    session_id, 
+                    "system", 
+                    f"Audio track stopped by {participant_identity}"
+                )
+                logger.info(f"Added audio stop event to session {session_id} history")
+                break
+        
+        # TODO: Stop STT processing here if needed
