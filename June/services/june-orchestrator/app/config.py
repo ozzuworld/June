@@ -11,6 +11,13 @@ class ServiceConfig(BaseModel):
     gemini_api_key: str = ""
 
 
+class LiveKitConfig(BaseModel):
+    """LiveKit configuration"""
+    api_key: str
+    api_secret: str
+    ws_url: str
+
+
 class AppConfig:
     """Main configuration"""
     
@@ -23,14 +30,11 @@ class AppConfig:
         cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
         self.cors_origins = [o.strip() for o in cors_origins.split(",")]
         
-        # Janus Gateway URL (for admin API only)
-        self.janus_url = os.getenv(
-            "JANUS_URL",
-            "http://june-janus.june-services.svc.cluster.local:8088"
-        )
-        
         # Service configuration
         self.services = self._load_service_config()
+        
+        # LiveKit configuration
+        self.livekit = self._load_livekit_config()
     
     def _load_service_config(self) -> ServiceConfig:
         return ServiceConfig(
@@ -43,6 +47,22 @@ class AppConfig:
                 "http://june-stt.june-services.svc.cluster.local:8080"
             ),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "")
+        )
+    
+    def _load_livekit_config(self) -> LiveKitConfig:
+        return LiveKitConfig(
+            api_key=os.getenv(
+                "LIVEKIT_API_KEY",
+                "devkey"
+            ),
+            api_secret=os.getenv(
+                "LIVEKIT_API_SECRET",
+                "secret"
+            ),
+            ws_url=os.getenv(
+                "LIVEKIT_WS_URL",
+                "ws://livekit.livekit.svc.cluster.local:7880"
+            )
         )
 
 
