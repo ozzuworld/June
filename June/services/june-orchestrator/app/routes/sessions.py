@@ -1,13 +1,10 @@
-"""Session management routes with LiveKit integration"""
+"""Session management routes - simplified for LiveKit auto-management"""
 import logging
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException
 
 from ..models import (
     SessionCreate, 
     SessionResponse, 
-    ParticipantInfo, 
-    RoomInfo,
     GuestTokenRequest,
     GuestTokenResponse
 )
@@ -19,10 +16,16 @@ router = APIRouter()
 
 
 @router.post("/", response_model=SessionResponse)
-async def create_session(request: SessionCreate):
-    """Create new business session with LiveKit room"""
+def create_session(request: SessionCreate):
+    """Create new business session with LiveKit access token
+    
+    LiveKit will automatically:
+    - Create the room when first participant connects
+    - Handle all participant management
+    - Clean up when room becomes empty
+    """
     try:
-        session = await session_manager.create_session(
+        session = session_manager.create_session(
             user_id=request.user_id,
             room_name=request.room_name
         )
@@ -35,8 +38,8 @@ async def create_session(request: SessionCreate):
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str):
-    """Get session information"""
+def get_session(session_id: str):
+    """Get session information with LiveKit connection details"""
     session = session_manager.get_session(session_id)
     
     if not session:
@@ -46,18 +49,25 @@ async def get_session(session_id: str):
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: str):
-    """Delete session and cleanup LiveKit room"""
-    success = await session_manager.delete_session(session_id)
+def delete_session(session_id: str):
+    """Delete business session
+    
+    LiveKit room will be automatically cleaned up when participants leave.
+    """
+    success = session_manager.delete_session(session_id)
     
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    return {"status": "deleted", "session_id": session_id}
+    return {
+        "status": "deleted", 
+        "session_id": session_id,
+        "note": "LiveKit room will auto-cleanup when empty"
+    }
 
 
 @router.get("/{session_id}/history")
-async def get_conversation_history(session_id: str):
+def get_conversation_history(session_id: str):
     """Get conversation history"""
     session = session_manager.get_session(session_id)
     
@@ -70,39 +80,12 @@ async def get_conversation_history(session_id: str):
     }
 
 
-@router.get("/{session_id}/participants", response_model=List[ParticipantInfo])
-async def get_session_participants(session_id: str):
-    """Get participants in the session's LiveKit room"""
-    try:
-        participants = await session_manager.get_room_participants(session_id)
-        return [ParticipantInfo(**p) for p in participants]
-    except Exception as e:
-        logger.error(f"Failed to get participants for session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/{session_id}/participants/{participant_identity}")
-async def remove_participant(session_id: str, participant_identity: str):
-    """Remove a participant from the session's room"""
-    try:
-        success = await session_manager.remove_participant(session_id, participant_identity)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Participant not found or session not found")
-        
-        return {
-            "status": "removed", 
-            "session_id": session_id, 
-            "participant": participant_identity
-        }
-    except Exception as e:
-        logger.error(f"Failed to remove participant {participant_identity}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("/{session_id}/guest-token", response_model=GuestTokenResponse)
-async def generate_guest_token(session_id: str, request: GuestTokenRequest):
-    """Generate access token for a guest user"""
+def generate_guest_token(session_id: str, request: GuestTokenRequest):
+    """Generate access token for a guest user
+    
+    Guest will automatically join the existing LiveKit room.
+    """
     try:
         # Validate session exists
         session = session_manager.get_session(session_id)
