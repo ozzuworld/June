@@ -61,7 +61,7 @@ class AppConfig:
             ),
             ws_url=os.getenv(
                 "LIVEKIT_WS_URL",
-                "ws://livekit.livekit.svc.cluster.local:7880"
+                "wss://livekit.ozzu.world"  # ← FIXED: Use correct external URL
             )
         )
 
