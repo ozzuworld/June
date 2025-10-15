@@ -1,6 +1,6 @@
-"""LiveKit token generation routes (LiveKit SDK-based, anonymous Body binding)"""
+"""LiveKit token generation routes (direct JSON parsing)"""
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Request
 from livekit import api as lk_api
 
 from ..config import config
@@ -11,13 +11,17 @@ router = APIRouter()
 
 @router.post("/token")
 async def generate_livekit_token(
-    body = Body(...),                 # Anonymous body binding to accept flat JSON
+    request: Request,
     current_user = Depends(get_current_user),
 ):
     """Generate a LiveKit JWT using LiveKit's Python SDK with VideoGrants.
-    Expects a flat JSON body: {"roomName": "...", "participantName": "..."}
+    Parses JSON directly from the request to avoid any body-binding issues.
+    Expects: {"roomName": "...", "participantName": "...", "metadata"?: "..."}
     """
     try:
+        body = await request.json()
+        logger.info(f"[TOKEN REQ] Parsed body: {body!r}")
+
         room_name = body.get("roomName")
         participant_name = body.get("participantName")
         metadata = body.get("metadata")
