@@ -7,6 +7,7 @@ from .config import config
 from .routes import (
     sessions_router,
     livekit_webhooks_router,
+    livekit_token_router,
     ai_router,
     health_router
 )
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"🔧 STT: {config.services.stt_base_url}")
     logger.info(f"🔧 LiveKit: {config.livekit.ws_url}")
     logger.info(f"🔧 LiveKit API Key: {config.livekit.api_key}")
+    logger.info("🎫 LiveKit Token Endpoint: /livekit/token")
     yield
     logger.info("🛑 Shutdown")
 
@@ -49,6 +51,7 @@ app.add_middleware(
 app.include_router(health_router, tags=["Health"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"])
 app.include_router(livekit_webhooks_router, prefix="/api/livekit-webhooks", tags=["LiveKit Webhooks"])
+app.include_router(livekit_token_router, prefix="/livekit", tags=["LiveKit Tokens"])
 app.include_router(ai_router, prefix="/api/ai", tags=["AI"])
 
 
@@ -61,6 +64,7 @@ async def root():
         "endpoints": {
             "sessions": "/api/sessions",
             "livekit_webhooks": "/api/livekit-webhooks",
+            "livekit_token": "/livekit/token",
             "ai": "/api/ai",
             "health": "/healthz"
         },
