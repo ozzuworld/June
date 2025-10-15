@@ -1,7 +1,7 @@
-"""LiveKit token generation routes (LiveKit SDK-based, flat body)"""
+"""LiveKit token generation routes (LiveKit SDK-based, explicit Body binding)"""
 import logging
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Body
 from pydantic import BaseModel
 from livekit import api as lk_api
 
@@ -24,19 +24,19 @@ class LiveKitTokenResponse(BaseModel):
 
 @router.post("/token", response_model=LiveKitTokenResponse)
 async def generate_livekit_token(
-    model: LiveKitTokenRequest,  # Accept flat JSON body (no wrapper key)
+    body: LiveKitTokenRequest = Body(...),  # Explicit body binding for flat JSON
     current_user = Depends(get_current_user),
 ):
     """Generate a LiveKit JWT using LiveKit's Python SDK with VideoGrants.
     Expects a flat JSON body: {"roomName": "...", "participantName": "..."}
     """
     try:
-        user_sub = current_user.get("sub", model.participantName)
-        logger.info(f"🎫 Generating LiveKit token for user {user_sub} in room {model.roomName}")
+        user_sub = current_user.get("sub", body.participantName)
+        logger.info(f"🎫 Generating LiveKit token for user {user_sub} in room {body.roomName}")
 
         grants = lk_api.VideoGrants(
             room_join=True,
-            room=model.roomName,
+            room=body.roomName,
             can_publish=True,
             can_subscribe=True,
             can_publish_data=True,
@@ -47,11 +47,11 @@ async def generate_livekit_token(
                 api_key=config.livekit.api_key,
                 api_secret=config.livekit.api_secret,
             )
-            .with_identity(model.participantName)
+            .with_identity(body.participantName)
             .with_grants(grants)
         )
-        if model.metadata:
-            at = at.with_metadata(model.metadata)
+        if body.metadata:
+            at = at.with_metadata(body.metadata)
 
         token = at.to_jwt()
 
@@ -60,11 +60,11 @@ async def generate_livekit_token(
             livekit_url = livekit_url.replace("ws://", "wss://")
         livekit_url = livekit_url.replace(":7880", "")
 
-        logger.info(f"✅ LiveKit token generated for participant {model.participantName}")
+        logger.info(f"✅ LiveKit token generated for participant {body.participantName}")
         return LiveKitTokenResponse(
             token=token,
-            roomName=model.roomName,
-            participantName=model.participantName,
+            roomName=body.roomName,
+            participantName=body.participantName,
             livekitUrl=livekit_url,
         )
     except Exception as e:
