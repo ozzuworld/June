@@ -80,7 +80,7 @@ spec:
   # ============================================
   # LIVEKIT - WebRTC (WebSocket)
   # Clients connect here directly for WebRTC
-  # Fixed to use cross-namespace service proxy
+  # Fixed to use correct port 7880 for LiveKit HTTP/WebSocket
   # ============================================
   - host: livekit.{{ .Values.domains.primary }}
     http:
@@ -91,7 +91,7 @@ spec:
           service:
             name: livekit-proxy
             port:
-              number: 80
+              number: 7880
   
   # ============================================
   # IDENTITY PROVIDER (KEYCLOAK)
@@ -141,6 +141,7 @@ spec:
 
 ---
 # ExternalName service to access LiveKit in media namespace
+# Fixed to use correct port 7880 for LiveKit HTTP/WebSocket
 apiVersion: v1
 kind: Service
 metadata:
@@ -151,6 +152,6 @@ spec:
   externalName: livekit-livekit-server.media.svc.cluster.local
   ports:
   - name: http
-    port: 80
-    targetPort: 80
+    port: 7880
+    targetPort: 7880
     protocol: TCP
