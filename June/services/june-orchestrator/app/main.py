@@ -2,6 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from .config import config
 from .routes import (
@@ -17,6 +19,23 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+class BodyLoggerMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        try:
+            raw = await request.body()
+            logger.info(
+                f"[BODY TAP] {request.method} {request.url.path} "
+                f"CT={request.headers.get('content-type')} "
+                f"CL={request.headers.get('content-length')} "
+                f"RAW_LEN={len(raw) if raw else 0} "
+                f"RAW_PREVIEW={(raw[:200])!r}"
+            )
+        except Exception as e:
+            logger.warning(f"[BODY TAP] Failed to read body: {e}")
+        response = await call_next(request)
+        return response
 
 
 @asynccontextmanager
@@ -38,6 +57,9 @@ app = FastAPI(
     description="Business logic orchestrator with LiveKit - AI, STT, TTS coordination",
     lifespan=lifespan
 )
+
+# Tap the raw body for debugging
+app.add_middleware(BodyLoggerMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
