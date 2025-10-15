@@ -1,5 +1,6 @@
-"""LiveKit token generation routes (direct JSON parsing)"""
+"""LiveKit token generation routes (direct JSON parsing with timing logs)"""
 import logging
+import time
 from fastapi import APIRouter, HTTPException, Depends, Request
 from livekit import api as lk_api
 
@@ -14,13 +15,13 @@ async def generate_livekit_token(
     request: Request,
     current_user = Depends(get_current_user),
 ):
-    """Generate a LiveKit JWT using LiveKit's Python SDK with VideoGrants.
-    Parses JSON directly from the request to avoid any body-binding issues.
-    Expects: {"roomName": "...", "participantName": "...", "metadata"?: "..."}
-    """
+    t0 = time.time()
+    logger.info("[TOKEN REQ] Entered route, starting parse…")
     try:
         body = await request.json()
         logger.info(f"[TOKEN REQ] Parsed body: {body!r}")
+        logger.info(f"[TOKEN REQ] current_user: {current_user!r}")
+        logger.info(f"[TOKEN REQ] elapsed after parse: {time.time()-t0:.3f}s")
 
         room_name = body.get("roomName")
         participant_name = body.get("participantName")
@@ -29,9 +30,6 @@ async def generate_livekit_token(
         if not room_name or not participant_name:
             raise HTTPException(status_code=400, detail="roomName and participantName are required")
 
-        user_sub = current_user.get("sub", participant_name)
-        logger.info(f"🎫 Generating LiveKit token for user {user_sub} in room {room_name}")
-
         grants = lk_api.VideoGrants(
             room_join=True,
             room=room_name,
@@ -39,7 +37,6 @@ async def generate_livekit_token(
             can_subscribe=True,
             can_publish_data=True,
         )
-
         at = (
             lk_api.AccessToken(
                 api_key=config.livekit.api_key,
@@ -52,13 +49,12 @@ async def generate_livekit_token(
             at = at.with_metadata(metadata)
 
         token = at.to_jwt()
-
         livekit_url = config.livekit.ws_url
         if livekit_url.startswith("ws://"):
             livekit_url = livekit_url.replace("ws://", "wss://")
         livekit_url = livekit_url.replace(":7880", "")
 
-        logger.info(f"✅ LiveKit token generated for participant {participant_name}")
+        logger.info(f"[TOKEN REQ] Success; total elapsed: {time.time()-t0:.3f}s")
         return {
             "token": token,
             "roomName": room_name,
@@ -68,5 +64,5 @@ async def generate_livekit_token(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Failed to generate LiveKit token")
+        logger.exception("[TOKEN REQ] Generation failed")
         raise HTTPException(status_code=500, detail=f"Failed to generate LiveKit token: {e}")
