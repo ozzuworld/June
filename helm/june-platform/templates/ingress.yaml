@@ -31,9 +31,7 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # WebSocket support for LiveKit
-    nginx.ingress.kubernetes.io/enable-websocket: "true"
-    nginx.ingress.kubernetes.io/websocket-services: "livekit-direct"
+    # WebSocket friendly defaults
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
@@ -66,25 +64,7 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  - host: livekit.{{ .Values.domains.primary }}
-    http:
-      paths:
-      # LiveKit WebSocket path - clients connect to /rtc
-      - path: /rtc
-        pathType: Prefix
-        backend:
-          service:
-            name: livekit-direct
-            port:
-              number: 80
-      # Keep root path for health checks and other endpoints
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: livekit-direct
-            port:
-              number: 80
+  # Removed livekit host from this shared ingress. Managed by dedicated livekit-ingress.
   - host: {{ .Values.domains.idp }}
     http:
       paths:
