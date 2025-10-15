@@ -13,11 +13,6 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/enable-websocket: "true"
-    # Rewrite /rtc -> / so LiveKit server at root is hit
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      if ($request_uri ~* "^/rtc(.*)$") {
-        rewrite ^/rtc(.*)$ /$1 break;
-      }
 spec:
   {{- if .Values.certificate.enabled }}
   tls:
@@ -29,10 +24,17 @@ spec:
   - host: livekit.{{ .Values.domains.primary }}
     http:
       paths:
+      - path: /rtc
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-backend
+            port:
+              number: 80
       - path: /
         pathType: Prefix
         backend:
           service:
-            name: livekit-direct
+            name: livekit-backend
             port:
               number: 80
