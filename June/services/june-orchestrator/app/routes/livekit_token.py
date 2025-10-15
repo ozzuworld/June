@@ -1,10 +1,9 @@
-"""LiveKit token generation routes"""
+"""LiveKit token generation routes (LiveKit SDK-based)"""
 import logging
-import time
-import jwt
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from livekit import api as lk_api
 
 from ..config import config
 from ..dependencies import get_current_user
@@ -13,66 +12,61 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class LiveKitTokenRequest(BaseModel):
-    """LiveKit token request model"""
     roomName: str
     participantName: str
     metadata: Optional[str] = None
 
 class LiveKitTokenResponse(BaseModel):
-    """LiveKit token response model"""
     token: str
     roomName: str
     participantName: str
     livekitUrl: Optional[str] = None
-    sessionId: Optional[str] = None
 
 @router.post("/token", response_model=LiveKitTokenResponse)
-async def generate_livekit_token(
-    payload: LiveKitTokenRequest = Body(...),
-    current_user=Depends(get_current_user)
-):
-    """Generate LiveKit JWT token for authenticated user"""
+async def generate_livekit_token(livekit_req: LiveKitTokenRequest, current_user=Depends(get_current_user)):
+    """Generate a LiveKit JWT using LiveKit's Python SDK with VideoGrants.
+    Expects a flat JSON body (roomName, participantName)."""
     try:
-        logger.info(f"🎫 Generating LiveKit token for user {current_user.get('sub', 'unknown')} in room {payload.roomName}")
+        user_sub = current_user.get("sub", livekit_req.participantName)
+        logger.info(f"🎫 Generating LiveKit token for user {user_sub} in room {livekit_req.roomName}")
 
-        # Create JWT payload for LiveKit
-        token_payload = {
-            "iss": config.livekit.api_key,
-            "sub": current_user.get("sub", payload.participantName),
-            "aud": "livekit",
-            "exp": int(time.time()) + 3600,  # 1 hour expiration
-            "video": {
-                "room": payload.roomName,
-                "roomJoin": True,
-                "canPublish": True,
-                "canSubscribe": True,
-                "canPublishData": True,
-            },
-            # Optional: Add user metadata
-            "metadata": payload.metadata or f"{{\"user_id\": \"{current_user.get('sub')}\", \"email\": \"{current_user.get('email')}\"}}"
-        }
-
-        # Generate JWT token
-        token = jwt.encode(
-            token_payload,
-            config.livekit.api_secret,
-            algorithm="HS256"
+        # Build grants
+        grants = lk_api.VideoGrants(
+            room_join=True,
+            room=livekit_req.roomName,
+            can_publish=True,
+            can_subscribe=True,
+            can_publish_data=True,
         )
 
-        logger.info(f"✅ Generated LiveKit token for room {payload.roomName}, participant {payload.participantName}")
+        # Build token with identity and optional metadata
+        at = (
+            lk_api.AccessToken(
+                api_key=config.livekit.api_key,
+                api_secret=config.livekit.api_secret,
+            )
+            .with_identity(livekit_req.participantName)
+            .with_grants(grants)
+        )
+        if livekit_req.metadata:
+            at = at.with_metadata(livekit_req.metadata)
 
-        session_id = f"session_{int(time.time())}_{current_user.get('sub', 'unknown')[:8]}"
+        token = at.to_jwt()
 
+        # Prefer wss URL if configured; otherwise, transform ws:// to wss:// for public use
+        livekit_url = config.livekit.ws_url
+        if livekit_url.startswith("ws://"):
+            livekit_url = livekit_url.replace("ws://", "wss://")
+        # If your internal URL includes :7880 but your public URL is on default TLS port, trim as needed.
+        livekit_url = livekit_url.replace(":7880", "")
+
+        logger.info(f"✅ LiveKit token generated for participant {livekit_req.participantName}")
         return LiveKitTokenResponse(
             token=token,
-            roomName=payload.roomName,
-            participantName=payload.participantName,
-            livekitUrl=config.livekit.ws_url.replace("ws://", "wss://").replace(":7880", ""),  # Convert to public URL
-            sessionId=session_id
+            roomName=livekit_req.roomName,
+            participantName=livekit_req.participantName,
+            livekitUrl=livekit_url,
         )
     except Exception as e:
-        logger.error(f"❌ Failed to generate LiveKit token: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate LiveKit token: {str(e)}"
-        )
+        logger.exception("Failed to generate LiveKit token")
+        raise HTTPException(status_code=500, detail=f"Failed to generate LiveKit token: {e}")
