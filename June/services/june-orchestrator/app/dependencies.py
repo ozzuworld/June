@@ -3,14 +3,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# NOTE: Replace the body of this function with your real auth logic.
-# The logging lines are safe to keep.
-async def get_current_user(*args, **kwargs):
+# TODO: Replace this stub with your real Keycloak verification.
+# Keep the logging lines. Do NOT add *args or **kwargs here, to avoid FastAPI
+# treating them as required query parameters.
+async def get_current_user():
     logger.info("[AUTH] get_current_user called")
     try:
-        # TODO: Insert real bearer token verification here and return a user dict.
-        # Example placeholder to keep service running while debugging:
-        user = kwargs.get("user") or {"sub": "test-user", "email": "test@example.com"}
+        # Placeholder user to keep the flow working during debugging.
+        user = {"sub": "test-user", "email": "test@example.com"}
         logger.info(f"[AUTH] get_current_user success: sub={user.get('sub')} email={user.get('email')}")
         return user
     except Exception as e:
