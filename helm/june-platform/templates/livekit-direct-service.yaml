@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-direct
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: livekit-direct
+spec:
+  type: ExternalName
+  externalName: livekit-livekit-server.media.svc.cluster.local
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
