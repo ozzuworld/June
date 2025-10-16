@@ -7,20 +7,26 @@ metadata:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
     
-    # CRITICAL: WebSocket configuration
+    # Force HTTP/1.1 for WebSocket support
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    
+    # WebSocket configuration - CRITICAL
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header Upgrade $http_upgrade;
       proxy_set_header Connection "upgrade";
       proxy_set_header Host $host;
       proxy_cache_bypass $http_upgrade;
+      
+    # Timeouts for long-lived connections
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
     
-    # LiveKit specific
+    # Backend is plain HTTP (not HTTPS)
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    
+    # Explicitly mark as WebSocket service
     nginx.ingress.kubernetes.io/websocket-services: "livekit-backend"
 spec:
   {{- if .Values.certificate.enabled }}
