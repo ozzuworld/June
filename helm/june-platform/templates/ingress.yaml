@@ -31,11 +31,24 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    # WebSocket friendly defaults
+    
+    # WebSocket support for LiveKit
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/websocket-services: "livekit-backend"
+    
+    # WebSocket configuration for LiveKit paths
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # WebSocket upgrade for LiveKit
+      if ($host = "livekit.{{ .Values.domains.primary }}") {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_cache_bypass $http_upgrade;
+      }
+    
+    # Timeouts (good for both regular services and WebSockets)
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -64,7 +77,19 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  # Removed livekit host from this shared ingress. Managed by dedicated livekit-ingress.
+  
+  # LiveKit WebSocket endpoint
+  - host: livekit.{{ .Values.domains.primary }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-backend
+            port:
+              number: 80
+  
   - host: {{ .Values.domains.idp }}
     http:
       paths:
