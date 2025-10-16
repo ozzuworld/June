@@ -66,6 +66,13 @@ spec:
   - host: livekit.{{ .Values.domains.primary }}
     http:
       paths:
+      - path: /rtc
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-backend
+            port:
+              number: 80
       - path: /
         pathType: Prefix
         backend:
