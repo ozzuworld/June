@@ -31,21 +31,18 @@ metadata:
     nginx.ingress.kubernetes.io/enable-cors: "true"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    
-    # CRITICAL: Force HTTP/1.1 for WebSocket support (HTTP/2 doesn't support Upgrade header)
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    
-    # Mark LiveKit service as requiring WebSocket
-    nginx.ingress.kubernetes.io/websocket-services: "livekit-backend"
-    
-    # Timeouts for long-lived connections
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
     nginx.ingress.kubernetes.io/upstream-hash-by: "$request_uri"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    # WebSocket support - THIS IS THE CRITICAL FIX
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
 spec:
   ingressClassName: nginx
   {{- if .Values.certificate.enabled }}
@@ -70,8 +67,6 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  
-  # LiveKit WebSocket endpoint
   - host: livekit.{{ .Values.domains.primary }}
     http:
       paths:
@@ -82,7 +77,6 @@ spec:
             name: livekit-backend
             port:
               number: 80
-  
   - host: {{ .Values.domains.idp }}
     http:
       paths:
