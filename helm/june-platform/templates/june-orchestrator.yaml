@@ -95,7 +95,7 @@ spec:
               name: june-webrtc-config
               key: LIVEKIT_API_SECRET
         - name: LIVEKIT_WS_URL
-          value: "wss://livekit.{{ .Values.domains.primary }}"
+          value: "wss://livekit.ozzu.world"
         
         # ============================================
         # SERVICE AUTHENTICATION

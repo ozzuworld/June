@@ -1,112 +1,78 @@
-"""Session management routes - simplified for LiveKit auto-management"""
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from livekit import api
+import os
 import logging
-from fastapi import APIRouter, HTTPException
-
-from ..models import (
-    SessionCreate, 
-    SessionResponse, 
-    GuestTokenRequest,
-    GuestTokenResponse
-)
-from ..session_manager import session_manager
-from ..config import config
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+class SessionCreateRequest(BaseModel):
+    user_id: str
+    room_name: str
+
+class SessionResponse(BaseModel):
+    session_id: str
+    user_id: str
+    room_name: str
+    access_token: str  # LiveKit JWT token
+    livekit_url: str   # LiveKit server URL
 
 @router.post("/", response_model=SessionResponse)
-def create_session(request: SessionCreate):
-    """Create new business session with LiveKit access token
-    
-    LiveKit will automatically:
-    - Create the room when first participant connects
-    - Handle all participant management
-    - Clean up when room becomes empty
+async def create_session(request: SessionCreateRequest):
+    """
+    Create a new session and generate LiveKit access token
     """
     try:
-        session = session_manager.create_session(
+        # Get LiveKit credentials from environment
+        livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+        livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
+        livekit_url = os.getenv("LIVEKIT_WS_URL", "wss://livekit.ozzu.world")
+        
+        if not livekit_api_key or not livekit_api_secret:
+            logger.error("LiveKit credentials not configured")
+            raise HTTPException(
+                status_code=500, 
+                detail="LiveKit credentials not configured"
+            )
+        
+        # Generate unique session ID
+        import uuid
+        session_id = str(uuid.uuid4())
+        
+        # Create LiveKit access token
+        token = (
+            api.AccessToken(livekit_api_key, livekit_api_secret)
+            .with_identity(request.user_id)
+            .with_name(request.user_id)
+            .with_grants(
+                api.VideoGrants(
+                    room_join=True,
+                    room=request.room_name,
+                    can_publish=True,
+                    can_subscribe=True,
+                    can_publish_data=True,
+                )
+            )
+            .to_jwt()
+        )
+        
+        logger.info(
+            f"Generated LiveKit token for user={request.user_id}, "
+            f"room={request.room_name}, session={session_id}"
+        )
+        
+        return SessionResponse(
+            session_id=session_id,
             user_id=request.user_id,
-            room_name=request.room_name
+            room_name=request.room_name,
+            access_token=token,
+            livekit_url=livekit_url
         )
         
-        return SessionResponse(**session.to_dict())
-        
     except Exception as e:
-        logger.error(f"Failed to create session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{session_id}", response_model=SessionResponse)
-def get_session(session_id: str):
-    """Get session information with LiveKit connection details"""
-    session = session_manager.get_session(session_id)
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return SessionResponse(**session.to_dict())
-
-
-@router.delete("/{session_id}")
-def delete_session(session_id: str):
-    """Delete business session
-    
-    LiveKit room will be automatically cleaned up when participants leave.
-    """
-    success = session_manager.delete_session(session_id)
-    
-    if not success:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return {
-        "status": "deleted", 
-        "session_id": session_id,
-        "note": "LiveKit room will auto-cleanup when empty"
-    }
-
-
-@router.get("/{session_id}/history")
-def get_conversation_history(session_id: str):
-    """Get conversation history"""
-    session = session_manager.get_session(session_id)
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return {
-        "session_id": session_id,
-        "history": session.conversation_history
-    }
-
-
-@router.post("/{session_id}/guest-token", response_model=GuestTokenResponse)
-def generate_guest_token(session_id: str, request: GuestTokenRequest):
-    """Generate access token for a guest user
-    
-    Guest will automatically join the existing LiveKit room.
-    """
-    try:
-        # Validate session exists
-        session = session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        # Generate guest token
-        access_token = session_manager.generate_guest_token(session_id, request.guest_name)
-        
-        if not access_token:
-            raise HTTPException(status_code=500, detail="Failed to generate guest token")
-        
-        return GuestTokenResponse(
-            access_token=access_token,
-            room_name=session.room_name,
-            livekit_ws_url=config.livekit.ws_url,
-            guest_name=request.guest_name
+        logger.error(f"Failed to create session: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create session: {str(e)}"
         )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to generate guest token: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
