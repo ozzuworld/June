@@ -7,7 +7,7 @@ metadata:
     app: livekit-backend
 spec:
   type: ExternalName
-  externalName: livekit-livekit-server.media.svc.cluster.local
+  externalName: livekit-livekit-server.june-services.svc.cluster.local  # ← CHANGED from .media.
   ports:
   - name: http
     port: 80

@@ -1,15 +1,13 @@
-apiVersion: v1
-kind: Service
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
 metadata:
-  name: livekit-udp
-  namespace: media
+  name: livekit-udp-route
+  namespace: stunner
 spec:
-  type: ClusterIP
-  selector:
-    app.kubernetes.io/instance: livekit
-    app.kubernetes.io/name: livekit-server
-  ports:
-    - name: rtp-udp
-      protocol: UDP
-      port: 7882
-      targetPort: 7882
+  parentRefs:
+    - name: stunner-gateway
+  rules:
+    - backendRefs:
+        - name: livekit-udp
+          namespace: june-services  # ← CHANGED from media
+          port: 7882

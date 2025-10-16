@@ -25,22 +25,22 @@ fi
 check_existing_livekit() {
     log "Checking for existing LiveKit installation..."
     
-    # First check if media namespace exists
-    if ! kubectl get namespace media &>/dev/null; then
-        log "No existing LiveKit installation found (no media namespace)"
+    # First check if june-services namespace exists
+    if ! kubectl get namespace june-services &>/dev/null; then
+        log "No existing LiveKit installation found (no june-services namespace)"
         return 1
     fi
     
     # Check if Helm release exists and is deployed
-    if helm list -n media 2>/dev/null | grep -q "livekit.*deployed"; then
+    if helm list -n june-services 2>/dev/null | grep -q "livekit.*deployed"; then
         log "Found existing LiveKit Helm release"
         
         # Check if deployment exists and is ready
-        if kubectl get deployment livekit-livekit-server -n media &>/dev/null; then
+        if kubectl get deployment livekit-livekit-server -n june-services &>/dev/null; then
             local ready_replicas
-            ready_replicas=$(kubectl get deployment livekit-livekit-server -n media -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            ready_replicas=$(kubectl get deployment livekit-livekit-server -n june-services -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
             local desired_replicas
-            desired_replicas=$(kubectl get deployment livekit-livekit-server -n media -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+            desired_replicas=$(kubectl get deployment livekit-livekit-server -n june-services -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
             
             if [ "$ready_replicas" = "$desired_replicas" ] && [ "$ready_replicas" -gt 0 ]; then
                 success "LiveKit is already installed and running ($ready_replicas/$desired_replicas replicas ready)"
@@ -65,22 +65,22 @@ install_livekit() {
         return 0
     fi
     
-    # Create media namespace
-    log "Creating media namespace..."
-    kubectl create namespace media --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    # Create june-services namespace
+    log "Creating june-services namespace..."
+    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
 
     # Wait for namespace with better error handling
     local timeout=60
     local count=0
     while [ $count -lt $timeout ]; do
-        if kubectl get namespace media --no-headers 2>/dev/null | grep -q "Active"; then
-            log "Media namespace is active"
+        if kubectl get namespace june-services --no-headers 2>/dev/null | grep -q "Active"; then
+            log "june-services namespace is active"
             break
         fi
         sleep 1
         count=$((count + 1))
         if [ $count -eq $timeout ]; then
-            error "Timeout waiting for media namespace to become active"
+            error "Timeout waiting for june-services namespace to become active"
         fi
     done
 
@@ -125,12 +125,12 @@ generate_livekit_credentials() {
 livekit:
   api_key: "$LIVEKIT_API_KEY"
   api_secret: "$LIVEKIT_API_SECRET"
-  server_url: "http://livekit.media.svc.cluster.local"
+  server_url: "http://livekit.june-services.svc.cluster.local"
   
 # Environment variables format:
 # LIVEKIT_API_KEY=$LIVEKIT_API_KEY
 # LIVEKIT_API_SECRET=$LIVEKIT_API_SECRET
-# LIVEKIT_URL=http://livekit.media.svc.cluster.local
+# LIVEKIT_URL=http://livekit.june-services.svc.cluster.local
 EOF
 
     # Also save as environment variables format
@@ -141,7 +141,7 @@ EOF
 
 export LIVEKIT_API_KEY="$LIVEKIT_API_KEY"
 export LIVEKIT_API_SECRET="$LIVEKIT_API_SECRET"
-export LIVEKIT_URL="http://livekit.media.svc.cluster.local"
+export LIVEKIT_URL="http://livekit.june-services.svc.cluster.local"
 EOF
 
     success "LiveKit credentials generated and saved to:"
@@ -152,7 +152,7 @@ EOF
     log "LiveKit API Credentials:"
     log "  API Key:    $LIVEKIT_API_KEY"
     log "  API Secret: $LIVEKIT_API_SECRET"
-    log "  Server URL: http://livekit.media.svc.cluster.local"
+    log "  Server URL: http://livekit.june-services.svc.cluster.local"
 }
 
 deploy_livekit_server() {
@@ -176,7 +176,7 @@ deploy_livekit_server() {
         
         # Apply with variable substitution
         envsubst < "$values_file" | helm upgrade --install livekit livekit/livekit-server \
-            --namespace media \
+            --namespace june-services \
             --values - \
             --wait \
             --timeout=15m > /dev/null 2>&1
@@ -189,7 +189,7 @@ deploy_livekit_server() {
         
         # Install with basic configuration and generated keys
         helm upgrade --install livekit livekit/livekit-server \
-            --namespace media \
+            --namespace june-services \
             --set "livekit.keys.$LIVEKIT_API_KEY=$LIVEKIT_API_SECRET" \
             --set server.replicas=1 \
             --set server.resources.requests.cpu=100m \
@@ -205,7 +205,7 @@ wait_for_livekit() {
     log "Waiting for LiveKit to be ready..."
     
     # Wait for LiveKit deployment to be available
-    wait_for_deployment "livekit-livekit-server" "media" 300
+    wait_for_deployment "livekit-livekit-server" "june-services" 300
     
     success "LiveKit is ready"
 }
@@ -260,8 +260,8 @@ setup_reference_grant() {
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: stunner-to-media
-  namespace: media
+  name: stunner-to-june-services
+  namespace: june-services
 spec:
   from:
   - group: stunner.l7mp.io
@@ -279,21 +279,21 @@ verify_livekit() {
     log "Verifying LiveKit installation..."
     
     # Check LiveKit namespace and deployment
-    verify_namespace "media"
-    verify_k8s_resource "deployment" "livekit-livekit-server" "media"
+    verify_namespace "june-services"
+    verify_k8s_resource "deployment" "livekit-livekit-server" "june-services"
     
     # Check if LiveKit services exist
-    if kubectl get service livekit-livekit-server -n media &>/dev/null; then
+    if kubectl get service livekit-livekit-server -n june-services &>/dev/null; then
         success "LiveKit service found"
         
         # Show service details
         log "LiveKit service status:"
-        kubectl get service livekit-livekit-server -n media
+        kubectl get service livekit-livekit-server -n june-services
     else
         warn "LiveKit main service not found"
     fi
     
-    if kubectl get service livekit-udp -n media &>/dev/null; then
+    if kubectl get service livekit-udp -n june-services &>/dev/null; then
         log "LiveKit UDP service found"
     else
         warn "LiveKit UDP service not found"
@@ -301,7 +301,7 @@ verify_livekit() {
     
     # Show LiveKit status
     log "LiveKit pod status:"
-    kubectl get pods -n media
+    kubectl get pods -n june-services | grep livekit
     
     # Display final credentials reminder
     local creds_file="${ROOT_DIR}/config/credentials/livekit-credentials.yaml"
@@ -325,7 +325,7 @@ main() {
     verify_command "kubectl" "kubectl must be available"
     verify_command "helm" "helm must be available"
 
-        # Verify Kubernetes connectivity with better error messages
+    # Verify Kubernetes connectivity with better error messages
     if ! kubectl cluster-info &> /dev/null; then
         error "Cannot connect to Kubernetes cluster. Please ensure kubectl is configured correctly."
     fi

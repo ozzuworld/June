@@ -19,7 +19,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   # LiveKit connection info for orchestrator (internal cluster communication)
-  LIVEKIT_HOST: "livekit-livekit-server.media.svc.cluster.local"
+  LIVEKIT_HOST: "livekit-livekit-server.june-services.svc.cluster.local"  # ← CHANGED from .media.
   LIVEKIT_API_KEY: "devkey"
   LIVEKIT_API_SECRET: "bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ"
   

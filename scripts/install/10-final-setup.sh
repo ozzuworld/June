@@ -17,13 +17,13 @@ fi
 setup_additional_reference_grants() {
     log "Setting up additional ReferenceGrants..."
     
-    # Ensure ReferenceGrant for STUNner to media namespace exists
+    # Ensure ReferenceGrant for STUNner to june-services namespace exists
     cat <<EOF | kubectl apply -f - > /dev/null 2>&1
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: stunner-to-media
-  namespace: media
+  name: stunner-to-june-services
+  namespace: june-services
 spec:
   from:
   - group: stunner.l7mp.io
