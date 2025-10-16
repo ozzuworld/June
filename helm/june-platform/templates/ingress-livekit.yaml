@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: livekit-ingress
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/enable-websocket: "true"
+spec:
+  {{- if .Values.certificate.enabled }}
+  tls:
+  - hosts:
+    - livekit.{{ .Values.domains.primary }}
+    secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
+  {{- end }}
+  rules:
+  - host: livekit.{{ .Values.domains.primary }}
+    http:
+      paths:
+      - path: /rtc
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-backend
+            port:
+              number: 80
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-backend
+            port:
+              number: 80
