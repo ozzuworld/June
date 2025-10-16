@@ -32,20 +32,13 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/proxy-body-size: "100m"
     
-    # WebSocket support for LiveKit
+    # CRITICAL: Force HTTP/1.1 for WebSocket support (HTTP/2 doesn't support Upgrade header)
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    
+    # Mark LiveKit service as requiring WebSocket
     nginx.ingress.kubernetes.io/websocket-services: "livekit-backend"
     
-    # WebSocket configuration for LiveKit paths
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      # WebSocket upgrade for LiveKit
-      if ($host = "livekit.{{ .Values.domains.primary }}") {
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_cache_bypass $http_upgrade;
-      }
-    
-    # Timeouts (good for both regular services and WebSockets)
+    # Timeouts for long-lived connections
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
