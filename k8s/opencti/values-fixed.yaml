@@ -8,6 +8,10 @@ opencti:
     email: admin@ozzu.world
     password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
     token: ""  # Leave empty to auto-generate or set explicitly
+  server:
+    extraEnv:
+      - name: ELASTICSEARCH__URL
+        value: "http://opensearch-cluster-master:9200"
 
 ingress:
   enabled: true
