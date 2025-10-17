@@ -1,0 +1,227 @@
+# OpenCTI No-Search Configuration
+# This configuration disables embedded search engines and uses existing OpenSearch service
+# Use this to avoid StatefulSet/PVC immutability conflicts during Helm upgrades
+
+# Disable any search engine management by the chart
+opensearch:
+  enabled: false
+
+elasticsearch:
+  enabled: false
+
+# OpenCTI Application Configuration
+opencti:
+  enabled: true
+  baseUrl: https://opencti.ozzu.world
+  
+  # Admin Configuration
+  admin:
+    email: admin@ozzu.world
+    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
+    token: ""  # Will be auto-generated if empty
+  
+  # Application Settings
+  appLogs:
+    logsLevel: info
+  
+  # Platform Settings
+  platform:
+    name: "June Platform OpenCTI"
+    mapTileServerDark: "https://map.opencti.io/styles/luatix-dark/{z}/{x}/{y}.png"
+    mapTileServerLight: "https://map.opencti.io/styles/luatix-light/{z}/{x}/{y}.png"
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: opencti.ozzu.world
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - opencti.ozzu.world
+      secretName: ozzu-world-wildcard-tls
+
+# OpenCTI Main Application - Environment to use existing OpenSearch
+app:
+  # Image Configuration
+  image:
+    repository: opencti/platform
+    tag: "6.8.6"
+    pullPolicy: IfNotPresent
+  
+  # Replicas
+  replicaCount: 1
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # Critical environment variables for existing OpenSearch connectivity
+  env:
+    NODE_OPTIONS: "--max-old-space-size=8096"
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+  
+  # Security Context
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  # Pod Security Context
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+# Worker Configuration - Same environment as app
+worker:
+  enabled: true
+  replicaCount: 1
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+  
+  # Environment variables to match app
+  env:
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+
+# CRITICAL: Keep current persistence settings unchanged to avoid PVC conflicts
+# Your current PVCs:
+# - opencti-minio: 50Gi bound to pv-minio
+# - data-opencti-rabbitmq-0: 10Gi bound to pv-rabbitmq
+# - redis: default size (5Gi from values)
+
+# MinIO Configuration - MUST match existing PVC size (50Gi)
+minio:
+  enabled: true
+  
+  # Authentication
+  auth:
+    rootUser: opencti
+    rootPassword: "MinIO2024!"
+  
+  # Mode
+  mode: standalone
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  # CRITICAL: Keep exact same size and storageClass as existing PVC
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 50Gi  # MUST match existing PVC
+  
+  # Console
+  consoleService:
+    type: ClusterIP
+
+# RabbitMQ Configuration - MUST match existing PVC size (10Gi)
+rabbitmq:
+  enabled: true
+  
+  # Authentication
+  auth:
+    username: opencti
+    password: "RabbitMQ2024!"
+    erlangCookie: "OpenCTICookie2024"
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  # CRITICAL: Keep exact same size and storageClass as existing PVC
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 10Gi  # MUST match existing PVC
+  
+  # Clustering
+  clustering:
+    enabled: false
+  
+  # Management Plugin
+  plugins: "rabbitmq_management rabbitmq_peer_discovery_k8s"
+
+# Redis Configuration - Keep default size (5Gi)
+redis:
+  enabled: true
+  
+  # Architecture
+  architecture: standalone
+  
+  # Authentication
+  auth:
+    enabled: false
+  
+  # Master Configuration
+  master:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
+    
+    # CRITICAL: Keep same size and storageClass
+    persistence:
+      enabled: true
+      storageClass: local-storage
+      size: 5Gi  # Default size
+
+# Connector Configuration
+connector:
+  enabled: false
+
+# Global Configuration
+global:
+  storageClass: local-storage
+  
+  # Security
+  podSecurityPolicy:
+    enabled: false
+  
+  # Network Policy
+  networkPolicy:
+    enabled: false
