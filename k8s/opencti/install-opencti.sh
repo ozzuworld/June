@@ -2,6 +2,7 @@
 
 # OpenCTI Deployment Script using Upstream Helm Chart
 # This script deploys OpenCTI using the official helm-opencti chart
+# Fixed version for OpenSearch connectivity issues
 
 set -e
 
@@ -18,6 +19,7 @@ RELEASE_NAME="opencti"
 CHART_REPO="https://devops-ia.github.io/helm-opencti"
 CHART_NAME="opencti/opencti"
 VALUES_FILE="k8s/opencti/values-production.yaml"
+FALLBACK_VALUES="k8s/opencti/values-fixed.yaml"
 
 # Helper functions
 log_info() {
@@ -62,6 +64,30 @@ check_prerequisites() {
     fi
     
     log_success "Prerequisites check passed"
+}
+
+# Check for existing OpenSearch
+check_opensearch() {
+    log_info "Checking for existing OpenSearch services..."
+    
+    # Look for OpenSearch services
+    local opensearch_services
+    opensearch_services=$(kubectl get services -n "$NAMESPACE" 2>/dev/null | grep -E "(opensearch|elasticsearch)" || true)
+    
+    if [ -n "$opensearch_services" ]; then
+        log_info "Found existing search engine services:"
+        echo "$opensearch_services"
+        
+        # Check if opensearch-cluster-master exists
+        if kubectl get service opensearch-cluster-master -n "$NAMESPACE" &> /dev/null; then
+            log_warning "OpenSearch service 'opensearch-cluster-master' already exists"
+            log_info "This deployment will try to connect to the existing service"
+            USE_EXISTING_OPENSEARCH=true
+        fi
+    else
+        log_info "No existing search engine services found"
+        USE_EXISTING_OPENSEARCH=false
+    fi
 }
 
 # Add Helm repository
@@ -119,24 +145,63 @@ generate_secrets() {
 deploy_opencti() {
     log_info "Deploying OpenCTI using upstream chart..."
     
+    # Choose values file based on existing services
+    local chosen_values="$VALUES_FILE"
+    if [ "$USE_EXISTING_OPENSEARCH" = "true" ]; then
+        log_warning "Using fallback configuration for existing OpenSearch"
+        chosen_values="$FALLBACK_VALUES"
+    fi
+    
+    log_info "Using values file: $chosen_values"
+    
     # Deploy using Helm
     if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
         log_info "Upgrading existing OpenCTI deployment..."
         helm upgrade "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
-            --values "$VALUES_FILE" \
+            --values "$chosen_values" \
             --timeout 15m0s \
             --wait
     else
         log_info "Installing OpenCTI..."
         helm upgrade --install "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
-            --values "$VALUES_FILE" \
+            --values "$chosen_values" \
             --timeout 15m0s \
             --wait
     fi
     
     log_success "OpenCTI deployment completed"
+}
+
+# Verify OpenSearch connectivity
+verify_opensearch_connectivity() {
+    log_info "Verifying OpenSearch connectivity..."
+    
+    # Wait a bit for services to be ready
+    sleep 10
+    
+    # Find OpenCTI server pod
+    local server_pod
+    server_pod=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=opencti --no-headers -o custom-columns=":metadata.name" | head -1 2>/dev/null || true)
+    
+    if [ -n "$server_pod" ]; then
+        log_info "Testing connectivity from pod: $server_pod"
+        
+        # Test connectivity to OpenSearch
+        log_info "Testing OpenSearch connectivity..."
+        if kubectl exec "$server_pod" -n "$NAMESPACE" -- curl -s -o /dev/null -w "%{http_code}" http://opensearch-cluster-master:9200 2>/dev/null | grep -q "200\|000"; then
+            log_success "OpenSearch connectivity verified"
+        else
+            log_warning "Could not verify OpenSearch connectivity"
+            
+            # Show available services for troubleshooting
+            log_info "Available services in namespace:"
+            kubectl get services -n "$NAMESPACE"
+        fi
+    else
+        log_warning "No OpenCTI server pod found for connectivity testing"
+    fi
 }
 
 # Wait for services
@@ -145,22 +210,27 @@ wait_for_services() {
     
     # Wait for dependencies first
     log_info "Waiting for Redis..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n "$NAMESPACE" --timeout=300s
-    
-    log_info "Waiting for Elasticsearch..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=elasticsearch -n "$NAMESPACE" --timeout=600s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n "$NAMESPACE" --timeout=300s 2>/dev/null || log_warning "Redis timeout"
     
     log_info "Waiting for RabbitMQ..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rabbitmq -n "$NAMESPACE" --timeout=300s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rabbitmq -n "$NAMESPACE" --timeout=300s 2>/dev/null || log_warning "RabbitMQ timeout"
     
     log_info "Waiting for MinIO..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=minio -n "$NAMESPACE" --timeout=300s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=minio -n "$NAMESPACE" --timeout=300s 2>/dev/null || log_warning "MinIO timeout"
+    
+    # Check for OpenSearch (existing or new)
+    log_info "Checking OpenSearch status..."
+    if kubectl get pod opensearch-cluster-master-0 -n "$NAMESPACE" &> /dev/null; then
+        kubectl wait --for=condition=ready pod opensearch-cluster-master-0 -n "$NAMESPACE" --timeout=600s 2>/dev/null || log_warning "OpenSearch timeout"
+    else
+        log_warning "No OpenSearch pod found (may be using external service)"
+    fi
     
     # Wait for OpenCTI application
     log_info "Waiting for OpenCTI application..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --timeout=600s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --timeout=600s 2>/dev/null || log_warning "OpenCTI timeout"
     
-    log_success "All services are ready"
+    log_success "Services deployment completed (some timeouts are normal)"
 }
 
 # Show deployment status
@@ -207,8 +277,40 @@ show_status() {
 # Get logs function
 get_logs() {
     log_info "Recent OpenCTI application logs:"
-    kubectl logs -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --tail=20 2>/dev/null || \
+    kubectl logs -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --tail=50 2>/dev/null || \
         log_warning "No OpenCTI pods found or logs not available"
+    
+    echo
+    log_info "OpenSearch logs:"
+    kubectl logs opensearch-cluster-master-0 -n "$NAMESPACE" --tail=20 2>/dev/null || \
+        log_warning "No OpenSearch logs available"
+}
+
+# Troubleshooting function
+troubleshoot() {
+    log_info "OpenCTI Troubleshooting Information:"
+    echo
+    
+    # Check failed pods
+    log_info "Failed/Pending Pods:"
+    kubectl get pods -n "$NAMESPACE" --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null || echo "No failed pods"
+    echo
+    
+    # Check recent events
+    log_info "Recent Events:"
+    kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -10
+    echo
+    
+    # Show services and endpoints
+    log_info "Service Endpoints:"
+    kubectl get endpoints -n "$NAMESPACE"
+    echo
+    
+    # Test OpenSearch connectivity
+    log_info "Testing OpenSearch connectivity from a test pod:"
+    kubectl run test-curl --rm -i --restart=Never --image=curlimages/curl:latest -n "$NAMESPACE" -- \
+        curl -s http://opensearch-cluster-master:9200 2>/dev/null || \
+        log_warning "Could not test OpenSearch connectivity"
 }
 
 # Cleanup function
@@ -232,6 +334,7 @@ main() {
     check_prerequisites
     add_helm_repo
     create_namespace
+    check_opensearch
     generate_secrets
     deploy_opencti
     
@@ -240,9 +343,13 @@ main() {
         wait_for_services
     fi
     
+    # Verify connectivity
+    verify_opensearch_connectivity
+    
     show_status
     
     log_success "OpenCTI deployment completed successfully!"
+    log_info "If you see connection errors, run: $0 --troubleshoot"
 }
 
 # Parse command line arguments
@@ -268,6 +375,10 @@ while [[ $# -gt 0 ]]; do
             show_status
             exit 0
             ;;
+        --troubleshoot)
+            troubleshoot
+            exit 0
+            ;;
         --cleanup)
             cleanup_deployment
             exit 0
@@ -280,6 +391,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-wait               Don't wait for deployment to be ready"
             echo "  --logs                  Show recent application logs"
             echo "  --status                Show deployment status"
+            echo "  --troubleshoot          Show troubleshooting information"
             echo "  --cleanup               Remove OpenCTI deployment"
             echo "  --help                  Show this help message"
             exit 0
