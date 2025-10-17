@@ -14,7 +14,6 @@ domains:
   stt: stt.ozzu.world
   tts: tts.ozzu.world
   turn: turn.ozzu.world
-  opencti: opencti.ozzu.world
 
 # Certificate Configuration
 certificate:
@@ -108,57 +107,6 @@ stunner:
   enabled: false  # Deployed via install-livekit.sh
   username: june-user
   password: Pokemon123!
-
-# OpenCTI Threat Intelligence Platform
-opencti:
-  enabled: true
-  replicas: 1
-  domain: opencti.ozzu.world
-  
-  # OpenCTI Application Configuration
-  image:
-    repository: opencti/platform
-    tag: "6.3.7"
-    pullPolicy: IfNotPresent
-    
-  # Admin Configuration
-  admin:
-    email: "admin@ozzu.world"
-    password: "OpenCTI2024!"
-    token: "38eb8db1-4e64-4467-9a44-0a8e0bd70f34"  # Generate new UUID
-    
-  # Storage Configuration
-  storage:
-    storageClass: local-storage
-    
-  # Resources for OpenCTI main application
-  resources:
-    requests:
-      memory: "2Gi"
-      cpu: "500m"
-    limits:
-      memory: "4Gi"
-      cpu: "1000m"
-      
-  # Redis Configuration
-  redis:
-    storage: "5Gi"
-    
-  # Elasticsearch Configuration  
-  elasticsearch:
-    storage: "50Gi"
-    
-  # RabbitMQ Configuration
-  rabbitmq:
-    username: "opencti"
-    password: "RabbitMQ2024!"
-    storage: "10Gi"
-    
-  # MinIO Configuration
-  minio:
-    accessKey: "opencti"
-    secretKey: "MinIO2024!"
-    storage: "100Gi"
 
 # Secrets (Set via --set or separate values file)
 secrets:
