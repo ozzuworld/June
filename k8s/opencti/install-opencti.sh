@@ -18,7 +18,7 @@ RELEASE_NAME="opencti"
 CHART_REPO="https://devops-ia.github.io/helm-opencti"
 CHART_NAME="opencti/opencti"
 VALUES_FILE="k8s/opencti/values-fixed.yaml"
-STORAGE_CLASS=""  # Auto-detected
+STORAGE_CLASS=""  # Auto-detected or overridden
 
 # Helper functions
 log_info() {
@@ -40,6 +40,12 @@ log_error() {
 
 # Detect best available storage class
 detect_storage_class() {
+    # If user specified --storage-class, respect it
+    if [[ -n "$STORAGE_CLASS" ]]; then
+        log_info "Using provided storage class: $STORAGE_CLASS"
+        return
+    }
+
     log_info "Detecting available storage classes..."
     
     # Check if any storage classes exist
@@ -86,12 +92,9 @@ detect_storage_class() {
         return
     fi
     
-    # Last resort: list available classes and let user choose
-    log_warning "No suitable dynamic storage class found automatically."
-    log_info "Available storage classes:"
-    kubectl get storageclass -o custom-columns="NAME:.metadata.name,PROVISIONER:.provisioner,DEFAULT:.metadata.annotations.storageclass\.kubernetes\.io/is-default-class"
-    
-    log_error "Please set a default storage class or specify one with: helm install --set global.storageClass=YOUR_CLASS"
+    # Last resort: if only local-storage exists, leave STORAGE_CLASS empty
+    # and rely on manual PVs + PVCs (as configured in the repo docs)
+    log_warning "No suitable dynamic storage class found automatically; proceeding with manual/local PVs."
 }
 
 # Check prerequisites
@@ -149,74 +152,34 @@ create_namespace() {
     log_success "Namespace '$NAMESPACE' ready"
 }
 
-# Validate and fix MinIO credentials
-validate_minio_credentials() {
-    log_info "Validating MinIO credentials..."
-    
-    # Wait for MinIO secret to exist
-    local retries=0
-    while ! kubectl get secret opencti-minio -n "$NAMESPACE" &> /dev/null && [ $retries -lt 30 ]; do
-        log_info "Waiting for MinIO secret to be created..."
-        sleep 5
-        ((retries++))
-    done
-    
-    if ! kubectl get secret opencti-minio -n "$NAMESPACE" &> /dev/null; then
-        log_warning "MinIO secret not found, will be created during deployment"
-        return
-    fi
-    
-    # Check current credentials
-    local current_user current_pass
-    current_user=$(kubectl get secret opencti-minio -n "$NAMESPACE" -o jsonpath='{.data.rootUser}' | base64 -d 2>/dev/null || echo "")
-    current_pass=$(kubectl get secret opencti-minio -n "$NAMESPACE" -o jsonpath='{.data.rootPassword}' | base64 -d 2>/dev/null || echo "")
-    
-    # Expected credentials from values-fixed.yaml
-    local expected_user="opencti"
-    local expected_pass="MinIO2024!"
-    
-    if [[ "$current_user" != "$expected_user" || "$current_pass" != "$expected_pass" ]]; then
-        log_warning "MinIO credentials don't match values-fixed.yaml, fixing..."
-        
-        kubectl patch secret opencti-minio -n "$NAMESPACE" --type='json' -p="[
-            {\"op\":\"replace\",\"path\":\"/data/rootUser\",\"value\":\"$(echo -n "$expected_user" | base64 -w 0)\"},
-            {\"op\":\"replace\",\"path\":\"/data/rootPassword\",\"value\":\"$(echo -n "$expected_pass" | base64 -w 0)\"}
-        ]"
-        
-        # Restart MinIO pod to pick up new credentials
-        kubectl delete pod -l app=minio -n "$NAMESPACE" --ignore-not-found=true
-        kubectl wait --for=condition=ready pod -l app=minio -n "$NAMESPACE" --timeout=120s
-        
-        log_success "MinIO credentials aligned with values-fixed.yaml"
-    else
-        log_success "MinIO credentials are correctly configured"
-    fi
-}
-
 # Deploy OpenCTI
 deploy_opencti() {
-    log_info "Deploying OpenCTI using values-fixed.yaml with storage class: $STORAGE_CLASS"
+    log_info "Deploying OpenCTI using values-fixed.yaml..."
     
-    # Prepare Helm command with storage class override
-    local helm_args=()
+    # Prepare Helm args
+    local helm_args=(
+        "--namespace" "$NAMESPACE"
+        "--values" "$VALUES_FILE"
+        # Enforce ELASTICSEARCH__URL env at deploy time
+        "--set" "opencti.server.extraEnv[0].name=ELASTICSEARCH__URL"
+        "--set" "opencti.server.extraEnv[0].value=http://opensearch-cluster-master:9200"
+    )
+
+    # Include storage class override if we have one
     if [[ -n "$STORAGE_CLASS" ]]; then
         helm_args+=("--set" "global.storageClass=$STORAGE_CLASS")
     fi
     
-    # Deploy using Helm
+    # Install or upgrade
     if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
         log_info "Upgrading existing OpenCTI deployment..."
         helm upgrade "$RELEASE_NAME" "$CHART_NAME" \
-            --namespace "$NAMESPACE" \
-            --values "$VALUES_FILE" \
             "${helm_args[@]}" \
             --timeout 25m0s \
             --wait
     else
         log_info "Installing OpenCTI..."
         helm upgrade --install "$RELEASE_NAME" "$CHART_NAME" \
-            --namespace "$NAMESPACE" \
-            --values "$VALUES_FILE" \
             "${helm_args[@]}" \
             --timeout 25m0s \
             --wait
@@ -225,133 +188,30 @@ deploy_opencti() {
     log_success "OpenCTI deployment completed"
 }
 
-# Reset OpenSearch for clean initialization
-reset_opensearch() {
-    log_info "Resetting OpenSearch for clean initialization..."
-    
-    if [ -f "k8s/opencti/opensearch-reset.sh" ]; then
-        bash k8s/opencti/opensearch-reset.sh "$NAMESPACE"
-    else
-        log_warning "opensearch-reset.sh not found, skipping OpenSearch reset"
+# Validate server environment variables
+validate_server_env() {
+    log_info "Validating OpenCTI server environment..."
+    local env_url
+    env_url=$(kubectl get deployment opencti-server -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ELASTICSEARCH__URL")].value}' || true)
+    if [[ "$env_url" != "http://opensearch-cluster-master:9200" ]]; then
+        log_error "ELASTICSEARCH__URL is '$env_url' (expected http://opensearch-cluster-master:9200). Aborting to avoid bad rollout."
     fi
-}
-
-# Bootstrap admin credentials
-bootstrap_admin() {
-    log_info "Bootstrapping OpenCTI admin credentials..."
-    
-    if [ -f "k8s/opencti/bootstrap-admin.sh" ]; then
-        bash k8s/opencti/bootstrap-admin.sh "$NAMESPACE"
-    else
-        log_warning "bootstrap-admin.sh not found, admin credentials not configured"
-        log_warning "You may need to manually set valid UUIDv4 admin token"
-    fi
-}
-
-# Wait for services
-wait_for_services() {
-    log_info "Waiting for OpenCTI services to be ready..."
-    
-    # Wait for dependencies first
-    log_info "Waiting for Redis..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n "$NAMESPACE" --timeout=300s || true
-    
-    log_info "Waiting for OpenSearch..."
-    kubectl wait --for=condition=ready pod -l app=opensearch-cluster-master -n "$NAMESPACE" --timeout=600s || true
-    
-    log_info "Waiting for RabbitMQ..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rabbitmq -n "$NAMESPACE" --timeout=300s || true
-    
-    log_info "Waiting for MinIO..."
-    kubectl wait --for=condition=ready pod -l app=minio -n "$NAMESPACE" --timeout=300s || true
-    
-    log_success "Dependencies are ready"
-}
-
-# Show deployment status
-show_status() {
-    log_info "OpenCTI Deployment Status:"
-    echo
-    
-    # Show storage class used
-    if [[ -n "$STORAGE_CLASS" ]]; then
-        log_info "Storage Class: $STORAGE_CLASS"
-    fi
-    
-    # Show pods
-    log_info "Pods:"
-    kubectl get pods -n "$NAMESPACE" -o wide
-    echo
-    
-    # Show services
-    log_info "Services:"
-    kubectl get svc -n "$NAMESPACE"
-    echo
-    
-    # Show PVCs and their status
-    log_info "Storage (PVCs):"
-    kubectl get pvc -n "$NAMESPACE" -o wide
-    echo
-    
-    # Show ingress
-    log_info "Ingress:"
-    kubectl get ingress -n "$NAMESPACE" 2>/dev/null || log_warning "No ingress found"
-    echo
-    
-    log_success "OpenCTI should be accessible at: https://opencti.ozzu.world"
-    echo
-    log_info "Default credentials are set in values-fixed.yaml"
-    log_warning "Remember to change default passwords in production!"
-}
-
-# Get logs function
-get_logs() {
-    log_info "Recent OpenCTI server logs:"
-    kubectl logs -l opencti.component=server -n "$NAMESPACE" --tail=50 2>/dev/null || \
-        log_warning "No OpenCTI server pods found or logs not available"
-}
-
-# Cleanup function
-cleanup_deployment() {
-    log_warning "This will remove the entire OpenCTI deployment. Are you sure? (y/N)"
-    read -r confirm
-    if [[ $confirm =~ ^[Yy]$ ]]; then
-        log_info "Removing OpenCTI deployment..."
-        helm uninstall "$RELEASE_NAME" -n "$NAMESPACE" 2>/dev/null || true
-        kubectl delete namespace "$NAMESPACE" --ignore-not-found=true
-        log_success "OpenCTI deployment removed"
-    else
-        log_info "Cleanup cancelled"
-    fi
+    log_success "OpenCTI server env validated (ELASTICSEARCH__URL correct)"
 }
 
 # Main execution
 main() {
-    log_info "Starting OpenCTI deployment with storage class detection..."
+    log_info "Starting OpenCTI deployment with deterministic configuration..."
     
     check_prerequisites
     detect_storage_class
     add_helm_repo
     create_namespace
     deploy_opencti
-    
-    # Validate and fix MinIO credentials after deployment
-    validate_minio_credentials
-    
-    # Wait for services if requested
-    if [ "${WAIT_FOR_READY:-true}" = "true" ]; then
-        wait_for_services
-    fi
-    
-    # Bootstrap admin if requested
-    if [ "${BOOTSTRAP_ADMIN:-true}" = "true" ]; then
-        bootstrap_admin
-    fi
-    
-    show_status
+    validate_server_env
     
     log_success "OpenCTI deployment completed successfully!"
-    log_info "If initialization fails, run: $0 --reset"
+    log_info "Next: run bootstrap-admin.sh if not already done."
 }
 
 # Parse command line arguments
@@ -369,42 +229,12 @@ while [[ $# -gt 0 ]]; do
             STORAGE_CLASS="$2"
             shift 2
             ;;
-        --no-wait)
-            WAIT_FOR_READY="false"
-            shift
-            ;;
-        --no-bootstrap)
-            BOOTSTRAP_ADMIN="false"
-            shift
-            ;;
-        --reset)
-            reset_opensearch
-            exit 0
-            ;;
-        --logs)
-            get_logs
-            exit 0
-            ;;
-        --status)
-            show_status
-            exit 0
-            ;;
-        --cleanup)
-            cleanup_deployment
-            exit 0
-            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
             echo "  --namespace NAMESPACE      Kubernetes namespace (default: opencti)"
             echo "  --release-name NAME        Helm release name (default: opencti)"
             echo "  --storage-class CLASS      Override storage class (auto-detected by default)"
-            echo "  --no-wait                 Don't wait for deployment to be ready"
-            echo "  --no-bootstrap            Skip admin credential bootstrap"
-            echo "  --reset                   Reset OpenSearch for clean initialization"
-            echo "  --logs                    Show recent application logs"
-            echo "  --status                  Show deployment status"
-            echo "  --cleanup                 Remove OpenCTI deployment"
             echo "  --help                    Show this help message"
             exit 0
             ;;
