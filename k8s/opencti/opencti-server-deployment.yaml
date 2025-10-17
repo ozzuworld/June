@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencti-server
+  namespace: opencti
+  labels:
+    app.kubernetes.io/name: opencti
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencti
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opencti
+        app.kubernetes.io/component: server
+    spec:
+      containers:
+      - name: opencti-server
+        image: opencti/platform:6.8.6
+        ports:
+        - containerPort: 4000
+        env:
+        - name: APP__ADMIN__EMAIL
+          value: "admin@ozzu.world"
+        - name: APP__ADMIN__PASSWORD
+          value: "OpenCTI2024!"
+        - name: APP__ADMIN__TOKEN
+          value: ""
+        - name: ELASTICSEARCH__URL
+          value: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
+        - name: ELASTICSEARCH__ENGINE_SELECTOR
+          value: "opensearch"
+        - name: ELASTICSEARCH__ENGINE_CHECK
+          value: "false"
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=8096"
+        - name: MINIO__ENDPOINT
+          value: "opencti-minio"
+        - name: MINIO__PORT
+          value: "9000"
+        - name: MINIO__ACCESS_KEY
+          value: "opencti"
+        - name: MINIO__SECRET_KEY
+          value: "MinIO2024!"
+        - name: MINIO__USE_SSL
+          value: "false"
+        - name: MINIO__BUCKET_NAME
+          value: "opencti-bucket"
+        - name: RABBITMQ__HOSTNAME
+          value: "opencti-rabbitmq"
+        - name: RABBITMQ__PORT
+          value: "5672"
+        - name: RABBITMQ__PORT_MANAGEMENT
+          value: "15672"
+        - name: RABBITMQ__USERNAME
+          value: "opencti"
+        - name: RABBITMQ__PASSWORD
+          value: "RabbitMQ2024!"
+        - name: REDIS__HOSTNAME
+          value: "opencti-redis-master"
+        - name: REDIS__MODE
+          value: "single"
+        - name: REDIS__PORT
+          value: "6379"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 1000m
+            memory: 4Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4000
+          initialDelaySeconds: 180
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 4000
+          initialDelaySeconds: 10
+          periodSeconds: 10
