@@ -6,15 +6,15 @@ opencti:
   baseUrl: https://opencti.ozzu.world
   admin:
     email: admin@ozzu.world
-    password: "OpenCTI2024!"
-    token: ""
+    password: "OpenCTI2024!"  # MUST NOT be "ChangeMe"
+    token: ""                 # Set via bootstrap-admin.sh - MUST be UUIDv4
   server:
     extraEnv:
       - name: ELASTICSEARCH__URL
         value: "http://opensearch-cluster-master:9200"
-      # CRITICAL FIX: MinIO URL must include http:// protocol
+      # CRITICAL FIX: MinIO endpoint must be hostname only, no protocol/port
       - name: MINIO__ENDPOINT
-        value: "http://opencti-minio:9000"
+        value: "opencti-minio"
       - name: MINIO__PORT
         value: "9000"
       - name: MINIO__USE_SSL
@@ -25,6 +25,21 @@ opencti:
         value: "MinIO2024!"
       - name: MINIO__BUCKET_NAME
         value: "opencti-bucket"
+      # Service names must match Helm chart outputs
+      - name: RABBITMQ__HOSTNAME
+        value: "opencti-rabbitmq"
+      - name: RABBITMQ__USERNAME
+        value: "opencti"
+      - name: RABBITMQ__PASSWORD
+        value: "RabbitMQ2024!"
+      - name: RABBITMQ__PORT
+        value: "5672"
+      - name: REDIS__HOSTNAME
+        value: "opencti-redis"
+      - name: REDIS__PORT
+        value: "6379"
+      - name: REDIS__MODE
+        value: "single"
 
 ingress:
   enabled: true
