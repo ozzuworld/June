@@ -49,9 +49,6 @@ spec:
     - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
-    {{- if .Values.opencti.enabled }}
-    - {{ .Values.domains.opencti }}
-    {{- end }}
     - livekit.{{ .Values.domains.primary }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
@@ -116,16 +113,4 @@ spec:
             name: june-tts
             port:
               number: 8000
-  {{- end }}
-  {{- if .Values.opencti.enabled }}
-  - host: {{ .Values.domains.opencti }}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: {{ include "june-platform.fullname" . }}-opencti
-            port:
-              number: 4000
   {{- end }}
