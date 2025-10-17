@@ -1,4 +1,4 @@
-# OpenCTI Production Configuration - CORRECTED MinIO Config
+# OpenCTI Production Configuration - CORRECTED Storage & MinIO Config
 # Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 25m --wait
 
 opencti:
@@ -58,8 +58,10 @@ ingress:
         - opencti.ozzu.world
       secretName: ozzu-world-wildcard-tls
 
+# Use default storage class for portability
+# Override with --set global.storageClass=your-class if needed
 global:
-  storageClass: local-storage
+  storageClass: ""  # Empty string uses cluster default
 
 # OpenSearch Configuration (replaces Elasticsearch)
 opensearch:
@@ -76,7 +78,7 @@ opensearch:
       value: "OpenSearch2024!"
   persistence:
     enabled: true
-    storageClass: local-storage
+    # Uses global.storageClass if not specified
     size: 20Gi
   resources:
     requests:
@@ -94,7 +96,7 @@ redis:
   master:
     persistence:
       enabled: true
-      storageClass: local-storage
+      # Uses global.storageClass if not specified
       size: 5Gi
     resources:
       requests:
@@ -111,7 +113,7 @@ rabbitmq:
     password: "RabbitMQ2024!"
   persistence:
     enabled: true
-    storageClass: local-storage
+    # Uses global.storageClass if not specified
     size: 10Gi
   resources:
     requests:
@@ -131,7 +133,7 @@ minio:
   defaultBuckets: "opencti-bucket"
   persistence:
     enabled: true
-    storageClass: local-storage
+    # Uses global.storageClass if not specified
     size: 50Gi
   resources:
     requests:
