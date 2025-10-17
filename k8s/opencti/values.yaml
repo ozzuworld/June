@@ -1,38 +1,261 @@
-# k8s/opencti/values.yaml (single file)
+# OpenCTI Helm Chart Values
+# Connects to existing OpenSearch in 'default' namespace
+# Documentation: https://github.com/devops-ia/helm-opencti
+
+# ============================================================================
+# OpenCTI Application Configuration
+# ============================================================================
 opencti:
   enabled: true
   baseUrl: https://opencti.ozzu.world
+  
   admin:
     email: admin@ozzu.world
-    password: "OpenCTI2024!"
-    token: ""  # Auto-generated
+    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
+    token: ""  # Auto-generated if empty
+  
+  appLogs:
+    logsLevel: info
+  
+  platform:
+    name: "June Platform OpenCTI"
+    mapTileServerDark: "https://map.opencti.io/styles/luatix-dark/{z}/{x}/{y}.png"
+    mapTileServerLight: "https://map.opencti.io/styles/luatix-light/{z}/{x}/{y}.png"
 
-# CRITICAL: Disable embedded search engines
+# ============================================================================
+# Search Engine Configuration - USE EXISTING OPENSEARCH
+# ============================================================================
+# Disable embedded search engines (we use existing OpenSearch in 'default' namespace)
 opensearch:
   enabled: false
+
 elasticsearch:
   enabled: false
 
-# Point to existing OpenSearch with FQDN
+# ============================================================================
+# Ingress Configuration
+# ============================================================================
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: opencti.ozzu.world
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - opencti.ozzu.world
+      secretName: ozzu-world-wildcard-tls
+
+# ============================================================================
+# OpenCTI Main Application - Environment Variables
+# ============================================================================
 app:
+  image:
+    repository: opencti/platform
+    tag: "6.8.6"
+    pullPolicy: IfNotPresent
+  
+  replicaCount: 1
+  
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # CRITICAL: Environment variables with correct FQDN for cross-namespace access
+  env:
+    # Node.js memory settings
+    NODE_OPTIONS: "--max-old-space-size=8096"
+
+    # OpenSearch connection (FQDN to default namespace)
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+
+    # MinIO S3 storage (same namespace, short name OK)
+    MINIO__ENDPOINT: "opencti-minio"
+    MINIO__PORT: "9000"
+    MINIO__ACCESS_KEY: "opencti"
+    MINIO__SECRET_KEY: "MinIO2024!"
+    MINIO__USE_SSL: "false"
+    MINIO__BUCKET_NAME: "opencti-bucket"
+
+    # RabbitMQ message queue (same namespace)
+    RABBITMQ__HOSTNAME: "opencti-rabbitmq"
+    RABBITMQ__PORT: "5672"
+    RABBITMQ__PORT_MANAGEMENT: "15672"
+    RABBITMQ__USERNAME: "opencti"
+    RABBITMQ__PASSWORD: "RabbitMQ2024!"
+
+    # Redis cache (same namespace)
+    REDIS__HOSTNAME: "opencti-redis-master"
+    REDIS__MODE: "single"
+    REDIS__PORT: "6379"
+    
+    # Application settings
+    APP__BASE_PATH: "/"
+    APP__HEALTH_ACCESS_KEY: "ChangeMe"
+    APP__TELEMETRY__METRICS__ENABLED: "true"
+  
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+# ============================================================================
+# Worker Configuration
+# ============================================================================
+worker:
+  enabled: true
+  replicaCount: 1
+  
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+  
+  # Same environment variables as app
   env:
     ELASTICSEARCH__URL: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
     ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
     ELASTICSEARCH__ENGINE_CHECK: "false"
     
-    # MinIO (uses chart defaults)
-    MINIO__ENDPOINT: "opencti-minio:9000"
-    # ... other configs
+    MINIO__ENDPOINT: "opencti-minio"
+    MINIO__PORT: "9000"
+    MINIO__ACCESS_KEY: "opencti"
+    MINIO__SECRET_KEY: "MinIO2024!"
+    MINIO__USE_SSL: "false"
+    MINIO__BUCKET_NAME: "opencti-bucket"
+    
+    RABBITMQ__HOSTNAME: "opencti-rabbitmq"
+    RABBITMQ__PORT: "5672"
+    RABBITMQ__USERNAME: "opencti"
+    RABBITMQ__PASSWORD: "RabbitMQ2024!"
+    
+    REDIS__HOSTNAME: "opencti-redis-master"
+    REDIS__MODE: "single"
+    REDIS__PORT: "6379"
 
-# Enable other dependencies
+# ============================================================================
+# MinIO S3 Storage
+# ============================================================================
 minio:
   enabled: true
-  # ... config
+  
+  auth:
+    rootUser: opencti
+    rootPassword: "MinIO2024!"  # CHANGE IN PRODUCTION
+  
+  mode: standalone
+  
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 50Gi
+  
+  consoleService:
+    type: ClusterIP
 
+# ============================================================================
+# RabbitMQ Message Queue
+# ============================================================================
 rabbitmq:
   enabled: true
-  # ... config
+  
+  auth:
+    username: opencti
+    password: "RabbitMQ2024!"  # CHANGE IN PRODUCTION
+    erlangCookie: "OpenCTICookie2024"
+  
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 10Gi
+  
+  clustering:
+    enabled: false
+  
+  plugins: "rabbitmq_management rabbitmq_peer_discovery_k8s"
 
+# ============================================================================
+# Redis Cache
+# ============================================================================
 redis:
   enabled: true
-  # ... config
+  
+  architecture: standalone
+  
+  auth:
+    enabled: false  # Simplified for internal use
+  
+  master:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
+    
+    persistence:
+      enabled: true
+      storageClass: local-storage
+      size: 5Gi
+
+# ============================================================================
+# Connectors (Disabled by default)
+# ============================================================================
+connector:
+  enabled: false
+
+# ============================================================================
+# Global Settings
+# ============================================================================
+global:
+  storageClass: local-storage
+  
+  podSecurityPolicy:
+    enabled: false
+  
+  networkPolicy:
+    enabled: false

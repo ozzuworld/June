@@ -1,82 +1,133 @@
 #!/bin/bash
-# k8s/opencti/deploy.sh
+# OpenCTI Simple Deployment Script
+# Deploys OpenCTI using Helm chart with existing OpenSearch
 
 set -e
 
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log() { echo -e "${BLUE}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# Configuration
 NS="opencti"
 RELEASE="opencti"
+CHART_REPO="https://devops-ia.github.io/helm-opencti"
+CHART_NAME="opencti/opencti"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VALUES_FILE="${SCRIPT_DIR}/values.yaml"
 
-echo "🚀 Deploying OpenCTI..."
+echo "=========================================="
+log "OpenCTI Deployment"
+echo "=========================================="
+echo ""
 
-# Add helm repo
-helm repo add opencti https://devops-ia.github.io/helm-opencti
-helm repo update
+# Verify prerequisites
+log "Checking prerequisites..."
 
-# Deploy
-helm upgrade --install "$RELEASE" opencti/opencti \
-  --namespace "$NS" \
-  --create-namespace \
-  -f values.yaml \
-  --wait
+if ! command -v kubectl &> /dev/null; then
+    error "kubectl not found. Please install kubectl."
+fi
 
-echo "✅ OpenCTI deployed!"
-echo "URL: https://opencti.ozzu.world"
-```
+if ! command -v helm &> /dev/null; then
+    error "helm not found. Please install Helm 3.x."
+fi
 
-**Total: ~100 lines instead of 1200 lines**
+if ! kubectl cluster-info &> /dev/null; then
+    error "Cannot connect to Kubernetes cluster."
+fi
 
----
+if [ ! -f "$VALUES_FILE" ]; then
+    error "Values file not found: $VALUES_FILE"
+fi
 
-## 🔍 **Why Is It Over-Engineered?**
+success "Prerequisites OK"
 
-### **Root Cause Analysis:**
+# Verify OpenSearch is running
+log "Checking OpenSearch in 'default' namespace..."
+if ! kubectl get service opensearch-cluster-master -n default &> /dev/null; then
+    warn "OpenSearch service 'opensearch-cluster-master' not found in 'default' namespace"
+    warn "OpenCTI will fail to start without OpenSearch"
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        error "Deployment cancelled"
+    fi
+else
+    success "OpenSearch service found"
+fi
 
-1. **Namespace Issue Not Addressed**: Instead of fixing the FQDN problem, multiple workarounds were created
-2. **Multiple Config Files**: Trying to handle different scenarios instead of having one clear path
-3. **Auto-Detection Logic**: Shouldn't need to detect - infrastructure should be deterministic
-4. **Recovery Scripts**: Needed because the initial config was wrong
-5. **Bootstrap Scripts**: Helm can handle secrets and initialization
+# Add Helm repository
+log "Adding Helm repository..."
+helm repo add opencti "$CHART_REPO" >/dev/null 2>&1 || true
+helm repo update >/dev/null 2>&1
 
-### **Red Flags:**
-- ❌ Script names like `quick-fix.sh` (shouldn't need fixes)
-- ❌ Script names like `opensearch-reset.sh` (shouldn't corrupt in first place)
-- ❌ 3 different values files (one should work)
-- ❌ Auto-detection logic (infrastructure should be explicit)
-- ❌ Interactive troubleshooting menus (deployment should be idempotent)
+success "Helm repository configured"
 
----
+# Check if namespace exists
+if kubectl get namespace "$NS" &> /dev/null; then
+    log "Namespace '$NS' already exists"
+else
+    log "Creating namespace '$NS'..."
+    kubectl create namespace "$NS"
+fi
 
-## 📋 **Recommended Refactoring**
+# Deploy OpenCTI
+log "Deploying OpenCTI..."
+log "  Namespace: $NS"
+log "  Release: $RELEASE"
+log "  Values: $VALUES_FILE"
+echo ""
 
-### **Keep:**
-- ✅ `values.yaml` (single, correct config)
-- ✅ `deploy.sh` (simple deployment script)
-- ✅ `README.md` (minimal docs)
+helm upgrade --install "$RELEASE" "$CHART_NAME" \
+    --namespace "$NS" \
+    --values "$VALUES_FILE" \
+    --timeout 15m \
+    --wait
 
-### **Remove:**
-- ❌ `values-production.yaml` (you have OpenSearch already)
-- ❌ `values-fixed.yaml` (wrong namespace)
-- ❌ `install-opencti.sh` (too complex)
-- ❌ `quick-fix.sh` (shouldn't be needed)
-- ❌ `opensearch-reset.sh` (shouldn't corrupt)
-- ❌ `bootstrap-admin.sh` (Helm handles this)
+echo ""
+success "OpenCTI deployed successfully!"
 
----
+# Show deployment status
+echo ""
+log "Deployment Status:"
+kubectl get pods -n "$NS"
 
-## 💡 **The Problem with Over-Engineering**
+echo ""
+log "Services:"
+kubectl get services -n "$NS"
 
-1. **Maintenance Burden**: 1200 lines to maintain vs 100 lines
-2. **Cognitive Load**: New team members need to understand complex scripts
-3. **Debugging Difficulty**: Multiple failure points
-4. **False Confidence**: Scripts mask the real problem instead of fixing it
+echo ""
+log "Ingress:"
+kubectl get ingress -n "$NS" 2>/dev/null || echo "No ingress configured"
 
----
-
-## 🎯 **My Recommendation**
-
-**Delete everything in `k8s/opencti/` and replace with:**
-```
-k8s/opencti/
-├── values.yaml          # Single config file (~80 lines)
-├── deploy.sh            # Simple deployment (~20 lines)
-└── README.md            # Basic usage (~30 lines)
+# Show access information
+echo ""
+echo "=========================================="
+success "OpenCTI is Ready!"
+echo "=========================================="
+echo ""
+echo "📋 Access Information:"
+echo "  URL: https://opencti.ozzu.world"
+echo "  Email: admin@ozzu.world"
+echo "  Password: Check values.yaml"
+echo ""
+echo "🔍 Useful Commands:"
+echo "  # Check pods"
+echo "  kubectl get pods -n $NS"
+echo ""
+echo "  # View logs"
+echo "  kubectl logs -n $NS deployment/opencti-server -f"
+echo ""
+echo "  # Test OpenSearch connectivity"
+echo "  kubectl exec -n $NS deployment/opencti-server -- \\"
+echo "    curl http://opensearch-cluster-master.default.svc.cluster.local:9200"
+echo ""
+echo "=========================================="
