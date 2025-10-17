@@ -9,10 +9,11 @@ opencti:
     password: "OpenCTI2024!"  # MUST NOT be "ChangeMe"
     token: ""                 # Set via bootstrap-admin.sh - MUST be UUIDv4
   server:
+    podAnnotations:
+      june.dev/config-rev: "2025-10-17-01"  # bump to force rollout when values change
     extraEnv:
       - name: ELASTICSEARCH__URL
         value: "http://opensearch-cluster-master:9200"
-      # CRITICAL FIX: MinIO endpoint must be hostname only, no protocol/port
       - name: MINIO__ENDPOINT
         value: "opencti-minio"
       - name: MINIO__PORT
@@ -25,7 +26,6 @@ opencti:
         value: "MinIO2024!"
       - name: MINIO__BUCKET_NAME
         value: "opencti-bucket"
-      # Service names must match Helm chart outputs
       - name: RABBITMQ__HOSTNAME
         value: "opencti-rabbitmq"
       - name: RABBITMQ__USERNAME
