@@ -74,12 +74,12 @@ env:
   # Redis Configuration
   REDIS__HOSTNAME: "opencti-redis-master"
   REDIS__MODE: "single"
-  REDIS__PORT: "6379"
+  REDIS__PORT: 6379
   
   # RabbitMQ Configuration
   RABBITMQ__HOSTNAME: "opencti-rabbitmq"
-  RABBITMQ__PORT: "5672"
-  RABBITMQ__PORT_MANAGEMENT: "15672"
+  RABBITMQ__PORT: 5672
+  RABBITMQ__PORT_MANAGEMENT: 15672
   RABBITMQ__USERNAME: "opencti"
   RABBITMQ__PASSWORD: "ChangeMe123!"  # CHANGE THIS
   
@@ -250,6 +250,17 @@ rabbitmq:
 minio:
   enabled: true
   mode: standalone
+  
+  # Fix image versions - use existing tags
+  image:
+    registry: docker.io
+    repository: bitnami/minio
+    tag: 2024.10.2-debian-12-r3
+  
+  clientImage:
+    registry: docker.io
+    repository: bitnami/minio-client
+    tag: 2024.10.2-debian-12-r4
   
   auth:
     rootUser: opencti
