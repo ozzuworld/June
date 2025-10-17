@@ -1,0 +1,138 @@
+{{- if .Values.opencti.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "june-platform.fullname" . }}-opencti
+  labels:
+    {{- include "june-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opencti
+spec:
+  replicas: {{ .Values.opencti.replicas }}
+  selector:
+    matchLabels:
+      {{- include "june-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opencti
+  template:
+    metadata:
+      labels:
+        {{- include "june-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opencti
+    spec:
+      initContainers:
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command: ['sh', '-c', 'until redis-cli -h {{ include "june-platform.fullname" . }}-opencti-redis ping; do echo waiting for redis; sleep 2; done;']
+      - name: wait-for-elasticsearch
+        image: curlimages/curl:latest
+        command: ['sh', '-c', 'until curl -s http://{{ include "june-platform.fullname" . }}-opencti-elasticsearch:9200/_cluster/health; do echo waiting for elasticsearch; sleep 5; done;']
+      - name: wait-for-rabbitmq
+        image: curlimages/curl:latest
+        command: ['sh', '-c', 'until curl -s http://{{ include "june-platform.fullname" . }}-opencti-rabbitmq:15672/api/overview; do echo waiting for rabbitmq; sleep 5; done;']
+      containers:
+      - name: opencti
+        image: "{{ .Values.opencti.image.repository }}:{{ .Values.opencti.image.tag }}"
+        imagePullPolicy: {{ .Values.opencti.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 4000
+          protocol: TCP
+        env:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=8096"
+        - name: APP__PORT
+          value: "4000"
+        - name: APP__BASE_URL
+          value: "https://{{ .Values.opencti.domain }}"
+        - name: APP__ADMIN__EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: admin-email
+        - name: APP__ADMIN__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: admin-password
+        - name: APP__ADMIN__TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: admin-token
+        - name: APP__APP_LOGS__LOGS_LEVEL
+          value: "info"
+        - name: REDIS__HOSTNAME
+          value: "{{ include "june-platform.fullname" . }}-opencti-redis"
+        - name: REDIS__PORT
+          value: "6379"
+        - name: ELASTICSEARCH__URL
+          value: "http://{{ include "june-platform.fullname" . }}-opencti-elasticsearch:9200"
+        - name: MINIO__ENDPOINT
+          value: "{{ include "june-platform.fullname" . }}-opencti-minio"
+        - name: MINIO__PORT
+          value: "9000"
+        - name: MINIO__USE_SSL
+          value: "false"
+        - name: MINIO__ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: minio-access-key
+        - name: MINIO__SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: minio-secret-key
+        - name: RABBITMQ__HOSTNAME
+          value: "{{ include "june-platform.fullname" . }}-opencti-rabbitmq"
+        - name: RABBITMQ__PORT
+          value: "5672"
+        - name: RABBITMQ__PORT_MANAGEMENT
+          value: "15672"
+        - name: RABBITMQ__USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: rabbitmq-username
+        - name: RABBITMQ__PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: rabbitmq-password
+        - name: SMTP__HOSTNAME
+          value: ""
+        - name: SMTP__PORT
+          value: "25"
+        - name: PROVIDERS__LOCAL__STRATEGY
+          value: "LocalStrategy"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.opencti.resources | nindent 12 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+{{- end }}

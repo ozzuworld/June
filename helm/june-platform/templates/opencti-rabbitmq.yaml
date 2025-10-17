@@ -1,0 +1,117 @@
+{{- if .Values.opencti.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "june-platform.fullname" . }}-opencti-rabbitmq
+  labels:
+    {{- include "june-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opencti-rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "june-platform.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opencti-rabbitmq
+  template:
+    metadata:
+      labels:
+        {{- include "june-platform.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opencti-rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3.12-management-alpine
+        ports:
+        - containerPort: 5672
+          name: amqp
+        - containerPort: 15672
+          name: management
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: rabbitmq-username
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "june-platform.fullname" . }}-opencti-secrets
+              key: rabbitmq-password
+        - name: RABBITMQ_NODENAME
+          value: "rabbit@localhost"
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 999
+        livenessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "status"]
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          timeoutSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "ping"]
+          initialDelaySeconds: 20
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+      volumes:
+      - name: rabbitmq-data
+        persistentVolumeClaim:
+          claimName: {{ include "june-platform.fullname" . }}-opencti-rabbitmq-pvc
+      securityContext:
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "june-platform.fullname" . }}-opencti-rabbitmq
+  labels:
+    {{- include "june-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opencti-rabbitmq
+spec:
+  ports:
+    - port: 5672
+      targetPort: amqp
+      name: amqp
+    - port: 15672
+      targetPort: management
+      name: management
+  selector:
+    {{- include "june-platform.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: opencti-rabbitmq
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "june-platform.fullname" . }}-opencti-rabbitmq-pvc
+  labels:
+    {{- include "june-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opencti-rabbitmq
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.opencti.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.opencti.rabbitmq.storage }}
+{{- end }}
