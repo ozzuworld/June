@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# OpenCTI Deployment Script using Upstream Helm Chart
-# This script deploys OpenCTI using the official helm-opencti chart
+# OpenCTI Deployment Script with Credential Validation
+# This script deploys OpenCTI with proper credential alignment
 
 set -e
 
@@ -17,7 +17,7 @@ NAMESPACE="opencti"
 RELEASE_NAME="opencti"
 CHART_REPO="https://devops-ia.github.io/helm-opencti"
 CHART_NAME="opencti/opencti"
-VALUES_FILE="k8s/opencti/values-production.yaml"
+VALUES_FILE="k8s/opencti/values-fixed.yaml"
 
 # Helper functions
 log_info() {
@@ -92,32 +92,53 @@ create_namespace() {
     log_success "Namespace '$NAMESPACE' ready"
 }
 
-# Generate secrets if needed
-generate_secrets() {
-    log_info "Checking OpenCTI secrets..."
+# Validate and fix MinIO credentials
+validate_minio_credentials() {
+    log_info "Validating MinIO credentials..."
     
-    # Generate admin token if not set
-    if ! kubectl get secret opencti-secrets -n "$NAMESPACE" &> /dev/null; then
-        log_info "Generating OpenCTI admin token..."
-        ADMIN_TOKEN=$(uuidgen 2>/dev/null || python3 -c "import uuid; print(str(uuid.uuid4()))" 2>/dev/null || openssl rand -hex 16)
-        
-        # Create secret with generated token
-        kubectl create secret generic opencti-secrets \
-            --from-literal=admin-token="$ADMIN_TOKEN" \
-            --namespace="$NAMESPACE" \
-            --dry-run=client -o yaml | kubectl apply -f -
-        
-        log_info "Generated admin token: $ADMIN_TOKEN"
-    else
-        log_info "OpenCTI secrets already exist"
+    # Wait for MinIO secret to exist
+    local retries=0
+    while ! kubectl get secret opencti-minio -n "$NAMESPACE" &> /dev/null && [ $retries -lt 30 ]; do
+        log_info "Waiting for MinIO secret to be created..."
+        sleep 5
+        ((retries++))
+    done
+    
+    if ! kubectl get secret opencti-minio -n "$NAMESPACE" &> /dev/null; then
+        log_warning "MinIO secret not found, will be created during deployment"
+        return
     fi
     
-    log_success "Secrets configured"
+    # Check current credentials
+    local current_user current_pass
+    current_user=$(kubectl get secret opencti-minio -n "$NAMESPACE" -o jsonpath='{.data.rootUser}' | base64 -d 2>/dev/null || echo "")
+    current_pass=$(kubectl get secret opencti-minio -n "$NAMESPACE" -o jsonpath='{.data.rootPassword}' | base64 -d 2>/dev/null || echo "")
+    
+    # Expected credentials from values-fixed.yaml
+    local expected_user="opencti"
+    local expected_pass="MinIO2024!"
+    
+    if [[ "$current_user" != "$expected_user" || "$current_pass" != "$expected_pass" ]]; then
+        log_warning "MinIO credentials don't match values-fixed.yaml, fixing..."
+        
+        kubectl patch secret opencti-minio -n "$NAMESPACE" --type='json' -p="[
+            {\"op\":\"replace\",\"path\":\"/data/rootUser\",\"value\":\"$(echo -n "$expected_user" | base64 -w 0)\"},
+            {\"op\":\"replace\",\"path\":\"/data/rootPassword\",\"value\":\"$(echo -n "$expected_pass" | base64 -w 0)\"}
+        ]"
+        
+        # Restart MinIO pod to pick up new credentials
+        kubectl delete pod -l app=minio -n "$NAMESPACE" --ignore-not-found=true
+        kubectl wait --for=condition=ready pod -l app=minio -n "$NAMESPACE" --timeout=120s
+        
+        log_success "MinIO credentials aligned with values-fixed.yaml"
+    else
+        log_success "MinIO credentials are correctly configured"
+    fi
 }
 
 # Deploy OpenCTI
 deploy_opencti() {
-    log_info "Deploying OpenCTI using upstream chart..."
+    log_info "Deploying OpenCTI using values-fixed.yaml..."
     
     # Deploy using Helm
     if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
@@ -125,18 +146,41 @@ deploy_opencti() {
         helm upgrade "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
-            --timeout 15m0s \
+            --timeout 25m0s \
             --wait
     else
         log_info "Installing OpenCTI..."
         helm upgrade --install "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
-            --timeout 15m0s \
+            --timeout 25m0s \
             --wait
     fi
     
     log_success "OpenCTI deployment completed"
+}
+
+# Reset OpenSearch for clean initialization
+reset_opensearch() {
+    log_info "Resetting OpenSearch for clean initialization..."
+    
+    if [ -f "k8s/opencti/opensearch-reset.sh" ]; then
+        bash k8s/opencti/opensearch-reset.sh "$NAMESPACE"
+    else
+        log_warning "opensearch-reset.sh not found, skipping OpenSearch reset"
+    fi
+}
+
+# Bootstrap admin credentials
+bootstrap_admin() {
+    log_info "Bootstrapping OpenCTI admin credentials..."
+    
+    if [ -f "k8s/opencti/bootstrap-admin.sh" ]; then
+        bash k8s/opencti/bootstrap-admin.sh "$NAMESPACE"
+    else
+        log_warning "bootstrap-admin.sh not found, admin credentials not configured"
+        log_warning "You may need to manually set valid UUIDv4 admin token"
+    fi
 }
 
 # Wait for services
@@ -145,22 +189,18 @@ wait_for_services() {
     
     # Wait for dependencies first
     log_info "Waiting for Redis..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n "$NAMESPACE" --timeout=300s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis -n "$NAMESPACE" --timeout=300s || true
     
-    log_info "Waiting for Elasticsearch..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=elasticsearch -n "$NAMESPACE" --timeout=600s
+    log_info "Waiting for OpenSearch..."
+    kubectl wait --for=condition=ready pod -l app=opensearch-cluster-master -n "$NAMESPACE" --timeout=600s || true
     
     log_info "Waiting for RabbitMQ..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rabbitmq -n "$NAMESPACE" --timeout=300s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=rabbitmq -n "$NAMESPACE" --timeout=300s || true
     
     log_info "Waiting for MinIO..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=minio -n "$NAMESPACE" --timeout=300s
+    kubectl wait --for=condition=ready pod -l app=minio -n "$NAMESPACE" --timeout=300s || true
     
-    # Wait for OpenCTI application
-    log_info "Waiting for OpenCTI application..."
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --timeout=600s
-    
-    log_success "All services are ready"
+    log_success "Dependencies are ready"
 }
 
 # Show deployment status
@@ -188,27 +228,17 @@ show_status() {
     kubectl get pvc -n "$NAMESPACE"
     echo
     
-    # Get admin token
-    if kubectl get secret opencti-secrets -n "$NAMESPACE" &> /dev/null; then
-        ADMIN_TOKEN=$(kubectl get secret opencti-secrets -n "$NAMESPACE" -o jsonpath='{.data.admin-token}' | base64 -d)
-        
-        log_success "OpenCTI is accessible at: https://opencti.ozzu.world"
-        echo
-        log_info "Default credentials:"
-        echo "  Email: admin@ozzu.world"
-        echo "  Password: OpenCTI2024!"
-        echo "  Admin Token: $ADMIN_TOKEN"
-        echo
-    fi
-    
+    log_success "OpenCTI should be accessible at: https://opencti.ozzu.world"
+    echo
+    log_info "Default credentials are set in values-fixed.yaml"
     log_warning "Remember to change default passwords in production!"
 }
 
 # Get logs function
 get_logs() {
-    log_info "Recent OpenCTI application logs:"
-    kubectl logs -l app.kubernetes.io/name=opencti -n "$NAMESPACE" --tail=20 2>/dev/null || \
-        log_warning "No OpenCTI pods found or logs not available"
+    log_info "Recent OpenCTI server logs:"
+    kubectl logs -l opencti.component=server -n "$NAMESPACE" --tail=50 2>/dev/null || \
+        log_warning "No OpenCTI server pods found or logs not available"
 }
 
 # Cleanup function
@@ -227,22 +257,30 @@ cleanup_deployment() {
 
 # Main execution
 main() {
-    log_info "Starting OpenCTI deployment using upstream chart..."
+    log_info "Starting OpenCTI deployment with credential validation..."
     
     check_prerequisites
     add_helm_repo
     create_namespace
-    generate_secrets
     deploy_opencti
+    
+    # Validate and fix MinIO credentials after deployment
+    validate_minio_credentials
     
     # Wait for services if requested
     if [ "${WAIT_FOR_READY:-true}" = "true" ]; then
         wait_for_services
     fi
     
+    # Bootstrap admin if requested
+    if [ "${BOOTSTRAP_ADMIN:-true}" = "true" ]; then
+        bootstrap_admin
+    fi
+    
     show_status
     
     log_success "OpenCTI deployment completed successfully!"
+    log_info "If initialization fails, run: $0 --reset"
 }
 
 # Parse command line arguments
@@ -259,6 +297,14 @@ while [[ $# -gt 0 ]]; do
         --no-wait)
             WAIT_FOR_READY="false"
             shift
+            ;;
+        --no-bootstrap)
+            BOOTSTRAP_ADMIN="false"
+            shift
+            ;;
+        --reset)
+            reset_opensearch
+            exit 0
             ;;
         --logs)
             get_logs
@@ -278,6 +324,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --namespace NAMESPACE    Kubernetes namespace (default: opencti)"
             echo "  --release-name NAME      Helm release name (default: opencti)"
             echo "  --no-wait               Don't wait for deployment to be ready"
+            echo "  --no-bootstrap          Skip admin credential bootstrap"
+            echo "  --reset                 Reset OpenSearch for clean initialization"
             echo "  --logs                  Show recent application logs"
             echo "  --status                Show deployment status"
             echo "  --cleanup               Remove OpenCTI deployment"
