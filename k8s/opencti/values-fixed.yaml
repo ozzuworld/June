@@ -34,18 +34,10 @@ opensearch:
   singleNode: true
   opensearchJavaOpts: "-Xms512m -Xmx512m"
   extraEnvs:
-    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
-      value: "ChangeThisStrongP@ssw0rd!"  # CHANGE IN PRODUCTION
+    - name: DISABLE_SECURITY_PLUGIN
+      value: "true"
     - name: DISABLE_INSTALL_DEMO_CONFIG
       value: "true"
-    - name: DISABLE_SECURITY_PLUGIN
-      value: "false"
-    - name: plugins.security.ssl.http.enabled
-      value: "false"
-    - name: plugins.security.ssl.transport.enabled
-      value: "false"
-    - name: plugins.security.disabled_transport_categories
-      value: "all"
   persistence:
     enabled: false  # set to true after validating storageClass works
     storageClass: standard
