@@ -1,5 +1,5 @@
 # OpenCTI Production Configuration - Fixed
-# Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 20m --wait
+# Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 25m --wait
 
 opencti:
   enabled: true
@@ -33,11 +33,18 @@ ingress:
 global:
   storageClass: standard
 
-# Use OpenSearch (single-node) with smaller footprint to avoid CrashLoop on low-memory nodes
+# Use OpenSearch (single-node) with smaller footprint and required admin password
 opensearch:
   enabled: true
   singleNode: true
   opensearchJavaOpts: "-Xms512m -Xmx512m"
+  extraEnvs:
+    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      value: "ChangeThisStrongP@ssw0rd!"  # CHANGE IN PRODUCTION
+    - name: DISABLE_INSTALL_DEMO_CONFIG
+      value: "true"
+    - name: DISABLE_SECURITY_PLUGIN
+      value: "false"
   persistence:
     enabled: false  # set to true after validating storageClass works
     storageClass: standard
