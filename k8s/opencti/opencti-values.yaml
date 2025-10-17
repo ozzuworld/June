@@ -1,0 +1,341 @@
+# OpenCTI Helm Chart Values for June Platform
+# Based on devops-ia/helm-opencti chart
+# Version: 2.0.7+
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# OpenCTI Frontend and Backend Configuration
+replicaCount: 2
+
+image:
+  repository: opencti/platform
+  pullPolicy: IfNotPresent
+  tag: "6.4.7"  # Use latest stable version
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+
+# Ingress configuration for June platform
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: cti.ozzu.world  # Change to your domain
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ozzu-world-wildcard-tls
+      hosts:
+        - cti.ozzu.world
+
+# Environment variables for OpenCTI
+env:
+  # Admin Configuration
+  APP__ADMIN__EMAIL: "admin@ozzu.world"
+  APP__ADMIN__PASSWORD: "ChangeMe123!"  # CHANGE THIS
+  APP__ADMIN__TOKEN: "CHANGE-ME-UUID-TOKEN"  # Generate with: uuidgen
+  
+  # Base Configuration
+  APP__BASE_PATH: "/"
+  APP__SESSION_COOKIE: "true"
+  
+  # GraphQL Configuration
+  APP__GRAPHQL__PLAYGROUND__ENABLED: false
+  APP__GRAPHQL__PLAYGROUND__FORCE_DISABLED_INTROSPECTION: true
+  
+  # Health and Telemetry
+  APP__HEALTH_ACCESS_KEY: "ChangeMe123!"  # CHANGE THIS
+  APP__TELEMETRY__METRICS__ENABLED: true
+  
+  # Node.js Options
+  NODE_OPTIONS: "--max-old-space-size=8096"
+  
+  # Authentication Providers
+  PROVIDERS__LOCAL__STRATEGY: "LocalStrategy"
+  
+  # ElasticSearch Configuration
+  ELASTICSEARCH__ENGINE_SELECTOR: "auto"
+  ELASTICSEARCH__URL: "http://opencti-elasticsearch:9200"
+  
+  # Redis Configuration
+  REDIS__HOSTNAME: "opencti-redis-master"
+  REDIS__MODE: "single"
+  REDIS__PORT: "6379"
+  
+  # RabbitMQ Configuration
+  RABBITMQ__HOSTNAME: "opencti-rabbitmq"
+  RABBITMQ__PORT: "5672"
+  RABBITMQ__PORT_MANAGEMENT: "15672"
+  RABBITMQ__USERNAME: "opencti"
+  RABBITMQ__PASSWORD: "ChangeMe123!"  # CHANGE THIS
+  
+  # MinIO Configuration
+  MINIO__ENDPOINT: "opencti-minio:9000"
+  MINIO__ACCESS_KEY: "opencti"
+  MINIO__SECRET_KEY: "ChangeMe123!"  # CHANGE THIS
+  MINIO__USE_SSL: "false"
+  MINIO__BUCKET_NAME: "opencti-bucket"
+  MINIO__BUCKET_REGION: "us-east-1"
+
+# Store secrets in Kubernetes secrets (recommended)
+envFromSecrets: {}
+  # Example:
+  # APP__ADMIN__TOKEN:
+  #   name: opencti-secrets
+  #   key: admin-token
+  # RABBITMQ__PASSWORD:
+  #   name: opencti-secrets
+  #   key: rabbitmq-password
+
+# Resource limits
+resources:
+  requests:
+    cpu: "500m"
+    memory: "2Gi"
+  limits:
+    cpu: "2000m"
+    memory: "4Gi"
+
+# Autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Health checks
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 180
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 120
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Ready checker for dependencies
+readyChecker:
+  enabled: true
+  repository: busybox
+  pullPolicy: IfNotPresent
+  tag: latest
+  retries: 30
+  timeout: 5
+  services:
+    - name: elasticsearch
+      port: 9200
+    - name: redis-master
+      port: 6379
+    - name: rabbitmq
+      port: 5672
+    - name: minio
+      port: 9000
+
+# ============================================
+# DEPENDENCIES
+# ============================================
+
+# ElasticSearch Configuration
+elasticsearch:
+  enabled: true
+  sysctlImage:
+    enabled: false  # Disable if you don't have permissions
+  
+  master:
+    masterOnly: false  # Allow master to also be data node in small deployments
+    replicaCount: 1
+    persistence:
+      enabled: true
+      storageClass: "local-storage"
+      size: 10Gi
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "1000m"
+        memory: "4Gi"
+  
+  data:
+    replicaCount: 0  # Disable separate data nodes in small setup
+  
+  coordinating:
+    replicaCount: 0  # Disable coordinating nodes in small setup
+  
+  ingest:
+    enabled: false
+  
+  # Java heap size configuration
+  extraEnvVars:
+    - name: ES_JAVA_OPTS
+      value: "-Xms1G -Xmx1G"
+
+# Redis Configuration
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  
+  master:
+    count: 1
+    persistence:
+      enabled: true
+      storageClass: "local-storage"
+      size: 2Gi
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+  
+  replica:
+    replicaCount: 0  # No replicas in standalone mode
+
+# RabbitMQ Configuration
+rabbitmq:
+  enabled: true
+  replicaCount: 1
+  
+  clustering:
+    enabled: false
+  
+  auth:
+    username: opencti
+    password: ChangeMe123!  # CHANGE THIS
+    erlangCookie: ChangeMe123!  # CHANGE THIS
+  
+  persistence:
+    enabled: true
+    storageClass: "local-storage"
+    size: 5Gi
+  
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# MinIO Configuration (S3-compatible object storage)
+minio:
+  enabled: true
+  mode: standalone
+  
+  auth:
+    rootUser: opencti
+    rootPassword: ChangeMe123!  # CHANGE THIS
+  
+  defaultBuckets: "opencti-bucket"
+  
+  persistence:
+    enabled: true
+    storageClass: "local-storage"
+    size: 20Gi
+  
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# ============================================
+# WORKERS (for data ingestion and processing)
+# ============================================
+
+worker:
+  enabled: true
+  replicaCount: 3  # OpenCTI recommends 3-4 workers
+  
+  image:
+    repository: opencti/worker
+    pullPolicy: IfNotPresent
+    tag: "6.4.7"
+  
+  env:
+    OPENCTI_URL: "http://opencti:8080"
+    OPENCTI_TOKEN: "CHANGE-ME-UUID-TOKEN"  # Must match APP__ADMIN__TOKEN
+    WORKER_LOG_LEVEL: "info"
+  
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+# ============================================
+# CONNECTORS (optional - for external data feeds)
+# ============================================
+
+# Example: MISP Connector
+# connectors:
+#   misp:
+#     enabled: false
+#     image:
+#       repository: opencti/connector-misp
+#       tag: latest
+#     env:
+#       OPENCTI_URL: "http://opencti:8080"
+#       OPENCTI_TOKEN: "CHANGE-ME-UUID-TOKEN"
+#       CONNECTOR_ID: "CHANGE-ME-UUID"
+#       CONNECTOR_NAME: "MISP"
+#       CONNECTOR_SCOPE: "misp"
+#       MISP_URL: "https://your-misp-instance.com"
+#       MISP_KEY: "YOUR-MISP-API-KEY"
+
+# Pod Security
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Node selection
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional labels and annotations
+podLabels: {}
+podAnnotations: {}
