@@ -1,6 +1,7 @@
-# OpenCTI Helm Values - FINAL WORKING VERSION
+# OpenCTI Helm Values - FIXED VERSION
 # File: k8s/opencti/values.yaml
 
+# CRITICAL: Disable all internal search engines
 opensearch:
   enabled: false
 
@@ -12,9 +13,13 @@ server:
   replicaCount: 1
   
   env:
+    # FIXED: Use proper OpenSearch connection string
     ELASTICSEARCH__URL: http://opensearch-cluster-master.default.svc.cluster.local:9200
     ELASTICSEARCH__ENGINE_SELECTOR: opensearch
     ELASTICSEARCH__ENGINE_CHECK: "false"
+    # CRITICAL: Override the chart's internal elasticsearch hostname
+    ELASTICSEARCH__HOSTNAME: opensearch-cluster-master.default.svc.cluster.local
+    ELASTICSEARCH__PORT: "9200"
     NODE_OPTIONS: "--max-old-space-size=8096"
     APP__ADMIN__EMAIL: admin@ozzu.world
     APP__ADMIN__PASSWORD: OpenCTI2024!
@@ -47,9 +52,13 @@ worker:
   replicaCount: 1
   
   env:
+    # FIXED: Use proper OpenSearch connection string
     ELASTICSEARCH__URL: http://opensearch-cluster-master.default.svc.cluster.local:9200
     ELASTICSEARCH__ENGINE_SELECTOR: opensearch
     ELASTICSEARCH__ENGINE_CHECK: "false"
+    # CRITICAL: Override the chart's internal elasticsearch hostname
+    ELASTICSEARCH__HOSTNAME: opensearch-cluster-master.default.svc.cluster.local
+    ELASTICSEARCH__PORT: "9200"
     MINIO__ENDPOINT: opencti-minio
     MINIO__PORT: "9000"
     MINIO__ACCESS_KEY: opencti
@@ -117,3 +126,10 @@ ingress:
 
 connector:
   enabled: false
+
+# CRITICAL: Global configuration to override any chart defaults
+global:
+  elasticsearch:
+    enabled: false
+  opensearch:
+    enabled: false
