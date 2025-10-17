@@ -26,14 +26,9 @@ ingress:
         - opencti.ozzu.world
       secretName: ozzu-world-wildcard-tls
 
-# IMPORTANT: set this to an existing, working StorageClass on your cluster.
-# Common names: standard, gp2, gp3, premium-rwo, do-block-storage, longhorn, local-path
-# Run: kubectl get storageclass
-# Replace "standard" if your cluster does not have it.
 global:
   storageClass: standard
 
-# Use OpenSearch (single-node) with smaller footprint and required admin password
 opensearch:
   enabled: true
   singleNode: true
@@ -45,6 +40,12 @@ opensearch:
       value: "true"
     - name: DISABLE_SECURITY_PLUGIN
       value: "false"
+    - name: plugins.security.ssl.http.enabled
+      value: "false"
+    - name: plugins.security.ssl.transport.enabled
+      value: "false"
+    - name: plugins.security.disabled_transport_categories
+      value: "all"
   persistence:
     enabled: false  # set to true after validating storageClass works
     storageClass: standard
