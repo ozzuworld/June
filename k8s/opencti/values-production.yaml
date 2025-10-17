@@ -23,6 +23,61 @@ opencti:
     mapTileServerDark: "https://map.opencti.io/styles/luatix-dark/{z}/{x}/{y}.png"
     mapTileServerLight: "https://map.opencti.io/styles/luatix-light/{z}/{x}/{y}.png"
 
+# Search Engine Configuration - Use OpenSearch instead of Elasticsearch
+opensearch:
+  enabled: true
+  
+  # Single node configuration for better resource usage
+  singleNode: true
+  
+  # OpenSearch Settings
+  config:
+    opensearch.yml: |
+      cluster.name: opencti-cluster
+      network.host: 0.0.0.0
+      discovery.type: single-node
+      plugins.security.disabled: true
+      cluster.routing.allocation.disk.watermark.low: 97%
+      cluster.routing.allocation.disk.watermark.high: 98%
+      cluster.routing.allocation.disk.watermark.flood_stage: 99%
+  
+  # Resource Configuration
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "3Gi"
+    limits:
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # JVM Settings
+  extraEnvs:
+    - name: OPENSEARCH_JAVA_OPTS
+      value: "-Xms2g -Xmx2g"
+    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      value: "OpenCTI2024!"
+  
+  # Storage Configuration
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 50Gi
+  
+  # Service Configuration - Critical for connectivity
+  service:
+    type: ClusterIP
+    ports:
+      - name: http
+        port: 9200
+        targetPort: 9200
+      - name: transport
+        port: 9300
+        targetPort: 9300
+
+# Disable Elasticsearch (we're using OpenSearch)
+elasticsearch:
+  enabled: false
+
 # Ingress Configuration
 ingress:
   enabled: true
@@ -43,37 +98,6 @@ ingress:
     - hosts:
         - opencti.ozzu.world
       secretName: ozzu-world-wildcard-tls  # Use existing wildcard cert
-
-# Elasticsearch Configuration
-elasticsearch:
-  enabled: true
-  replicas: 1
-  
-  # Resource Configuration
-  resources:
-    requests:
-      cpu: "500m"
-      memory: "3Gi"
-    limits:
-      cpu: "1000m"
-      memory: "4Gi"
-  
-  # Storage Configuration
-  persistence:
-    enabled: true
-    storageClass: local-storage  # Match your existing storage class
-    size: 50Gi
-  
-  # Elasticsearch Settings
-  esJavaOpts: "-Xms2g -Xmx2g"
-  clusterName: "opencti-cluster"
-  
-  # Security Settings
-  xpack:
-    security:
-      enabled: false
-    monitoring:
-      enabled: false
 
 # Redis Configuration
 redis:
@@ -169,7 +193,7 @@ app:
   # Image Configuration
   image:
     repository: opencti/platform
-    tag: "6.3.7"  # Stable version for CPU-only deployment
+    tag: "6.8.6"  # Match your current version
     pullPolicy: IfNotPresent
   
   # Replicas
@@ -184,9 +208,15 @@ app:
       cpu: "1000m"
       memory: "4Gi"
   
-  # Environment Variables
+  # Environment Variables - Critical for OpenSearch connectivity
   env:
     NODE_OPTIONS: "--max-old-space-size=8096"
+    # OpenSearch Configuration
+    ELASTICSEARCH__URL: "http://opencti-opensearch:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+    # Alternative if the above doesn't work
+    # ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
   
   # Security Context
   securityContext:
@@ -217,6 +247,12 @@ worker:
     limits:
       cpu: "500m"
       memory: "2Gi"
+  
+  # Environment Variables - Same as app for consistency
+  env:
+    ELASTICSEARCH__URL: "http://opencti-opensearch:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
 
 # Connector Configuration (disabled initially)
 connector:
