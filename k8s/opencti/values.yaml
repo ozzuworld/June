@@ -1,0 +1,38 @@
+# k8s/opencti/values.yaml (single file)
+opencti:
+  enabled: true
+  baseUrl: https://opencti.ozzu.world
+  admin:
+    email: admin@ozzu.world
+    password: "OpenCTI2024!"
+    token: ""  # Auto-generated
+
+# CRITICAL: Disable embedded search engines
+opensearch:
+  enabled: false
+elasticsearch:
+  enabled: false
+
+# Point to existing OpenSearch with FQDN
+app:
+  env:
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+    
+    # MinIO (uses chart defaults)
+    MINIO__ENDPOINT: "opencti-minio:9000"
+    # ... other configs
+
+# Enable other dependencies
+minio:
+  enabled: true
+  # ... config
+
+rabbitmq:
+  enabled: true
+  # ... config
+
+redis:
+  enabled: true
+  # ... config
