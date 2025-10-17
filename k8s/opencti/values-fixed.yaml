@@ -1,0 +1,102 @@
+# OpenCTI Production Configuration - Fixed
+# Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 25m --wait
+
+opencti:
+  enabled: true
+  baseUrl: https://opencti.ozzu.world
+  admin:
+    email: admin@ozzu.world
+    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
+    token: ""  # Leave empty to auto-generate or set explicitly
+  server:
+    extraEnv:
+      - name: ELASTICSEARCH__URL
+        value: "http://opensearch-cluster-master:9200"
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: opencti.ozzu.world
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - opencti.ozzu.world
+      secretName: ozzu-world-wildcard-tls
+
+global:
+  storageClass: standard
+
+opensearch:
+  enabled: true
+  singleNode: true
+  opensearchJavaOpts: "-Xms512m -Xmx512m"
+  extraEnvs:
+    - name: DISABLE_SECURITY_PLUGIN
+      value: "true"
+    - name: DISABLE_INSTALL_DEMO_CONFIG
+      value: "true"
+  persistence:
+    enabled: false  # set to true after validating storageClass works
+    storageClass: standard
+    size: 20Gi
+  resources:
+    requests:
+      cpu: "300m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
+
+rabbitmq:
+  enabled: true
+  auth:
+    username: opencti
+    password: "RabbitMQ2024!"  # CHANGE IN PRODUCTION
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+minio:
+  enabled: true
+  mode: standalone
+  auth:
+    rootUser: opencti
+    rootPassword: "MinIO2024!"  # CHANGE IN PRODUCTION
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "300m"
+      memory: "512Mi"
