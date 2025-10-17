@@ -1,0 +1,235 @@
+# OpenCTI Production Configuration
+# For use with upstream helm-opencti chart
+# Deploy with: helm upgrade --install opencti opencti/opencti -f values-production.yaml -n opencti
+
+# OpenCTI Application Configuration
+opencti:
+  enabled: true
+  baseUrl: https://opencti.ozzu.world
+  
+  # Admin Configuration
+  admin:
+    email: admin@ozzu.world
+    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
+    token: ""  # Will be auto-generated if empty
+  
+  # Application Settings
+  appLogs:
+    logsLevel: info
+  
+  # Platform Settings
+  platform:
+    name: "June Platform OpenCTI"
+    mapTileServerDark: "https://map.opencti.io/styles/luatix-dark/{z}/{x}/{y}.png"
+    mapTileServerLight: "https://map.opencti.io/styles/luatix-light/{z}/{x}/{y}.png"
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: opencti.ozzu.world
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - opencti.ozzu.world
+      secretName: ozzu-world-wildcard-tls  # Use existing wildcard cert
+
+# Elasticsearch Configuration
+elasticsearch:
+  enabled: true
+  replicas: 1
+  
+  # Resource Configuration
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "3Gi"
+    limits:
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # Storage Configuration
+  persistence:
+    enabled: true
+    storageClass: local-storage  # Match your existing storage class
+    size: 50Gi
+  
+  # Elasticsearch Settings
+  esJavaOpts: "-Xms2g -Xmx2g"
+  clusterName: "opencti-cluster"
+  
+  # Security Settings
+  xpack:
+    security:
+      enabled: false
+    monitoring:
+      enabled: false
+
+# Redis Configuration
+redis:
+  enabled: true
+  
+  # Architecture
+  architecture: standalone
+  
+  # Authentication
+  auth:
+    enabled: false  # Simplified for internal use
+  
+  # Master Configuration
+  master:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
+    
+    persistence:
+      enabled: true
+      storageClass: local-storage
+      size: 5Gi
+
+# RabbitMQ Configuration
+rabbitmq:
+  enabled: true
+  
+  # Authentication
+  auth:
+    username: opencti
+    password: "RabbitMQ2024!"  # CHANGE IN PRODUCTION
+    erlangCookie: "OpenCTICookie2024"
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  # Persistence
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 10Gi
+  
+  # Clustering (disabled for single instance)
+  clustering:
+    enabled: false
+  
+  # Management Plugin
+  plugins: "rabbitmq_management rabbitmq_peer_discovery_k8s"
+
+# MinIO Configuration
+minio:
+  enabled: true
+  
+  # Authentication
+  auth:
+    rootUser: opencti
+    rootPassword: "MinIO2024!"  # CHANGE IN PRODUCTION
+  
+  # Mode
+  mode: standalone
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  
+  # Persistence
+  persistence:
+    enabled: true
+    storageClass: local-storage
+    size: 100Gi
+  
+  # Console
+  consoleService:
+    type: ClusterIP
+
+# OpenCTI Main Application
+app:
+  # Image Configuration
+  image:
+    repository: opencti/platform
+    tag: "6.3.7"  # Stable version for CPU-only deployment
+    pullPolicy: IfNotPresent
+  
+  # Replicas
+  replicaCount: 1
+  
+  # Resources (CPU-optimized)
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # Environment Variables
+  env:
+    NODE_OPTIONS: "--max-old-space-size=8096"
+  
+  # Security Context
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  # Pod Security Context
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+# Worker Configuration (for background processing)
+worker:
+  enabled: true
+  replicaCount: 1
+  
+  # Resources
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+
+# Connector Configuration (disabled initially)
+connector:
+  enabled: false  # Enable after initial setup
+
+# Global Configuration
+global:
+  storageClass: local-storage
+  
+  # Security
+  podSecurityPolicy:
+    enabled: false
+  
+  # Network Policy
+  networkPolicy:
+    enabled: false  # Enable if you need network isolation
