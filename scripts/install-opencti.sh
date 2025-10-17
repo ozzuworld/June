@@ -98,6 +98,51 @@ generate_secrets() {
     log_success "OpenCTI secrets generated"
 }
 
+# Check existing deployment
+check_existing_deployment() {
+    log_info "Checking for existing deployments..."
+    
+    # Check if Helm release already exists
+    if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
+        log_info "Found existing Helm release: $RELEASE_NAME"
+        DEPLOYMENT_MODE="upgrade"
+    else
+        log_info "No existing Helm release found"
+        DEPLOYMENT_MODE="install"
+        
+        # Check for existing resources that might conflict
+        EXISTING_RESOURCES=$(kubectl get all -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l || echo "0")
+        if [ "$EXISTING_RESOURCES" -gt "0" ]; then
+            log_warning "Found $EXISTING_RESOURCES existing resources in namespace $NAMESPACE"
+            log_warning "These resources might not be managed by Helm"
+            
+            # Ask user what to do
+            echo "Options:"
+            echo "1. Continue anyway (may cause conflicts)"
+            echo "2. Use a different namespace"
+            echo "3. Exit and manually clean up"
+            read -p "Choose option (1-3): " choice
+            
+            case $choice in
+                1)
+                    log_warning "Continuing with existing resources..."
+                    ;;
+                2)
+                    read -p "Enter new namespace: " NAMESPACE
+                    log_info "Using namespace: $NAMESPACE"
+                    ;;
+                3)
+                    log_info "Exiting. Please clean up existing resources first."
+                    exit 0
+                    ;;
+                *)
+                    log_error "Invalid choice"
+                    ;;
+            esac
+        fi
+    fi
+}
+
 # Create values file for production
 create_values_file() {
     log_info "Creating production values file..."
@@ -256,41 +301,30 @@ EOF
 deploy_opencti() {
     log_info "Deploying OpenCTI with June Platform..."
     
-    # Create namespace if it doesn't exist
-    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+    # Create namespace if it doesn't exist (without Helm labels that cause conflicts)
+    if ! kubectl get namespace "$NAMESPACE" &> /dev/null; then
+        kubectl create namespace "$NAMESPACE"
+        log_info "Created namespace: $NAMESPACE"
+    fi
     
     # Deploy using Helm
-    if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
+    if [ "$DEPLOYMENT_MODE" = "upgrade" ]; then
         log_info "Upgrading existing June Platform deployment..."
         helm upgrade "$RELEASE_NAME" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
-            --timeout 10m0s
+            --timeout 15m0s \
+            --wait
     else
         log_info "Installing June Platform with OpenCTI..."
         helm install "$RELEASE_NAME" "$CHART_PATH" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
-            --timeout 10m0s
+            --timeout 15m0s \
+            --wait
     fi
     
-    log_success "OpenCTI deployment initiated"
-}
-
-# Wait for deployment
-wait_for_deployment() {
-    log_info "Waiting for OpenCTI to be ready..."
-    
-    # Wait for OpenCTI dependencies
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opencti-redis -n "$NAMESPACE" --timeout=300s
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opencti-elasticsearch -n "$NAMESPACE" --timeout=300s
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opencti-rabbitmq -n "$NAMESPACE" --timeout=300s
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opencti-minio -n "$NAMESPACE" --timeout=300s
-    
-    # Wait for OpenCTI main application
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=opencti -n "$NAMESPACE" --timeout=600s
-    
-    log_success "OpenCTI is ready!"
+    log_success "OpenCTI deployment completed"
 }
 
 # Show deployment status
@@ -321,8 +355,10 @@ show_status() {
 
 # Cleanup function
 cleanup() {
-    log_info "Cleaning up temporary files..."
-    rm -f "$VALUES_FILE"
+    if [ "${KEEP_VALUES_FILE:-false}" != "true" ]; then
+        log_info "Cleaning up temporary files..."
+        rm -f "$VALUES_FILE"
+    fi
 }
 
 # Main execution
@@ -336,14 +372,9 @@ main() {
     check_prerequisites
     load_config
     generate_secrets
+    check_existing_deployment
     create_values_file
     deploy_opencti
-    
-    # Wait for deployment if requested
-    if [ "${WAIT_FOR_READY:-true}" = "true" ]; then
-        wait_for_deployment
-    fi
-    
     show_status
     
     log_success "OpenCTI installation completed successfully!"
@@ -360,8 +391,8 @@ while [[ $# -gt 0 ]]; do
             RELEASE_NAME="$2"
             shift 2
             ;;
-        --no-wait)
-            WAIT_FOR_READY="false"
+        --keep-values)
+            KEEP_VALUES_FILE="true"
             shift
             ;;
         --help)
@@ -369,7 +400,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --namespace NAMESPACE    Kubernetes namespace (default: default)"
             echo "  --release-name NAME      Helm release name (default: june-platform)"
-            echo "  --no-wait               Don't wait for deployment to be ready"
+            echo "  --keep-values           Keep generated values file after deployment"
             echo "  --help                  Show this help message"
             exit 0
             ;;
