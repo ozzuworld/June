@@ -1,31 +1,65 @@
-# OpenCTI Production Configuration - CORRECTED MinIO Config
-# Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 25m --wait
+# OpenCTI Fixed Configuration
+# Alternative configuration that explicitly sets Elasticsearch service name to match OpenSearch
+# Use this if values-production.yaml doesn't work
 
+# OpenCTI Application Configuration
 opencti:
   enabled: true
   baseUrl: https://opencti.ozzu.world
+  
+  # Admin Configuration
   admin:
     email: admin@ozzu.world
-    password: "OpenCTI2024!"
-    token: ""
-  server:
-    extraEnv:
-      - name: ELASTICSEARCH__URL
-        value: "http://opensearch-cluster-master:9200"
-      # CRITICAL FIX: MinIO URL must include http:// protocol
-      - name: MINIO__ENDPOINT
-        value: "http://opencti-minio:9000"
-      - name: MINIO__PORT
-        value: "9000"
-      - name: MINIO__USE_SSL
-        value: "false"
-      - name: MINIO__ACCESS_KEY
-        value: "opencti"
-      - name: MINIO__SECRET_KEY
-        value: "MinIO2024!"
-      - name: MINIO__BUCKET_NAME
-        value: "opencti-bucket"
+    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
+    token: ""  # Will be auto-generated if empty
+  
+  # Application Settings
+  appLogs:
+    logsLevel: info
+  
+  # Platform Settings
+  platform:
+    name: "June Platform OpenCTI"
+    mapTileServerDark: "https://map.opencti.io/styles/luatix-dark/{z}/{x}/{y}.png"
+    mapTileServerLight: "https://map.opencti.io/styles/luatix-light/{z}/{x}/{y}.png"
 
+# Elasticsearch Configuration - Keep enabled but point to OpenSearch service
+elasticsearch:
+  enabled: true
+  # Override service name to match existing OpenSearch
+  service:
+    name: "opensearch-cluster-master"
+    type: ClusterIP
+    ports:
+      http: 9200
+  
+  # Point to existing OpenSearch service
+  url: "http://opensearch-cluster-master:9200"
+  
+  # Minimal resource config since we're using external service
+  replicas: 0  # Don't create new Elasticsearch pods
+  
+  # Resource Configuration (minimal since external)
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "100Mi"
+    limits:
+      cpu: "100m"
+      memory: "200Mi"
+  
+  # Disable persistence since using external
+  persistence:
+    enabled: false
+  
+  # Security Settings
+  xpack:
+    security:
+      enabled: false
+    monitoring:
+      enabled: false
+
+# Ingress Configuration
 ingress:
   enabled: true
   className: "nginx"
@@ -33,6 +67,9 @@ ingress:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: opencti.ozzu.world
       paths:
@@ -43,85 +80,133 @@ ingress:
         - opencti.ozzu.world
       secretName: ozzu-world-wildcard-tls
 
-global:
-  storageClass: local-storage
-
-# OpenSearch Configuration (replaces Elasticsearch)
-opensearch:
-  enabled: true
-  singleNode: true
-  opensearchJavaOpts: "-Xms512m -Xmx512m"
-  extraEnvs:
-    - name: DISABLE_SECURITY_PLUGIN
-      value: "true"
-    - name: DISABLE_INSTALL_DEMO_CONFIG
-      value: "true"
-    # Disable attachment processor (not needed for basic setup)
-    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
-      value: "OpenSearch2024!"
-  persistence:
-    enabled: true
-    storageClass: local-storage
-    size: 20Gi
-  resources:
-    requests:
-      cpu: "300m"
-      memory: "1Gi"
-    limits:
-      cpu: "1000m"
-      memory: "2Gi"
-
+# Redis Configuration
 redis:
   enabled: true
   architecture: standalone
   auth:
     enabled: false
   master:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "200m"
+        memory: "512Mi"
     persistence:
       enabled: true
       storageClass: local-storage
       size: 5Gi
-    resources:
-      requests:
-        cpu: "50m"
-        memory: "128Mi"
-      limits:
-        cpu: "200m"
-        memory: "512Mi"
 
+# RabbitMQ Configuration
 rabbitmq:
   enabled: true
   auth:
     username: opencti
     password: "RabbitMQ2024!"
+    erlangCookie: "OpenCTICookie2024"
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
   persistence:
     enabled: true
     storageClass: local-storage
     size: 10Gi
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "1Gi"
+  clustering:
+    enabled: false
+  plugins: "rabbitmq_management rabbitmq_peer_discovery_k8s"
 
+# MinIO Configuration
 minio:
   enabled: true
-  mode: standalone
   auth:
     rootUser: opencti
     rootPassword: "MinIO2024!"
-  # CRITICAL: Default bucket creation
-  defaultBuckets: "opencti-bucket"
+  mode: standalone
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
   persistence:
     enabled: true
     storageClass: local-storage
-    size: 50Gi
+    size: 100Gi
+  consoleService:
+    type: ClusterIP
+
+# OpenCTI Main Application
+app:
+  image:
+    repository: opencti/platform
+    tag: "6.8.6"
+    pullPolicy: IfNotPresent
+  
+  replicaCount: 1
+  
   resources:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
+      cpu: "500m"
+      memory: "2Gi"
     limits:
-      cpu: "300m"
-      memory: "512Mi"
+      cpu: "1000m"
+      memory: "4Gi"
+  
+  # Critical environment variables for OpenSearch connectivity
+  env:
+    NODE_OPTIONS: "--max-old-space-size=8096"
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+  
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: false
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  podSecurityContext:
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+# Worker Configuration
+worker:
+  enabled: true
+  replicaCount: 1
+  
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+  
+  # Same environment variables as app
+  env:
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
+    ELASTICSEARCH__ENGINE_CHECK: "false"
+
+# Connector Configuration
+connector:
+  enabled: false
+
+# Global Configuration
+global:
+  storageClass: local-storage
+  podSecurityPolicy:
+    enabled: false
+  networkPolicy:
+    enabled: false
