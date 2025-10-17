@@ -1,4 +1,4 @@
-# OpenCTI Production Configuration - Fixed
+# OpenCTI Production Configuration - CORRECTED MinIO Config
 # Deploy with: helm upgrade --install opencti opencti/opencti -n opencti -f k8s/opencti/values-fixed.yaml --timeout 25m --wait
 
 opencti:
@@ -6,12 +6,25 @@ opencti:
   baseUrl: https://opencti.ozzu.world
   admin:
     email: admin@ozzu.world
-    password: "OpenCTI2024!"  # CHANGE IN PRODUCTION
-    token: ""  # Leave empty to auto-generate or set explicitly
+    password: "OpenCTI2024!"
+    token: ""
   server:
     extraEnv:
       - name: ELASTICSEARCH__URL
         value: "http://opensearch-cluster-master:9200"
+      # CRITICAL FIX: MinIO URL must include http:// protocol
+      - name: MINIO__ENDPOINT
+        value: "http://opencti-minio:9000"
+      - name: MINIO__PORT
+        value: "9000"
+      - name: MINIO__USE_SSL
+        value: "false"
+      - name: MINIO__ACCESS_KEY
+        value: "opencti"
+      - name: MINIO__SECRET_KEY
+        value: "MinIO2024!"
+      - name: MINIO__BUCKET_NAME
+        value: "opencti-bucket"
 
 ingress:
   enabled: true
@@ -31,8 +44,9 @@ ingress:
       secretName: ozzu-world-wildcard-tls
 
 global:
-  storageClass: standard
+  storageClass: local-storage
 
+# OpenSearch Configuration (replaces Elasticsearch)
 opensearch:
   enabled: true
   singleNode: true
@@ -42,9 +56,12 @@ opensearch:
       value: "true"
     - name: DISABLE_INSTALL_DEMO_CONFIG
       value: "true"
+    # Disable attachment processor (not needed for basic setup)
+    - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      value: "OpenSearch2024!"
   persistence:
-    enabled: false  # set to true after validating storageClass works
-    storageClass: standard
+    enabled: true
+    storageClass: local-storage
     size: 20Gi
   resources:
     requests:
@@ -61,7 +78,9 @@ redis:
     enabled: false
   master:
     persistence:
-      enabled: false
+      enabled: true
+      storageClass: local-storage
+      size: 5Gi
     resources:
       requests:
         cpu: "50m"
@@ -74,9 +93,11 @@ rabbitmq:
   enabled: true
   auth:
     username: opencti
-    password: "RabbitMQ2024!"  # CHANGE IN PRODUCTION
+    password: "RabbitMQ2024!"
   persistence:
-    enabled: false
+    enabled: true
+    storageClass: local-storage
+    size: 10Gi
   resources:
     requests:
       cpu: "100m"
@@ -90,9 +111,13 @@ minio:
   mode: standalone
   auth:
     rootUser: opencti
-    rootPassword: "MinIO2024!"  # CHANGE IN PRODUCTION
+    rootPassword: "MinIO2024!"
+  # CRITICAL: Default bucket creation
+  defaultBuckets: "opencti-bucket"
   persistence:
-    enabled: false
+    enabled: true
+    storageClass: local-storage
+    size: 50Gi
   resources:
     requests:
       cpu: "100m"
