@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# OpenCTI Deployment Script with Credential Validation
-# This script deploys OpenCTI with proper credential alignment
+# OpenCTI Deployment Script with Storage Class Detection
+# This script deploys OpenCTI with proper credential alignment and storage configuration
 
 set -e
 
@@ -18,6 +18,7 @@ RELEASE_NAME="opencti"
 CHART_REPO="https://devops-ia.github.io/helm-opencti"
 CHART_NAME="opencti/opencti"
 VALUES_FILE="k8s/opencti/values-fixed.yaml"
+STORAGE_CLASS=""  # Auto-detected
 
 # Helper functions
 log_info() {
@@ -35,6 +36,62 @@ log_warning() {
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
+}
+
+# Detect best available storage class
+detect_storage_class() {
+    log_info "Detecting available storage classes..."
+    
+    # Check if any storage classes exist
+    if ! kubectl get storageclass &> /dev/null; then
+        log_error "No storage classes found. Please configure a storage provisioner."
+    fi
+    
+    # Try to find default storage class
+    local default_sc
+    default_sc=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}' 2>/dev/null || echo "")
+    
+    if [[ -n "$default_sc" ]]; then
+        STORAGE_CLASS="$default_sc"
+        log_success "Using default storage class: $STORAGE_CLASS"
+        return
+    fi
+    
+    # No default found, look for common dynamic provisioners
+    local common_classes=("gp2" "gp3" "standard" "ssd" "fast" "do-block-storage" "rook-ceph-block" "longhorn")
+    
+    for class in "${common_classes[@]}"; do
+        if kubectl get storageclass "$class" &> /dev/null; then
+            # Check if it's a dynamic provisioner (not local storage)
+            local provisioner
+            provisioner=$(kubectl get storageclass "$class" -o jsonpath='{.provisioner}' 2>/dev/null || echo "")
+            
+            if [[ "$provisioner" != "kubernetes.io/no-provisioner" && "$provisioner" != *"local"* ]]; then
+                STORAGE_CLASS="$class"
+                log_success "Using storage class: $STORAGE_CLASS (provisioner: $provisioner)"
+                return
+            fi
+        fi
+    done
+    
+    # Fallback: use first available dynamic provisioner
+    local first_dynamic
+    first_dynamic=$(kubectl get storageclass -o jsonpath='{.items[?(@.provisioner!="kubernetes.io/no-provisioner")].metadata.name}' | awk '{print $1}' 2>/dev/null || echo "")
+    
+    if [[ -n "$first_dynamic" ]]; then
+        STORAGE_CLASS="$first_dynamic"
+        local provisioner
+        provisioner=$(kubectl get storageclass "$first_dynamic" -o jsonpath='{.provisioner}' 2>/dev/null || echo "unknown")
+        log_warning "Using first available dynamic storage class: $STORAGE_CLASS (provisioner: $provisioner)"
+        return
+    fi
+    
+    # Last resort: list available classes and let user choose
+    log_warning "No suitable dynamic storage class found automatically."
+    log_info "Available storage classes:"
+    kubectl get storageclass -o custom-columns="NAME:.metadata.name,PROVISIONER:.provisioner,DEFAULT:.metadata.annotations.storageclass\.kubernetes\.io/is-default-class"
+    
+    log_error "Please set a default storage class or specify one with: helm install --set global.storageClass=YOUR_CLASS"
 }
 
 # Check prerequisites
@@ -138,7 +195,13 @@ validate_minio_credentials() {
 
 # Deploy OpenCTI
 deploy_opencti() {
-    log_info "Deploying OpenCTI using values-fixed.yaml..."
+    log_info "Deploying OpenCTI using values-fixed.yaml with storage class: $STORAGE_CLASS"
+    
+    # Prepare Helm command with storage class override
+    local helm_args=()
+    if [[ -n "$STORAGE_CLASS" ]]; then
+        helm_args+=("--set" "global.storageClass=$STORAGE_CLASS")
+    fi
     
     # Deploy using Helm
     if helm list -n "$NAMESPACE" | grep -q "$RELEASE_NAME"; then
@@ -146,6 +209,7 @@ deploy_opencti() {
         helm upgrade "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
+            "${helm_args[@]}" \
             --timeout 25m0s \
             --wait
     else
@@ -153,6 +217,7 @@ deploy_opencti() {
         helm upgrade --install "$RELEASE_NAME" "$CHART_NAME" \
             --namespace "$NAMESPACE" \
             --values "$VALUES_FILE" \
+            "${helm_args[@]}" \
             --timeout 25m0s \
             --wait
     fi
@@ -208,6 +273,11 @@ show_status() {
     log_info "OpenCTI Deployment Status:"
     echo
     
+    # Show storage class used
+    if [[ -n "$STORAGE_CLASS" ]]; then
+        log_info "Storage Class: $STORAGE_CLASS"
+    fi
+    
     # Show pods
     log_info "Pods:"
     kubectl get pods -n "$NAMESPACE" -o wide
@@ -218,14 +288,14 @@ show_status() {
     kubectl get svc -n "$NAMESPACE"
     echo
     
+    # Show PVCs and their status
+    log_info "Storage (PVCs):"
+    kubectl get pvc -n "$NAMESPACE" -o wide
+    echo
+    
     # Show ingress
     log_info "Ingress:"
     kubectl get ingress -n "$NAMESPACE" 2>/dev/null || log_warning "No ingress found"
-    echo
-    
-    # Show persistent volumes
-    log_info "Storage:"
-    kubectl get pvc -n "$NAMESPACE"
     echo
     
     log_success "OpenCTI should be accessible at: https://opencti.ozzu.world"
@@ -257,9 +327,10 @@ cleanup_deployment() {
 
 # Main execution
 main() {
-    log_info "Starting OpenCTI deployment with credential validation..."
+    log_info "Starting OpenCTI deployment with storage class detection..."
     
     check_prerequisites
+    detect_storage_class
     add_helm_repo
     create_namespace
     deploy_opencti
@@ -294,6 +365,10 @@ while [[ $# -gt 0 ]]; do
             RELEASE_NAME="$2"
             shift 2
             ;;
+        --storage-class)
+            STORAGE_CLASS="$2"
+            shift 2
+            ;;
         --no-wait)
             WAIT_FOR_READY="false"
             shift
@@ -321,15 +396,16 @@ while [[ $# -gt 0 ]]; do
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --namespace NAMESPACE    Kubernetes namespace (default: opencti)"
-            echo "  --release-name NAME      Helm release name (default: opencti)"
-            echo "  --no-wait               Don't wait for deployment to be ready"
-            echo "  --no-bootstrap          Skip admin credential bootstrap"
-            echo "  --reset                 Reset OpenSearch for clean initialization"
-            echo "  --logs                  Show recent application logs"
-            echo "  --status                Show deployment status"
-            echo "  --cleanup               Remove OpenCTI deployment"
-            echo "  --help                  Show this help message"
+            echo "  --namespace NAMESPACE      Kubernetes namespace (default: opencti)"
+            echo "  --release-name NAME        Helm release name (default: opencti)"
+            echo "  --storage-class CLASS      Override storage class (auto-detected by default)"
+            echo "  --no-wait                 Don't wait for deployment to be ready"
+            echo "  --no-bootstrap            Skip admin credential bootstrap"
+            echo "  --reset                   Reset OpenSearch for clean initialization"
+            echo "  --logs                    Show recent application logs"
+            echo "  --status                  Show deployment status"
+            echo "  --cleanup                 Remove OpenCTI deployment"
+            echo "  --help                    Show this help message"
             exit 0
             ;;
         *)
