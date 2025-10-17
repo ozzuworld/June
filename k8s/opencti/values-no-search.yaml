@@ -51,7 +51,7 @@ ingress:
         - opencti.ozzu.world
       secretName: ozzu-world-wildcard-tls
 
-# OpenCTI Main Application - Environment to use existing OpenSearch and in-cluster services
+# OpenCTI Main Application - Environment to use existing OpenSearch (in default ns) and in-cluster services
 app:
   # Image Configuration
   image:
@@ -75,8 +75,8 @@ app:
   env:
     NODE_OPTIONS: "--max-old-space-size=8096"
 
-    # Search engine
-    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    # Search engine (FQDN to default namespace service)
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
     ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
     ELASTICSEARCH__ENGINE_CHECK: "false"
 
@@ -130,8 +130,8 @@ worker:
   
   # Environment variables to match app
   env:
-    # Search engine
-    ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
+    # Search engine (FQDN to default namespace service)
+    ELASTICSEARCH__URL: "http://opensearch-cluster-master.default.svc.cluster.local:9200"
     ELASTICSEARCH__ENGINE_SELECTOR: "opensearch"
     ELASTICSEARCH__ENGINE_CHECK: "false"
 
@@ -218,7 +218,11 @@ connector:
 
 global:
   storageClass: local-storage
+  
+  # Security
   podSecurityPolicy:
     enabled: false
+  
+  # Network Policy
   networkPolicy:
     enabled: false
