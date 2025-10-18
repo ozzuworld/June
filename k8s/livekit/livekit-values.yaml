@@ -14,14 +14,14 @@ server:
       # ONLY USE YOUR STUNNER - NO GOOGLE STUN!
       ice_servers:
         - urls: 
-          - "stun:34.59.53.188:3478"  # ONLY your STUNner server
+          - "stun:turn.ozzu.world:3478"  # ONLY your STUNner server
         - urls:
-          - "turn:34.59.53.188:3478"
+          - "turn:turn.ozzu.world:3478"
           username: "june-user"
           credential: "Pokemon123!"
       # Force use of only configured STUN/TURN servers
       stun_servers:
-        - "34.59.53.188:3478"  # Only STUNner, no Google fallback
+        - "turn.ozzu.world:3478"  # Only STUNner, no Google fallback
     # DISABLE embedded TURN - use STUNner only
     turn:
       enabled: false
