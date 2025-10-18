@@ -49,10 +49,19 @@ async def generate_livekit_token(
             at = at.with_metadata(metadata)
 
         token = at.to_jwt()
-        livekit_url = config.livekit.ws_url
-        if livekit_url.startswith("ws://"):
-            livekit_url = livekit_url.replace("ws://", "wss://")
-        livekit_url = livekit_url.replace(":7880", "")
+        
+        # Get LiveKit signal URL from environment variable or default to domain
+        import os
+        livekit_url = os.getenv("LIVEKIT_SIGNAL_URL", "wss://livekit.ozzu.world")
+        
+        # Only do URL transformations if using the default domain
+        if livekit_url == "wss://livekit.ozzu.world":
+            base_url = config.livekit.ws_url
+            if base_url.startswith("ws://"):
+                livekit_url = base_url.replace("ws://", "wss://")
+            else:
+                livekit_url = base_url
+            livekit_url = livekit_url.replace(":7880", "")
 
         logger.info(f"[TOKEN REQ] Success; total elapsed: {time.time()-t0:.3f}s")
         return {
