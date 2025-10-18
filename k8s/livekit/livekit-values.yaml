@@ -1,4 +1,4 @@
-# LiveKit Server Configuration - USING ONLY STUNNER (NO GOOGLE!)
+# LiveKit Server Configuration - USING ONLY STUNNER DOMAIN
 server:
   replicas: 1
   config:
@@ -9,41 +9,25 @@ server:
       port_range_start: 50000
       port_range_end: 60000
       use_external_ip: true
-      # CRITICAL: Set external IP explicitly
       external_ip: "34.59.178.219"
-      # ONLY USE YOUR STUNNER - NO GOOGLE STUN!
       ice_servers:
-        - urls: 
-          - "stun:turn.ozzu.world:3478"  # ONLY your STUNner server
-        - urls:
-          - "turn:turn.ozzu.world:3478"
+        - urls: ["stun:turn.ozzu.world:3478"]
+        - urls: ["turn:turn.ozzu.world:3478"]
           username: "june-user"
           credential: "Pokemon123!"
-      # Force use of only configured STUN/TURN servers
-      stun_servers:
-        - "turn.ozzu.world:3478"  # Only STUNner, no Google fallback
-    # DISABLE embedded TURN - use STUNner only
     turn:
       enabled: false
-    # CRITICAL: WebRTC signaling configuration
-    keys:
-      devkey: bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ
-    # Logging configuration
-    logging:
-      level: debug  # Temporary for troubleshooting
-      json: true
-    # Development settings for WebSocket handling
-    development: false
+  extraEnv:
+    - name: LIVEKIT_RTC_ICE_SERVERS
+      value: >-
+        [{"urls":["stun:turn.ozzu.world:3478"]},{"urls":["turn:turn.ozzu.world:3478"],"username":"june-user","credential":"Pokemon123!"}]
+    - name: LIVEKIT_TURN_ENABLED
+      value: "false"
 
-# API Keys - CRITICAL: Replace with your actual keys
 livekit:
   keys:
-    # Replace with your actual API key and secret
     devkey: bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ
-    # Add more key-value pairs as needed
-    # ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
 
-# Service Configuration - Simplified for STUNner only
 service:
   type: ClusterIP
   ports:
@@ -60,7 +44,6 @@ service:
       targetPort: 7882
       protocol: UDP
 
-# Simplified UDP service - STUNner handles TURN
 udpService:
   enabled: true
   type: LoadBalancer
@@ -69,7 +52,6 @@ udpService:
       port: 7882
       targetPort: 7882
       protocol: UDP
-  # Port range for WebRTC media (requires LoadBalancer or NodePort)
   portRange:
     start: 50000
-    end: 50020  # Reduced range for K8s compatibility
+    end: 50020
