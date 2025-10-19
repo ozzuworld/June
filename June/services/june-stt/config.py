@@ -13,9 +13,10 @@ class Config:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     
     # Whisper Configuration
-    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "large-v3")
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "base")
     WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "auto")  # auto, cuda, cpu
     WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
+    WHISPER_CACHE_DIR: str = os.getenv("WHISPER_CACHE_DIR", "/app/models")
     
     # File Processing
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
@@ -34,7 +35,7 @@ class Config:
     # Orchestrator Configuration (Internal Kubernetes URLs)
     ORCHESTRATOR_URL: str = os.getenv(
         "ORCHESTRATOR_URL", 
-        "http://june-orchestrator:8080"
+        "http://june-orchestrator.june-services.svc.cluster.local:8080"
     )
     ORCHESTRATOR_API_KEY: str = os.getenv("ORCHESTRATOR_API_KEY", "")
     ORCHESTRATOR_ENABLED: bool = bool(os.getenv("ORCHESTRATOR_ENABLED", "true").lower() == "true")
