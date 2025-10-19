@@ -165,7 +165,10 @@ main() {
 
     success "GPU detected - proceeding with GPU Operator installation"
 
-    # Apply time-slicing config first
+    # ✅ CREATE NAMESPACE FIRST
+    ensure_namespace
+
+    # Then apply time-slicing config
     apply_timeslicing_config
 
     # Install GPU Operator with time-slicing
