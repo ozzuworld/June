@@ -63,7 +63,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(webhooks_router, tags=["Webhooks"])
-app.include_router(livekit_router, prefix="/api/livekit", tags=["LiveKit"])  # new token route
+app.include_router(livekit_router, prefix="/api/livekit", tags=["LiveKit"])  # token route
 
 
 @app.get("/")
@@ -81,3 +81,8 @@ async def root():
             "api_key": config.livekit.api_key
         }
     }
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "healthy", "service": "june-orchestrator"}
