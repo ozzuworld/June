@@ -7,6 +7,7 @@ livekit-api==0.6.0
 httpx==0.25.2
 pydantic==2.5.0
 python-multipart==0.0.6
-faster-whisper==0.9.0
 numpy==1.24.3
 scipy==1.11.4
+av==9.2.0
+faster-whisper==0.9.0
