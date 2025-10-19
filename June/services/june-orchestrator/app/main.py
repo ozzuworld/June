@@ -5,19 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from .routes.webhooks import router as webhooks_router
-
-
+from .routes_livekit import router as livekit_router
 
 from .config import config
-from .routes import (
-    sessions_router,
-    livekit_webhooks_router,
-    livekit_token_router,
-    ai_router,
-    health_router
-)
-
-app.include_router(webhooks_router, tags=["Webhooks"])
 
 logging.basicConfig(
     level=getattr(logging, config.log_level),
@@ -28,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 class BodyLoggerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Do NOT consume the body; just log headers to avoid interfering with downstream parsing
         try:
             logger.info(
                 f"[BODY TAP] {request.method} {request.url.path} "
@@ -49,7 +38,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"🔧 STT: {config.services.stt_base_url}")
     logger.info(f"🔧 LiveKit: {config.livekit.ws_url}")
     logger.info(f"🔧 LiveKit API Key: {config.livekit.api_key}")
-    logger.info("🎫 LiveKit Token Endpoint: /livekit/token")
+    logger.info("🎫 LiveKit Token Endpoint: /api/livekit/token")
     yield
     logger.info("🛑 Shutdown")
 
@@ -73,11 +62,8 @@ app.add_middleware(
 )
 
 # Register routes
-app.include_router(health_router, tags=["Health"])
-app.include_router(sessions_router, prefix="/api/sessions", tags=["Sessions"])
-app.include_router(livekit_webhooks_router, prefix="/api/livekit-webhooks", tags=["LiveKit Webhooks"])
-app.include_router(livekit_token_router, prefix="/livekit", tags=["LiveKit Tokens"])
-app.include_router(ai_router, prefix="/api/ai", tags=["AI"])
+app.include_router(webhooks_router, tags=["Webhooks"])
+app.include_router(livekit_router, prefix="/api/livekit", tags=["LiveKit"])  # new token route
 
 
 @app.get("/")
@@ -87,10 +73,7 @@ async def root():
         "version": "3.0.0",
         "description": "Business logic orchestrator with LiveKit integration",
         "endpoints": {
-            "sessions": "/api/sessions",
-            "livekit_webhooks": "/api/livekit-webhooks",
-            "livekit_token": "/livekit/token",
-            "ai": "/api/ai",
+            "livekit": "/api/livekit/token",
             "health": "/healthz"
         },
         "livekit": {
