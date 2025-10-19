@@ -165,7 +165,7 @@ main() {
 
     success "GPU detected - proceeding with GPU Operator installation"
 
-    # ✅ CREATE NAMESPACE FIRST
+    # CREATE NAMESPACE FIRST
     ensure_namespace
 
     # Then apply time-slicing config
@@ -177,10 +177,13 @@ main() {
     # Wait for components
     wait_for_gpu_components
 
-    # Verify
+    # Verify GPU capacity
     verify_gpu_capacity
+    
+    # ✅ NEW: Label GPU nodes automatically
+    label_gpu_nodes
 
-    success "GPU Operator with time-slicing configured"
+    success "GPU Operator with time-slicing configured and nodes labeled"
 }
 
 main "$@"
