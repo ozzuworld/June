@@ -1,4 +1,4 @@
-# June STT Service Dependencies
+# June STT Service Dependencies (PyAV-free)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 openai-whisper==20231117
@@ -9,5 +9,3 @@ pydantic==2.5.0
 python-multipart==0.0.6
 numpy==1.24.3
 scipy==1.11.4
-# removed av pin; STT pipeline uses LiveKit PCM → Whisper, no PyAV
-faster-whisper==0.9.0
