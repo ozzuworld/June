@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Phase 03.5: NVIDIA GPU Operator and Time-Slicing
-# Installs NVIDIA GPU Operator and configures time-slicing so multiple pods can share one GPU.
+# Installs NVIDIA GPU Operator via Helm (driver+toolkit+device plugin) and configures time-slicing.
 
 set -e
 
@@ -9,20 +9,87 @@ source "$(dirname "$0")/../common/validation.sh"
 
 ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
 
-# Defaults (can be overridden via environment or config.env)
-GPU_NAMESPACE="nvidia-gpu-operator"
-GPU_TS_PROFILE_NAME="geforce-rtx-4090"
+GPU_NAMESPACE="gpu-operator"
+GPU_OPERATOR_VERSION="v25.3.4"
 GPU_TS_REPLICAS="${GPU_TIMESLICING_REPLICAS:-2}"
 
-ensure_helm_repo() {
-  local name="$1" url="$2"
-  if ! helm repo list | awk '{print $1}' | grep -qx "$name"; then
-    helm repo add "$name" "$url"
-  fi
+ensure_namespace() {
+  kubectl create namespace "$GPU_NAMESPACE" 2>/dev/null || true
+  kubectl label --overwrite namespace "$GPU_NAMESPACE" pod-security.kubernetes.io/enforce=privileged || true
 }
 
-apply_timeslicing_configmap() {
-  log "Applying NVIDIA time-slicing ConfigMap with replicas=${GPU_TS_REPLICAS} for profile ${GPU_TS_PROFILE_NAME}..."
+ensure_helm_repo() {
+  if ! helm repo list 2>/dev/null | awk '{print $1}' | grep -qx "nvidia"; then
+    helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+  fi
+  helm repo update
+}
+
+nfd_is_running() {
+  # Detect if Node Feature Discovery labels exist on any node
+  kubectl get nodes -o json 2>/dev/null | jq '.items[].metadata.labels | keys | any(.[]; startswith("feature.node.kubernetes.io"))' -r 2>/dev/null | grep -q true
+}
+
+install_gpu_operator() {
+  header "Installing NVIDIA GPU Operator"
+  ensure_namespace
+  ensure_helm_repo
+
+  local nfd_flag=""
+  if nfd_is_running; then
+    warn "NFD detected in cluster; disabling NFD deployment in GPU Operator"
+    nfd_flag="--set nfd.enabled=false"
+  fi
+
+  helm upgrade --install gpu-operator nvidia/gpu-operator \
+    --namespace "$GPU_NAMESPACE" \
+    --version="$GPU_OPERATOR_VERSION" \
+    --wait \
+    --set driver.enabled=true \
+    --set toolkit.enabled=true \
+    --set devicePlugin.enabled=true \
+    --set dcgmExporter.enabled=true \
+    --set gfd.enabled=true \
+    --set migManager.enabled=true \
+    --set nodeStatusExporter.enabled=true \
+    --set gds.enabled=false \
+    --set vfioManager.enabled=true \
+    --set sandboxWorkloads.enabled=false \
+    --set vgpuManager.enabled=false \
+    --set vgpuDeviceManager.enabled=false \
+    --set ccManager.enabled=false \
+    $nfd_flag
+
+  success "NVIDIA GPU Operator installed/updated"
+}
+
+wait_for_gpu_components() {
+  subheader "Waiting for GPU Operator components"
+  # Driver
+  kubectl wait --for=condition=ready pods \
+    --selector=app=nvidia-driver-daemonset \
+    --namespace="$GPU_NAMESPACE" \
+    --timeout=600s || warn "Driver pods not fully ready within timeout"
+
+  # Device plugin
+  kubectl wait --for=condition=ready pods \
+    --selector=app=nvidia-device-plugin-daemonset \
+    --namespace="$GPU_NAMESPACE" \
+    --timeout=300s || warn "Device plugin pods not fully ready within timeout"
+
+  # Container toolkit (daemonset name varies by version; attempt best-known label)
+  kubectl wait --for=condition=ready pods \
+    --selector=app=nvidia-container-toolkit-daemonset \
+    --namespace="$GPU_NAMESPACE" \
+    --timeout=300s || warn "Container toolkit pods not fully ready within timeout"
+
+  success "Wait sequence completed"
+}
+
+apply_timeslicing_config() {
+  header "Configuring GPU time-slicing (replicas=${GPU_TS_REPLICAS})"
+
+  # Use device plugin configuration via GPU Operator namespace
   cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -30,7 +97,6 @@ metadata:
   name: time-slicing-config
   namespace: $GPU_NAMESPACE
   labels:
-    nvidia.com/operator.version: v1
     nvidia.com/device-plugin.config: "true"
 data:
   timeslicing.yaml: |
@@ -43,57 +109,22 @@ data:
           - name: nvidia.com/gpu
             replicas: ${GPU_TS_REPLICAS}
 EOF
-}
 
-install_gpu_operator() {
-  log "Installing NVIDIA GPU Operator..."
-  kubectl create namespace "$GPU_NAMESPACE" 2>/dev/null || true
-
-  ensure_helm_repo nvidia https://nvidia.github.io/gpu-operator
-  helm repo update
-
-  # Install or upgrade GPU Operator and point device plugin to our time-slicing ConfigMap
-  helm upgrade --install gpu-operator nvidia/gpu-operator \
-    --namespace "$GPU_NAMESPACE" \
-    --set toolkit.enabled=true \
-    --set devicePlugin.enabled=true \
-    --set devicePlugin.config.name=time-slicing-config \
-    --set driver.enabled=false \
-    --set mig.strategy=none \
-    --wait --timeout 20m
-
-  success "GPU Operator installed/updated"
-}
-
-wait_for_gpu_resources() {
-  log "Waiting for GPU operator components and device plugin..."
-  # Device plugin DaemonSet
-  if kubectl -n "$GPU_NAMESPACE" get ds nvidia-device-plugin-daemonset &>/dev/null; then
-    kubectl -n "$GPU_NAMESPACE" rollout status ds/nvidia-device-plugin-daemonset --timeout=5m
-  else
-    warn "nvidia-device-plugin-daemonset not found yet"
+  # Patch operator values so device plugin uses this config map
+  # Some operator versions support devicePlugin.config.name; attempt it safely.
+  if helm get values gpu-operator -n "$GPU_NAMESPACE" >/dev/null 2>&1; then
+    helm upgrade gpu-operator nvidia/gpu-operator \
+      -n "$GPU_NAMESPACE" \
+      --reuse-values \
+      --set devicePlugin.config.name=time-slicing-config
   fi
-
-  # Validate nodes expose nvidia.com/gpu allocatable
-  log "Checking for advertised GPU resources..."
-  sleep 10
-  kubectl get nodes -o json | jq -r '.items[] | select(.status.allocatable["nvidia.com/gpu"]) | "\(.metadata.name): \(.status.allocatable["nvidia.com/gpu"])"' || true
-}
-
-verify_timeslicing_effective() {
-  log "Verifying time-slicing is effective (replicas=${GPU_TS_REPLICAS})..."
-  local nodes
-  nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.allocatable["nvidia.com/gpu"]) | .metadata.name')
-  if [ -z "$nodes" ]; then
-    warn "No nodes advertising nvidia.com/gpu yet. It may take some time or require a reboot."
-    return 0
-  fi
-  for n in $nodes; do
-    local cap
-    cap=$(kubectl get node "$n" -o json | jq -r '.status.allocatable["nvidia.com/gpu"]')
-    log "Node $n reports allocatable nvidia.com/gpu: $cap"
-  done
   success "Time-slicing configuration applied"
+}
+
+verify_gpu_capacity() {
+  subheader "Verifying GPU capacity"
+  sleep 20
+  kubectl get nodes -o json | jq -r '.items[] | select(.status.allocatable["nvidia.com/gpu"]) | (.metadata.name+": "+.status.allocatable["nvidia.com/gpu"])' || true
 }
 
 main() {
@@ -105,22 +136,22 @@ main() {
 
   verify_command kubectl "kubectl is required"
   verify_command helm "helm is required"
-
-  if ! lspci | grep -i nvidia | grep -qi vga; then
-    warn "No NVIDIA GPU detected, skipping GPU Operator installation"
-    return 0
+  if ! kubectl cluster-info &>/dev/null; then
+    error "Kubernetes cluster must be running"
   fi
 
-  if ! command -v nvidia-smi &>/dev/null; then
-    warn "nvidia-smi not found. Please run phase 02.5-gpu (GPU driver/runtime) first. Skipping for now."
-    return 0
-  fi
-
+  # Install Operator stack (driver/toolkit/device plugin) via Helm
   install_gpu_operator
-  apply_timeslicing_configmap
-  wait_for_gpu_resources
-  verify_timeslicing_effective
+  wait_for_gpu_components
 
+  # Apply time-slicing
+  if [ "${GPU_TS_REPLICAS}" -gt 1 ] 2>/dev/null; then
+    apply_timeslicing_config
+  else
+    warn "GPU_TIMESLICING_REPLICAS=${GPU_TS_REPLICAS}; skipping time-slicing config"
+  fi
+
+  verify_gpu_capacity
   success "GPU Operator configuration completed"
 }
 
