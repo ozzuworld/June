@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Phase 8: LiveKit Installation
-# Installs LiveKit WebRTC server
+# Installs LiveKit WebRTC server in june-services namespace
 
 set -e
 
@@ -21,22 +21,25 @@ if [ -f "${ROOT_DIR}/config.env" ]; then
     source "${ROOT_DIR}/config.env"
 fi
 
+# FIXED: Use june-services namespace consistently
+LIVEKIT_NAMESPACE="june-services"
+
 check_existing_livekit() {
     log "Checking for existing LiveKit installation..."
     
-    if ! kubectl get namespace june-services &>/dev/null; then
-        log "No existing LiveKit installation found (no june-services namespace)"
+    if ! kubectl get namespace "$LIVEKIT_NAMESPACE" &>/dev/null; then
+        log "No existing LiveKit installation found (no $LIVEKIT_NAMESPACE namespace)"
         return 1
     fi
     
-    if helm list -n june-services 2>/dev/null | grep -q "livekit.*deployed"; then
+    if helm list -n "$LIVEKIT_NAMESPACE" 2>/dev/null | grep -q "livekit.*deployed"; then
         log "Found existing LiveKit Helm release"
         
-        if kubectl get deployment livekit-livekit-server -n june-services &>/dev/null; then
+        if kubectl get deployment livekit-livekit-server -n "$LIVEKIT_NAMESPACE" &>/dev/null; then
             local ready_replicas
-            ready_replicas=$(kubectl get deployment livekit-livekit-server -n june-services -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            ready_replicas=$(kubectl get deployment livekit-livekit-server -n "$LIVEKIT_NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
             local desired_replicas
-            desired_replicas=$(kubectl get deployment livekit-livekit-server -n june-services -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+            desired_replicas=$(kubectl get deployment livekit-livekit-server -n "$LIVEKIT_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
             
             if [ "$ready_replicas" = "$desired_replicas" ] && [ "$ready_replicas" -gt 0 ]; then
                 success "LiveKit is already installed and running ($ready_replicas/$desired_replicas replicas ready)"
@@ -59,20 +62,20 @@ install_livekit() {
         return 0
     fi
     
-    log "Creating june-services namespace..."
-    kubectl create namespace june-services --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+    log "Creating $LIVEKIT_NAMESPACE namespace..."
+    kubectl create namespace "$LIVEKIT_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
 
     local timeout=60
     local count=0
     while [ $count -lt $timeout ]; do
-        if kubectl get namespace june-services --no-headers 2>/dev/null | grep -q "Active"; then
-            log "june-services namespace is active"
+        if kubectl get namespace "$LIVEKIT_NAMESPACE" --no-headers 2>/dev/null | grep -q "Active"; then
+            log "$LIVEKIT_NAMESPACE namespace is active"
             break
         fi
         sleep 1
         count=$((count + 1))
         if [ $count -eq $timeout ]; then
-            error "Timeout waiting for june-services namespace to become active"
+            error "Timeout waiting for $LIVEKIT_NAMESPACE namespace to become active"
         fi
     done
     
@@ -97,8 +100,8 @@ install_livekit() {
 generate_livekit_credentials() {
     log "Generating LiveKit API credentials..."
     
-    export LIVEKIT_API_KEY="june-api-$(openssl rand -hex 16)"
-    export LIVEKIT_API_SECRET="$(openssl rand -base64 32)"
+    export LIVEKIT_API_KEY="devkey"
+    export LIVEKIT_API_SECRET="bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ"
     
     local creds_dir="${ROOT_DIR}/config/credentials"
     mkdir -p "$creds_dir"
@@ -108,14 +111,14 @@ generate_livekit_credentials() {
 livekit:
   api_key: "$LIVEKIT_API_KEY"
   api_secret: "$LIVEKIT_API_SECRET"
-  server_url: "http://livekit.june-services.svc.cluster.local"
+  server_url: "http://livekit-livekit-server.$LIVEKIT_NAMESPACE.svc.cluster.local"
 EOF
 
     local env_file="${creds_dir}/livekit.env"
     cat > "$env_file" << EOF
 export LIVEKIT_API_KEY="$LIVEKIT_API_KEY"
 export LIVEKIT_API_SECRET="$LIVEKIT_API_SECRET"
-export LIVEKIT_URL="http://livekit.june-services.svc.cluster.local"
+export LIVEKIT_URL="http://livekit-livekit-server.$LIVEKIT_NAMESPACE.svc.cluster.local"
 EOF
 
     success "LiveKit credentials generated and saved to:"
@@ -125,7 +128,7 @@ EOF
     log "LiveKit API Credentials:"
     log "  API Key:    $LIVEKIT_API_KEY"
     log "  API Secret: $LIVEKIT_API_SECRET"
-    log "  Server URL: http://livekit.june-services.svc.cluster.local"
+    log "  Server URL: http://livekit-livekit-server.$LIVEKIT_NAMESPACE.svc.cluster.local"
 }
 
 deploy_livekit_server() {
@@ -136,94 +139,95 @@ deploy_livekit_server() {
         return 0
     fi
     
-    local values_file="${ROOT_DIR}/k8s/livekit/livekit-values.yaml"
-    
-    if [ -f "$values_file" ]; then
-        log "Using custom values file: $values_file"
-        
-        if [ -z "$LIVEKIT_API_KEY" ] || [ -z "$LIVEKIT_API_SECRET" ]; then
-            generate_livekit_credentials
-        fi
-        
-        envsubst < "$values_file" | helm upgrade --install livekit livekit/livekit-server \
-            --namespace june-services \
-            --values - \
-            --wait \
-            --timeout=15m > /dev/null 2>&1
-
-    else
-        warn "Values file not found at $values_file, using default configuration"
-        
+    if [ -z "$LIVEKIT_API_KEY" ] || [ -z "$LIVEKIT_API_SECRET" ]; then
         generate_livekit_credentials
-        
-        helm upgrade --install livekit livekit/livekit-server \
-            --namespace june-services \
-            --set "livekit.keys.$LIVEKIT_API_KEY=$LIVEKIT_API_SECRET" \
-            --set server.replicas=1 \
-            --set server.resources.requests.cpu=100m \
-            --set server.resources.requests.memory=128Mi \
-            --wait \
-            --timeout=15m > /dev/null 2>&1
     fi
     
-    # 🔥 FIX: Helm chart bug - manually patch ConfigMap with correct ICE servers
-    log "Patching ConfigMap to override Google/Twilio STUN servers..."
-    kubectl patch configmap livekit-livekit-server -n june-services --type merge -p '
-{
-  "data": {
-    "config.yaml": "keys:\n  devkey: bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ\nlog_level: info\nport: 7880\nredis: {}\nrtc:\n  external_ip: \"34.59.178.219\"\n  port_range_end: 60000\n  port_range_start: 50000\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: true\n  stun_servers: []\n  turn_servers:\n    - host: turn.ozzu.world\n      port: 3478\n      protocol: udp\n      username: june-user\n      credential: Pokemon123!\nturn:\n  enabled: false\n  loadBalancerAnnotations: {}\n"
-  }
-}' > /dev/null 2>&1
+    # Get external IP for RTC configuration
+    EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
+    export EXTERNAL_IP
     
-    kubectl rollout restart deployment/livekit-livekit-server -n june-services > /dev/null 2>&1
+    log "Using external IP: $EXTERNAL_IP for LiveKit RTC"
     
-    success "LiveKit server deployed with correct ICE servers"
+    helm upgrade --install livekit livekit/livekit-server \
+        --namespace "$LIVEKIT_NAMESPACE" \
+        --set "livekit.keys.$LIVEKIT_API_KEY=$LIVEKIT_API_SECRET" \
+        --set server.replicas=1 \
+        --set "server.config.rtc.external_ip=$EXTERNAL_IP" \
+        --set server.config.rtc.udp_port=7882 \
+        --set server.config.rtc.tcp_port=7881 \
+        --set server.config.rtc.port_range_start=50000 \
+        --set server.config.rtc.port_range_end=60000 \
+        --set server.config.rtc.use_external_ip=true \
+        --set server.config.rtc.stun_servers='[]' \
+        --set "server.config.rtc.turn_servers[0].host=turn.$DOMAIN" \
+        --set "server.config.rtc.turn_servers[0].port=3478" \
+        --set "server.config.rtc.turn_servers[0].protocol=udp" \
+        --set "server.config.rtc.turn_servers[0].username=$TURN_USERNAME" \
+        --set "server.config.rtc.turn_servers[0].credential=$STUNNER_PASSWORD" \
+        --wait \
+        --timeout=15m > /dev/null 2>&1
+    
+    success "LiveKit server deployed"
 }
 
 wait_for_livekit() {
     log "Waiting for LiveKit to be ready..."
     
-    wait_for_deployment "livekit-livekit-server" "june-services" 300
+    wait_for_deployment "livekit-livekit-server" "$LIVEKIT_NAMESPACE" 300
     
     success "LiveKit is ready"
 }
 
-apply_livekit_services() {
-    log "Applying LiveKit additional services..."
+create_livekit_udp_service() {
+    log "Creating LiveKit UDP service..."
     
-    local livekit_config_dir="${ROOT_DIR}/k8s/livekit"
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-udp
+  namespace: $LIVEKIT_NAMESPACE
+  labels:
+    app: livekit
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: livekit-server
+  ports:
+  - name: udp
+    port: 7882
+    targetPort: 7882
+    protocol: UDP
+EOF
     
-    if [ ! -d "$livekit_config_dir" ]; then
-        warn "LiveKit configuration directory not found at $livekit_config_dir"
-        return 0
-    fi
-    
-    if [ -f "${livekit_config_dir}/livekit-udp-svc.yaml" ]; then
-        log "Applying LiveKit UDP service..."
-        kubectl apply -f "${livekit_config_dir}/livekit-udp-svc.yaml" > /dev/null 2>&1
-        sleep 5
-    fi
-    
-    success "LiveKit additional services applied"
+    success "LiveKit UDP service created"
 }
 
 setup_udproute() {
     log "Setting up UDPRoute for LiveKit..."
-    
-    local udproute_file="${ROOT_DIR}/k8s/stunner/60-udproute-livekit.yaml"
-    
-    if [ ! -f "$udproute_file" ]; then
-        warn "UDPRoute configuration not found at $udproute_file"
-        return 0
-    fi
     
     if ! kubectl get gateway stunner-gateway -n stunner &>/dev/null; then
         warn "STUNner gateway not found, skipping UDPRoute creation"
         return 0
     fi
     
-    log "Applying UDPRoute for LiveKit..."
-    kubectl apply -f "$udproute_file" > /dev/null 2>&1
+    # Create UDPRoute pointing to LiveKit in june-services namespace
+    cat <<EOF | kubectl apply -f - > /dev/null 2>&1
+apiVersion: stunner.l7mp.io/v1
+kind: UDPRoute
+metadata:
+  name: livekit-udp-route
+  namespace: stunner
+spec:
+  parentRefs:
+    - name: stunner-gateway
+  rules:
+    - backendRefs:
+        - name: livekit-udp
+          namespace: $LIVEKIT_NAMESPACE
+          port: 7882
+EOF
     
     success "UDPRoute applied successfully"
 }
@@ -236,7 +240,7 @@ apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
   name: stunner-to-june-services
-  namespace: june-services
+  namespace: $LIVEKIT_NAMESPACE
 spec:
   from:
   - group: stunner.l7mp.io
@@ -253,26 +257,26 @@ EOF
 verify_livekit() {
     log "Verifying LiveKit installation..."
     
-    verify_namespace "june-services"
-    verify_k8s_resource "deployment" "livekit-livekit-server" "june-services"
+    verify_namespace "$LIVEKIT_NAMESPACE"
+    verify_k8s_resource "deployment" "livekit-livekit-server" "$LIVEKIT_NAMESPACE"
     
-    if kubectl get service livekit-livekit-server -n june-services &>/dev/null; then
+    if kubectl get service livekit-livekit-server -n "$LIVEKIT_NAMESPACE" &>/dev/null; then
         success "LiveKit service found"
         
         log "LiveKit service status:"
-        kubectl get service livekit-livekit-server -n june-services
+        kubectl get service livekit-livekit-server -n "$LIVEKIT_NAMESPACE"
     else
         warn "LiveKit main service not found"
     fi
     
-    if kubectl get service livekit-udp -n june-services &>/dev/null; then
+    if kubectl get service livekit-udp -n "$LIVEKIT_NAMESPACE" &>/dev/null; then
         log "LiveKit UDP service found"
     else
         warn "LiveKit UDP service not found"
     fi
     
     log "LiveKit pod status:"
-    kubectl get pods -n june-services | grep livekit
+    kubectl get pods -n "$LIVEKIT_NAMESPACE" | grep livekit || echo "No LiveKit pods found"
     
     local creds_file="${ROOT_DIR}/config/credentials/livekit-credentials.yaml"
     if [ -f "$creds_file" ]; then
@@ -293,25 +297,13 @@ main() {
     verify_command "helm" "helm must be available"
 
     if ! kubectl cluster-info &> /dev/null; then
-        error "Cannot connect to Kubernetes cluster. Please ensure kubectl is configured correctly."
-    fi
-
-    if ! kubectl auth can-i create namespaces 2>/dev/null; then
-        error "Insufficient permissions to create namespaces. Please ensure you have cluster-admin rights."
-    fi
-
-    if ! helm list -A &> /dev/null; then
-        error "Helm cannot communicate with cluster. Please ensure Helm is properly configured."
-    fi
-    
-    if ! kubectl cluster-info &> /dev/null; then
-        error "Kubernetes cluster must be running"
+        error "Cannot connect to Kubernetes cluster"
     fi
     
     install_livekit
     deploy_livekit_server
     wait_for_livekit
-    apply_livekit_services
+    create_livekit_udp_service
     setup_udproute
     setup_reference_grant
     verify_livekit

@@ -75,15 +75,15 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (ordered explicitly)
+# Define installation phases (FIXED ORDER - GPU Operator after Helm)
 PHASES=(
     "01-prerequisites"
     "02-docker"
     "02.5-gpu"
     "03-kubernetes"
-    "03.5-gpu-operator"
     "04-infrastructure"
     "05-helm"
+    "03.5-gpu-operator"    # MOVED HERE - After Helm is installed
     "06-certificates"
     "07-stunner"
     "08-livekit"
@@ -220,7 +220,7 @@ main() {
     fi
     echo ""
     echo "🎮 WebRTC Services:"
-    echo "  LiveKit:    livekit.media.svc.cluster.local"
+    echo "  LiveKit:    livekit-livekit-server.june-services.svc.cluster.local"
     echo "  TURN:       turn:${EXTERNAL_IP}:3478"
     echo ""
     echo "🌐 DNS Configuration:"
@@ -243,8 +243,7 @@ main() {
     echo "  Backup File: /root/.june-certs/${DOMAIN}-wildcard-tls-backup.yaml"
     echo ""
     echo "📊 Status Check:"
-    echo "  kubectl get pods -n june-services   # Core services"
-    echo "  kubectl get pods -n media            # LiveKit"
+    echo "  kubectl get pods -n june-services   # Core services & LiveKit"
     echo "  kubectl get gateway -n stunner       # STUNner"
     echo "  kubectl get certificates -n june-services # Certificates"
     echo ""
