@@ -57,11 +57,11 @@ class AppConfig:
             ),
             api_secret=os.getenv(
                 "LIVEKIT_API_SECRET",
-                "secret"
+                "bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ"  # Updated to match LiveKit server
             ),
             ws_url=os.getenv(
                 "LIVEKIT_WS_URL",
-                "wss://livekit.ozzu.world"  # ← FIXED: Use correct external URL
+                "wss://livekit.ozzu.world"  # Use correct external URL
             )
         )
 
