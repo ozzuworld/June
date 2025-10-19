@@ -74,10 +74,11 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (updated to include certificates phase)
+# Define installation phases (updated to include GPU phase)
 PHASES=(
     "01-prerequisites"
     "02-docker"
+    "02.5-gpu"
     "03-kubernetes"
     "04-infrastructure"
     "05-helm"
@@ -150,6 +151,11 @@ debug_info() {
     echo ""
     echo "Certificate backups:"
     ls -la /root/.june-certs/ 2>/dev/null || echo "No certificate backups found"
+    
+    echo ""
+    echo "GPU Information:"
+    lspci | grep -i nvidia 2>/dev/null || echo "No NVIDIA GPU found"
+    nvidia-smi 2>/dev/null || echo "nvidia-smi not available"
 }
 
 # Main execution function
@@ -257,6 +263,7 @@ show_usage() {
     echo "  $0 --skip 01-prerequisites     # Skip prerequisites"
     echo "  $0 --skip kubernetes docker    # Skip multiple phases"
     echo "  $0 --skip 06-certificates      # Skip certificate management"
+    echo "  $0 --skip 02.5-gpu             # Skip GPU installation"
 }
 
 # Check for help flag
