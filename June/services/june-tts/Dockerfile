@@ -37,29 +37,26 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install compatible NumPy FIRST (critical for PyTorch compatibility)
 RUN pip install --no-cache-dir "numpy<2.0"
 
-# Install PyTorch 2.1.2 with CUDA 11.8 support (fixes the transformers issue)
+# Install PyTorch 2.1.2 with CUDA 11.8 support
 RUN pip install --no-cache-dir torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
     --index-url https://download.pytorch.org/whl/cu118
 
-# Install compatible Pydantic v1 to avoid config conflicts
-RUN pip install --no-cache-dir "pydantic<2.0"
-
-# Install Coqui TTS
-RUN pip install --no-cache-dir coqui-tts==0.27.2
-
-# Install audio processing libraries for voice cloning
+# Install TTS and audio processing dependencies
 RUN pip install --no-cache-dir \
+    TTS==0.19.1 \
     librosa==0.10.1 \
     soundfile==0.12.1 \
-    scipy==1.11.0
+    scipy==1.11.0 \
+    numpy==1.24.3
 
 # Install web framework and LiveKit dependencies
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     python-multipart==0.0.6 \
-    requests==2.31.0 \
-    livekit==0.11.0
+    livekit==0.11.1 \
+    livekit-api==0.6.0 \
+    pydantic==2.5.0
 
 # Clean up
 RUN rm -rf /tmp/* /var/tmp/* /root/.cache
@@ -98,27 +95,22 @@ RUN useradd -m -u 1001 ttsuser
 WORKDIR /app
 RUN chown -R ttsuser:ttsuser /app
 
-# Copy application code
+# Copy application code (only the files that exist)
 COPY --chown=ttsuser:ttsuser main.py /app/
-COPY --chown=ttsuser:ttsuser livekit_participant.py /app/
 COPY --chown=ttsuser:ttsuser config.py /app/
+COPY --chown=ttsuser:ttsuser requirements.txt /app/
 
 # Switch to non-root user
 USER ttsuser
 
-# Create directories for voice cloning
-RUN mkdir -p /app/models /app/cache /app/voices
+# Create directories for TTS models and cache
+RUN mkdir -p /app/models /app/cache
 
 # Set TTS environment variables
 ENV TTS_CACHE_PATH=/app/cache
 ENV TTS_HOME=/app/models
-ENV VOICES_DIR=/app/voices
 ENV COQUI_TOS_AGREED=1
-
-# Voice cloning configuration
-ENV MAX_VOICE_FILES=10
-ENV MAX_VOICE_DURATION=300
-ENV MIN_VOICE_DURATION=6.0
+ENV PORT=8000
 
 # Expose port
 EXPOSE 8000
