@@ -16,12 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from livekit import rtc
+from livekit_token import connect_room_as_publisher
 from TTS.api import TTS
 import numpy as np
 import soundfile as sf
 
 from config import config
-from livekit_token import connect_room_as_publisher
 
 # Accept Coqui TTS license
 os.environ['COQUI_TOS_AGREED'] = '1'
