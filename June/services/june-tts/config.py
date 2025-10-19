@@ -1,52 +1,33 @@
-# June/services/june-tts/config.py
+#!/usr/bin/env python3
 """
-Configuration module for June TTS Service
+Configuration for June TTS Service
 """
 import os
-from dataclasses import dataclass
-from typing import Optional
 
-
-@dataclass
 class Config:
     """TTS Service Configuration"""
     
-    # LiveKit Configuration
-    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "")
-    LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "")
-    LIVEKIT_WS_URL: str = os.getenv("LIVEKIT_WS_URL", "wss://ozzu-livekit-serverless-5rbtbahf4a-ue.a.run.app")
-    
-    # TTS Configuration
-    TTS_DEVICE: str = os.getenv("TTS_DEVICE", "auto")  # auto, cpu, cuda
-    TTS_CACHE_DIR: str = os.getenv("TTS_CACHE_DIR", "/app/cache")
-    VOICES_DIR: str = os.getenv("VOICES_DIR", "/app/voices")
-    
-    # Service Configuration
-    SERVICE_PORT: int = int(os.getenv("SERVICE_PORT", "8000"))
-    SERVICE_HOST: str = os.getenv("SERVICE_HOST", "0.0.0.0")
+    # Server
+    PORT: int = int(os.getenv("PORT", "8000"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     
-    # Voice Cloning Limits
-    MAX_VOICE_FILES: int = int(os.getenv("MAX_VOICE_FILES", "10"))
-    MAX_VOICE_DURATION: int = int(os.getenv("MAX_VOICE_DURATION", "300"))  # seconds
-    MIN_VOICE_DURATION: float = float(os.getenv("MIN_VOICE_DURATION", "6.0"))  # seconds
+    # TTS Configuration
+    TTS_MODEL: str = os.getenv("TTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+    TTS_DEVICE: str = os.getenv("TTS_DEVICE", "auto")  # auto, cuda, cpu
     
-    # Audio Processing
-    TARGET_SAMPLE_RATE: int = 24000
-    SUPPORTED_AUDIO_FORMATS: tuple = ('.wav', '.mp3', '.flac', '.m4a', '.mp4')
+    # LiveKit Configuration (Internal Kubernetes URLs)
+    LIVEKIT_WS_URL: str = os.getenv(
+        "LIVEKIT_WS_URL", 
+        "ws://livekit-livekit-server:80"
+    )
+    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "devkey")
+    LIVEKIT_API_SECRET: str = os.getenv(
+        "LIVEKIT_API_SECRET", 
+        "secret"
+    )
     
-    def __post_init__(self):
-        """Validate configuration after initialization"""
-        if not self.LIVEKIT_API_KEY:
-            print("Warning: LIVEKIT_API_KEY not set")
-        if not self.LIVEKIT_API_SECRET:
-            print("Warning: LIVEKIT_API_SECRET not set")
+    # Audio Configuration
+    SAMPLE_RATE: int = 24000
+    CHANNELS: int = 1
     
-    @property
-    def is_livekit_configured(self) -> bool:
-        """Check if LiveKit is properly configured"""
-        return bool(self.LIVEKIT_API_KEY and self.LIVEKIT_API_SECRET and self.LIVEKIT_WS_URL)
-
-
-# Global config instance
 config = Config()
