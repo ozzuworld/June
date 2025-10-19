@@ -56,6 +56,7 @@ export POSTGRESQL_PASSWORD
 export KEYCLOAK_ADMIN_PASSWORD
 export TURN_USERNAME
 export STUNNER_PASSWORD
+export GPU_TIMESLICING_REPLICAS
 
 # Validate required variables
 REQUIRED_VARS=(
@@ -74,11 +75,12 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (updated to include GPU phase)
+# Define installation phases (GPU + Operator)
 PHASES=(
     "01-prerequisites"
     "02-docker"
     "02.5-gpu"
+    "03-gpu-operator"
     "03-kubernetes"
     "04-infrastructure"
     "05-helm"
@@ -263,7 +265,8 @@ show_usage() {
     echo "  $0 --skip 01-prerequisites     # Skip prerequisites"
     echo "  $0 --skip kubernetes docker    # Skip multiple phases"
     echo "  $0 --skip 06-certificates      # Skip certificate management"
-    echo "  $0 --skip 02.5-gpu             # Skip GPU installation"
+    echo "  $0 --skip 02.5-gpu             # Skip GPU driver/runtime"
+    echo "  $0 --skip 03-gpu-operator      # Skip GPU Operator/time-slicing"
 }
 
 # Check for help flag
