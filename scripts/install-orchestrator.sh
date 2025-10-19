@@ -75,13 +75,13 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (GPU + Operator)
+# Define installation phases (ordered explicitly)
 PHASES=(
     "01-prerequisites"
     "02-docker"
     "02.5-gpu"
-    "03-gpu-operator"
     "03-kubernetes"
+    "03.5-gpu-operator"
     "04-infrastructure"
     "05-helm"
     "06-certificates"
@@ -266,7 +266,7 @@ show_usage() {
     echo "  $0 --skip kubernetes docker    # Skip multiple phases"
     echo "  $0 --skip 06-certificates      # Skip certificate management"
     echo "  $0 --skip 02.5-gpu             # Skip GPU driver/runtime"
-    echo "  $0 --skip 03-gpu-operator      # Skip GPU Operator/time-slicing"
+    echo "  $0 --skip 03.5-gpu-operator    # Skip GPU Operator/time-slicing"
 }
 
 # Check for help flag
