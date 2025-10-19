@@ -8,7 +8,6 @@ import torch
 import logging
 import tempfile
 import asyncio
-from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -16,12 +15,13 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from livekit import rtc, api
+from livekit import rtc
 from TTS.api import TTS
 import numpy as np
 import soundfile as sf
 
 from config import config
+from livekit_token import connect_room_as_publisher
 
 # Accept Coqui TTS license
 os.environ['COQUI_TOS_AGREED'] = '1'
@@ -56,29 +56,11 @@ async def join_livekit_room():
     global tts_room, audio_source, room_connected
     
     try:
-        logger.info("🔊 TTS connecting to LiveKit room: ozzu-main")
+        logger.info("🔊 TTS connecting to LiveKit room via orchestrator token")
         
-        # Generate access token
-        token = api.AccessToken(
-            api_key=config.LIVEKIT_API_KEY,
-            api_secret=config.LIVEKIT_API_SECRET
-        )
-        token.with_identity("june-tts")
-        token.with_name("TTS Service")
-        token.with_grants(
-            api.VideoGrants(
-                room_join=True,
-                room="ozzu-main",
-                can_publish=True,      # Publish audio responses
-                can_subscribe=False,   # Don't need to listen
-                can_publish_data=True  # Can send data messages
-            )
-        )
-        
-        access_token = token.to_jwt()
-        
-        # Connect to room
+        # Connect to room using orchestrator-minted token
         tts_room = rtc.Room()
+        await connect_room_as_publisher(tts_room, "june-tts")
         
         # Set up event handlers
         @tts_room.on("participant_connected")
@@ -88,9 +70,6 @@ async def join_livekit_room():
         @tts_room.on("participant_disconnected")
         def on_participant_disconnected(participant):
             logger.info(f"👋 Participant left room: {participant.identity}")
-        
-        # Connect
-        await tts_room.connect(config.LIVEKIT_WS_URL, access_token)
         
         # Create audio source for publishing
         audio_source = rtc.AudioSource(
@@ -106,7 +85,7 @@ async def join_livekit_room():
         await tts_room.local_participant.publish_track(track, options)
         
         room_connected = True
-        logger.info("✅ TTS connected to ozzu-main room")
+        logger.info("✅ TTS connected to ozzu-main room (token via orchestrator)")
         logger.info("🎤 TTS audio track published and ready")
         
     except Exception as e:
@@ -152,29 +131,22 @@ async def publish_audio_to_room(audio_data: bytes):
             for i in range(0, len(audio_array), frame_samples):
                 chunk = audio_array[i:i + frame_samples]
                 
-                # Pad last chunk if needed
                 if len(chunk) < frame_samples:
                     chunk = np.pad(chunk, (0, frame_samples - len(chunk)))
                 
-                # Create audio frame
                 frame = rtc.AudioFrame(
                     data=chunk.tobytes(),
                     sample_rate=24000,
                     num_channels=1,
                     samples_per_channel=len(chunk)
                 )
-                
-                # Publish frame
                 await audio_source.capture_frame(frame)
-                
-                # Real-time delay
                 await asyncio.sleep(len(chunk) / 24000)
             
             logger.info("✅ Audio published to room successfully")
             return True
             
         finally:
-            # Cleanup
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
                 
@@ -189,7 +161,6 @@ async def lifespan(app: FastAPI):
     
     logger.info(f"🚀 Starting June TTS Service on device: {device}")
     
-    # Initialize TTS model
     try:
         logger.info("Loading XTTS-v2 model...")
         tts_instance = TTS(
@@ -200,17 +171,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ TTS initialization failed: {e}")
     
-    # Connect to LiveKit room
     await join_livekit_room()
     
     yield
     
-    # Cleanup on shutdown
     logger.info("🛑 Shutting down TTS service")
     if tts_room and room_connected:
         await tts_room.disconnect()
 
-# FastAPI app
 app = FastAPI(
     title="June TTS Service",
     version="2.0.0",
@@ -247,15 +215,12 @@ async def health():
         "device": device
     }
 
-# Direct synthesis endpoint (returns audio file)
 @app.post("/synthesize")
 async def synthesize_audio(request: TTSRequest):
-    """Synthesize text to audio file (direct download)"""
     if not tts_instance:
         raise HTTPException(status_code=503, detail="TTS model not ready")
     
     try:
-        # Generate audio
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
         
@@ -269,11 +234,8 @@ async def synthesize_audio(request: TTSRequest):
             speed=request.speed
         )
         
-        # Read and return audio
         with open(output_path, "rb") as f:
             audio_bytes = f.read()
-        
-        # Cleanup
         os.unlink(output_path)
         
         return Response(
@@ -286,21 +248,17 @@ async def synthesize_audio(request: TTSRequest):
         logger.error(f"❌ Synthesis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Publish to room endpoint (called by orchestrator)
 @app.post("/publish-to-room")
 async def publish_to_room(
     request: PublishToRoomRequest,
     background_tasks: BackgroundTasks
 ):
-    """Synthesize text and publish to LiveKit room"""
     if not tts_instance:
         raise HTTPException(status_code=503, detail="TTS model not ready")
-    
     if not room_connected:
         raise HTTPException(status_code=503, detail="Not connected to LiveKit room")
     
     try:
-        # Generate audio
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
         
@@ -314,14 +272,10 @@ async def publish_to_room(
             speed=request.speed
         )
         
-        # Read audio data
         with open(output_path, "rb") as f:
             audio_bytes = f.read()
-        
-        # Cleanup temp file
         os.unlink(output_path)
         
-        # Publish to room (background task for non-blocking response)
         background_tasks.add_task(publish_audio_to_room, audio_bytes)
         
         return {
@@ -337,7 +291,6 @@ async def publish_to_room(
 
 @app.get("/speakers")
 async def get_speakers():
-    """Get available built-in speakers"""
     return {
         "speakers": [
             "Claribel Dervla", "Daisy Studious", "Gracie Wise",
