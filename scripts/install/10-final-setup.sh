@@ -147,16 +147,29 @@ run_system_health_check() {
         fi
     done
     
-    # Check critical pods are running
+    # Check critical pods are running - FIXED arithmetic error
     local critical_pods=0
     local total_pods=0
     
     for ns in "${namespaces[@]}"; do
         if kubectl get namespace "$ns" &>/dev/null; then
-            local pod_count
-            pod_count=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)
-            local running_count
-            running_count=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+            # Get pod counts safely
+            local pod_count_line running_count_line
+            pod_count_line=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l || echo "0")
+            running_count_line=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | grep -c "Running" 2>/dev/null || echo "0")
+            
+            # Ensure we have valid integers
+            local pod_count running_count
+            pod_count=${pod_count_line//[^0-9]/}
+            running_count=${running_count_line//[^0-9]/}
+            
+            # Default to 0 if empty or invalid
+            pod_count=${pod_count:-0}
+            running_count=${running_count:-0}
+            
+            # Validate they are actual numbers
+            if ! [[ "$pod_count" =~ ^[0-9]+$ ]]; then pod_count=0; fi
+            if ! [[ "$running_count" =~ ^[0-9]+$ ]]; then running_count=0; fi
             
             total_pods=$((total_pods + pod_count))
             critical_pods=$((critical_pods + running_count))
@@ -167,6 +180,7 @@ run_system_health_check() {
         fi
     done
     
+    # Safe arithmetic comparison
     if [ "$total_pods" -gt 0 ] && [ "$critical_pods" -eq "$total_pods" ]; then
         success "All pods are running ($critical_pods/$total_pods)"
     else
