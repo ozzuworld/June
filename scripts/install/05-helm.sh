@@ -9,6 +9,16 @@ source "$(dirname "$0")/../common/validation.sh"
 
 ROOT_DIR="${1:-$(dirname $(dirname $(dirname $0)))}"
 
+cleanup_stale_nvidia_repo() {
+    # Defensive: remove stale NVIDIA repo entries that can break apt on Ubuntu Noble
+    if [ -f /etc/apt/sources.list.d/nvidia-container-toolkit.list ]; then
+        if ! grep -q 'https://nvidia.github.io/libnvidia-container/stable/deb/ubuntu noble' /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null; then
+            warn "Removing stale NVIDIA repo causing apt failures..."
+            rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        fi
+    fi
+}
+
 install_helm() {
     log "Phase 5/9: Installing Helm..."
     
@@ -20,6 +30,9 @@ install_helm() {
     fi
     
     log "Downloading and installing Helm..."
+    
+    # Defensive cleanup of stale repos that could break curl/apt in this phase
+    cleanup_stale_nvidia_repo
     
     # Download and install Helm using the official script
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
