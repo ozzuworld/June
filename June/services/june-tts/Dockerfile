@@ -41,22 +41,10 @@ RUN pip install --no-cache-dir "numpy<2.0"
 RUN pip install --no-cache-dir torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
     --index-url https://download.pytorch.org/whl/cu118
 
-# Install TTS and audio processing dependencies
-RUN pip install --no-cache-dir \
-    TTS==0.19.1 \
-    librosa==0.10.1 \
-    soundfile==0.12.1 \
-    scipy==1.11.0 \
-    numpy==1.24.3
-
-# Install web framework and LiveKit dependencies
-RUN pip install --no-cache-dir \
-    fastapi==0.104.1 \
-    uvicorn[standard]==0.24.0 \
-    python-multipart==0.0.6 \
-    livekit==0.11.1 \
-    livekit-api==0.6.0 \
-    pydantic==2.5.0
+# Use requirements.txt to ensure single source of truth
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Clean up
 RUN rm -rf /tmp/* /var/tmp/* /root/.cache
