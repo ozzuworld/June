@@ -47,16 +47,19 @@ RUN pip install --no-cache-dir "pydantic<2.0"
 # Install Coqui TTS
 RUN pip install --no-cache-dir coqui-tts==0.27.2
 
-# Install additional libraries with compatible versions
+# Install audio processing libraries for voice cloning
+RUN pip install --no-cache-dir \
+    librosa==0.10.1 \
+    soundfile==0.12.1 \
+    scipy==1.11.0
+
+# Install web framework and LiveKit dependencies
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
-    librosa==0.10.1 \
-    soundfile==0.12.1 \
+    python-multipart==0.0.6 \
     requests==2.31.0 \
-    python-multipart==0.0.6\
-    livekit==0.11.0\
-    scipy==1.11.0
+    livekit==0.11.0
 
 # Clean up
 RUN rm -rf /tmp/* /var/tmp/* /root/.cache
@@ -97,23 +100,32 @@ RUN chown -R ttsuser:ttsuser /app
 
 # Copy application code
 COPY --chown=ttsuser:ttsuser main.py /app/
+COPY --chown=ttsuser:ttsuser livekit_participant.py /app/
+COPY --chown=ttsuser:ttsuser config.py /app/
 
 # Switch to non-root user
 USER ttsuser
 
-# Create directories
-RUN mkdir -p /app/models /app/cache
+# Create directories for voice cloning
+RUN mkdir -p /app/models /app/cache /app/voices
 
 # Set TTS environment variables
 ENV TTS_CACHE_PATH=/app/cache
 ENV TTS_HOME=/app/models
+ENV VOICES_DIR=/app/voices
+ENV COQUI_TOS_AGREED=1
+
+# Voice cloning configuration
+ENV MAX_VOICE_FILES=10
+ENV MAX_VOICE_DURATION=300
+ENV MIN_VOICE_DURATION=6.0
 
 # Expose port
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8000/healthz || exit 1
 
 # Start command
 CMD ["python", "main.py"]
