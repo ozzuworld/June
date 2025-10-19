@@ -99,20 +99,55 @@ install_nvidia_drivers() {
 install_nvidia_container_toolkit() {
     log "Installing NVIDIA Container Toolkit for Kubernetes..."
     
-    # Add NVIDIA repository
+    # Add NVIDIA repository with proper Ubuntu 24.04 support
     log "Adding NVIDIA repository..."
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
     
-    # Add repository source
+    # Get OS information and determine correct repository path
     . /etc/os-release
-    echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/${ID}${VERSION_ID} /" > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    
+    # Handle Ubuntu 24.04 Noble specifically
+    local repo_path
+    if [ "$ID" = "ubuntu" ] && [ "$VERSION_ID" = "24.04" ]; then
+        repo_path="ubuntu noble"
+        log "Detected Ubuntu 24.04 Noble - using noble codename"
+    elif [ "$ID" = "ubuntu" ] && [ -n "$VERSION_CODENAME" ]; then
+        repo_path="ubuntu $VERSION_CODENAME"
+        log "Using Ubuntu codename: $VERSION_CODENAME"
+    else
+        # Fallback for other distributions
+        repo_path="${ID}${VERSION_ID}"
+        log "Using distribution path: $repo_path"
+    fi
+    
+    # Add repository source
+    cat > /etc/apt/sources.list.d/nvidia-container-toolkit.list <<EOF
+deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/$repo_path /
+EOF
     
     # Update package list
-    apt-get update -qq
+    log "Updating package list with NVIDIA repository..."
+    if ! apt-get update -qq; then
+        warn "Package list update failed, trying with verbose output..."
+        apt-get update
+    fi
     
     # Install NVIDIA Container Toolkit
     log "Installing NVIDIA Container Toolkit..."
-    apt-get install -y nvidia-container-toolkit
+    if ! apt-get install -y nvidia-container-toolkit; then
+        # Fallback: try different repository format
+        warn "Installation failed, trying alternative repository format..."
+        
+        # Remove existing repo and try ubuntu/bionic format (more widely supported)
+        rm -f /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        
+        cat > /etc/apt/sources.list.d/nvidia-container-toolkit.list <<EOF
+deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/ubuntu bionic main
+EOF
+        
+        apt-get update -qq
+        apt-get install -y nvidia-container-toolkit
+    fi
     
     # Configure Docker runtime
     log "Configuring Docker to use NVIDIA runtime..."
@@ -146,7 +181,8 @@ verify_gpu_setup() {
         success "nvidia-smi working correctly"
         nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
     else
-        error "nvidia-smi not working after installation"
+        warn "nvidia-smi not working - may need reboot to activate drivers"
+        return 1
     fi
     
     # Test Docker GPU access
@@ -155,21 +191,52 @@ verify_gpu_setup() {
         success "Docker can access GPU successfully"
     else
         warn "Docker GPU access test failed - may need reboot"
+        return 1
     fi
     
-    # Check Kubernetes can see GPU
-    log "Checking Kubernetes GPU detection..."
-    sleep 10  # Wait for device plugin to register GPUs
-    
-    local gpu_nodes
-    gpu_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.capacity."nvidia.com/gpu" != null) | .metadata.name' 2>/dev/null || echo "")
-    
-    if [ -n "$gpu_nodes" ]; then
-        success "Kubernetes detected GPU on nodes: $gpu_nodes"
-        kubectl get nodes -o json | jq '.items[] | {name: .metadata.name, gpus: .status.capacity."nvidia.com/gpu"}' 2>/dev/null || true
-    else
-        warn "Kubernetes has not detected GPUs yet - may need time or reboot"
+    # Check Kubernetes can see GPU (if cluster is ready)
+    if command -v kubectl &>/dev/null && kubectl cluster-info &>/dev/null; then
+        log "Checking Kubernetes GPU detection..."
+        sleep 10  # Wait for device plugin to register GPUs
+        
+        local gpu_nodes
+        gpu_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.status.capacity."nvidia.com/gpu" != null) | .metadata.name' 2>/dev/null || echo "")
+        
+        if [ -n "$gpu_nodes" ]; then
+            success "Kubernetes detected GPU on nodes: $gpu_nodes"
+            kubectl get nodes -o json | jq '.items[] | {name: .metadata.name, gpus: .status.capacity."nvidia.com/gpu"}' 2>/dev/null || true
+        else
+            log "Kubernetes has not detected GPUs yet - normal if cluster not ready"
+        fi
     fi
+    
+    return 0
+}
+
+handle_reboot_requirement() {
+    log "Checking if reboot is required..."
+    
+    # Check if drivers are loaded but nvidia-smi doesn't work
+    if lsmod | grep -q nvidia && ! nvidia-smi &>/dev/null; then
+        warn "NVIDIA drivers loaded but not functional - reboot required"
+        return 1
+    fi
+    
+    # Check if needrestart indicates kernel upgrade
+    if command -v needrestart &>/dev/null; then
+        if needrestart -k 2>/dev/null | grep -q "Pending kernel upgrade"; then
+            warn "Kernel upgrade detected - reboot recommended"
+            return 1
+        fi
+    fi
+    
+    # Check if /var/run/reboot-required exists
+    if [ -f /var/run/reboot-required ]; then
+        warn "System indicates reboot required"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Main execution
@@ -189,11 +256,25 @@ main() {
     fi
     
     # Check if drivers are already working
-    if check_nvidia_driver_status; then
-        log "NVIDIA drivers already working, checking container toolkit..."
+    if check_nvidia_driver_status && verify_gpu_setup; then
+        log "NVIDIA drivers already working properly"
     else
         install_nvidia_drivers
-        log "NVIDIA drivers installed - system will need reboot to activate"
+        
+        # Check if reboot is needed after driver installation
+        if ! handle_reboot_requirement; then
+            warn "=================================================="
+            warn "REBOOT REQUIRED: NVIDIA drivers installed but not active"
+            warn "=================================================="
+            warn "Please reboot the system and re-run the installer:"
+            warn "  sudo reboot"
+            warn "After reboot:"
+            warn "  bash scripts/install-orchestrator.sh --skip 01-prerequisites 02-docker 02.5-gpu"
+            warn "=================================================="
+            
+            # Still try to install container toolkit for completeness
+            log "Installing container toolkit anyway (will be ready after reboot)..."
+        fi
     fi
     
     # Install container toolkit if Docker is available
@@ -212,12 +293,6 @@ main() {
     fi
     
     success "GPU setup phase completed"
-    
-    # Check if reboot is needed
-    if ! nvidia-smi &>/dev/null && lspci | grep -i nvidia | grep -i vga &>/dev/null; then
-        warn "GPU drivers installed but not active - system reboot recommended"
-        warn "You may want to reboot and re-run the installation to enable GPU services"
-    fi
 }
 
 main "$@"
