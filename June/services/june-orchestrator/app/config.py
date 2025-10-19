@@ -40,11 +40,11 @@ class AppConfig:
         return ServiceConfig(
             tts_base_url=os.getenv(
                 "TTS_SERVICE_URL",
-                "http://june-tts.june-services.svc.cluster.local:8000"
+                "http://june-tts:8000"
             ),
             stt_base_url=os.getenv(
                 "STT_SERVICE_URL",
-                "http://june-stt.june-services.svc.cluster.local:8080"
+                "http://june-stt:8080"
             ),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "")
         )
@@ -57,11 +57,11 @@ class AppConfig:
             ),
             api_secret=os.getenv(
                 "LIVEKIT_API_SECRET",
-                "bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ"  # Updated to match LiveKit server
+                "secret"
             ),
             ws_url=os.getenv(
                 "LIVEKIT_WS_URL",
-                "wss://livekit.ozzu.world"  # Use correct external URL
+                "ws://livekit-livekit-server:80"  # Internal Kubernetes URL
             )
         )
 
