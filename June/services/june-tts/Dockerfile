@@ -54,7 +54,9 @@ RUN pip install --no-cache-dir \
     librosa==0.10.1 \
     soundfile==0.12.1 \
     requests==2.31.0 \
-    python-multipart==0.0.6
+    python-multipart==0.0.6\
+    livekit==0.11.0\
+    scipy==1.11.0
 
 # Clean up
 RUN rm -rf /tmp/* /var/tmp/* /root/.cache

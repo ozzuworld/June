@@ -4,6 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from .routes.webhooks import router as webhooks_router
+
+
 
 from .config import config
 from .routes import (
@@ -13,6 +16,8 @@ from .routes import (
     ai_router,
     health_router
 )
+
+app.include_router(webhooks_router, tags=["Webhooks"])
 
 logging.basicConfig(
     level=getattr(logging, config.log_level),
