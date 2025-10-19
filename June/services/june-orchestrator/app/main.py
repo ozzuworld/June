@@ -63,7 +63,8 @@ app.add_middleware(
 
 # Register routes
 app.include_router(webhooks_router, tags=["Webhooks"])
-app.include_router(livekit_router, prefix="/api/livekit", tags=["LiveKit"])  # token route
+# Fixed: Remove duplicate prefix since livekit_router already has prefix="/api/livekit"
+app.include_router(livekit_router, tags=["LiveKit"])
 
 
 @app.get("/")
