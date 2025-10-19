@@ -36,6 +36,10 @@ service:
       port: 80
       targetPort: 7880
       protocol: TCP
+    - name: websocket
+      port: 7880
+      targetPort: 7880
+      protocol: TCP
     - name: ice-tcp
       port: 7881
       targetPort: 7881
