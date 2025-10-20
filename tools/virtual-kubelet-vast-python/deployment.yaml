@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virtual-kubelet-vast-python
+  namespace: kube-system
+  labels:
+    app: virtual-kubelet-vast-python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: virtual-kubelet-vast-python
+  template:
+    metadata:
+      labels:
+        app: virtual-kubelet-vast-python
+    spec:
+      serviceAccountName: virtual-kubelet-vast
+      tolerations:
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 300
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 300
+      containers:
+      - name: virtual-kubelet
+        image: ozzuworld/virtual-kubelet-vast-python:latest
+        imagePullPolicy: Always
+        env:
+        - name: NODE_NAME
+          value: "vast-gpu-node-python" 
+        - name: VAST_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vast-api-secret
+              key: api-key
+        ports:
+        - containerPort: 10255
+          name: http
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10255
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 10255
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: virtual-kubelet-vast-python
+  namespace: kube-system
+  labels:
+    app: virtual-kubelet-vast-python
+spec:
+  ports:
+  - port: 10255
+    targetPort: 10255
+    protocol: TCP
+    name: http
+  selector:
+    app: virtual-kubelet-vast-python
