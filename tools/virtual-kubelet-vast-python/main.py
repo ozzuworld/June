@@ -76,27 +76,44 @@ class VastAIClient:
             return False
     
     async def search_instances(self, gpu_type: str = "RTX3060") -> List[Dict]:
-        """Search for available instances"""
+        """Search for available instances using correct Vast.ai API"""
         logger.info("Searching for Vast.ai instances", gpu_type=gpu_type)
         
         if not self.session:
             raise RuntimeError("Client session not initialized")
             
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        params = {
-            "verified": "true",
-            "rentable": "true",
-            "gpu_name": gpu_type,
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Correct search body format for Vast.ai API
+        search_body = {
+            "q": {
+                "verified": {},
+                "rentable": {},
+                "gpu_name": gpu_type.replace(" ", "_"),  # RTX_3060 format
+                "rented": False
+            },
+            "order": [["score", "desc"]],
+            "type": "on-demand"
         }
         
         try:
-            async with self.session.get(f"{self.base_url}/bundles", headers=headers, params=params) as resp:
+            # Use correct PUT endpoint for search
+            async with self.session.put(f"{self.base_url}/search/asks/", 
+                                        headers=headers, 
+                                        json=search_body) as resp:
                 if resp.status == 200:
-                    offers = await resp.json()
-                    logger.info("Found Vast.ai offers", count=len(offers.get("offers", [])))
-                    return offers.get("offers", [])
+                    result = await resp.json()
+                    offers = result.get("offers", [])
+                    logger.info("Found Vast.ai offers", count=len(offers))
+                    return offers
                 else:
-                    logger.error("Failed to search instances", status_code=resp.status)
+                    response_text = await resp.text()
+                    logger.error("Failed to search instances", 
+                                status_code=resp.status, 
+                                response=response_text)
                     return []
         except Exception as e:
             logger.error("Error searching instances", error=str(e))
