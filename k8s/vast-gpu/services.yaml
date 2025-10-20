@@ -1,0 +1,69 @@
+# Services for GPU components with automatic endpoint management
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: default
+  labels:
+    app: june-gpu-services
+    service: stt
+  annotations:
+    vast.ai/managed: "true"
+    virtual-kubelet.io/endpoint-managed: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: stt-api
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  sessionAffinity: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: default
+  labels:
+    app: june-gpu-services
+    service: tts
+  annotations:
+    vast.ai/managed: "true"
+    virtual-kubelet.io/endpoint-managed: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: tts-api
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  sessionAffinity: None
+---
+# Headless service for direct pod access if needed
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-gpu-services-headless
+  namespace: default
+  labels:
+    app: june-gpu-services
+  annotations:
+    vast.ai/managed: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: stt-api
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  - name: tts-api
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
