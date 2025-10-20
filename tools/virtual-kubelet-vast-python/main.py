@@ -11,7 +11,7 @@ import os
 import signal
 import sys
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import structlog
 from aiohttp import web, ClientSession
@@ -74,63 +74,29 @@ class VastAIClient:
         except Exception as e:
             logger.error("Vast.ai API connection error", error=str(e))
             return False
-    
-    async def search_instances(self, gpu_type: str = "RTX3060") -> List[Dict]:
-        """Search for available instances using correct Vast.ai API"""
-        logger.info("Searching for Vast.ai instances", gpu_type=gpu_type)
-        
+
+    async def search_offers(self, q: Dict, order: List[List[str]] = None, offer_type: str = "on-demand") -> List[Dict]:
+        """Generic search offers helper using PUT /search/asks/"""
         if not self.session:
             raise RuntimeError("Client session not initialized")
-            
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
-        # Correct search body format for Vast.ai API
-        search_body = {
-            "q": {
-                "verified": {},
-                "rentable": {},
-                "gpu_name": gpu_type.replace(" ", "_"),  # RTX_3060 format
-                "rented": False
-            },
-            "order": [["score", "desc"]],
-            "type": "on-demand"
-        }
-        
+        body = {"q": q, "order": order or [["dph_total", "asc"]], "type": offer_type}
         try:
-            # Use correct PUT endpoint for search
-            async with self.session.put(f"{self.base_url}/search/asks/", 
-                                        headers=headers, 
-                                        json=search_body) as resp:
+            async with self.session.put(f"{self.base_url}/search/asks/", headers=headers, json=body) as resp:
                 if resp.status == 200:
-                    result = await resp.json()
-                    offers = result.get("offers", [])
-                    logger.info("Found Vast.ai offers", count=len(offers))
-                    return offers
+                    data = await resp.json()
+                    return data.get("offers", [])
                 else:
-                    response_text = await resp.text()
-                    logger.error("Failed to search instances", 
-                                status_code=resp.status, 
-                                response=response_text)
+                    txt = await resp.text()
+                    logger.error("search_offers failed", status_code=resp.status, response=txt)
                     return []
         except Exception as e:
-            logger.error("Error searching instances", error=str(e))
+            logger.error("search_offers exception", error=str(e))
             return []
-    
-    async def create_instance(self, offer_id: str, pod: V1Pod) -> Optional[Dict]:
-        """Create a new instance from an offer"""
-        logger.info("Creating Vast.ai instance", offer_id=offer_id, pod_name=pod.metadata.name)
-        
-        # This would make the actual API call to create an instance
-        # For now, return a mock instance
-        return {
-            "id": f"mock_instance_{offer_id}",
-            "status": "running",
-            "public_ip": "203.0.113.1",
-            "ssh_port": 22,
-        }
 
 
 class VirtualKubelet:
@@ -173,7 +139,51 @@ class VirtualKubelet:
         except Exception as e:
             logger.error("Failed to initialize Virtual Kubelet", error=str(e))
             raise
-    
+
+    def _parse_annotations(self, pod: V1Pod) -> Tuple[List[str], Optional[float], Optional[str]]:
+        ann = pod.metadata.annotations or {}
+        primary = ann.get("vast.ai/gpu-type", "RTX 3060").strip()
+        fallbacks = ann.get("vast.ai/gpu-fallbacks", "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000")
+        fallback_list = [primary] + [g.strip() for g in fallbacks.split(",") if g.strip()]
+        price_max = ann.get("vast.ai/price-max")
+        region = ann.get("vast.ai/region")  # free-text, e.g. "North America" or country code
+        return fallback_list, float(price_max) if price_max else None, region
+
+    async def _find_offer(self, vast: VastAIClient, gpu_names: List[str], price_max: Optional[float], region: Optional[str]) -> Optional[Dict]:
+        # Try each desired gpu_name in order
+        for gpu in gpu_names:
+            # First attempt exact match
+            q: Dict = {
+                "rentable": {"eq": True},
+                "verified": {"eq": True},
+                "gpu_name": {"eq": gpu}
+            }
+            if price_max is not None:
+                q["dph_total"] = {"lte": price_max}
+            offers = await vast.search_offers(q)
+            # If region provided, filter results by string containment
+            if region:
+                offers = [o for o in offers if region.lower() in str(o.get("geolocation", "")).lower()]
+            logger.info("search result", gpu_name=gpu, count=len(offers))
+            if offers:
+                return offers[0]
+
+            # Second attempt: fuzzy contains (like) on gpu_name
+            q = {
+                "rentable": {"eq": True},
+                "verified": {"eq": True},
+                "gpu_name": {"like": gpu.replace("_", " ")}
+            }
+            if price_max is not None:
+                q["dph_total"] = {"lte": price_max}
+            offers = await vast.search_offers(q)
+            if region:
+                offers = [o for o in offers if region.lower() in str(o.get("geolocation", "")).lower()]
+            logger.info("fuzzy search result", gpu_name=gpu, count=len(offers))
+            if offers:
+                return offers[0]
+        return None
+
     async def register_node(self):
         """Register the virtual node with Kubernetes"""
         logger.info("Registering virtual node", node_name=self.node_name)
@@ -258,10 +268,7 @@ class VirtualKubelet:
     async def update_node_status(self):
         """Update node status to show it's ready"""
         try:
-            # Get current node
             current_node = self.k8s_client.read_node(name=self.node_name)
-            
-            # Update the Ready condition with current timestamp
             current_node.status.conditions = [
                 client.V1NodeCondition(
                     type="Ready",
@@ -296,50 +303,31 @@ class VirtualKubelet:
                     last_transition_time=datetime.now(timezone.utc)
                 )
             ]
-            
-            # Update node status
-            self.k8s_client.patch_node_status(
-                name=self.node_name,
-                body=current_node
-            )
-            
+            self.k8s_client.patch_node_status(name=self.node_name, body=current_node)
             logger.debug("Node status updated successfully")
-            
         except Exception as e:
             logger.error("Failed to update node status", error=str(e))
     
     async def heartbeat_loop(self):
         """Periodic heartbeat to update node status"""
         logger.info("Starting node heartbeat loop")
-        
         while self.running:
             try:
                 await self.update_node_status()
-                await asyncio.sleep(30)  # Update every 30 seconds
+                await asyncio.sleep(30)
             except Exception as e:
                 logger.error("Error in heartbeat loop", error=str(e))
-                await asyncio.sleep(5)  # Short delay before retry
+                await asyncio.sleep(5)
     
     async def watch_pods(self):
         """Watch for pods scheduled to this node"""
         logger.info("Starting pod watcher", node_name=self.node_name)
-        
         w = watch.Watch()
         try:
-            for event in w.stream(
-                self.k8s_client.list_pod_for_all_namespaces,
-                field_selector=f"spec.nodeName={self.node_name}"
-            ):
+            for event in w.stream(self.k8s_client.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}"):
                 event_type = event['type']
                 pod = event['object']
-                
-                logger.info(
-                    "Pod event received",
-                    event_type=event_type,
-                    pod_name=pod.metadata.name,
-                    namespace=pod.metadata.namespace
-                )
-                
+                logger.info("Pod event received", event_type=event_type, pod_name=pod.metadata.name, namespace=pod.metadata.namespace)
                 try:
                     if event_type == "ADDED":
                         await self.create_pod(pod)
@@ -347,15 +335,8 @@ class VirtualKubelet:
                         await self.delete_pod(pod)
                     elif event_type == "MODIFIED":
                         await self.update_pod_status(pod)
-                        
                 except Exception as e:
-                    logger.error(
-                        "Error handling pod event",
-                        event_type=event_type,
-                        pod_name=pod.metadata.name,
-                        error=str(e)
-                    )
-                    
+                    logger.error("Error handling pod event", event_type=event_type, pod_name=pod.metadata.name, error=str(e))
         except Exception as e:
             logger.error("Error in pod watcher", error=str(e))
             raise
@@ -364,194 +345,109 @@ class VirtualKubelet:
         """Create a pod on Vast.ai"""
         pod_name = pod.metadata.name
         logger.info("Creating pod on Vast.ai", pod_name=pod_name)
-        
         try:
-            # Get GPU requirements from annotations
-            gpu_type = "RTX3060"
-            if pod.metadata.annotations:
-                gpu_type = pod.metadata.annotations.get("vast.ai/gpu-type", "RTX3060")
-            
+            gpu_list, price_max, region = self._parse_annotations(pod)
             async with VastAIClient(self.api_key) as vast:
-                # Search for available instances
-                offers = await vast.search_instances(gpu_type)
-                
-                if not offers:
-                    logger.error("No Vast.ai offers available", gpu_type=gpu_type)
+                offer = await self._find_offer(vast, gpu_list, price_max, region)
+                if not offer:
+                    logger.error("No matching Vast.ai offers after fallback", pod_name=pod_name, requested=gpu_list, price_max=price_max, region=region)
                     await self.update_pod_status_failed(pod, "No GPU instances available")
                     return
-                
-                # Select first available offer
-                offer = offers[0]
-                logger.info("Selected Vast.ai offer", offer_id=offer["id"])
-                
-                # Create instance
-                instance = await vast.create_instance(offer["id"], pod)
-                
-                if instance:
-                    # Store instance mapping
-                    self.pod_instances[pod_name] = instance
-                    logger.info("Pod created successfully", pod_name=pod_name, instance_id=instance["id"])
-                    
-                    # Update pod status to running
-                    await self.update_pod_status_running(pod, instance)
-                else:
-                    logger.error("Failed to create Vast.ai instance", pod_name=pod_name)
-                    await self.update_pod_status_failed(pod, "Failed to create instance")
-                    
+                instance = {
+                    "id": f"mock_instance_{offer['id']}",
+                    "status": "running",
+                    "public_ip": offer.get("public_ip", "203.0.113.1"),
+                    "ssh_port": 22,
+                    "offer": offer,
+                }
+                self.pod_instances[pod_name] = instance
+                logger.info("Selected Vast.ai offer", pod_name=pod_name, gpu=offer.get("gpu_name"), price=offer.get("dph_total"), location=offer.get("geolocation"), offer_id=offer.get("id"))
+                await self.update_pod_status_running(pod, instance)
         except Exception as e:
             logger.error("Error creating pod", pod_name=pod_name, error=str(e))
             await self.update_pod_status_failed(pod, str(e))
     
     async def delete_pod(self, pod: V1Pod):
-        """Delete a pod from Vast.ai"""
         pod_name = pod.metadata.name
         logger.info("Deleting pod from Vast.ai", pod_name=pod_name)
-        
         if pod_name in self.pod_instances:
             instance = self.pod_instances.pop(pod_name)
             logger.info("Pod instance removed", pod_name=pod_name, instance_id=instance["id"])
-            # TODO: Make API call to destroy Vast.ai instance
-    
+
     async def update_pod_status_running(self, pod: V1Pod, instance: Dict):
-        """Update pod status to running"""
         try:
-            # Create container statuses with safe image handling
             container_statuses = []
             for container in pod.spec.containers:
-                # Handle missing or None image field
                 image = container.image or "unknown:latest"
-                container_status = V1ContainerStatus(
+                container_statuses.append(V1ContainerStatus(
                     name=container.name,
                     image=image,
                     image_id=f"docker-pullable://{image}",
                     ready=True,
                     restart_count=0,
-                    state=client.V1ContainerState(
-                        running=client.V1ContainerStateRunning(
-                            started_at=datetime.now(timezone.utc)
-                        )
-                    )
-                )
-                container_statuses.append(container_status)
-                
+                    state=client.V1ContainerState(running=client.V1ContainerStateRunning(started_at=datetime.now(timezone.utc)))
+                ))
             pod_status = V1PodStatus(
                 phase="Running",
                 pod_ip=instance.get("public_ip"),
                 host_ip=instance.get("public_ip"),
                 start_time=datetime.now(timezone.utc),
                 conditions=[
-                    client.V1PodCondition(
-                        type="Initialized",
-                        status="True",
-                        last_transition_time=datetime.now(timezone.utc)
-                    ),
-                    client.V1PodCondition(
-                        type="Ready",
-                        status="True",
-                        last_transition_time=datetime.now(timezone.utc)
-                    ),
-                    client.V1PodCondition(
-                        type="ContainersReady",
-                        status="True",
-                        last_transition_time=datetime.now(timezone.utc)
-                    ),
-                    client.V1PodCondition(
-                        type="PodScheduled",
-                        status="True",
-                        last_transition_time=datetime.now(timezone.utc)
-                    )
+                    client.V1PodCondition(type="Initialized", status="True", last_transition_time=datetime.now(timezone.utc)),
+                    client.V1PodCondition(type="Ready", status="True", last_transition_time=datetime.now(timezone.utc)),
+                    client.V1PodCondition(type="ContainersReady", status="True", last_transition_time=datetime.now(timezone.utc)),
+                    client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc)),
                 ],
-                container_statuses=container_statuses
+                container_statuses=container_statuses,
             )
-            
-            # Update pod status
-            self.k8s_client.patch_namespaced_pod_status(
-                name=pod.metadata.name,
-                namespace=pod.metadata.namespace,
-                body=client.V1Pod(status=pod_status)
-            )
-            
+            self.k8s_client.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=client.V1Pod(status=pod_status))
             logger.info("Pod status updated to running", pod_name=pod.metadata.name)
-            
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
-    
+
     async def update_pod_status_failed(self, pod: V1Pod, reason: str):
-        """Update pod status to failed"""
         try:
             pod_status = V1PodStatus(
                 phase="Failed",
                 reason=reason,
                 message=f"Failed to create Vast.ai instance: {reason}",
                 start_time=datetime.now(timezone.utc),
-                conditions=[
-                    client.V1PodCondition(
-                        type="PodScheduled",
-                        status="True",
-                        last_transition_time=datetime.now(timezone.utc)
-                    )
-                ]
+                conditions=[client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc))],
             )
-            
-            self.k8s_client.patch_namespaced_pod_status(
-                name=pod.metadata.name,
-                namespace=pod.metadata.namespace,
-                body=client.V1Pod(status=pod_status)
-            )
-            
+            self.k8s_client.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=client.V1Pod(status=pod_status))
             logger.info("Pod status updated to failed", pod_name=pod.metadata.name, reason=reason)
-            
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
-    
+
     async def update_pod_status(self, pod: V1Pod):
-        """Handle pod status updates"""
-        # Check if we have an instance for this pod
         pod_name = pod.metadata.name
         if pod_name in self.pod_instances:
             instance = self.pod_instances[pod_name]
-            # Update status based on instance state
             await self.update_pod_status_running(pod, instance)
-    
+
     async def start_health_server(self):
-        """Start HTTP health check server"""
         async def healthz(request):
             return web.json_response({"status": "healthy", "node": self.node_name})
-        
         async def readyz(request):
             return web.json_response({"status": "ready", "node": self.node_name})
-        
         app = web.Application()
         app.router.add_get('/healthz', healthz)
         app.router.add_get('/readyz', readyz)
-        
         runner = web.AppRunner(app)
         await runner.setup()
-        
         site = web.TCPSite(runner, '0.0.0.0', 10255)
         await site.start()
-        
         logger.info("Health server started on port 10255")
     
     async def run(self):
-        """Main run loop"""
         self.running = True
         logger.info("Starting Virtual Kubelet")
-        
         try:
-            # Initialize everything
             await self.initialize()
-            
-            # Start health server
             await self.start_health_server()
-            
-            # Start heartbeat loop
             self._heartbeat_task = asyncio.create_task(self.heartbeat_loop())
             logger.info("Node heartbeat loop started")
-            
-            # Start pod watcher (this will block)
             await self.watch_pods()
-            
         except Exception as e:
             logger.error("Virtual Kubelet crashed", error=str(e))
             raise
@@ -560,7 +456,6 @@ class VirtualKubelet:
                 self._heartbeat_task.cancel()
     
     def stop(self):
-        """Stop the Virtual Kubelet"""
         logger.info("Stopping Virtual Kubelet")
         self.running = False
         if self._heartbeat_task:
@@ -568,27 +463,17 @@ class VirtualKubelet:
 
 
 async def main():
-    """Main entry point"""
-    # Get configuration from environment
     node_name = os.getenv("NODE_NAME", "vast-gpu-node-python")
     api_key = os.getenv("VAST_API_KEY")
-    
     if not api_key:
         logger.error("VAST_API_KEY environment variable is required")
         sys.exit(1)
-    
-    # Create and run Virtual Kubelet
     vk = VirtualKubelet(node_name, api_key)
-    
-    # Handle shutdown signals
     def signal_handler(signum, frame):
         logger.info("Received shutdown signal", signal=signum)
         vk.stop()
-    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Run the Virtual Kubelet
     try:
         await vk.run()
     except KeyboardInterrupt:
@@ -599,11 +484,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Use uvloop for better async performance
     try:
         import uvloop
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     except ImportError:
         pass
-    
     asyncio.run(main())
