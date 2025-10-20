@@ -217,7 +217,11 @@ class VirtualKubelet:
                     os_image="Ubuntu 22.04 LTS",
                     container_runtime_version="docker://24.0.0",
                     kubelet_version="v1.28.0-vk-vast-python",
-                    kube_proxy_version="v1.28.0-vk-vast-python"
+                    kube_proxy_version="v1.28.0-vk-vast-python",
+                    boot_id=os.getenv("BOOT_ID", f"vk-{int(datetime.now(timezone.utc).timestamp())}"),
+                    machine_id=os.getenv("MACHINE_ID", "vk-machine-id"),
+                    system_uuid=os.getenv("SYSTEM_UUID", "vk-system-uuid"),
+                    os_type="linux",
                 )
             )
         )
