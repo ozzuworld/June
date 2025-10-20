@@ -300,7 +300,7 @@ func (c *VastClient) DestroyInstance(ctx context.Context, instanceID int) error 
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("destroy instance request failed: %w", err)
+		return fmt.Errorf("destroy instance request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
