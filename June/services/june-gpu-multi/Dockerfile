@@ -93,17 +93,11 @@ RUN chown -R juneuser:juneuser /app
 RUN mkdir -p /app/stt /app/tts /app/models /app/cache /etc/supervisor/conf.d /var/log/supervisor
 RUN chown -R juneuser:juneuser /app /etc/supervisor /var/log/supervisor
 
-# Copy STT service files
-COPY --chown=juneuser:juneuser ../june-stt/main.py /app/stt/
-COPY --chown=juneuser:juneuser ../june-stt/config.py /app/stt/
-COPY --chown=juneuser:juneuser ../june-stt/livekit_token.py /app/stt/
-COPY --chown=juneuser:juneuser ../june-stt/whisper_service.py /app/stt/
-COPY --chown=juneuser:juneuser ../june-stt/orchestrator_client.py /app/stt/
+# Copy STT service files (from local directory structure)
+COPY --chown=juneuser:juneuser stt/ /app/stt/
 
-# Copy TTS service files
-COPY --chown=juneuser:juneuser ../june-tts/main.py /app/tts/
-COPY --chown=juneuser:juneuser ../june-tts/config.py /app/tts/
-COPY --chown=juneuser:juneuser ../june-tts/livekit_token.py /app/tts/
+# Copy TTS service files (from local directory structure)  
+COPY --chown=juneuser:juneuser tts/ /app/tts/
 
 # Copy supervisor configuration
 COPY --chown=juneuser:juneuser supervisord.conf /etc/supervisor/conf.d/supervisord.conf
