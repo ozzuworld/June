@@ -1,4 +1,4 @@
-# Virtual Kubelet deployment for Vast.ai integration
+# Virtual Kubelet deployment for Vast.ai integration - North America Optimized
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +6,7 @@ metadata:
   namespace: kube-system
   labels:
     app: virtual-kubelet-vast
+    region: north-america
 spec:
   replicas: 1
   selector:
@@ -15,6 +16,7 @@ spec:
     metadata:
       labels:
         app: virtual-kubelet-vast
+        region: north-america
     spec:
       serviceAccountName: virtual-kubelet-vast
       nodeSelector:
@@ -23,6 +25,7 @@ spec:
       - name: virtual-kubelet
         image: your-registry/virtual-kubelet-vast:latest
         env:
+        # Kubelet configuration
         - name: KUBELET_PORT
           value: "10250"
         - name: APISERVER_CERT_LOCATION
@@ -34,7 +37,9 @@ spec:
             fieldRef:
               fieldPath: status.podIP
         - name: NODENAME
-          value: "vast-gpu-node-1"
+          value: "vast-gpu-node-na-1"  # North America node identifier
+        
+        # Vast.ai API configuration
         - name: VAST_API_KEY
           valueFrom:
             secretKeyRef:
@@ -42,6 +47,38 @@ spec:
               key: api-key
         - name: VAST_API_URL
           value: "https://console.vast.ai/api/v0"
+        
+        # North America optimization settings
+        - name: VAST_PREFERRED_REGIONS
+          value: "US-CA,US-WA,US-OR,US-TX,US-CO,US-AZ,US-NY,US-FL,US-VA,CA-ON,CA-BC"
+        - name: VAST_PRIMARY_REGION
+          value: "US"
+        - name: VAST_FALLBACK_REGIONS
+          value: "CA,MX"
+        - name: VAST_BLOCKED_REGIONS
+          value: "RU,CN,KP"  # Blocked countries
+        
+        # Instance selection criteria from config.env
+        - name: VAST_GPU_TYPE
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: vast-gpu-type
+              optional: true
+        - name: VAST_MAX_PRICE_PER_HOUR
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: vast-max-price
+              optional: true
+        - name: VAST_MIN_RELIABILITY
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: vast-reliability
+              optional: true
+        
+        # Service configuration
         - name: CLUSTER_DOMAIN
           value: "cluster.local"
         - name: ORCHESTRATOR_URL
@@ -49,33 +86,73 @@ spec:
             configMapKeyRef:
               name: june-config
               key: orchestrator-url
+        
+        # Performance optimization
+        - name: VAST_LATENCY_CHECK_ENABLED
+          value: "true"
+        - name: VAST_MAX_LATENCY_MS
+          value: "50"  # 50ms max for North America
+        - name: VAST_BANDWIDTH_MIN_MBPS
+          value: "100"
+        
+        # Template configuration
+        - name: VAST_CONTAINER_IMAGE
+          value: "your-registry/june-gpu-multi:latest"
+        - name: VAST_DOCKER_OPTIONS
+          value: "-p 8000:8000 -p 8001:8001 --gpus all --restart unless-stopped"
+        
         volumeMounts:
         - name: credentials
           mountPath: /etc/virtual-kubelet
           readOnly: true
+        - name: provider-config
+          mountPath: /etc/vast-config
+          readOnly: true
+        
         resources:
           requests:
-            cpu: 50m
-            memory: 128Mi
+            cpu: 100m
+            memory: 256Mi
           limits:
-            cpu: 500m
-            memory: 512Mi
+            cpu: 1000m
+            memory: 1Gi
+        
         livenessProbe:
           httpGet:
             path: /stats/summary
             port: 10255
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
         readinessProbe:
           httpGet:
-            path: /stats/summary  
+            path: /stats/summary
+            port: 10255
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Startup probe for initial API connectivity
+        startupProbe:
+          httpGet:
+            path: /healthz
             port: 10255
           initialDelaySeconds: 10
-          periodSeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 12  # 60 seconds total
+      
       volumes:
       - name: credentials
         secret:
           secretName: vast-credentials
+      - name: provider-config
+        configMap:
+          name: vast-provider-config
+      
       tolerations:
       - key: node.alpha.kubernetes.io/unreachable
         operator: Exists
@@ -85,3 +162,16 @@ spec:
         operator: Exists
         effect: NoExecute
         tolerationSeconds: 0
+      
+      # Prefer to run on control plane nodes
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+      
+      # Restart policy for reliability
+      restartPolicy: Always
