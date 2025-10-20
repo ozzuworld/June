@@ -103,6 +103,12 @@ func main() {
 	// Attach pod routes with websockets disabled
 	api.AttachPodRoutes(podHandlerConfig, mux, false)
 	
+	// Add /healthz handler for liveness/startup probes
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	// Add stats endpoint manually
 	mux.HandleFunc("/stats/summary", func(w http.ResponseWriter, r *http.Request) {
 		stats, err := provider.GetStatsSummary(ctx)
