@@ -10,3 +10,7 @@ numpy<2.0
 scipy==1.11.3
 soundfile==0.12.1
 pydantic==2.5.0
+# XTTS v2 compatible transformer stack
+transformers==4.36.2
+sentencepiece>=0.1.99,<0.2.0
+tokenizers<0.20
