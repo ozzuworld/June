@@ -1,4 +1,4 @@
-package scheduler
+package vast
 
 import (
 	"context"
@@ -139,8 +139,8 @@ func (s *InstanceScheduler) SelectAndLaunchInstance(ctx context.Context, pod *co
 		return nil, fmt.Errorf("failed to select instance: %w", err)
 	}
 
-	log.Info(fmt.Sprintf("Selected instance %d (Score: %.3f) in %s for $%.3f/hr", 
-		bestOffer.ID, bestOffer.Score, bestOffer.Offer.Geolocation, bestOffer.Offer.DPH))
+	log.Info(fmt.Sprintf("Selected instance %d (Score: %.3f) in %s for $%.3f/hr",
+		bestOffer.Offer.ID, bestOffer.Score, bestOffer.Offer.Geolocation, bestOffer.Offer.DPH))
 
 	// Launch the selected instance
 	instance, err := s.client.CreateInstance(ctx, bestOffer.Offer, pod)
@@ -157,85 +157,77 @@ func (s *InstanceScheduler) selectBestInstance(ctx context.Context, offers []api
 	var scores []api.InstanceScore
 
 	for _, offer := range offers {
-		score := s.scoreInstance(ctx, offer)
-		scores = append(scores, api.InstanceScore{
-			Offer: offer,
-			Score: score.Score,
-			Notes: score.Notes,
-		})
+		is := s.scoreInstance(ctx, offer)
+		scores = append(scores, is)
 	}
 
 	// Sort by score (highest first)
-	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].Score > scores[j].Score
-	})
+	sort.Slice(scores, func(i, j int) bool { return scores[i].Score > scores[j].Score })
 
 	if len(scores) == 0 {
 		return nil, fmt.Errorf("no instances scored")
 	}
 
-	// Log top 3 candidates for debugging
-	for i, score := range scores {
-		if i >= 3 {
-			break
-		}
-		klog.Info(fmt.Sprintf("Candidate %d: Instance %d, Score %.3f, %s, $%.3f/hr, %s",
-			i+1, score.Offer.ID, score.Score, score.Offer.Geolocation, 
-			score.Offer.DPH, strings.Join(score.Notes, ", ")))
+	// Log top 3 candidates
+	for i := 0; i < len(scores) && i < 3; i++ {
+		cand := scores[i]
+		klog.Info(fmt.Sprintf("Candidate %d: Offer %d, Score %.3f, %s, $%.3f/hr, %s",
+			i+1, cand.Offer.ID, cand.Score, cand.Offer.Geolocation, cand.Offer.DPH, strings.Join(cand.Notes, ", ")))
 	}
 
-	return &scores[0], nil
+	best := scores[0]
+	return &best, nil
 }
 
 // scoreInstance calculates a score for an instance offer
 func (s *InstanceScheduler) scoreInstance(ctx context.Context, offer api.InstanceOffer) api.InstanceScore {
 	score := 0.0
-	var notes []string
+	notes := []string{}
 
-	// Base scoring
-	
-	// Price score (25% weight, inverse relationship - lower price = higher score)
-	priceScore := math.Max(0, (s.config.MaxPricePerHour-offer.DPH)/s.config.MaxPricePerHour)
-	score += priceScore * s.weights.Price
-	notes = append(notes, fmt.Sprintf("price: %.3f", priceScore))
+	// Price (lower is better)
+	if s.config.MaxPricePerHour > 0 {
+		priceScore := math.Max(0, (s.config.MaxPricePerHour-offer.DPH)/s.config.MaxPricePerHour)
+		score += priceScore * s.weights.Price
+		notes = append(notes, fmt.Sprintf("price: %.3f", priceScore))
+	}
 
-	// Reliability score (15% weight)
-	reliabilityScore := offer.Reliability
-	score += reliabilityScore * s.weights.Reliability
-	notes = append(notes, fmt.Sprintf("reliability: %.3f", reliabilityScore))
+	// Reliability
+	relScore := offer.Reliability
+	score += relScore * s.weights.Reliability
+	notes = append(notes, fmt.Sprintf("reliability: %.3f", relScore))
 
-	// GPU match score (20% weight)
+	// GPU match
 	gpuScore := 0.0
-	if strings.ToUpper(offer.GPUName) == strings.ToUpper(s.config.GPUType) {
+	if strings.EqualFold(offer.GPUName, s.config.GPUType) {
 		gpuScore = 1.0
-		score += s.weights.ExactGPUMatch // Bonus for exact match
+		score += s.weights.ExactGPUMatch
 		notes = append(notes, "exact GPU match bonus")
 	} else if strings.Contains(strings.ToUpper(offer.GPUName), "RTX") {
-		gpuScore = 0.7 // Partial score for RTX family
+		gpuScore = 0.7
 	}
 	score += gpuScore * s.weights.GPUMatch
 	notes = append(notes, fmt.Sprintf("gpu: %.3f", gpuScore))
 
-	// Geographic bonuses (North America optimization)
-	location := strings.ToUpper(offer.Geolocation)
-	if strings.HasPrefix(location, "US-CA") || strings.HasPrefix(location, "US-WA") || strings.HasPrefix(location, "US-OR") {
+	// Geography bonuses
+	loc := strings.ToUpper(offer.Geolocation)
+	switch {
+	case strings.HasPrefix(loc, "US-CA") || strings.HasPrefix(loc, "US-WA") || strings.HasPrefix(loc, "US-OR"):
 		score += s.weights.USWestCoast
 		notes = append(notes, "US West Coast bonus")
-	} else if strings.HasPrefix(location, "US-TX") || strings.HasPrefix(location, "US-CO") || strings.HasPrefix(location, "US-AZ") {
+	case strings.HasPrefix(loc, "US-TX") || strings.HasPrefix(loc, "US-CO") || strings.HasPrefix(loc, "US-AZ"):
 		score += s.weights.USCentral
 		notes = append(notes, "US Central bonus")
-	} else if strings.HasPrefix(location, "US-NY") || strings.HasPrefix(location, "US-FL") || strings.HasPrefix(location, "US-VA") {
+	case strings.HasPrefix(loc, "US-NY") || strings.HasPrefix(loc, "US-FL") || strings.HasPrefix(loc, "US-VA"):
 		score += s.weights.USEastCoast
 		notes = append(notes, "US East Coast bonus")
-	} else if strings.HasPrefix(location, "CA-") {
+	case strings.HasPrefix(loc, "CA-"):
 		score += s.weights.Canada
 		notes = append(notes, "Canada bonus")
-	} else if location == "US" {
-		score += s.weights.USCentral * 0.5 // General US bonus
+	case loc == "US":
+		score += s.weights.USCentral * 0.5
 		notes = append(notes, "US general bonus")
-	} else {
-		// Non-North America penalty
-		if !contains([]string{"US", "CA", "MX"}, location) {
+	default:
+		if loc != "US" && loc != "CA" && loc != "MX" {
 			score += s.weights.NonNALocation
 			notes = append(notes, "non-NA penalty")
 		}
@@ -247,31 +239,16 @@ func (s *InstanceScheduler) scoreInstance(ctx context.Context, offer api.Instanc
 		notes = append(notes, "high bandwidth bonus")
 	}
 
-	// Verified host bonus
+	// Verified bonus / new host penalty
 	if offer.Verified {
 		score += s.weights.VerifiedHost
 		notes = append(notes, "verified host bonus")
 	}
 
-	// New host penalty (low runtime)
-	if offer.HostRunTime < 30*24*3600 { // Less than 30 days
+	if offer.HostRunTime < 30*24*3600 {
 		score += s.weights.NewHost
 		notes = append(notes, "new host penalty")
 	}
 
-	return api.InstanceScore{
-		Offer: offer,
-		Score: score,
-		Notes: notes,
-	}
-}
-
-// contains checks if slice contains string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if strings.ToUpper(s) == strings.ToUpper(item) {
-			return true
-		}
-	}
-	return false
+	return api.InstanceScore{Offer: offer, Score: score, Notes: notes}
 }
