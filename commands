@@ -58,3 +58,8 @@ curl -X POST "http://localhost:8000/v1/clone" \
   -F "reference_text=This is my voice speaking clearly" \
   -F "reference_audio=/home/user/June/test.wav" \
   --output cloned_voice.wav
+
+##Auth url keycloak:
+
+com.example.livekitvoiceapp:/*
+livekit://auth
