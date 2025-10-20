@@ -1,0 +1,104 @@
+# Virtual Kubelet Vast.ai Provider Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vast-provider-config
+  namespace: kube-system
+  labels:
+    app: virtual-kubelet-vast
+data:
+  # Instance Selection Strategy
+  instance-selection.yaml: |
+    # Vast.ai instance selection criteria
+    selection:
+      # GPU requirements
+      gpu:
+        type: "RTX3060"           # Preferred: RTX3060, RTX4090, A4000
+        memory_gb: 12             # Minimum GPU memory
+        count: 1                  # Number of GPUs needed
+      
+      # Performance requirements
+      performance:
+        min_download_mbps: 100    # Minimum download speed
+        min_upload_mbps: 100      # Minimum upload speed
+        reliability_score: 0.95   # Minimum reliability (0.0-1.0)
+        max_price_per_hour: 0.50  # Maximum price in USD
+      
+      # Location preferences (ordered by preference)
+      locations:
+        - "US-CA"                 # California
+        - "US-TX"                 # Texas
+        - "US-NY"                 # New York
+        - "US"                    # Any US location
+        - "EU"                    # European fallback
+      
+      # Instance specifications
+      system:
+        min_ram_gb: 16            # Minimum system RAM
+        min_disk_gb: 50           # Minimum disk space
+        cpu_cores: 4              # Minimum CPU cores
+    
+    # Template configuration for launched instances
+    template:
+      image: "your-registry/june-gpu-multi:latest"
+      docker_options: "-p 8000:8000 -p 8001:8001 --gpus all"
+      env_vars:
+        STT_PORT: "8001"
+        TTS_PORT: "8000"
+        CUDA_VISIBLE_DEVICES: "0"
+        WHISPER_DEVICE: "cuda"
+        TTS_CACHE_PATH: "/app/cache"
+        COQUI_TOS_AGREED: "1"
+      onstart_script: |
+        #!/bin/bash
+        echo "[VAST] Starting June GPU Multi-Service Container"
+        nvidia-smi
+        /app/start-services.sh
+    
+    # Auto-scaling configuration
+    autoscale:
+      min_instances: 0            # Scale to zero when no demand
+      max_instances: 3            # Maximum concurrent instances
+      scale_up_threshold: 0.8     # CPU/GPU usage to scale up
+      scale_down_delay: 300       # Seconds before scaling down
+      instance_warmup_time: 180   # Seconds to warm up instance
+    
+    # Health monitoring
+    health:
+      startup_timeout: 300        # Max seconds for service startup
+      health_check_interval: 30   # Seconds between health checks
+      failure_threshold: 3        # Failed checks before restart
+      success_threshold: 2        # Successful checks to mark healthy
+      endpoints:
+        - "http://localhost:8000/healthz"  # TTS health
+        - "http://localhost:8001/healthz"  # STT health
+---
+# Selection algorithm weights
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vast-selection-weights
+  namespace: kube-system
+data:
+  weights.yaml: |
+    # Scoring weights for instance selection (total should equal 1.0)
+    scoring:
+      price: 0.30                 # 30% weight on price
+      performance: 0.25           # 25% weight on speed/reliability
+      gpu_match: 0.20             # 20% weight on GPU type match
+      location: 0.15              # 15% weight on location preference
+      availability: 0.10          # 10% weight on current availability
+    
+    # Bonus/penalty modifiers
+    modifiers:
+      exact_gpu_match: +0.15      # Bonus for exact GPU type match
+      verified_host: +0.10        # Bonus for verified hosts
+      new_host: -0.05             # Small penalty for new/unproven hosts
+      high_latency: -0.20         # Penalty for high network latency
+    
+    # Blacklist criteria (automatic exclusion)
+    blacklist:
+      max_price_per_hour: 1.00    # Hard limit on price
+      min_reliability: 0.80       # Hard limit on reliability
+      blocked_locations: []       # List of blocked countries/regions
+      blocked_hosts: []           # List of specific host IDs to avoid
