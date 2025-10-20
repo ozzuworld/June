@@ -95,7 +95,7 @@ func main() {
 	// Create PodHandlerConfig for VK v1.11
 	podHandlerConfig := api.PodHandlerConfig{
 		RunInContainer:        provider.RunInContainer,
-		LogsHandler:           provider.GetPodLogs,
+		GetContainerLogs:      provider.GetPodLogs,
 		StreamIdleTimeout:     30 * time.Second,
 		StreamCreationTimeout: 30 * time.Second,
 	}
