@@ -142,44 +142,47 @@ func (p *VastProvider) ConfigureNode(ctx context.Context, node *corev1.Node) {
 }
 
 // NotifyNodeStatus implements node.NodeProvider interface for VK v1.11
+// FIXED: Now runs in goroutine to avoid blocking
 func (p *VastProvider) NotifyNodeStatus(ctx context.Context, notifierFunc func(*corev1.Node)) {
-	log := pkglog.G(ctx).WithField("provider", "vast.ai")
-	log.Info("Starting node status monitoring")
+	go func() {
+		log := pkglog.G(ctx).WithField("provider", "vast.ai")
+		log.Info("Starting node status monitoring")
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Create updated node status
-			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: p.nodeName,
-				},
-				Status: corev1.NodeStatus{
-					Conditions: []corev1.NodeCondition{
-						{
-							Type:               corev1.NodeReady,
-							Status:             corev1.ConditionTrue,
-							LastHeartbeatTime:  metav1.Now(),
-							LastTransitionTime: metav1.Now(),
-							Reason:            "VastProviderHealthy",
-							Message:           "Vast.ai provider is healthy",
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Create updated node status
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: p.nodeName,
+					},
+					Status: corev1.NodeStatus{
+						Conditions: []corev1.NodeCondition{
+							{
+								Type:               corev1.NodeReady,
+								Status:             corev1.ConditionTrue,
+								LastHeartbeatTime:  metav1.Now(),
+								LastTransitionTime: metav1.Now(),
+								Reason:            "VastProviderHealthy",
+								Message:           "Vast.ai provider is healthy",
+							},
 						},
 					},
-				},
+				}
+				
+				// Configure full node status
+				p.ConfigureNode(ctx, node)
+				
+				// Notify controller of updated node status
+				notifierFunc(node)
 			}
-			
-			// Configure full node status
-			p.ConfigureNode(ctx, node)
-			
-			// Notify controller of updated node status
-			notifierFunc(node)
 		}
-	}
+	}()
 }
 
 // CreatePod accepts a Pod definition and creates a Vast.ai instance
@@ -366,20 +369,22 @@ func (p *VastProvider) GetStatsSummary(ctx context.Context) (*Summary, error) {
 
 // NotifyPods instructs the notifier to call the passed in function when the pod status changes
 func (p *VastProvider) NotifyPods(ctx context.Context, notifierFunc func(*corev1.Pod)) {
-	log := pkglog.G(ctx).WithField("provider", "vast.ai")
-	log.Info("Starting pod status monitoring")
+	go func() {
+		log := pkglog.G(ctx).WithField("provider", "vast.ai")
+		log.Info("Starting pod status monitoring")
 
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			p.checkAndNotifyPodStatuses(ctx, notifierFunc)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p.checkAndNotifyPodStatuses(ctx, notifierFunc)
+			}
 		}
-	}
+	}()
 }
 
 func (p *VastProvider) checkAndNotifyPodStatuses(ctx context.Context, notifierFunc func(*corev1.Pod)) {
