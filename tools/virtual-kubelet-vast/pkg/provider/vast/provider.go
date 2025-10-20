@@ -141,6 +141,47 @@ func (p *VastProvider) ConfigureNode(ctx context.Context, node *corev1.Node) {
 	log.Info("Node configured for Vast.ai GPU provider")
 }
 
+// NotifyNodeStatus implements node.NodeProvider interface for VK v1.11
+func (p *VastProvider) NotifyNodeStatus(ctx context.Context, notifierFunc func(*corev1.Node)) {
+	log := pkglog.G(ctx).WithField("provider", "vast.ai")
+	log.Info("Starting node status monitoring")
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Create updated node status
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: p.nodeName,
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:               corev1.NodeReady,
+							Status:             corev1.ConditionTrue,
+							LastHeartbeatTime:  metav1.Now(),
+							LastTransitionTime: metav1.Now(),
+							Reason:            "VastProviderHealthy",
+							Message:           "Vast.ai provider is healthy",
+						},
+					},
+				},
+			}
+			
+			// Configure full node status
+			p.ConfigureNode(ctx, node)
+			
+			// Notify controller of updated node status
+			notifierFunc(node)
+		}
+	}
+}
+
 // CreatePod accepts a Pod definition and creates a Vast.ai instance
 func (p *VastProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log := pkglog.G(ctx).WithField("pod", pod.Name)
@@ -321,6 +362,47 @@ func (p *VastProvider) GetStatsSummary(ctx context.Context) (*Summary, error) {
 			StartTime: time.Now().Format(time.RFC3339),
 		},
 	}, nil
+}
+
+// NotifyNodeStatus implements node.NodeProvider interface for VK v1.11
+func (p *VastProvider) NotifyNodeStatus(ctx context.Context, notifierFunc func(*corev1.Node)) {
+	log := pkglog.G(ctx).WithField("provider", "vast.ai")
+	log.Info("Starting node status monitoring")
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Create updated node status
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: p.nodeName,
+				},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:               corev1.NodeReady,
+							Status:             corev1.ConditionTrue,
+							LastHeartbeatTime:  metav1.Now(),
+							LastTransitionTime: metav1.Now(),
+							Reason:            "VastProviderHealthy",
+							Message:           "Vast.ai provider is healthy",
+						},
+					},
+				},
+			}
+			
+			// Configure full node status
+			p.ConfigureNode(ctx, node)
+			
+			// Notify controller of updated node status
+			notifierFunc(node)
+		}
+	}
 }
 
 // NotifyPods instructs the notifier to call the passed in function when the pod status changes
