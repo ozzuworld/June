@@ -146,119 +146,61 @@ class VirtualKubelet:
         fallbacks = ann.get("vast.ai/gpu-fallbacks", "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000")
         fallback_list = [primary] + [g.strip() for g in fallbacks.split(",") if g.strip()]
         price_max = ann.get("vast.ai/price-max")
-        region = ann.get("vast.ai/region")  # free-text, e.g. "North America" or country code
+        region = ann.get("vast.ai/region")
         return fallback_list, float(price_max) if price_max else None, region
 
     async def _find_offer(self, vast: VastAIClient, gpu_names: List[str], price_max: Optional[float], region: Optional[str]) -> Optional[Dict]:
-        # Try each desired gpu_name in order
-        for gpu in gpu_names:
-            # First attempt exact match
-            q: Dict = {
-                "rentable": {"eq": True},
-                "verified": {"eq": True},
-                "gpu_name": {"eq": gpu}
-            }
-            if price_max is not None:
-                q["dph_total"] = {"lte": price_max}
-            offers = await vast.search_offers(q)
-            # If region provided, filter results by string containment
-            if region:
-                offers = [o for o in offers if region.lower() in str(o.get("geolocation", "")).lower()]
-            logger.info("search result", gpu_name=gpu, count=len(offers))
-            if offers:
-                return offers[0]
+        # Prepare base query (broad) with optional price cap
+        base_q: Dict = {"rentable": {"eq": True}, "verified": {"eq": True}}
+        if price_max is not None:
+            base_q["dph_total"] = {"lte": price_max}
 
-            # Second attempt: fuzzy contains (like) on gpu_name
-            q = {
-                "rentable": {"eq": True},
-                "verified": {"eq": True},
-                "gpu_name": {"like": gpu.replace("_", " ")}
-            }
-            if price_max is not None:
-                q["dph_total"] = {"lte": price_max}
-            offers = await vast.search_offers(q)
-            if region:
-                offers = [o for o in offers if region.lower() in str(o.get("geolocation", "")).lower()]
-            logger.info("fuzzy search result", gpu_name=gpu, count=len(offers))
-            if offers:
-                return offers[0]
+        # Pull a page of broadly matching offers once to avoid multiple API calls
+        offers = await vast.search_offers(base_q)
+        if region:
+            offers = [o for o in offers if region.lower() in str(o.get("geolocation", "")).lower()]
+
+        # Try exact then substring match for each desired gpu name
+        for gpu in gpu_names:
+            needle = gpu.replace("_", " ").lower()
+
+            # Exact match first
+            exact = [o for o in offers if str(o.get("gpu_name", "")).lower() == needle]
+            if exact:
+                logger.info("offer match (exact)", gpu_name=gpu, count=len(exact))
+                return exact[0]
+
+            # Substring match fallback
+            fuzzy = [o for o in offers if needle in str(o.get("gpu_name", "")).lower()]
+            logger.info("offer match (substring)", gpu_name=gpu, count=len(fuzzy))
+            if fuzzy:
+                return fuzzy[0]
+
         return None
 
     async def register_node(self):
-        """Register the virtual node with Kubernetes"""
         logger.info("Registering virtual node", node_name=self.node_name)
-        
-        # Create node object
         node = V1Node(
             metadata=client.V1ObjectMeta(
                 name=self.node_name,
-                labels={
-                    "provider": "vast.ai",
-                    "node.kubernetes.io/instance-type": "gpu",
-                    "beta.kubernetes.io/arch": "amd64",
-                    "beta.kubernetes.io/os": "linux",
-                }
+                labels={"provider": "vast.ai", "node.kubernetes.io/instance-type": "gpu", "beta.kubernetes.io/arch": "amd64", "beta.kubernetes.io/os": "linux"}
             ),
             spec=client.V1NodeSpec(
-                taints=[
-                    client.V1Taint(
-                        key="virtual-kubelet.io/provider",
-                        value="vast",
-                        effect="NoSchedule"
-                    ),
-                    client.V1Taint(
-                        key="vast.ai/gpu",
-                        effect="NoSchedule"
-                    )
-                ]
+                taints=[client.V1Taint(key="virtual-kubelet.io/provider", value="vast", effect="NoSchedule"), client.V1Taint(key="vast.ai/gpu", effect="NoSchedule")]
             ),
             status=client.V1NodeStatus(
-                capacity={
-                    "cpu": "16",
-                    "memory": "32Gi",
-                    "nvidia.com/gpu": "1",
-                    "pods": "10"
-                },
-                allocatable={
-                    "cpu": "16", 
-                    "memory": "32Gi",
-                    "nvidia.com/gpu": "1",
-                    "pods": "10"
-                },
-                conditions=[
-                    client.V1NodeCondition(
-                        type="Ready",
-                        status="True",
-                        reason="VirtualKubeletReady",
-                        message="Virtual Kubelet is ready",
-                        last_heartbeat_time=datetime.now(timezone.utc),
-                        last_transition_time=datetime.now(timezone.utc)
-                    )
-                ],
-                addresses=[
-                    client.V1NodeAddress(type="InternalIP", address="10.0.0.1")
-                ],
-                node_info=client.V1NodeSystemInfo(
-                    architecture="amd64",
-                    operating_system="linux",
-                    kernel_version="5.15.0",
-                    os_image="Ubuntu 22.04 LTS",
-                    container_runtime_version="docker://24.0.0",
-                    kubelet_version="v1.28.0-vk-vast-python",
-                    kube_proxy_version="v1.28.0-vk-vast-python",
-                    boot_id=os.getenv("BOOT_ID", f"vk-{int(datetime.now(timezone.utc).timestamp())}"),
-                    machine_id=os.getenv("MACHINE_ID", "vk-machine-id"),
-                    system_uuid=os.getenv("SYSTEM_UUID", "vk-system-uuid"),
-                )
+                capacity={"cpu": "16", "memory": "32Gi", "nvidia.com/gpu": "1", "pods": "10"},
+                allocatable={"cpu": "16", "memory": "32Gi", "nvidia.com/gpu": "1", "pods": "10"},
+                conditions=[client.V1NodeCondition(type="Ready", status="True", reason="VirtualKubeletReady", message="Virtual Kubelet is ready", last_heartbeat_time=datetime.now(timezone.utc), last_transition_time=datetime.now(timezone.utc))],
+                addresses=[client.V1NodeAddress(type="InternalIP", address="10.0.0.1")],
+                node_info=client.V1NodeSystemInfo(architecture="amd64", operating_system="linux", kernel_version="5.15.0", os_image="Ubuntu 22.04 LTS", container_runtime_version="docker://24.0.0", kubelet_version="v1.28.0-vk-vast-python", kube_proxy_version="v1.28.0-vk-vast-python", boot_id=os.getenv("BOOT_ID", f"vk-{int(datetime.now(timezone.utc).timestamp())}"), machine_id=os.getenv("MACHINE_ID", "vk-machine-id"), system_uuid=os.getenv("SYSTEM_UUID", "vk-system-uuid"))
             )
         )
-        
         try:
-            # Try to create the node
             self.k8s_client.create_node(node)
             logger.info("Virtual node registered successfully")
         except ApiException as e:
-            if e.status == 409:  # Node already exists
+            if e.status == 409:
                 logger.info("Virtual node already exists, updating")
                 self.k8s_client.patch_node(self.node_name, node)
             else:
@@ -266,42 +208,13 @@ class VirtualKubelet:
                 raise
     
     async def update_node_status(self):
-        """Update node status to show it's ready"""
         try:
             current_node = self.k8s_client.read_node(name=self.node_name)
             current_node.status.conditions = [
-                client.V1NodeCondition(
-                    type="Ready",
-                    status="True",
-                    reason="VirtualKubeletReady",
-                    message="Virtual Kubelet is ready",
-                    last_heartbeat_time=datetime.now(timezone.utc),
-                    last_transition_time=datetime.now(timezone.utc)
-                ),
-                client.V1NodeCondition(
-                    type="MemoryPressure",
-                    status="False",
-                    reason="VirtualKubeletSufficient",
-                    message="Virtual Kubelet has sufficient memory",
-                    last_heartbeat_time=datetime.now(timezone.utc),
-                    last_transition_time=datetime.now(timezone.utc)
-                ),
-                client.V1NodeCondition(
-                    type="DiskPressure",
-                    status="False",
-                    reason="VirtualKubeletNoDiskPressure",
-                    message="Virtual Kubelet has no disk pressure",
-                    last_heartbeat_time=datetime.now(timezone.utc),
-                    last_transition_time=datetime.now(timezone.utc)
-                ),
-                client.V1NodeCondition(
-                    type="PIDPressure",
-                    status="False",
-                    reason="VirtualKubeletNoPIDPressure",
-                    message="Virtual Kubelet has no PID pressure",
-                    last_heartbeat_time=datetime.now(timezone.utc),
-                    last_transition_time=datetime.now(timezone.utc)
-                )
+                client.V1NodeCondition(type="Ready", status="True", reason="VirtualKubeletReady", message="Virtual Kubelet is ready", last_heartbeat_time=datetime.now(timezone.utc), last_transition_time=datetime.now(timezone.utc)),
+                client.V1NodeCondition(type="MemoryPressure", status="False", reason="VirtualKubeletSufficient", message="Virtual Kubelet has sufficient memory", last_heartbeat_time=datetime.now(timezone.utc), last_transition_time=datetime.now(timezone.utc)),
+                client.V1NodeCondition(type="DiskPressure", status="False", reason="VirtualKubeletNoDiskPressure", message="Virtual Kubelet has no disk pressure", last_heartbeat_time=datetime.now(timezone.utc), last_transition_time=datetime.now(timezone.utc)),
+                client.V1NodeCondition(type="PIDPressure", status="False", reason="VirtualKubeletNoPIDPressure", message="Virtual Kubelet has no PID pressure", last_heartbeat_time=datetime.now(timezone.utc), last_transition_time=datetime.now(timezone.utc)),
             ]
             self.k8s_client.patch_node_status(name=self.node_name, body=current_node)
             logger.debug("Node status updated successfully")
@@ -309,7 +222,6 @@ class VirtualKubelet:
             logger.error("Failed to update node status", error=str(e))
     
     async def heartbeat_loop(self):
-        """Periodic heartbeat to update node status"""
         logger.info("Starting node heartbeat loop")
         while self.running:
             try:
@@ -320,7 +232,6 @@ class VirtualKubelet:
                 await asyncio.sleep(5)
     
     async def watch_pods(self):
-        """Watch for pods scheduled to this node"""
         logger.info("Starting pod watcher", node_name=self.node_name)
         w = watch.Watch()
         try:
@@ -342,7 +253,6 @@ class VirtualKubelet:
             raise
     
     async def create_pod(self, pod: V1Pod):
-        """Create a pod on Vast.ai"""
         pod_name = pod.metadata.name
         logger.info("Creating pod on Vast.ai", pod_name=pod_name)
         try:
