@@ -33,8 +33,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install compatible NumPy FIRST (critical for PyTorch compatibility)
 RUN pip install --no-cache-dir "numpy<2.0"
 
-# Install PyTorch 2.1.2 with CUDA 11.8 support
-RUN pip install --no-cache-dir torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+# Install PyTorch 2.2.2 with CUDA 11.8 support
+RUN pip install --no-cache-dir torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
     --index-url https://download.pytorch.org/whl/cu118
 
 WORKDIR /app
