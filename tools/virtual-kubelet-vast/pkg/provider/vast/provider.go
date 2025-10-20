@@ -51,18 +51,22 @@ func NewVastProvider(ctx context.Context, apiKey, nodeName string) (*VastProvide
 	}
 
 	log.Info("Successfully connected to Vast.ai API")
+	log.Info("DEBUG: About to create VastProvider struct")
 
 	p := &VastProvider{
 		client:    client,
 		nodeName:  nodeName,
 		instances: make(map[string]*vapi.Instance),
 	}
+	log.Info("DEBUG: VastProvider struct created, about to call NewInstanceScheduler")
 
 	// Initialize scheduler
 	p.scheduler = NewInstanceScheduler(client)
+	log.Info("DEBUG: InstanceScheduler created, about to call NewEndpointManager")
 	
 	// Initialize endpoint manager
 	p.endpoints = NewEndpointManager()
+	log.Info("DEBUG: EndpointManager created, about to return provider")
 
 	return p, nil
 }
