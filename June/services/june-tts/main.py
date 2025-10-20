@@ -42,13 +42,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 class TTSRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize", max_length=5000)
     language: str = Field("en", description="Language code")
-    speaker: Optional[str] = Field("Claribel Dervla", description="Built-in speaker name")
+    # For XTTS v2, prefer a reference wav; fallback speaker name for other models
+    speaker: Optional[str] = Field(None, description="Built-in speaker name (non-XTTS)")
+    speaker_wav: Optional[str] = Field(None, description="Path/URL to reference speaker wav (XTTS v2)")
     speed: float = Field(1.0, description="Speech speed", ge=0.5, le=2.0)
 
 class PublishToRoomRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize and publish to room")
     language: str = Field("en", description="Language code")
-    speaker: Optional[str] = Field("Claribel Dervla", description="Speaker name")
+    speaker: Optional[str] = Field(None, description="Speaker name (non-XTTS)")
+    speaker_wav: Optional[str] = Field(None, description="Path/URL to reference speaker wav (XTTS v2)")
     speed: float = Field(1.0, description="Speech speed", ge=0.5, le=2.0)
 
 async def join_livekit_room():
@@ -163,10 +166,8 @@ async def lifespan(app: FastAPI):
     
     try:
         logger.info("Loading XTTS-v2 model...")
-        tts_instance = TTS(
-            model_name="tts_models/multilingual/multi-dataset/xtts_v2",
-            gpu=torch.cuda.is_available()
-        ).to(device)
+        model_name = os.getenv("TTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+        tts_instance = TTS(model_name=model_name).to(device)
         logger.info("✅ TTS model initialized")
     except Exception as e:
         logger.error(f"❌ TTS initialization failed: {e}")
@@ -181,7 +182,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June TTS Service",
-    version="2.0.0",
+    version="2.1.0",
     description="Text-to-speech service with LiveKit room integration",
     lifespan=lifespan
 )
@@ -198,7 +199,7 @@ app.add_middleware(
 async def root():
     return {
         "service": "june-tts",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "tts_ready": tts_instance is not None,
         "device": device,
@@ -225,14 +226,14 @@ async def synthesize_audio(request: TTSRequest):
             output_path = f.name
         
         logger.info(f"🎤 Synthesizing: {request.text[:50]}...")
+
+        kwargs = {"text": request.text, "language": request.language, "file_path": output_path, "speed": request.speed}
+        if request.speaker_wav:
+            kwargs["speaker_wav"] = request.speaker_wav
+        elif request.speaker:
+            kwargs["speaker"] = request.speaker
         
-        tts_instance.tts_to_file(
-            text=request.text,
-            language=request.language,
-            speaker=request.speaker,
-            file_path=output_path,
-            speed=request.speed
-        )
+        tts_instance.tts_to_file(**kwargs)
         
         with open(output_path, "rb") as f:
             audio_bytes = f.read()
@@ -263,14 +264,14 @@ async def publish_to_room(
             output_path = f.name
         
         logger.info(f"🔊 Generating response: {request.text[:100]}...")
+
+        kwargs = {"text": request.text, "language": request.language, "file_path": output_path, "speed": request.speed}
+        if request.speaker_wav:
+            kwargs["speaker_wav"] = request.speaker_wav
+        elif request.speaker:
+            kwargs["speaker"] = request.speaker
         
-        tts_instance.tts_to_file(
-            text=request.text,
-            language=request.language,
-            speaker=request.speaker,
-            file_path=output_path,
-            speed=request.speed
-        )
+        tts_instance.tts_to_file(**kwargs)
         
         with open(output_path, "rb") as f:
             audio_bytes = f.read()
