@@ -223,8 +223,6 @@ func (p *VastProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 // GetPod returns a pod by name that is being managed by the provider
 func (p *VastProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
-	log := pkglog.G(ctx).WithField("pod", fmt.Sprintf("%s/%s", namespace, name))
-	
 	p.mu.RLock()
 	instance, exists := p.instances[name]
 	p.mu.RUnlock()
