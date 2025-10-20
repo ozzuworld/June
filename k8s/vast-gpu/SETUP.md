@@ -1,4 +1,4 @@
-# Vast.ai API Key Setup & Instance Selection Guide
+# Vast.ai API Key Setup & North America Low Latency Guide
 
 ## 🔑 Getting Your Vast.ai API Key
 
@@ -16,189 +16,211 @@
 ### Step 3: Add to Configuration
 Edit your `config.env` file:
 ```bash
-# Replace with your actual API key
+# Replace with your actual API key from console.vast.ai
 VAST_API_KEY=vast_api_key_abcd1234567890
 ```
 
-## ⚙️ Instance Selection Configuration
+## 🌎 North America Low Latency Optimization
 
-### How Virtual Kubelet Chooses Instances
+### Geographic Selection Strategy
 
-The Virtual Kubelet uses a **smart scoring system** to select the best Vast.ai instance:
+The system is **optimized for North America** with this priority order:
 
-#### 1. **Hard Requirements** (Must Meet)
-```yaml
-# From config.env
-VAST_GPU_TYPE=RTX3060           # Must have this GPU type
-VAST_MIN_GPU_MEMORY=12          # Must have at least 12GB VRAM
-VAST_MAX_PRICE_PER_HOUR=0.50    # Must be under $0.50/hour
-VAST_RELIABILITY_SCORE=0.95     # Must have 95%+ reliability
-```
+#### **Tier 1: US West Coast** (Lowest Latency)
+- **US-CA** (California) - Silicon Valley, Los Angeles
+- **US-WA** (Washington) - Seattle
+- **US-OR** (Oregon) - Portland
 
-#### 2. **Scoring Criteria** (Best Match Wins)
-- **Price (30%)**: Lower cost = higher score
-- **Performance (25%)**: Better speed/reliability = higher score
-- **GPU Match (20%)**: Exact GPU type match = bonus points
-- **Location (15%)**: Closer to your region = higher score
-- **Availability (10%)**: Currently available = higher score
+#### **Tier 2: US Central/Southwest**
+- **US-TX** (Texas) - Dallas, Austin
+- **US-CO** (Colorado) - Denver
+- **US-AZ** (Arizona) - Phoenix
 
-#### 3. **Selection Process**
-```mermaid
-graph TD
-    A[Pod Scheduled] --> B[Query Vast.ai API]
-    B --> C[Filter by Hard Requirements]
-    C --> D[Score Each Instance]
-    D --> E[Select Highest Score]
-    E --> F[Launch Instance]
-    F --> G[Wait for Health Check]
-    G --> H[Update Service Endpoints]
-```
+#### **Tier 3: US East Coast**
+- **US-NY** (New York) - NYC, Albany
+- **US-FL** (Florida) - Miami
+- **US-VA** (Virginia) - Ashburn (AWS region)
 
-## 🎯 Customizing Instance Selection
+#### **Tier 4: Canada Fallback**
+- **CA-ON** (Ontario) - Toronto
+- **CA-BC** (British Columbia) - Vancouver
 
-### Basic Configuration (config.env)
+## ⚡ How Current API-Aligned Selection Works
+
+### Real Vast.ai API Query (2024/2025)
+
+The Virtual Kubelet constructs queries using **current Vast.ai API parameters**:
+
 ```bash
-# GPU Preferences
-VAST_GPU_TYPE=RTX3060           # RTX3060, RTX4090, A4000, A6000
-VAST_MIN_GPU_MEMORY=12          # Minimum VRAM (GB)
-VAST_MAX_PRICE_PER_HOUR=0.50    # Budget limit
-
-# Performance Requirements  
-VAST_MIN_DOWNLOAD_SPEED=100     # Minimum internet speed (Mbps)
-VAST_RELIABILITY_SCORE=0.95     # Minimum host reliability
-
-# Location Preferences
-VAST_DATACENTER_LOCATION=US     # US, EU, ASIA
+# Equivalent to this vast-cli command:
+vast search offers 'rentable=true verified=true geolocation=US gpu_name=RTX_3060 gpu_ram>=12 dph<=0.50 reliability>=0.95 inet_down>=100 inet_up>=100' --order 'dph+,reliability-,inet_down-'
 ```
 
-### Advanced Configuration (k8s/vast-gpu/vast-provider-config.yaml)
-```yaml
-# Multiple GPU type preferences (ordered)
-gpu:
-  preferred_types:
-    - "RTX3060"     # First choice (budget)
-    - "RTX4090"     # Second choice (performance)
-    - "A4000"       # Third choice (professional)
+### API Parameter Mapping
 
-# Location preferences (ordered by latency)
-locations:
-  - "US-CA"        # California (lowest latency)
-  - "US-TX"        # Texas
-  - "US-NY"        # New York
-  - "US"           # Any US location
-  - "EU"           # European fallback
+| Config Setting | Vast.ai API Parameter | Example Value |
+|---|---|---|
+| `VAST_GPU_TYPE=RTX3060` | `gpu_name=RTX_3060` | Exact GPU model |
+| `VAST_MIN_GPU_MEMORY=12` | `gpu_ram>=12` | Minimum VRAM (GB) |
+| `VAST_MAX_PRICE_PER_HOUR=0.50` | `dph<=0.50` | Max dollars per hour |
+| `VAST_RELIABILITY_SCORE=0.95` | `reliability>=0.95` | Min reliability % |
+| `VAST_MIN_DOWNLOAD_SPEED=100` | `inet_down>=100` | Min download (Mbps) |
+| `VAST_MIN_UPLOAD_SPEED=100` | `inet_up>=100` | Min upload (Mbps) |
+| `VAST_DATACENTER_LOCATION=US` | `geolocation=US` | Geographic filter |
+| `VAST_VERIFIED_ONLY=true` | `verified=true` | Verified hosts only |
+| `VAST_RENTABLE_ONLY=true` | `rentable=true` | Available for rent |
+
+### Advanced Scoring Algorithm
+
+**Latency-First Scoring** (Total: 1.0):
+- **Latency: 35%** - Network ping time (increased for NA optimization)
+- **Price: 25%** - Cost per hour
+- **GPU Match: 20%** - Exact GPU type bonus
+- **Reliability: 15%** - Host uptime history
+- **Availability: 5%** - Current availability
+
+**Geographic Bonuses**:
+- **US West Coast**: +20% score bonus
+- **US Central**: +15% score bonus  
+- **US East Coast**: +10% score bonus
+- **Canada**: +5% score bonus
+- **Non-North America**: -25% penalty
+
+## 📊 Real-Time Selection Example
+
+### Typical Selection Flow
+```
+[VAST-NA] Querying API: geolocation=US gpu_name=RTX_3060 dph<=0.50...
+[VAST-NA] Found 34 instances, scoring for North America optimization:
+
+Instance 12345 (US-CA, San Jose):
+  - Base Score: 0.82 (price: $0.23/hr, reliability: 98.5%)
+  - Location Bonus: +0.20 (US West Coast)
+  - Latency: 12ms
+  - Final Score: 1.02 ⭐ WINNER
+
+Instance 12346 (US-TX, Dallas):
+  - Base Score: 0.85 (price: $0.21/hr, reliability: 97.2%)
+  - Location Bonus: +0.15 (US Central)
+  - Latency: 28ms
+  - Final Score: 1.00
+
+Instance 12347 (US-NY, NYC):
+  - Base Score: 0.88 (price: $0.19/hr, reliability: 99.1%)
+  - Location Bonus: +0.10 (US East Coast)
+  - Latency: 45ms
+  - Final Score: 0.98
+
+[VAST-NA] Selected: Instance 12345 (optimal latency + location)
+[VAST-NA] Launching in US-CA with RTX 3060...
+[VAST-NA] Services ready with 12ms average latency:
+  - june-stt.default.svc.cluster.local:8001 → 198.51.100.45:42352
+  - june-tts.default.svc.cluster.local:8000 → 198.51.100.45:42351
 ```
 
-## 💰 Cost Optimization Examples
+## ⚙️ Configuration Templates
 
-### Budget Configuration
+### **Budget North America** (~$0.20-0.30/hour)
 ```bash
-# Target: $0.15-0.25/hour for RTX 3060
-VAST_GPU_TYPE=RTX3060
-VAST_MAX_PRICE_PER_HOUR=0.30
-VAST_RELIABILITY_SCORE=0.90    # Slightly lower for better price
-```
-
-### Performance Configuration  
-```bash
-# Target: $0.40-0.60/hour for RTX 4090
-VAST_GPU_TYPE=RTX4090
-VAST_MAX_PRICE_PER_HOUR=0.70
-VAST_MIN_DOWNLOAD_SPEED=200    # Higher speed requirement
-VAST_RELIABILITY_SCORE=0.98    # Premium reliability
-```
-
-### Development Configuration
-```bash
-# Target: Cheapest available for testing
-VAST_GPU_TYPE=GTX1080Ti
-VAST_MIN_GPU_MEMORY=8
-VAST_MAX_PRICE_PER_HOUR=0.15
-VAST_RELIABILITY_SCORE=0.80    # Lower requirements OK for dev
-```
-
-## 📊 Real-Time Instance Selection
-
-### How It Works in Practice
-
-1. **Pod Scheduling**: Kubernetes schedules GPU pod to `vast-gpu-node-1`
-2. **API Query**: Virtual Kubelet calls Vast.ai `/instances/search` API
-3. **Filtering**: Removes instances that don't meet hard requirements
-4. **Scoring**: Ranks remaining instances by weighted criteria
-5. **Selection**: Chooses highest-scoring available instance
-6. **Launch**: Creates instance with your multi-service container
-7. **Health Check**: Waits for both STT and TTS services to be healthy
-8. **Endpoint Update**: Updates Kubernetes service endpoints with external IP:port
-
-### Example Selection Log
-```
-[VAST] Searching for instances matching: RTX3060, 12GB+, <$0.50/hr
-[VAST] Found 23 candidates, filtering...
-[VAST] After filtering: 8 instances remain
-[VAST] Scoring instances:
-  - Instance 12345: Score 0.87 (RTX3060, $0.22/hr, US-CA, 98.2% reliability)
-  - Instance 12346: Score 0.83 (RTX3060, $0.19/hr, US-TX, 96.8% reliability)
-  - Instance 12347: Score 0.81 (RTX3060, $0.25/hr, EU-DE, 99.1% reliability)
-[VAST] Selected instance 12345 - launching...
-[VAST] Instance ready, updating service endpoints:
-  - june-stt.default.svc.cluster.local:8001 → 203.0.113.45:42352
-  - june-tts.default.svc.cluster.local:8000 → 203.0.113.45:42351
-```
-
-## 🔧 Troubleshooting Selection Issues
-
-### No Instances Found
-```bash
-# Check if requirements are too strict
-kubectl logs -n kube-system deployment/virtual-kubelet-vast
-
-# Common issues:
-# 1. Price too low (increase VAST_MAX_PRICE_PER_HOUR)
-# 2. GPU memory too high (decrease VAST_MIN_GPU_MEMORY)
-# 3. Reliability too strict (decrease VAST_RELIABILITY_SCORE)
-```
-
-### Instance Selection Too Slow
-```bash
-# Optimize selection criteria in vast-provider-config.yaml
-# 1. Increase max_price_per_hour for more options
-# 2. Add more GPU types to preferred_types
-# 3. Expand location preferences
-```
-
-### Wrong Instance Type Selected
-```bash
-# Check scoring weights in vast-selection-weights ConfigMap
-# Increase gpu_match weight if GPU type is most important
-# Increase price weight if cost is most important
-```
-
-## 🎛️ Quick Configuration Templates
-
-### Copy and paste into your `config.env`:
-
-**Budget Template** (RTX 3060, ~$0.20/hr):
-```bash
+# Optimized for cost while staying in North America
+VAST_API_KEY=your_vast_api_key_here
 VAST_GPU_TYPE=RTX3060
 VAST_MAX_PRICE_PER_HOUR=0.35
 VAST_RELIABILITY_SCORE=0.90
 VAST_DATACENTER_LOCATION=US
+VAST_PREFERRED_REGIONS=US-TX,US-CO,US-AZ,US  # Central US for balance
 ```
 
-**Performance Template** (RTX 4090, ~$0.50/hr):
+### **Performance North America** (~$0.40-0.60/hour)
 ```bash
+# Optimized for performance within North America
+VAST_API_KEY=your_vast_api_key_here
 VAST_GPU_TYPE=RTX4090
 VAST_MAX_PRICE_PER_HOUR=0.70
 VAST_MIN_DOWNLOAD_SPEED=200
 VAST_RELIABILITY_SCORE=0.98
 VAST_DATACENTER_LOCATION=US
+VAST_PREFERRED_REGIONS=US-CA,US-WA,US-NY,US  # Premium locations
 ```
 
-**Development Template** (Any GPU, cheapest):
+### **Ultra-Low Latency** (West Coast Priority)
 ```bash
-VAST_GPU_TYPE=GTX1080Ti
-VAST_MIN_GPU_MEMORY=8
-VAST_MAX_PRICE_PER_HOUR=0.20
-VAST_RELIABILITY_SCORE=0.80
+# Maximum performance, West Coast only
+VAST_API_KEY=your_vast_api_key_here
+VAST_GPU_TYPE=RTX3060
+VAST_MAX_PRICE_PER_HOUR=0.50
+VAST_MIN_DOWNLOAD_SPEED=150
+VAST_RELIABILITY_SCORE=0.95
 VAST_DATACENTER_LOCATION=US
+VAST_PREFERRED_REGIONS=US-CA,US-WA,US-OR     # West Coast only
 ```
+
+## 🔍 Monitoring & Troubleshooting
+
+### Check Selection Logs
+```bash
+# View instance selection process
+kubectl logs -n kube-system deployment/virtual-kubelet-vast | grep "VAST-NA"
+
+# Monitor latency and performance
+kubectl logs deployment/june-gpu-services | grep "latency\|ms"
+```
+
+### Common Issues & Solutions
+
+#### **No Instances Found in North America**
+```bash
+# Temporarily relax requirements
+VAST_MAX_PRICE_PER_HOUR=0.75  # Increase budget
+VAST_RELIABILITY_SCORE=0.85   # Lower reliability requirement
+# Or allow global fallback:
+VAST_PREFERRED_REGIONS=US-CA,US-TX,US-NY,US,CA,EU
+```
+
+#### **High Latency Despite North America Selection**
+```bash
+# Enable strict latency checking
+# In vast-provider-config.yaml:
+latency_check:
+  enabled: true
+  max_acceptable_ms: 30  # Stricter limit
+  timeout_seconds: 3
+```
+
+#### **Instances Keep Failing in Specific Regions**
+```bash
+# Blacklist problematic hosts
+# Add to vast-provider-config.yaml:
+blacklist:
+  blocked_hosts: ["12345", "12346"]  # Specific host IDs
+  # Or avoid entire subregions temporarily
+```
+
+## 📈 Expected Performance
+
+### Latency Expectations
+- **US West Coast**: 5-20ms (optimal)
+- **US Central**: 15-35ms (good)
+- **US East Coast**: 25-50ms (acceptable)
+- **Canada**: 10-40ms (varies by location)
+- **Global Fallback**: 50-150ms (backup only)
+
+### Typical Selection Times
+- **API Query**: 1-3 seconds
+- **Instance Launch**: 30-90 seconds
+- **Service Health Check**: 60-180 seconds
+- **Total Deployment**: 2-4 minutes
+
+### Cost Optimization
+- **RTX 3060 (12GB)**: $0.15-0.45/hour in North America
+- **Multi-Service Sharing**: ~60% cost savings vs separate instances
+- **Auto-scaling**: Scale to zero when unused
+
+## 🚀 Quick Start
+
+1. **Get API Key**: Visit [console.vast.ai](https://console.vast.ai/)
+2. **Configure**: Add `VAST_API_KEY` to your `config.env`
+3. **Deploy**: The system automatically optimizes for North America
+4. **Monitor**: Check logs for latency and selection decisions
+
+The Virtual Kubelet will automatically prioritize North American instances with the lowest latency while staying within your budget and performance requirements!
