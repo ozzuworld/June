@@ -10,4 +10,4 @@ soundfile==0.12.1
 numpy<2.0
 scipy==1.11.4
 pyaudio==0.2.13
-silero-vad==4.0.1
+silero-vad==6.0.0
