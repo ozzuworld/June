@@ -25,6 +25,12 @@ class Config:
         "LIVEKIT_API_SECRET", 
         "secret"
     )
+
+    # Orchestrator URL (added for TTS token retrieval)
+    ORCHESTRATOR_URL: str = os.getenv(
+        "ORCHESTRATOR_URL",
+        "http://june-orchestrator.june-services.svc.cluster.local:8080"
+    )
     
     # Audio Configuration
     SAMPLE_RATE: int = 24000
