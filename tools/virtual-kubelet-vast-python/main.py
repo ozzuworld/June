@@ -221,7 +221,6 @@ class VirtualKubelet:
                     boot_id=os.getenv("BOOT_ID", f"vk-{int(datetime.now(timezone.utc).timestamp())}"),
                     machine_id=os.getenv("MACHINE_ID", "vk-machine-id"),
                     system_uuid=os.getenv("SYSTEM_UUID", "vk-system-uuid"),
-                    os_type="linux",
                 )
             )
         )
