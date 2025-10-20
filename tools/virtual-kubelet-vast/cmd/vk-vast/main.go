@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -89,8 +90,28 @@ func main() {
 
 	// HTTP server for VK routes
 	mux := http.NewServeMux()
-	api.AttachPodRoutes(provider, mux)
-	api.AttachMetricsRoutes(ctx, nodeController, mux, "")
+	
+	// Create PodHandlerConfig for VK v1.11
+	podHandlerConfig := api.PodHandlerConfig{
+		RunInContainer: provider.RunInContainer,
+		GetPodLogs:     provider.GetPodLogs,
+		StreamIdleTimeout: 30,
+		StreamCreationTimeout: 30,
+	}
+	
+	// Attach pod routes with websockets disabled
+	api.AttachPodRoutes(podHandlerConfig, mux, false)
+	
+	// Add stats endpoint manually
+	mux.HandleFunc("/stats/summary", func(w http.ResponseWriter, r *http.Request) {
+		stats, err := provider.GetStatsSummary(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(stats)
+	})
 
 	go func() {
 		srv := &http.Server{Addr: ":10255", Handler: mux}
