@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast"
 	logutil "github.com/virtual-kubelet/virtual-kubelet/log"
@@ -93,10 +94,10 @@ func main() {
 	
 	// Create PodHandlerConfig for VK v1.11
 	podHandlerConfig := api.PodHandlerConfig{
-		RunInContainer: provider.RunInContainer,
-		GetPodLogs:     provider.GetPodLogs,
-		StreamIdleTimeout: 30,
-		StreamCreationTimeout: 30,
+		RunInContainer:        provider.RunInContainer,
+		LogsHandler:           provider.GetPodLogs,
+		StreamIdleTimeout:     30 * time.Second,
+		StreamCreationTimeout: 30 * time.Second,
 	}
 	
 	// Attach pod routes with websockets disabled
