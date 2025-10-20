@@ -1,4 +1,4 @@
-# Virtual Kubelet Vast.ai Provider Configuration
+# Virtual Kubelet Vast.ai Provider Configuration - North America Optimized
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,73 +7,102 @@ metadata:
   labels:
     app: virtual-kubelet-vast
 data:
-  # Instance Selection Strategy
+  # Instance Selection Strategy - Aligned with Vast.ai API 2024/2025
   instance-selection.yaml: |
-    # Vast.ai instance selection criteria
+    # Vast.ai instance selection criteria (maps to API search offers)
     selection:
-      # GPU requirements
+      # GPU requirements (gpu_name, gpu_ram filters)
       gpu:
-        type: "RTX3060"           # Preferred: RTX3060, RTX4090, A4000
-        memory_gb: 12             # Minimum GPU memory
-        count: 1                  # Number of GPUs needed
+        primary_type: "RTX_3060"     # Exact API gpu_name format
+        fallback_types:              # Alternative GPU types in order
+          - "RTX_4060_Ti"
+          - "RTX_3060_Ti"
+          - "RTX_3070"
+        memory_gb: 12                # gpu_ram >= 12 filter
+        count: 1                     # Number of GPUs needed
       
-      # Performance requirements
+      # Performance requirements (reliability, inet_down, inet_up)
       performance:
-        min_download_mbps: 100    # Minimum download speed
-        min_upload_mbps: 100      # Minimum upload speed
-        reliability_score: 0.95   # Minimum reliability (0.0-1.0)
-        max_price_per_hour: 0.50  # Maximum price in USD
+        min_download_mbps: 100       # inet_down >= 100 filter
+        min_upload_mbps: 100         # inet_up >= 100 filter
+        reliability_score: 0.95      # reliability >= 0.95 filter
+        max_price_per_hour: 0.50     # dph <= 0.50 filter
+        verified_only: true          # verified=true filter (recommended)
+        rentable_only: true          # rentable=true filter (required)
       
-      # Location preferences (ordered by preference)
+      # Geographic preferences for North America low latency
+      # Ordered by expected latency: West Coast -> Central -> East Coast -> Canada
       locations:
-        - "US-CA"                 # California
-        - "US-TX"                 # Texas
-        - "US-NY"                 # New York
-        - "US"                    # Any US location
-        - "EU"                    # European fallback
+        priority_regions:
+          - geolocation: "US"         # United States (primary)
+            subregions: ["US-CA", "US-WA", "US-OR"]  # West Coast first
+          - geolocation: "US" 
+            subregions: ["US-TX", "US-CO", "US-AZ"]  # Central/Southwest
+          - geolocation: "US"
+            subregions: ["US-NY", "US-FL", "US-VA"]  # East Coast
+          - geolocation: "CA"         # Canada fallback
+            subregions: ["CA-ON", "CA-BC"]
+        fallback_regions:
+          - geolocation: "US"         # Any US location
+          - geolocation: "CA"         # Any Canada location
+          - geolocation: "MX"         # Mexico (North America)
+        blocked_regions: []           # Countries to avoid
       
-      # Instance specifications
+      # System requirements
       system:
-        min_ram_gb: 16            # Minimum system RAM
-        min_disk_gb: 50           # Minimum disk space
-        cpu_cores: 4              # Minimum CPU cores
+        min_ram_gb: 16               # Minimum system RAM
+        min_disk_gb: 50              # Minimum disk space
+        cpu_cores: 4                 # Minimum CPU cores
     
     # Template configuration for launched instances
     template:
       image: "your-registry/june-gpu-multi:latest"
-      docker_options: "-p 8000:8000 -p 8001:8001 --gpus all"
+      docker_options: "-p 8000:8000 -p 8001:8001 --gpus all --restart unless-stopped"
       env_vars:
         STT_PORT: "8001"
         TTS_PORT: "8000"
         CUDA_VISIBLE_DEVICES: "0"
         WHISPER_DEVICE: "cuda"
+        WHISPER_COMPUTE_TYPE: "float16"
         TTS_CACHE_PATH: "/app/cache"
+        TTS_HOME: "/app/models"
         COQUI_TOS_AGREED: "1"
+        PYTHONPATH: "/app:/app/stt:/app/tts"
       onstart_script: |
         #!/bin/bash
-        echo "[VAST] Starting June GPU Multi-Service Container"
-        nvidia-smi
+        echo "[VAST-NA] Starting June GPU Multi-Service Container (North America)"
+        echo "[VAST-NA] Location: $(curl -s ipinfo.io/region 2>/dev/null || echo 'Unknown')"
+        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits
         /app/start-services.sh
     
     # Auto-scaling configuration
     autoscale:
-      min_instances: 0            # Scale to zero when no demand
-      max_instances: 3            # Maximum concurrent instances
-      scale_up_threshold: 0.8     # CPU/GPU usage to scale up
-      scale_down_delay: 300       # Seconds before scaling down
-      instance_warmup_time: 180   # Seconds to warm up instance
+      min_instances: 0              # Scale to zero when no demand
+      max_instances: 5              # Maximum concurrent instances
+      scale_up_threshold: 0.8       # Resource usage to trigger scale up
+      scale_down_delay: 300         # Seconds before scaling down idle instances
+      instance_warmup_time: 180     # Seconds to wait for service startup
+      preemptible_allowed: false    # Avoid spot instances for reliability
     
-    # Health monitoring
+    # Health monitoring and failover
     health:
-      startup_timeout: 300        # Max seconds for service startup
-      health_check_interval: 30   # Seconds between health checks
-      failure_threshold: 3        # Failed checks before restart
-      success_threshold: 2        # Successful checks to mark healthy
+      startup_timeout: 300          # Max seconds for service startup
+      health_check_interval: 30     # Seconds between health checks
+      failure_threshold: 3          # Failed checks before restart
+      success_threshold: 2          # Successful checks to mark healthy
       endpoints:
-        - "http://localhost:8000/healthz"  # TTS health
-        - "http://localhost:8001/healthz"  # STT health
+        - path: "/healthz"
+          port: 8000
+          service: "tts"
+        - path: "/healthz"
+          port: 8001
+          service: "stt"
+      latency_check:
+        enabled: true               # Test network latency during selection
+        max_acceptable_ms: 50       # Maximum acceptable ping time
+        timeout_seconds: 5          # Timeout for latency tests
 ---
-# Selection algorithm weights
+# Selection algorithm weights optimized for North America
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -82,23 +111,55 @@ metadata:
 data:
   weights.yaml: |
     # Scoring weights for instance selection (total should equal 1.0)
+    # Optimized for low-latency North America deployment
     scoring:
-      price: 0.30                 # 30% weight on price
-      performance: 0.25           # 25% weight on speed/reliability
-      gpu_match: 0.20             # 20% weight on GPU type match
-      location: 0.15              # 15% weight on location preference
-      availability: 0.10          # 10% weight on current availability
+      latency: 0.35                # 35% weight on network latency (increased for NA)
+      price: 0.25                  # 25% weight on price
+      gpu_match: 0.20              # 20% weight on GPU type match
+      reliability: 0.15            # 15% weight on host reliability
+      availability: 0.05           # 5% weight on current availability
     
-    # Bonus/penalty modifiers
+    # Bonus/penalty modifiers for North America optimization
     modifiers:
-      exact_gpu_match: +0.15      # Bonus for exact GPU type match
-      verified_host: +0.10        # Bonus for verified hosts
-      new_host: -0.05             # Small penalty for new/unproven hosts
-      high_latency: -0.20         # Penalty for high network latency
+      us_west_coast: +0.20         # Major bonus for US West Coast (lowest latency)
+      us_central: +0.15            # Good bonus for US Central
+      us_east_coast: +0.10         # Moderate bonus for US East Coast
+      canada: +0.05                # Small bonus for Canada
+      exact_gpu_match: +0.15       # Bonus for exact GPU type match
+      verified_host: +0.10         # Bonus for verified hosts
+      high_bandwidth: +0.08        # Bonus for >200 Mbps connections
+      datacenter_tier: +0.05       # Bonus for tier-1 datacenters
+      new_host: -0.05              # Small penalty for new/unproven hosts
+      high_latency: -0.30          # Major penalty for >50ms latency
+      non_na_location: -0.25       # Penalty for non-North America locations
+    
+    # API query construction (maps to Vast.ai search offers parameters)
+    api_query:
+      base_filters:
+        rentable: true              # rentable=true
+        verified: true              # verified=true (recommended)
+        gpu_name: "RTX_3060"        # gpu_name=RTX_3060
+        gpu_ram_gte: 12             # gpu_ram>=12
+        dph_lte: 0.50               # dph<=0.50
+        reliability_gte: 0.95       # reliability>=0.95
+        inet_down_gte: 100          # inet_down>=100
+        inet_up_gte: 100            # inet_up>=100
+        geolocation_in: ["US", "CA", "MX"]  # North America focus
+      
+      ordering:
+        primary: "dph+"             # Price ascending (cheapest first)
+        secondary: "reliability-"   # Reliability descending (most reliable)
+        tertiary: "inet_down-"      # Bandwidth descending (fastest)
+      
+      pagination:
+        limit: 100                  # Fetch up to 100 offers for selection
+        timeout_seconds: 10         # API request timeout
     
     # Blacklist criteria (automatic exclusion)
     blacklist:
-      max_price_per_hour: 1.00    # Hard limit on price
-      min_reliability: 0.80       # Hard limit on reliability
-      blocked_locations: []       # List of blocked countries/regions
-      blocked_hosts: []           # List of specific host IDs to avoid
+      max_price_per_hour: 1.00      # Hard limit on price
+      min_reliability: 0.80         # Hard minimum reliability
+      max_latency_ms: 100           # Hard maximum network latency
+      blocked_locations: ["RU", "CN", "KP"]  # Blocked countries
+      blocked_hosts: []             # List of specific host IDs to avoid
+      min_uptime_days: 30           # Require at least 30 days uptime history
