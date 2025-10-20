@@ -1,12 +1,16 @@
 # June TTS Service Dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-TTS==0.19.1
+# Upgrade to support XTTS v2
+TTS>=0.22.0
 livekit==0.11.1
 httpx==0.27.2
-# livekit-api removed to avoid aiohttp conflict with Coqui TTS 0.19.1
-torch>=2.0.0
-numpy==1.22.0
+# Match PyTorch to CUDA 11.8 (runtime image)
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+--index-url https://download.pytorch.org/whl/cu118
+numpy<2.0
 scipy==1.11.3
 soundfile==0.12.1
 pydantic==2.5.0
