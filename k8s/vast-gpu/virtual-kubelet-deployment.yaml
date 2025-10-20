@@ -23,19 +23,11 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: virtual-kubelet
-        image: your-registry/virtual-kubelet-vast:latest
+        image: ozzuworld/virtual-kubelet-vast:latest
         env:
         # Kubelet configuration
         - name: KUBELET_PORT
           value: "10250"
-        - name: APISERVER_CERT_LOCATION
-          value: "/etc/kubernetes/certs"
-        - name: APISERVER_KEY_LOCATION
-          value: "/etc/kubernetes/certs"
-        - name: VKUBELET_POD_IP
-          valueFrom:
-            fieldRef:
-              fieldPath: status.podIP
         - name: NODENAME
           value: "vast-gpu-node-na-1"  # North America node identifier
         
@@ -58,35 +50,6 @@ spec:
         - name: VAST_BLOCKED_REGIONS
           value: "RU,CN,KP"  # Blocked countries
         
-        # Instance selection criteria from config.env
-        - name: VAST_GPU_TYPE
-          valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: vast-gpu-type
-              optional: true
-        - name: VAST_MAX_PRICE_PER_HOUR
-          valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: vast-max-price
-              optional: true
-        - name: VAST_MIN_RELIABILITY
-          valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: vast-reliability
-              optional: true
-        
-        # Service configuration
-        - name: CLUSTER_DOMAIN
-          value: "cluster.local"
-        - name: ORCHESTRATOR_URL
-          valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: orchestrator-url
-        
         # Performance optimization
         - name: VAST_LATENCY_CHECK_ENABLED
           value: "true"
@@ -97,7 +60,7 @@ spec:
         
         # Template configuration
         - name: VAST_CONTAINER_IMAGE
-          value: "your-registry/june-gpu-multi:latest"
+          value: "ozzuworld/june-gpu-multi:latest"
         - name: VAST_DOCKER_OPTIONS
           value: "-p 8000:8000 -p 8001:8001 --gpus all --restart unless-stopped"
         
