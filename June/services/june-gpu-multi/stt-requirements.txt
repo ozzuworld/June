@@ -2,8 +2,8 @@ fastapi==0.104.1
 uvicorn==0.24.0
 httpx==0.25.2
 openai-whisper==20231117
-livekit==0.11.3
-livekit-api==0.5.8
+livekit==1.0.16
+livekit-api==1.0.6
 websockets==12.0
 librosa==0.10.1
 soundfile==0.12.1
