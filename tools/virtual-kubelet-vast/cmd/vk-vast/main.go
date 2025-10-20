@@ -4,16 +4,17 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast"
-	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
 	logutil "github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/node"
 	"github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -59,43 +60,66 @@ func main() {
 		logutil.G(ctx).WithError(err).Fatal("Failed to initialize Vast.ai provider")
 	}
 
-	nodeOpts := []node.NodeOpt{
-		node.WithClient(clientset),
-		node.WithNodeName(nodeName),
-		node.WithOperatingSystem("Linux"),
-		node.WithTaints([]corev1.Taint{
-			{Key: "vast.ai/gpu", Value: "true", Effect: corev1.TaintEffectNoSchedule},
-			{Key: "virtual-kubelet.io/provider", Value: "vast", Effect: corev1.TaintEffectNoSchedule},
-		}),
-		node.WithNodeLabels(map[string]string{
-			"provider":                      "vast.ai",
-			"gpu.nvidia.com/class":         "RTX3060",
-			"node.kubernetes.io/instance-type": "vast.gpu",
-			"region":                       "north-america",
-			"kubernetes.io/arch":           "amd64",
-			"kubernetes.io/os":             "linux",
-		}),
+	// Build kube Node object for VK v1.11
+	kubeNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Labels: map[string]string{
+				"provider":                      "vast.ai",
+				"gpu.nvidia.com/class":         "RTX3060",
+				"node.kubernetes.io/instance-type": "vast.gpu",
+				"region":                       "north-america",
+				"kubernetes.io/arch":           "amd64",
+				"kubernetes.io/os":             "linux",
+			},
+		},
+		Spec: corev1.NodeSpec{
+			Taints: []corev1.Taint{
+				{Key: "vast.ai/gpu", Value: "true", Effect: corev1.TaintEffectNoSchedule},
+				{Key: "virtual-kubelet.io/provider", Value: "vast", Effect: corev1.TaintEffectNoSchedule},
+			},
+		},
 	}
 
-	nodeRunner, err := node.NewNode(provider, nodeOpts...)
+	nodesClient := clientset.CoreV1().Nodes()
+	nodeController, err := node.NewNodeController(provider, kubeNode, nodesClient)
 	if err != nil {
 		logutil.G(ctx).WithError(err).Fatal("Failed to create node controller")
 	}
 
+	// HTTP server for VK routes
+	mux := http.NewServeMux()
+	api.AttachPodRoutes(provider, mux)
+	api.AttachMetricsRoutes(ctx, nodeController, mux, "")
+
 	go func() {
-		if err := api.AttachMetricsRoutes(ctx, nodeRunner, nil, ":10255"); err != nil {
-			logutil.G(ctx).WithError(err).Error("Failed to start metrics server")
+		srv := &http.Server{Addr: ":10255", Handler: mux}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logutil.G(ctx).WithError(err).Error("HTTP server error")
 		}
 	}()
 
 	logutil.G(ctx).Info(fmt.Sprintf("Starting Virtual Kubelet Vast.ai provider for node: %s", nodeName))
-	logutil.G(ctx).Info("Optimized for North America GPU deployment with cost-effective RTX 3060 sharing")
 
-	if err := nodeRunner.Run(ctx); err != nil {
-		if !errdefs.IsAborted(err) {
-			logutil.G(ctx).WithError(err).Fatal("Node runner exited with error")
+	// Run node controller
+	go func() {
+		if err := nodeController.Run(ctx); err != nil {
+			logutil.G(ctx).WithError(err).Error("NodeController exited with error")
 		}
+	}()
+
+	select {
+	case <-nodeController.Ready():
+		logutil.G(ctx).Info("NodeController ready")
+	case <-nodeController.Done():
+		if err := nodeController.Err(); err != nil {
+			logutil.G(ctx).WithError(err).Fatal("NodeController failed")
+		}
+		logutil.G(ctx).Info("NodeController stopped")
+		return
 	}
+
+	<-ctx.Done()
 	logutil.G(ctx).Info("Virtual Kubelet Vast.ai provider stopped")
 }
 
