@@ -126,6 +126,7 @@ class VirtualKubelet:
         self.k8s_client: Optional[client.CoreV1Api] = None
         self.pod_instances: Dict[str, Dict] = {}  # pod_name -> instance_info
         self.running = False
+        self._heartbeat_task: Optional[asyncio.Task] = None
         
     async def initialize(self):
         """Initialize the Virtual Kubelet"""
@@ -237,6 +238,71 @@ class VirtualKubelet:
                 logger.error("Failed to register node", error=str(e))
                 raise
     
+    async def update_node_status(self):
+        """Update node status to show it's ready"""
+        try:
+            # Get current node
+            current_node = self.k8s_client.read_node(name=self.node_name)
+            
+            # Update the Ready condition with current timestamp
+            current_node.status.conditions = [
+                client.V1NodeCondition(
+                    type="Ready",
+                    status="True",
+                    reason="VirtualKubeletReady",
+                    message="Virtual Kubelet is ready",
+                    last_heartbeat_time=datetime.now(timezone.utc),
+                    last_transition_time=datetime.now(timezone.utc)
+                ),
+                client.V1NodeCondition(
+                    type="MemoryPressure",
+                    status="False",
+                    reason="VirtualKubeletSufficient",
+                    message="Virtual Kubelet has sufficient memory",
+                    last_heartbeat_time=datetime.now(timezone.utc),
+                    last_transition_time=datetime.now(timezone.utc)
+                ),
+                client.V1NodeCondition(
+                    type="DiskPressure",
+                    status="False",
+                    reason="VirtualKubeletNoDiskPressure",
+                    message="Virtual Kubelet has no disk pressure",
+                    last_heartbeat_time=datetime.now(timezone.utc),
+                    last_transition_time=datetime.now(timezone.utc)
+                ),
+                client.V1NodeCondition(
+                    type="PIDPressure",
+                    status="False",
+                    reason="VirtualKubeletNoPIDPressure",
+                    message="Virtual Kubelet has no PID pressure",
+                    last_heartbeat_time=datetime.now(timezone.utc),
+                    last_transition_time=datetime.now(timezone.utc)
+                )
+            ]
+            
+            # Update node status
+            self.k8s_client.patch_node_status(
+                name=self.node_name,
+                body=current_node
+            )
+            
+            logger.debug("Node status updated successfully")
+            
+        except Exception as e:
+            logger.error("Failed to update node status", error=str(e))
+    
+    async def heartbeat_loop(self):
+        """Periodic heartbeat to update node status"""
+        logger.info("Starting node heartbeat loop")
+        
+        while self.running:
+            try:
+                await self.update_node_status()
+                await asyncio.sleep(30)  # Update every 30 seconds
+            except Exception as e:
+                logger.error("Error in heartbeat loop", error=str(e))
+                await asyncio.sleep(5)  # Short delay before retry
+    
     async def watch_pods(self):
         """Watch for pods scheduled to this node"""
         logger.info("Starting pod watcher", node_name=self.node_name)
@@ -284,7 +350,9 @@ class VirtualKubelet:
         
         try:
             # Get GPU requirements from annotations
-            gpu_type = pod.metadata.annotations.get("vast.ai/gpu-type", "RTX3060")
+            gpu_type = "RTX3060"
+            if pod.metadata.annotations:
+                gpu_type = pod.metadata.annotations.get("vast.ai/gpu-type", "RTX3060")
             
             async with VastAIClient(self.api_key) as vast:
                 # Search for available instances
@@ -329,19 +397,16 @@ class VirtualKubelet:
     
     async def update_pod_status_running(self, pod: V1Pod, instance: Dict):
         """Update pod status to running"""
-        pod_status = V1PodStatus(
-            phase="Running",
-            pod_ip=instance.get("public_ip"),
-            conditions=[
-                client.V1PodCondition(
-                    type="Ready",
-                    status="True",
-                    last_transition_time=datetime.now(timezone.utc)
-                )
-            ],
-            container_statuses=[
-                V1ContainerStatus(
+        try:
+            # Create container statuses with safe image handling
+            container_statuses = []
+            for container in pod.spec.containers:
+                # Handle missing or None image field
+                image = container.image or "unknown:latest"
+                container_status = V1ContainerStatus(
                     name=container.name,
+                    image=image,
+                    image_id=f"docker-pullable://{image}",
                     ready=True,
                     restart_count=0,
                     state=client.V1ContainerState(
@@ -349,44 +414,87 @@ class VirtualKubelet:
                             started_at=datetime.now(timezone.utc)
                         )
                     )
-                ) for container in pod.spec.containers
-            ]
-        )
-        
-        try:
-            pod.status = pod_status
+                )
+                container_statuses.append(container_status)
+                
+            pod_status = V1PodStatus(
+                phase="Running",
+                pod_ip=instance.get("public_ip"),
+                host_ip=instance.get("public_ip"),
+                start_time=datetime.now(timezone.utc),
+                conditions=[
+                    client.V1PodCondition(
+                        type="Initialized",
+                        status="True",
+                        last_transition_time=datetime.now(timezone.utc)
+                    ),
+                    client.V1PodCondition(
+                        type="Ready",
+                        status="True",
+                        last_transition_time=datetime.now(timezone.utc)
+                    ),
+                    client.V1PodCondition(
+                        type="ContainersReady",
+                        status="True",
+                        last_transition_time=datetime.now(timezone.utc)
+                    ),
+                    client.V1PodCondition(
+                        type="PodScheduled",
+                        status="True",
+                        last_transition_time=datetime.now(timezone.utc)
+                    )
+                ],
+                container_statuses=container_statuses
+            )
+            
+            # Update pod status
             self.k8s_client.patch_namespaced_pod_status(
                 name=pod.metadata.name,
                 namespace=pod.metadata.namespace,
-                body=pod
+                body=client.V1Pod(status=pod_status)
             )
+            
             logger.info("Pod status updated to running", pod_name=pod.metadata.name)
+            
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
     
     async def update_pod_status_failed(self, pod: V1Pod, reason: str):
         """Update pod status to failed"""
-        pod_status = V1PodStatus(
-            phase="Failed",
-            reason=reason,
-            message=f"Failed to create Vast.ai instance: {reason}"
-        )
-        
         try:
-            pod.status = pod_status
+            pod_status = V1PodStatus(
+                phase="Failed",
+                reason=reason,
+                message=f"Failed to create Vast.ai instance: {reason}",
+                start_time=datetime.now(timezone.utc),
+                conditions=[
+                    client.V1PodCondition(
+                        type="PodScheduled",
+                        status="True",
+                        last_transition_time=datetime.now(timezone.utc)
+                    )
+                ]
+            )
+            
             self.k8s_client.patch_namespaced_pod_status(
                 name=pod.metadata.name,
-                namespace=pod.metadata.namespace, 
-                body=pod
+                namespace=pod.metadata.namespace,
+                body=client.V1Pod(status=pod_status)
             )
+            
             logger.info("Pod status updated to failed", pod_name=pod.metadata.name, reason=reason)
+            
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
     
     async def update_pod_status(self, pod: V1Pod):
         """Handle pod status updates"""
-        # This would check instance status and update accordingly
-        pass
+        # Check if we have an instance for this pod
+        pod_name = pod.metadata.name
+        if pod_name in self.pod_instances:
+            instance = self.pod_instances[pod_name]
+            # Update status based on instance state
+            await self.update_pod_status_running(pod, instance)
     
     async def start_health_server(self):
         """Start HTTP health check server"""
@@ -420,17 +528,26 @@ class VirtualKubelet:
             # Start health server
             await self.start_health_server()
             
-            # Start pod watcher
+            # Start heartbeat loop
+            self._heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+            logger.info("Node heartbeat loop started")
+            
+            # Start pod watcher (this will block)
             await self.watch_pods()
             
         except Exception as e:
             logger.error("Virtual Kubelet crashed", error=str(e))
             raise
+        finally:
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
     
     def stop(self):
         """Stop the Virtual Kubelet"""
         logger.info("Stopping Virtual Kubelet")
         self.running = False
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
 
 
 async def main():
