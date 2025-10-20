@@ -117,12 +117,49 @@ func (c *VastClient) SearchInstances(ctx context.Context, criteria SearchCriteri
 	return offers, nil
 }
 
+// GetInstance retrieves instance details
+func (c *VastClient) GetInstance(ctx context.Context, instanceID int) (*Instance, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", 
+		fmt.Sprintf("%s/instances/%d", c.baseURL, instanceID), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get instance request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get instance failed: %d %s", resp.StatusCode, string(body))
+	}
+
+	var instance Instance
+	if err := json.NewDecoder(resp.Body).Decode(&instance); err != nil {
+		return nil, fmt.Errorf("failed to decode instance: %w", err)
+	}
+
+	return &instance, nil
+}
+
+// GetInstanceStatus returns the current status of an instance
+func (c *VastClient) GetInstanceStatus(ctx context.Context, instanceID int) (InstanceStatus, error) {
+	instance, err := c.GetInstance(ctx, instanceID)
+	if err != nil {
+		return InstanceStatusUnknown, err
+	}
+	return instance.Status, nil
+}
+
 // CreateInstance launches a new instance on Vast.ai
 func (c *VastClient) CreateInstance(ctx context.Context, offer InstanceOffer, pod *corev1.Pod) (*Instance, error) {
 	// Build creation request
 	createReq := CreateInstanceRequest{
 		ClientID:      "virtual-kubelet-june",
-		Image:         "ozzuworld/june-gpu-multi:latest", // TODO: extract from pod spec
+		Image:         "ozzuworld/june-gpu-multi:latest",
 		DiskGB:        50,
 		DockerOptions: "-p 8000:8000 -p 8001:8001 --gpus all --restart unless-stopped",
 		EnvVars: map[string]string{
@@ -243,6 +280,37 @@ func (c *VastClient) checkEndpoint(ctx context.Context, url string) bool {
 	defer resp.Body.Close()
 
 	return resp.StatusCode == 200
+}
+
+// UpdateInstance updates an existing instance (limited support)
+func (c *VastClient) UpdateInstance(ctx context.Context, instanceID int, pod *corev1.Pod) error {
+	// Vast.ai has limited update capabilities
+	// Most updates require destroying and recreating the instance
+	return fmt.Errorf("instance updates not supported, recreate pod to get new instance")
+}
+
+// DestroyInstance terminates an instance
+func (c *VastClient) DestroyInstance(ctx context.Context, instanceID int) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", 
+		fmt.Sprintf("%s/instances/%d/", c.baseURL, instanceID), nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("destroy instance request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 404 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("destroy instance failed: %d %s", resp.StatusCode, string(body))
+	}
+
+	klog.Infof("Instance %d destroyed", instanceID)
+	return nil
 }
 
 // GetInstanceLogs retrieves logs from an instance
