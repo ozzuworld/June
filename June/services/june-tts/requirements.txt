@@ -1,12 +1,16 @@
 # June TTS Service Dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-TTS==0.19.1
+# Upgrade to support XTTS v2
+TTS>=0.22.0
 livekit==0.11.1
 httpx==0.27.2
-# livekit-api removed to avoid aiohttp conflict with Coqui TTS 0.19.1
-torch>=2.0.0
-numpy==1.22.0
+# Numpy pinned for compatibility
+numpy<2.0
 scipy==1.11.3
 soundfile==0.12.1
 pydantic==2.5.0
+# XTTS v2 compatible transformer stack
+transformers==4.36.2
+sentencepiece>=0.1.99,<0.2.0
+tokenizers<0.20

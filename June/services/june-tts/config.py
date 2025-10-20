@@ -18,12 +18,19 @@ class Config:
     # LiveKit Configuration (Internal Kubernetes URLs)
     LIVEKIT_WS_URL: str = os.getenv(
         "LIVEKIT_WS_URL", 
-        "ws://livekit-livekit-server:80"
+        # Standardize default to june-services namespace
+        "ws://livekit-livekit-server.june-services.svc.cluster.local:80"
     )
     LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "devkey")
     LIVEKIT_API_SECRET: str = os.getenv(
         "LIVEKIT_API_SECRET", 
         "secret"
+    )
+
+    # Orchestrator URL (standardized)
+    ORCHESTRATOR_URL: str = os.getenv(
+        "ORCHESTRATOR_URL",
+        "http://june-orchestrator.june-services.svc.cluster.local:8080"
     )
     
     # Audio Configuration

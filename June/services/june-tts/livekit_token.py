@@ -8,13 +8,14 @@ from config import config
 logger = logging.getLogger("june-tts")
 
 async def get_livekit_token(identity: str) -> tuple[str, str]:
-    base = config.LIVEKIT_ORCHESTRATOR_URL or os.getenv('ORCHESTRATOR_URL', 'http://june-orchestrator:8080')
+    # Standardized: prefer env ORCHESTRATOR_URL, fallback to config.ORCHESTRATOR_URL, then service DNS
+    base = os.getenv("ORCHESTRATOR_URL", getattr(config, "ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080"))
     url = f"{base}/api/livekit/token"
     async with httpx.AsyncClient(timeout=5.0) as client:
         r = await client.post(url, json={"service_identity": identity})
         r.raise_for_status()
         data = r.json()
-        return data.get("ws_url") or config.LIVEKIT_WS_URL, data["token"]
+        return data.get("ws_url") or getattr(config, "LIVEKIT_WS_URL", "ws://livekit-livekit-server:80"), data["token"]
 
 async def connect_room_as_publisher(room: rtc.Room, identity: str) -> None:
     ws_url, token = await get_livekit_token(identity)
