@@ -26,6 +26,17 @@ type VastClient struct {
 	baseURL    string
 }
 
+// ContainerLogOpts for compatibility with VK interface
+type ContainerLogOpts struct {
+	Tail         int
+	SinceSeconds *int64
+	SinceTime    *time.Time
+	Timestamps   bool
+	Follow       bool
+	Previous     bool
+	LimitBytes   *int64
+}
+
 // NewVastClient creates a new Vast.ai API client
 func NewVastClient(apiKey string) (*VastClient, error) {
 	if apiKey == "" {
@@ -134,6 +145,7 @@ func (c *VastClient) CreateInstance(ctx context.Context, offer InstanceOffer, po
 			"COQUI_TOS_AGREED":      "1",
 		},
 		OnStart: "#!/bin/bash\necho '[VAST-K8S] Starting June GPU Multi-Service'\nnvidia-smi\n/app/start-services.sh",
+		RunType: "ssh",
 	}
 
 	body, err := json.Marshal(createReq)

@@ -3,6 +3,7 @@ package vast
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,7 +11,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
-	"github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
+	vapi "github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
 )
 
 // EndpointManager handles updating Kubernetes service endpoints for Vast.ai instances
@@ -39,7 +40,7 @@ func NewEndpointManager() *EndpointManager {
 }
 
 // UpdatePodEndpoints updates the service endpoints for STT and TTS services
-func (e *EndpointManager) UpdatePodEndpoints(ctx context.Context, pod *corev1.Pod, instance *api.Instance) error {
+func (e *EndpointManager) UpdatePodEndpoints(ctx context.Context, pod *corev1.Pod, instance *vapi.Instance) error {
 	if e.clientset == nil {
 		return fmt.Errorf("kubernetes client not available")
 	}

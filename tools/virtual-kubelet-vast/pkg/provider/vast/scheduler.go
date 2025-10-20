@@ -10,12 +10,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
+	vapi "github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
 )
 
 // InstanceScheduler handles intelligent selection of Vast.ai instances
 type InstanceScheduler struct {
-	client  *api.VastClient
+	client  *vapi.VastClient
 	config  *SchedulerConfig
 	weights *ScoringWeights
 }
@@ -65,7 +65,7 @@ type ScoringWeights struct {
 }
 
 // NewInstanceScheduler creates a new scheduler with North America optimized defaults
-func NewInstanceScheduler(client *api.VastClient) *InstanceScheduler {
+func NewInstanceScheduler(client *vapi.VastClient) *InstanceScheduler {
 	return &InstanceScheduler{
 		client: client,
 		config: &SchedulerConfig{
@@ -104,12 +104,12 @@ func NewInstanceScheduler(client *api.VastClient) *InstanceScheduler {
 }
 
 // SelectAndLaunchInstance finds the best instance and launches it
-func (s *InstanceScheduler) SelectAndLaunchInstance(ctx context.Context, pod *corev1.Pod) (*api.Instance, error) {
+func (s *InstanceScheduler) SelectAndLaunchInstance(ctx context.Context, pod *corev1.Pod) (*vapi.Instance, error) {
 	log := klog.FromContext(ctx)
 	log.Info("Selecting Vast.ai instance for North America deployment")
 
 	// Build search criteria
-	criteria := api.SearchCriteria{
+	criteria := vapi.SearchCriteria{
 		GPUType:          s.config.GPUType,
 		MinGPUMemoryGB:   s.config.MinGPUMemoryGB,
 		MaxPricePerHour:  s.config.MaxPricePerHour,
@@ -153,8 +153,8 @@ func (s *InstanceScheduler) SelectAndLaunchInstance(ctx context.Context, pod *co
 }
 
 // selectBestInstance scores offers and returns the best match
-func (s *InstanceScheduler) selectBestInstance(ctx context.Context, offers []api.InstanceOffer) (*api.InstanceScore, error) {
-	var scores []api.InstanceScore
+func (s *InstanceScheduler) selectBestInstance(ctx context.Context, offers []vapi.InstanceOffer) (*vapi.InstanceScore, error) {
+	var scores []vapi.InstanceScore
 
 	for _, offer := range offers {
 		is := s.scoreInstance(ctx, offer)
@@ -180,7 +180,7 @@ func (s *InstanceScheduler) selectBestInstance(ctx context.Context, offers []api
 }
 
 // scoreInstance calculates a score for an instance offer
-func (s *InstanceScheduler) scoreInstance(ctx context.Context, offer api.InstanceOffer) api.InstanceScore {
+func (s *InstanceScheduler) scoreInstance(ctx context.Context, offer vapi.InstanceOffer) vapi.InstanceScore {
 	score := 0.0
 	notes := []string{}
 
@@ -250,5 +250,5 @@ func (s *InstanceScheduler) scoreInstance(ctx context.Context, offer api.Instanc
 		notes = append(notes, "new host penalty")
 	}
 
-	return api.InstanceScore{Offer: offer, Score: score, Notes: notes}
+	return vapi.InstanceScore{Offer: offer, Score: score, Notes: notes}
 }

@@ -7,20 +7,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
 	pkglog "github.com/virtual-kubelet/virtual-kubelet/log"
-	"github.com/virtual-kubelet/virtual-kubelet/node/api"
-	trace "github.com/virtual-kubelet/virtual-kubelet/trace"
+	vkapi "github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
+	vapi "github.com/ozzuworld/June/tools/virtual-kubelet-vast/pkg/provider/vast/api"
 )
 
+// Summary for stats (simplified to avoid kubelet internals)
+type Summary struct {
+	Node *NodeStats `json:"node"`
+}
+
+type NodeStats struct {
+	NodeName  string `json:"nodeName"`
+	StartTime string `json:"startTime"`
+}
+
 type VastProvider struct {
-	client     *api.VastClient
+	client     *vapi.VastClient
 	nodeName   string
-	instances  map[string]*api.Instance  // podName -> instance
+	instances  map[string]*vapi.Instance  // podName -> instance
 	mu         sync.RWMutex
 	scheduler  *InstanceScheduler
 	endpoints  *EndpointManager
@@ -30,7 +40,7 @@ type VastProvider struct {
 func NewVastProvider(ctx context.Context, apiKey, nodeName string) (*VastProvider, error) {
 	log := pkglog.G(ctx).WithField("provider", "vast.ai")
 	
-	client, err := api.NewVastClient(apiKey)
+	client, err := vapi.NewVastClient(apiKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Vast.ai client: %w", err)
 	}
@@ -45,7 +55,7 @@ func NewVastProvider(ctx context.Context, apiKey, nodeName string) (*VastProvide
 	p := &VastProvider{
 		client:    client,
 		nodeName:  nodeName,
-		instances: make(map[string]*api.Instance),
+		instances: make(map[string]*vapi.Instance),
 	}
 
 	// Initialize scheduler
@@ -247,7 +257,7 @@ func (p *VastProvider) GetPod(ctx context.Context, namespace, name string) (*cor
 			ContainerStatuses: []corev1.ContainerStatus{
 				{
 					Name:  "june-multi-gpu",
-					Ready: status == api.InstanceStatusRunning,
+					Ready: status == vapi.InstanceStatusRunning,
 					State: corev1.ContainerState{
 						Running: &corev1.ContainerStateRunning{
 							StartedAt: metav1.Now(),
@@ -277,7 +287,6 @@ func (p *VastProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 
 	var pods []*corev1.Pod
 	for podName := range p.instances {
-		// Extract namespace from pod name if needed
 		pod, err := p.GetPod(ctx, "default", podName)
 		if err != nil {
 			continue
@@ -289,12 +298,12 @@ func (p *VastProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 }
 
 // RunInContainer executes a command in a container in the pod
-func (p *VastProvider) RunInContainer(ctx context.Context, namespace, podName, containerName string, cmd []string, attach api.AttachIO) error {
+func (p *VastProvider) RunInContainer(ctx context.Context, namespace, podName, containerName string, cmd []string, attach vkapi.AttachIO) error {
 	return fmt.Errorf("RunInContainer not supported for Vast.ai provider")
 }
 
 // GetPodLogs retrieves the logs of a container of the specified pod
-func (p *VastProvider) GetPodLogs(ctx context.Context, namespace, podName, containerName string, opts api.ContainerLogOpts) (io.ReadCloser, error) {
+func (p *VastProvider) GetPodLogs(ctx context.Context, namespace, podName, containerName string, opts vkapi.ContainerLogOpts) (io.ReadCloser, error) {
 	p.mu.RLock()
 	instance, exists := p.instances[podName]
 	p.mu.RUnlock()
@@ -303,12 +312,17 @@ func (p *VastProvider) GetPodLogs(ctx context.Context, namespace, podName, conta
 		return nil, errdefs.NotFound("pod not found")
 	}
 
-	return p.client.GetInstanceLogs(ctx, instance.ID, opts)
+	return p.client.GetInstanceLogs(ctx, instance.ID, vapi.ContainerLogOpts{})
 }
 
 // GetStatsSummary returns the stats for all pods known by this provider
-func (p *VastProvider) GetStatsSummary(ctx context.Context) (*statsv1alpha1.Summary, error) {
-	return &statsv1alpha1.Summary{}, nil
+func (p *VastProvider) GetStatsSummary(ctx context.Context) (*Summary, error) {
+	return &Summary{
+		Node: &NodeStats{
+			NodeName:  p.nodeName,
+			StartTime: time.Now().Format(time.RFC3339),
+		},
+	}, nil
 }
 
 // NotifyPods instructs the notifier to call the passed in function when the pod status changes
@@ -331,7 +345,7 @@ func (p *VastProvider) NotifyPods(ctx context.Context, notifierFunc func(*corev1
 
 func (p *VastProvider) checkAndNotifyPodStatuses(ctx context.Context, notifierFunc func(*corev1.Pod)) {
 	p.mu.RLock()
-	instances := make(map[string]*api.Instance)
+	instances := make(map[string]*vapi.Instance)
 	for k, v := range p.instances {
 		instances[k] = v
 	}
@@ -348,29 +362,28 @@ func (p *VastProvider) checkAndNotifyPodStatuses(ctx context.Context, notifierFu
 			continue
 		}
 
-		// Update pod status based on instance status
 		pod.Status.Phase = p.convertInstanceStatusToPodPhase(status)
 		notifierFunc(pod)
 	}
 }
 
-func (p *VastProvider) convertInstanceStatusToPodPhase(status api.InstanceStatus) corev1.PodPhase {
+func (p *VastProvider) convertInstanceStatusToPodPhase(status vapi.InstanceStatus) corev1.PodPhase {
 	switch status {
-	case api.InstanceStatusRunning:
+	case vapi.InstanceStatusRunning:
 		return corev1.PodRunning
-	case api.InstanceStatusStarting:
+	case vapi.InstanceStatusStarting:
 		return corev1.PodPending
-	case api.InstanceStatusStopped:
+	case vapi.InstanceStatusStopped:
 		return corev1.PodSucceeded
-	case api.InstanceStatusFailed:
+	case vapi.InstanceStatusFailed:
 		return corev1.PodFailed
 	default:
 		return corev1.PodPending
 	}
 }
 
-func (p *VastProvider) convertInstanceStatusToConditionStatus(status api.InstanceStatus) corev1.ConditionStatus {
-	if status == api.InstanceStatusRunning {
+func (p *VastProvider) convertInstanceStatusToConditionStatus(status vapi.InstanceStatus) corev1.ConditionStatus {
+	if status == vapi.InstanceStatusRunning {
 		return corev1.ConditionTrue
 	}
 	return corev1.ConditionFalse
