@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
 Python-based Virtual Kubelet for Vast.ai GPU instances
-- Structured logging
+- Real Vast.ai instance provisioning (buy/poll/delete)
+- Structured logging with full lifecycle visibility
 - List+watch with resourceVersion handling (relist on 410)
 - Periodic poller reconcile
 - Region filter fix (US/CA/MX => North America)
-- Health endpoints
+- Health endpoints with proper timing
+- Continuous heartbeat to maintain node Ready status
 """
 
 import asyncio
 import os
 import signal
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -102,6 +105,118 @@ class VastAIClient:
             logger.error("search_offers exception", error=str(e))
             return []
 
+    async def buy_instance(self, ask_id: int, image: str = "ubuntu:22.04", disk: float = 50.0, ssh_key: str = None) -> Optional[Dict]:
+        """Buy/create an instance from a Vast.ai ask/offer"""
+        if not self.session:
+            raise RuntimeError("Client session not initialized")
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        body = {
+            "ask_id": ask_id,
+            "image": image,
+            "disk": disk,
+        }
+        if ssh_key:
+            body["ssh_key"] = ssh_key
+        
+        try:
+            async with self.session.post(f"{self.base_url}/asks/buy/", headers=headers, json=body) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    logger.info("Instance creation initiated", ask_id=ask_id, instance_id=data.get("new_contract"))
+                    return data
+                else:
+                    txt = await resp.text()
+                    logger.error("buy_instance failed", ask_id=ask_id, status_code=resp.status, response=txt)
+                    return None
+        except Exception as e:
+            logger.error("buy_instance exception", ask_id=ask_id, error=str(e))
+            return None
+
+    async def get_instance(self, instance_id: int) -> Optional[Dict]:
+        """Get details of a specific instance"""
+        if not self.session:
+            raise RuntimeError("Client session not initialized")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            async with self.session.get(f"{self.base_url}/instances/{instance_id}/", headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data
+                else:
+                    txt = await resp.text()
+                    logger.error("get_instance failed", instance_id=instance_id, status_code=resp.status, response=txt)
+                    return None
+        except Exception as e:
+            logger.error("get_instance exception", instance_id=instance_id, error=str(e))
+            return None
+
+    async def list_instances(self) -> List[Dict]:
+        """List all instances"""
+        if not self.session:
+            raise RuntimeError("Client session not initialized")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            async with self.session.get(f"{self.base_url}/instances/", headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("instances", [])
+                else:
+                    txt = await resp.text()
+                    logger.error("list_instances failed", status_code=resp.status, response=txt)
+                    return []
+        except Exception as e:
+            logger.error("list_instances exception", error=str(e))
+            return []
+
+    async def delete_instance(self, instance_id: int) -> bool:
+        """Delete/terminate an instance"""
+        if not self.session:
+            raise RuntimeError("Client session not initialized")
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            async with self.session.delete(f"{self.base_url}/instances/{instance_id}/", headers=headers) as resp:
+                if resp.status in (200, 204):
+                    logger.info("Instance deletion initiated", instance_id=instance_id)
+                    return True
+                else:
+                    txt = await resp.text()
+                    logger.error("delete_instance failed", instance_id=instance_id, status_code=resp.status, response=txt)
+                    return False
+        except Exception as e:
+            logger.error("delete_instance exception", instance_id=instance_id, error=str(e))
+            return False
+
+    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 300) -> Optional[Dict]:
+        """Poll instance until it's ready with public IP and SSH access"""
+        logger.info("Polling instance readiness", instance_id=instance_id, timeout_seconds=timeout_seconds)
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout_seconds:
+            instance = await self.get_instance(instance_id)
+            if not instance:
+                logger.warning("Instance not found during polling", instance_id=instance_id)
+                await asyncio.sleep(10)
+                continue
+            
+            status = instance.get("actual_status", "")
+            public_ip = instance.get("public_ipaddr")
+            ssh_port = instance.get("ssh_port")
+            
+            logger.debug("Instance status check", instance_id=instance_id, status=status, public_ip=public_ip, ssh_port=ssh_port)
+            
+            if status == "running" and public_ip and ssh_port:
+                logger.info("Instance ready", instance_id=instance_id, public_ip=public_ip, ssh_port=ssh_port)
+                return instance
+            
+            if status in ("failed", "terminated", "error"):
+                logger.error("Instance failed to start", instance_id=instance_id, status=status)
+                return None
+            
+            await asyncio.sleep(10)
+        
+        logger.error("Instance readiness timeout", instance_id=instance_id, timeout_seconds=timeout_seconds)
+        return None
+
 class VirtualKubelet:
     def __init__(self, node_name: str, api_key: str):
         self.node_name = node_name
@@ -120,11 +235,13 @@ class VirtualKubelet:
             config.load_incluster_config()
             self.k8s_client = client.CoreV1Api()
             logger.info("Kubernetes client initialized")
+            
             logger.info("Initializing Vast.ai client")
             self.vast_client = VastAIClient(self.api_key)
             async with self.vast_client as vast:
                 if not await vast.test_connection():
                     raise RuntimeError("Failed to connect to Vast.ai API")
+            
             await self.register_node()
             logger.info("Virtual Kubelet initialization complete")
         except Exception as e:
@@ -144,8 +261,10 @@ class VirtualKubelet:
         base_q: Dict = {"rentable": {"eq": True}, "verified": {"eq": True}}
         if price_max is not None:
             base_q["dph_total"] = {"lte": price_max}
+        
         offers = await vast.search_offers(base_q)
         offers = [o for o in offers if is_in_region(str(o.get("geolocation", "")), region)]
+        
         for gpu in gpu_names:
             needle = gpu.replace("_", " ").lower()
             exact = [o for o in offers if str(o.get("gpu_name", "")).lower() == needle]
@@ -240,12 +359,13 @@ class VirtualKubelet:
 
     async def _reconcile_pod(self, pod: V1Pod):
         phase = (pod.status and pod.status.phase) or "Pending"
-        if phase in ("Pending", "Unknown") and pod.metadata and pod.metadata.name not in self.pod_instances:
-            logger.info("Reconciling pending pod", pod_name=pod.metadata.name)
+        pod_name = pod.metadata.name if pod.metadata else "unknown"
+        if phase in ("Pending", "Unknown") and pod_name not in self.pod_instances:
+            logger.info("Reconciling pending pod", pod_name=pod_name)
             try:
                 await self.create_pod(pod)
             except Exception as e:
-                logger.error("Reconcile create_pod failed", pod_name=pod.metadata.name, error=str(e))
+                logger.error("Reconcile create_pod failed", pod_name=pod_name, error=str(e))
 
     async def watch_pods(self):
         logger.info("Starting pod watcher", node_name=self.node_name)
@@ -290,16 +410,54 @@ class VirtualKubelet:
         logger.info("Creating pod on Vast.ai", pod_name=pod_name)
         try:
             gpu_list, price_max, region = self._parse_annotations(pod)
+            
             async with VastAIClient(self.api_key) as vast:
                 offer = await self._find_offer(vast, gpu_list, price_max, region)
                 if not offer:
                     logger.error("No matching Vast.ai offers after fallback", pod_name=pod_name, requested=gpu_list, price_max=price_max, region=region)
                     await self.update_pod_status_failed(pod, "No GPU instances available")
                     return
-                instance = {"id": f"mock_instance_{offer['id']}", "status": "running", "public_ip": offer.get("public_ip", "203.0.113.1"), "ssh_port": 22, "offer": offer}
-                self.pod_instances[pod_name] = instance
+
                 logger.info("Selected Vast.ai offer", pod_name=pod_name, gpu=offer.get("gpu_name"), price=offer.get("dph_total"), location=offer.get("geolocation"), offer_id=offer.get("id"))
+
+                # Buy the instance
+                buy_result = await vast.buy_instance(offer["id"], image="ubuntu:22.04", disk=50.0)
+                if not buy_result:
+                    logger.error("Failed to buy Vast.ai instance", pod_name=pod_name, offer_id=offer.get("id"))
+                    await self.update_pod_status_failed(pod, "Failed to create instance")
+                    return
+
+                instance_id = buy_result.get("new_contract")
+                if not instance_id:
+                    logger.error("No instance ID returned from buy", pod_name=pod_name, buy_result=buy_result)
+                    await self.update_pod_status_failed(pod, "Invalid instance creation response")
+                    return
+
+                logger.info("Instance creation started", pod_name=pod_name, instance_id=instance_id)
+
+                # Poll for readiness
+                ready_instance = await vast.poll_instance_ready(instance_id, timeout_seconds=300)
+                if not ready_instance:
+                    logger.error("Instance failed to become ready", pod_name=pod_name, instance_id=instance_id)
+                    # Cleanup failed instance
+                    await vast.delete_instance(instance_id)
+                    await self.update_pod_status_failed(pod, "Instance failed to start")
+                    return
+
+                # Store instance details
+                instance = {
+                    "id": instance_id,
+                    "status": "running",
+                    "public_ip": ready_instance.get("public_ipaddr"),
+                    "ssh_port": ready_instance.get("ssh_port"),
+                    "offer": offer,
+                    "instance_data": ready_instance
+                }
+                self.pod_instances[pod_name] = instance
+
+                logger.info("Instance ready and assigned", pod_name=pod_name, instance_id=instance_id, public_ip=instance["public_ip"], ssh_port=instance["ssh_port"])
                 await self.update_pod_status_running(pod, instance)
+
         except Exception as e:
             logger.error("Error creating pod", pod_name=pod_name, error=str(e))
             await self.update_pod_status_failed(pod, str(e))
@@ -309,24 +467,72 @@ class VirtualKubelet:
         logger.info("Deleting pod from Vast.ai", pod_name=pod_name)
         if pod_name in self.pod_instances:
             instance = self.pod_instances.pop(pod_name)
-            logger.info("Pod instance removed", pod_name=pod_name, instance_id=instance["id"])
+            instance_id = instance["id"]
+            
+            try:
+                async with VastAIClient(self.api_key) as vast:
+                    success = await vast.delete_instance(instance_id)
+                    if success:
+                        logger.info("Instance terminated successfully", pod_name=pod_name, instance_id=instance_id)
+                    else:
+                        logger.error("Failed to terminate instance", pod_name=pod_name, instance_id=instance_id)
+            except Exception as e:
+                logger.error("Error terminating instance", pod_name=pod_name, instance_id=instance_id, error=str(e))
 
     async def update_pod_status_running(self, pod: V1Pod, instance: Dict):
         try:
             container_statuses = []
             for container in pod.spec.containers:
                 image = container.image or "unknown:latest"
-                container_statuses.append(V1ContainerStatus(name=container.name, image=image, image_id=f"docker-pullable://{image}", ready=True, restart_count=0, state=client.V1ContainerState(running=client.V1ContainerStateRunning(started_at=datetime.now(timezone.utc)))))
-            pod_status = V1PodStatus(phase="Running", pod_ip=instance.get("public_ip"), host_ip=instance.get("public_ip"), start_time=datetime.now(timezone.utc), conditions=[client.V1PodCondition(type="Initialized", status="True", last_transition_time=datetime.now(timezone.utc)), client.V1PodCondition(type="Ready", status="True", last_transition_time=datetime.now(timezone.utc)), client.V1PodCondition(type="ContainersReady", status="True", last_transition_time=datetime.now(timezone.utc)), client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc))], container_statuses=container_statuses)
-            self.k8s_client.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=client.V1Pod(status=pod_status))
-            logger.info("Pod status updated to running", pod_name=pod.metadata.name)
+                container_statuses.append(V1ContainerStatus(
+                    name=container.name, 
+                    image=image, 
+                    image_id=f"docker-pullable://{image}", 
+                    ready=True, 
+                    restart_count=0, 
+                    state=client.V1ContainerState(running=client.V1ContainerStateRunning(started_at=datetime.now(timezone.utc)))
+                ))
+            
+            pod_status = V1PodStatus(
+                phase="Running", 
+                pod_ip=instance.get("public_ip"), 
+                host_ip=instance.get("public_ip"), 
+                start_time=datetime.now(timezone.utc), 
+                conditions=[
+                    client.V1PodCondition(type="Initialized", status="True", last_transition_time=datetime.now(timezone.utc)), 
+                    client.V1PodCondition(type="Ready", status="True", last_transition_time=datetime.now(timezone.utc)), 
+                    client.V1PodCondition(type="ContainersReady", status="True", last_transition_time=datetime.now(timezone.utc)), 
+                    client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc))
+                ], 
+                container_statuses=container_statuses
+            )
+            
+            self.k8s_client.patch_namespaced_pod_status(
+                name=pod.metadata.name, 
+                namespace=pod.metadata.namespace, 
+                body=client.V1Pod(status=pod_status)
+            )
+            logger.info("Pod status updated to running", pod_name=pod.metadata.name, public_ip=instance.get("public_ip"))
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
 
     async def update_pod_status_failed(self, pod: V1Pod, reason: str):
         try:
-            pod_status = V1PodStatus(phase="Failed", reason=reason, message=f"Failed to create Vast.ai instance: {reason}", start_time=datetime.now(timezone.utc), conditions=[client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc))])
-            self.k8s_client.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=client.V1Pod(status=pod_status))
+            pod_status = V1PodStatus(
+                phase="Failed", 
+                reason=reason, 
+                message=f"Failed to create Vast.ai instance: {reason}", 
+                start_time=datetime.now(timezone.utc), 
+                conditions=[
+                    client.V1PodCondition(type="PodScheduled", status="True", last_transition_time=datetime.now(timezone.utc))
+                ]
+            )
+            
+            self.k8s_client.patch_namespaced_pod_status(
+                name=pod.metadata.name, 
+                namespace=pod.metadata.namespace, 
+                body=client.V1Pod(status=pod_status)
+            )
             logger.info("Pod status updated to failed", pod_name=pod.metadata.name, reason=reason)
         except Exception as e:
             logger.error("Failed to update pod status", pod_name=pod.metadata.name, error=str(e))
@@ -340,8 +546,10 @@ class VirtualKubelet:
     async def start_health_server(self):
         async def healthz(request):
             return web.json_response({"status": "healthy", "node": self.node_name})
+        
         async def readyz(request):
             return web.json_response({"status": "ready", "node": self.node_name})
+        
         app = web.Application()
         app.router.add_get('/healthz', healthz)
         app.router.add_get('/readyz', readyz)
@@ -357,9 +565,13 @@ class VirtualKubelet:
         try:
             await self.initialize()
             await self.start_health_server()
+            
+            # Start background tasks
             self._heartbeat_task = asyncio.create_task(self.heartbeat_loop())
             self._poller_task = asyncio.create_task(self.pod_poller())
             logger.info("Node heartbeat and poller started")
+            
+            # Run main watch loop
             await self.watch_pods()
         except Exception as e:
             logger.error("Virtual Kubelet crashed", error=str(e))
@@ -384,12 +596,16 @@ async def main():
     if not api_key:
         logger.error("VAST_API_KEY environment variable is required")
         sys.exit(1)
+    
     vk = VirtualKubelet(node_name, api_key)
+    
     def signal_handler(signum, frame):
         logger.info("Received shutdown signal", signal=signum)
         vk.stop()
+    
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    
     try:
         await vk.run()
     except KeyboardInterrupt:
