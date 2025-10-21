@@ -1,156 +1,286 @@
-# Vast.ai GPU Integration for June Platform
+# Virtual Kubelet for Vast.ai GPU Instances
 
-This directory contains the configuration files needed to integrate Vast.ai GPU resources with your existing Kubernetes cluster using Virtual Kubelet.
+A Virtual Kubelet implementation that provisions GPU instances from Vast.ai marketplace and runs Kubernetes pods on them. This enables auto-scaling GPU workloads without managing dedicated GPU nodes.
 
-## Architecture Overview
+## Features
 
-The integration provides:
-- **Virtual Kubelet**: Presents Vast.ai instances as virtual Kubernetes nodes
-- **Multi-Service Container**: Runs both STT and TTS services on a single GPU
-- **Service Discovery**: Maintains FQDN accessibility (`june-stt.default.svc.cluster.local`, `june-tts.default.svc.cluster.local`)
-- **Cost Optimization**: Single RTX 3060 12GB instance handles both services
+- **Real Vast.ai Provisioning**: Creates, monitors, and terminates actual GPU instances
+- **Smart GPU Selection**: Matches pod requirements (GPU type, memory, price) with available offers
+- **Regional Filtering**: Supports North America region filtering for compliance/latency
+- **Cost Control**: Enforces price limits per pod via annotations
+- **Auto-cleanup**: Terminates instances when pods are deleted
+- **Health Monitoring**: Kubernetes-native health probes and node status management
 
-## Prerequisites
+## Architecture
 
-1. **Vast.ai Account**: Get your API key from [Vast.ai Console](https://console.vast.ai/)
-2. **Docker Registry**: Push images to your container registry
-3. **Kubernetes Cluster**: Your existing cluster should be running
-
-## Deployment Steps
-
-### Step 1: Build and Push Multi-Service Image
-
-```bash
-# Build the multi-service container
-cd June/services/june-gpu-multi
-docker build -t your-registry/june-gpu-multi:latest .
-docker push your-registry/june-gpu-multi:latest
+```
+Kubernetes Scheduler → Virtual Node (vast-gpu-node-python)
+                     ↓
+             Virtual Kubelet Pod
+                     ↓
+              Vast.ai API (buy/poll/delete)
+                     ↓
+             GPU Instance (running containers)
 ```
 
-### Step 2: Build Virtual Kubelet Provider
+## Quick Start
 
-You'll need to implement the Virtual Kubelet provider for Vast.ai. Reference implementation:
-- [RunPod Kubelet Example](https://github.com/BSVogler/k8s-runpod-kubelet)
-- [Virtual Kubelet Documentation](https://virtual-kubelet.io/docs/)
+### 1. Deploy Virtual Kubelet
 
 ```bash
-# Build virtual kubelet with Vast.ai provider
-docker build -t your-registry/virtual-kubelet-vast:latest .
-docker push your-registry/virtual-kubelet-vast:latest
+# Create Vast.ai API key secret
+kubectl create secret generic vast-api-secret \
+  --from-literal=api-key=YOUR_VAST_API_KEY \
+  -n kube-system
+
+# Deploy Virtual Kubelet
+kubectl apply -f deployments/virtual-kubelet-vast-python.yaml
+
+# Verify deployment
+kubectl get pods -n kube-system -l app=virtual-kubelet-vast-python
+kubectl get nodes | grep vast
 ```
 
-### Step 3: Create Secrets and Config
+### 2. Deploy GPU Workloads
 
 ```bash
-# Copy template and fill in your values
-cp secrets-template.yaml secrets.yaml
-# Edit secrets.yaml with your actual values
+# Deploy combined STT+TTS services
+kubectl apply -f k8s/vast-gpu/gpu-services-deployment.yaml
 
-# Encode your secrets
-echo -n "your-vast-api-key" | base64
-echo -n "your-livekit-api-key" | base64
-echo -n "your-livekit-api-secret" | base64
-echo -n "your-bearer-token" | base64
-
-# Apply secrets
-kubectl apply -f secrets.yaml
+# Monitor provisioning
+kubectl get pods -n june-services -l app=june-gpu-services -w
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python -f
 ```
 
-### Step 4: Deploy RBAC and Virtual Kubelet
+## GPU Service Annotations
 
-```bash
-# Deploy RBAC permissions
-kubectl apply -f rbac.yaml
+Configure GPU requirements using pod annotations:
 
-# Update virtual-kubelet-deployment.yaml with your registry
-# Then deploy Virtual Kubelet
-kubectl apply -f virtual-kubelet-deployment.yaml
+```yaml
+metadata:
+  annotations:
+    # Primary GPU type to search for
+    vast.ai/gpu-type: "RTX 3060"
+    
+    # Fallback GPU types (comma-separated)
+    vast.ai/gpu-fallbacks: "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090"
+    
+    # Maximum price per hour (USD)
+    vast.ai/price-max: "0.30"
+    
+    # Geographic region filter
+    vast.ai/region: "North America"
+    
+    # Minimum GPU memory (optional)
+    vast.ai/memory: "12GB"
+    
+    # Disk space requirement (optional)
+    vast.ai/disk: "50GB"
 ```
 
-### Step 5: Deploy GPU Services
+### Supported Regions
 
-```bash
-# Update gpu-services-deployment.yaml with your registry
-kubectl apply -f gpu-services-deployment.yaml
+- `"North America"` - US, Canada, Mexico
+- `"Europe"` - European countries
+- `"Asia"` - Asian countries
+- Leave empty for global search
 
-# Deploy services
-kubectl apply -f services.yaml
-```
+## Instance Lifecycle
 
-## Verification
-
-```bash
-# Check if virtual node is registered
-kubectl get nodes
-# Should show: vast-gpu-node-1
-
-# Check pod scheduling
-kubectl get pods -o wide
-# GPU services should be on vast-gpu-node-1
-
-# Check service endpoints
-kubectl get endpoints june-stt june-tts
-# Should show Vast.ai external IP and ports
-
-# Test service connectivity
-kubectl run test-pod --image=curlimages/curl --rm -it -- sh
-# Inside pod:
-curl http://june-stt.default.svc.cluster.local:8001/healthz
-curl http://june-tts.default.svc.cluster.local:8000/healthz
-```
-
-## Cost Optimization
-
-- **Single Instance**: RTX 3060 12GB (~$0.20-0.40/hour)
-- **Shared GPU**: Both STT (~3GB) and TTS (~5GB) fit in 12GB
-- **Auto-scaling**: Pods scale down when not needed
+1. **Pod Scheduling**: Kubernetes schedules pod to `vast-gpu-node-python`
+2. **Offer Search**: VK searches Vast.ai marketplace for matching GPU offers
+3. **Instance Creation**: VK buys the best matching offer
+4. **Readiness Polling**: VK waits for instance to become SSH-accessible
+5. **Pod Running**: Pod status updated to Running with instance IP
+6. **Cleanup**: Instance terminated when pod is deleted
 
 ## Monitoring
 
+### Check Virtual Kubelet Status
+
 ```bash
-# Check Virtual Kubelet logs
-kubectl logs -n kube-system deployment/virtual-kubelet-vast
+# VK pod status and logs
+kubectl get pods -n kube-system -l app=virtual-kubelet-vast-python
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python --tail=50
 
-# Check GPU service logs
-kubectl logs deployment/june-gpu-services -c june-multi-gpu
-
-# Monitor GPU usage (if available)
-kubectl exec deployment/june-gpu-services -- nvidia-smi
+# Virtual node status
+kubectl get nodes vast-gpu-node-python
+kubectl describe node vast-gpu-node-python
 ```
+
+### Monitor GPU Workloads
+
+```bash
+# GPU service status
+kubectl get pods -n june-services -l app=june-gpu-services
+kubectl describe pod -n june-services -l app=june-gpu-services
+
+# Check instance assignment
+kubectl get pods -n june-services -o wide
+```
+
+### View Provisioning Logs
+
+```bash
+# Real-time VK logs with structured JSON
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python -f | jq .
+
+# Filter specific events
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python | grep "offer match"
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python | grep "Instance ready"
+```
+
+## Cost Management
+
+### Price Optimization
+
+1. **Monitor Current Rates**: Check Vast.ai marketplace for GPU prices
+2. **Adjust Price Limits**: Update `vast.ai/price-max` annotations
+3. **Use Fallback GPUs**: Configure multiple GPU types in fallbacks
+4. **Regional Selection**: Choose regions with lower costs
+
+```bash
+# Check current GPU prices
+curl -s "https://console.vast.ai/api/v0/bundles" | jq '.[] | select(.gpu_name | contains("RTX 3060"))'
+```
+
+### Cost Tracking
+
+- Monitor Vast.ai dashboard for active instances
+- Set up billing alerts in Vast.ai account
+- Use pod resource requests to estimate costs
 
 ## Troubleshooting
 
-### Virtual Kubelet Issues
-- Check RBAC permissions
-- Verify Vast.ai API key
-- Review Virtual Kubelet logs
+### Virtual Kubelet Not Starting
 
-### Pod Scheduling Issues
-- Check node taints and tolerations
-- Verify node selector labels
-- Review resource requests
+```bash
+# Check deployment status
+kubectl get deployment -n kube-system virtual-kubelet-vast-python
+kubectl describe pod -n kube-system -l app=virtual-kubelet-vast-python
 
-### Service Discovery Issues
-- Check endpoint updates
-- Verify service annotations
-- Test DNS resolution
+# Common issues:
+# 1. Missing VAST_API_KEY secret
+# 2. RBAC permissions
+# 3. Health probe failures
+```
 
-### GPU Issues
-- Verify CUDA drivers in container
-- Check GPU resource allocation
-- Monitor memory usage
+### Node Not Ready
 
-## Next Steps
+```bash
+# Check node conditions
+kubectl describe node vast-gpu-node-python | grep -A10 Conditions
 
-1. **Implement Virtual Kubelet Provider**: Custom provider for Vast.ai API
-2. **Add Monitoring**: Prometheus metrics for GPU usage
-3. **Implement Auto-scaling**: HPA based on queue depth
-4. **Add Health Checks**: Robust health monitoring
-5. **Security Hardening**: Network policies and secrets management
+# Manual node status update
+kubectl patch node vast-gpu-node-python -p '{"status":{"conditions":[{"type":"Ready","status":"True","reason":"VirtualKubeletReady"}]}}'
+```
 
-## References
+### Pods Stuck in Pending
 
-- [Virtual Kubelet Documentation](https://virtual-kubelet.io/)
-- [Vast.ai API Documentation](https://vast.ai/docs/)
-- [Kubernetes GPU Scheduling](https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/)
-- [Multi-Container Pods](https://kubernetes.io/docs/concepts/workloads/pods/)
+```bash
+# Check scheduling events
+kubectl describe pod -n june-services PODNAME
+
+# Common causes:
+# 1. Missing tolerations for VK taints
+# 2. Node not Ready
+# 3. No matching GPU offers
+# 4. Price limits too low
+```
+
+### No Matching GPU Offers
+
+```bash
+# Check VK logs for offer search results
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python | grep "offers found"
+
+# Solutions:
+# 1. Increase vast.ai/price-max
+# 2. Add more GPU types to fallbacks
+# 3. Remove region restrictions
+# 4. Check Vast.ai marketplace availability
+```
+
+### Instance Creation Failures
+
+```bash
+# Check instance creation logs
+kubectl logs -n kube-system -l app=virtual-kubelet-vast-python | grep "buy_instance"
+
+# Common issues:
+# 1. Insufficient Vast.ai account balance
+# 2. Offer no longer available
+# 3. API rate limits
+# 4. Instance startup timeout
+```
+
+### Health Probe Failures
+
+```bash
+# Check VK health endpoints
+kubectl port-forward -n kube-system deployment/virtual-kubelet-vast-python 10255:10255
+curl http://localhost:10255/healthz
+curl http://localhost:10255/readyz
+```
+
+## Configuration
+
+### Environment Variables
+
+- `NODE_NAME`: Virtual node name (default: `vast-gpu-node-python`)
+- `VAST_API_KEY`: Vast.ai API key (required)
+
+### Resource Limits
+
+Virtual Kubelet resource usage:
+- CPU: 200m request, 1 core limit
+- Memory: 512Mi request, 2Gi limit
+
+### Health Probes
+
+- **Readiness**: 20s initial delay, 10s interval, 3s timeout
+- **Liveness**: 60s initial delay, 30s interval, 5s timeout
+
+## Development
+
+### Local Testing
+
+```bash
+# Build and push VK image
+docker build -t ozzuworld/virtual-kubelet-vast-python:latest tools/virtual-kubelet-vast-python/
+docker push ozzuworld/virtual-kubelet-vast-python:latest
+
+# Update deployment
+kubectl rollout restart deployment -n kube-system virtual-kubelet-vast-python
+```
+
+### Debug Mode
+
+```bash
+# Enable debug logging
+kubectl set env deployment/virtual-kubelet-vast-python -n kube-system PYTHONPATH=/app
+kubectl set env deployment/virtual-kubelet-vast-python -n kube-system RUST_LOG=debug
+```
+
+## Limitations
+
+- Maximum 10 pods per virtual node
+- Instance startup time: 2-5 minutes
+- Regional availability depends on Vast.ai marketplace
+- Instance persistence limited to pod lifecycle
+- No persistent storage across instance recreation
+
+## Security
+
+- Store Vast.ai API key in Kubernetes secrets
+- Use RBAC to limit VK permissions
+- Network policies for pod-to-pod communication
+- Regular API key rotation
+
+## Support
+
+For issues:
+1. Check troubleshooting section above
+2. Review VK logs with structured output
+3. Verify Vast.ai account status and balance
+4. Test GPU availability in target regions
