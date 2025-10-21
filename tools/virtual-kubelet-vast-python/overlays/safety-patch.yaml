@@ -1,0 +1,25 @@
+# Virtual Kubelet (Vast.ai) safety defaults
+# 1) Limit VK concurrency and add backoff env vars
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virtual-kubelet-vast-python
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: virtual-kubelet
+        env:
+        - name: VK_MAX_BUY_CONCURRENCY
+          value: "1"
+        - name: VK_RATE_LIMIT_RPS
+          value: "0.5"  # max 1 call every 2s
+        - name: VK_BACKOFF_INITIAL_SEC
+          value: "2"
+        - name: VK_BACKOFF_MAX_SEC
+          value: "60"
+        - name: VK_CIRCUIT_FAILS_TO_OPEN
+          value: "5"
+        - name: VK_CIRCUIT_OPEN_SEC
+          value: "300"
