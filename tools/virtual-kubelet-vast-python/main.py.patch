@@ -1,0 +1,185 @@
+diff --git a/tools/virtual-kubelet-vast-python/main.py b/tools/virtual-kubelet-vast-python/main.py
+index a06d82e..0000000 100644
+--- a/tools/virtual-kubelet-vast-python/main.py
++++ b/tools/virtual-kubelet-vast-python/main.py
+@@ -1,17 +1,26 @@
+ #!/usr/bin/env python3
+ """
+ Virtual Kubelet Provider for Vast.ai
+-Adds node registration, status updates, lease heartbeats, and pod watch to create/delete instances
++Adds node registration, status updates, lease heartbeats, and pod watch to create/delete instances
++Includes safety: global rate limit, backoff on 429/5xx, and a simple circuit breaker
+ """
+ import asyncio
+ import os
+ import re
+ import time
+ from typing import Dict, Any, Optional, List
+ from datetime import datetime, timezone
+ 
+ import aiohttp
+ import structlog
+ from aiohttp import web
+ from kubernetes import client as k8s_client, config as k8s_config, watch as k8s_watch
+ from kubernetes.client.rest import ApiException
+ 
+@@
+-# Rate limiting for instance creation
+-from asyncio import Semaphore
+-INSTANCE_BUY_SEMAPHORE = Semaphore(2)
++# Safety configuration (env tunables)
++from asyncio import Semaphore
++INSTANCE_BUY_SEMAPHORE = Semaphore(int(os.getenv("VK_MAX_BUY_CONCURRENCY", "1")))
++GLOBAL_RPS = float(os.getenv("VK_RATE_LIMIT_RPS", "0.5"))  # default 1 call every 2s
++BACKOFF_INITIAL = float(os.getenv("VK_BACKOFF_INITIAL_SEC", "2"))
++BACKOFF_MAX = float(os.getenv("VK_BACKOFF_MAX_SEC", "60"))
++CIRCUIT_FAILS_TO_OPEN = int(os.getenv("VK_CIRCUIT_FAILS_TO_OPEN", "5"))
++CIRCUIT_OPEN_SEC = float(os.getenv("VK_CIRCUIT_OPEN_SEC", "300"))
++
++# Simple token bucket for global client-side rate limit
++_last_call_ts = 0.0
++async def _respect_global_rate_limit():
++    global _last_call_ts
++    min_interval = 1.0 / max(GLOBAL_RPS, 0.1)
++    now = time.time()
++    sleep_for = (_last_call_ts + min_interval) - now
++    if sleep_for > 0:
++        await asyncio.sleep(sleep_for)
++    _last_call_ts = time.time()
+@@
+ class VastAIClient:
+@@
+-        self.session = aiohttp.ClientSession(
+-            headers={"Authorization": f"Bearer {self.api_key}"},
++        self.session = aiohttp.ClientSession(
++            headers={
++                "Authorization": f"Bearer {self.api_key}",
++                "Accept": "application/json",
++                "Content-Type": "application/json",
++                "User-Agent": "vk-vast-python/1.0"
++            },
+             timeout=aiohttp.ClientTimeout(total=30)
+         )
+         return self
+@@
+-            async with self.session.get(f"{self.base_url}{endpoint}", params=params) as resp:
++            await _respect_global_rate_limit()
++            async with self.session.get(f"{self.base_url}{endpoint}/", params=params, allow_redirects=True) as resp:
+                 content_type = resp.headers.get('Content-Type', '')
+@@
+-                if resp.status != 200:
++                if resp.status == 429:
++                    # Backoff on rate limit
++                    logger.warning("search_offers rate limited", status_code=resp.status)
++                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
++                    return []
++                if resp.status >= 500:
++                    logger.warning("search_offers server error", status_code=resp.status)
++                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
++                    return []
++                if resp.status != 200:
+                     text = await resp.text()
+                     logger.error(
+                         "search_offers failed",
+                         status_code=resp.status,
+                         response_preview=text[:500]
+                     )
+                     return []
+@@
+-            async with self.session.put(
+-                f"{self.base_url}{endpoint}", 
+-                json=payload
+-            ) as resp:
++            await _respect_global_rate_limit()
++            async with self.session.put(
++                f"{self.base_url}{endpoint}", 
++                json=payload,
++                allow_redirects=True
++            ) as resp:
+                 body = await resp.read()
+                 content_type = resp.headers.get('Content-Type', '')
+@@
+-                if resp.status not in (200, 201):
++                if resp.status == 429:
++                    logger.warning("buy_instance rate limited", status_code=resp.status)
++                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
++                    return None
++                if resp.status >= 500:
++                    logger.warning("buy_instance server error", status_code=resp.status)
++                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
++                    return None
++                if resp.status not in (200, 201):
+                     logger.error(
+                         "buy_instance failed (non-2xx)",
+                         ask_id=ask_id,
+                         status_code=resp.status,
+                         content_type=content_type,
+                         response=text_preview
+                     )
+                     return None
+@@
+-                async with self.session.get(f"{self.base_url}{endpoint}") as resp:
++                await _respect_global_rate_limit()
++                async with self.session.get(f"{self.base_url}{endpoint}", allow_redirects=True) as resp:
+                     if resp.status == 200:
+                         data = await resp.json()
+                         status = data.get("actual_status")
+@@
+         endpoint = f"/instances/{instance_id}"
+         
+         try:
+-            async with self.session.delete(f"{self.base_url}{endpoint}") as resp:
++            await _respect_global_rate_limit()
++            async with self.session.delete(f"{self.base_url}{endpoint}", allow_redirects=True) as resp:
+                 if resp.status in (200, 404):
+                     logger.info("Instance deleted", instance_id=instance_id)
+                     return True
+@@
+ class VirtualKubelet:
+@@
+     async def pod_watch_loop(self):
+         w = k8s_watch.Watch()
++        consecutive_failures = 0
++        circuit_open_until = 0.0
+         while True:
+             try:
++                # Circuit breaker: pause processing when failing too often
++                now = time.time()
++                if now < circuit_open_until:
++                    await asyncio.sleep(5)
++                    continue
+                 stream = w.stream(self.v1.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
+                 for event in stream:
+                     typ = event.get("type")
+                     pod = event.get("object")
+                     if not pod:
+                         continue
+                     name = pod.metadata.name
+                     if typ == "ADDED":
+                         if self._is_target_pod(pod) and name not in self.pod_instances:
+                             logger.info("Pod event ADDED", pod_name=name)
+-                            await self.create_pod(pod)
++                            try:
++                                await self.create_pod(pod)
++                                consecutive_failures = 0
++                            except Exception:
++                                consecutive_failures += 1
++                                if consecutive_failures >= CIRCUIT_FAILS_TO_OPEN:
++                                    circuit_open_until = time.time() + CIRCUIT_OPEN_SEC
++                                    logger.warning("Circuit opened due to failures", open_seconds=CIRCUIT_OPEN_SEC)
++                                raise
+@@
+     async def create_pod(self, pod):
+         pod_name = pod.metadata.name
+         logger.info("Creating pod on Vast.ai", pod_name=pod_name)
+         try:
+             gpu_list, price_max, region = self._parse_annotations(pod)
++            # Reduce fan-out: only try first 2 GPU types per attempt
++            try_gpus = gpu_list[:2]
+             async with VastAIClient(self.api_key) as vast:
+-                offer = await self._find_offer(vast, gpu_list, price_max, region)
++                offer = await self._find_offer(vast, try_gpus, price_max, region)
+                 if not offer:
+-                    await self.update_pod_status_failed(pod, "No GPU instances available")
++                    await self.update_pod_status_failed(pod, "No GPU instances available (rate-limited or none)")
+                     return
