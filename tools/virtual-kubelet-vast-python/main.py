@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Virtual Kubelet Provider for Vast.ai
-Adds node registration, status updates, lease heartbeats, and pod watch to create/delete instances
-Includes safety: global rate limit, backoff on 429/5xx, and circuit breaker to prevent API abuse
+Uses official vastai CLI instead of direct REST API calls to ensure compatibility
+Includes safety: global rate limit, backoff on errors, and circuit breaker
 """
 import asyncio
+import json
 import os
 import re
+import shutil
+import subprocess
 import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
@@ -27,7 +30,6 @@ structlog.configure(
 logger = structlog.get_logger()
 
 # Vast.ai API configuration
-VAST_API_BASE = "https://console.vast.ai/api/v0"
 VAST_API_KEY = os.getenv("VAST_API_KEY")
 NODE_NAME = os.getenv("NODE_NAME", "vast-gpu-node-python")
 
@@ -35,7 +37,7 @@ NODE_NAME = os.getenv("NODE_NAME", "vast-gpu-node-python")
 from asyncio import Semaphore
 INSTANCE_BUY_SEMAPHORE = Semaphore(1)  # Only 1 concurrent purchase
 GLOBAL_RPS = 0.5  # Max 1 API call every 2 seconds
-BACKOFF_INITIAL = 2.0  # Initial backoff on 429/5xx
+BACKOFF_INITIAL = 2.0  # Initial backoff on errors
 BACKOFF_MAX = 60.0  # Max backoff
 CIRCUIT_FAILS_TO_OPEN = 5  # Circuit opens after 5 failures
 CIRCUIT_OPEN_SEC = 300.0  # Circuit stays open for 5 minutes
@@ -48,220 +50,250 @@ async def _respect_global_rate_limit():
     now = time.time()
     sleep_for = (_last_call_ts + min_interval) - now
     if sleep_for > 0:
-        logger.debug("Rate limiting API call", sleep_seconds=sleep_for)
+        logger.debug("Rate limiting CLI call", sleep_seconds=sleep_for)
         await asyncio.sleep(sleep_for)
     _last_call_ts = time.time()
 
 
 class VastAIClient:
-    """Client for Vast.ai API with proper error handling and safety features"""
+    """Client for Vast.ai using official CLI instead of broken REST API"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = VAST_API_BASE
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.cli_path = self._find_cli_path()
+        self._setup_api_key()
+    
+    def _find_cli_path(self) -> Optional[str]:
+        """Find vastai CLI executable"""
+        # Check common locations
+        paths = [
+            shutil.which("vastai"),
+            "/usr/local/bin/vastai",
+            "/app/vastai",
+        ]
+        for path in paths:
+            if path and os.path.exists(path) and os.access(path, os.X_OK):
+                logger.info("Found vastai CLI", path=path)
+                return path
+        logger.warning("vastai CLI not found, will fail")
+        return None
+    
+    def _setup_api_key(self):
+        """Set up API key for CLI"""
+        if self.api_key:
+            # Write API key to expected location
+            api_key_file = os.path.expanduser("~/.vastai_api_key")
+            with open(api_key_file, "w") as f:
+                f.write(self.api_key)
+            os.chmod(api_key_file, 0o600)
+            logger.debug("API key configured for CLI")
     
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession(
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "vk-vast-python/1.0"
-            },
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
+        pass
     
-    def _parse_disk_space(self, disk_str: str) -> float:
-        """Parse disk space string like '50GB' or '50' to float"""
-        if isinstance(disk_str, (int, float)):
-            return float(disk_str)
-        import re as _re
-        match = _re.match(r'(\d+(?:\.\d+)?)', str(disk_str))
-        if match:
-            return float(match.group(1))
-        return 50.0
+    def _gpu_name_to_cli_format(self, gpu_name: str) -> str:
+        """Convert GPU name to CLI format (spaces -> underscores)"""
+        return gpu_name.replace(" ", "_")
     
-    async def search_offers(self, gpu_type: str = "RTX 3060", max_price: float = 0.50, region: Optional[str] = None) -> List[Dict[str, Any]]:
-        if not self.session:
-            raise RuntimeError("Client session not initialized")
+    def _build_search_query(self, gpu_type: str, max_price: float, region: Optional[str] = None) -> str:
+        """Build vastai CLI search query string"""
+        gpu_cli = self._gpu_name_to_cli_format(gpu_type)
+        query_parts = [
+            "rentable=True",
+            "verified=True", 
+            "rented=False",
+            f"gpu_name={gpu_cli}",
+            f"dph <= {max_price}",
+            "reliability >= 0.90",
+            "inet_down >= 100"
+        ]
         
-        params = {
-            "rentable": "true",
-            "verified": "true",
-            "gpu_name": gpu_type,
-            "dph_lte": max_price,
-            "reliability_gte": 0.90,
-            "inet_down_gte": 100,
-        }
         if region:
-            params["geolocation"] = region
+            # Map common region names to CLI format
+            region_map = {
+                "North America": "geolocation=US",
+                "US": "geolocation=US", 
+                "United States": "geolocation=US",
+                "Europe": "geolocation=DE",  # Use DE as EU representative
+                "Asia": "geolocation=JP",    # Use JP as Asia representative
+            }
+            if region in region_map:
+                query_parts.append(region_map[region])
         
-        endpoint = "/bundles"
+        return " ".join(query_parts)
+    
+    async def _run_cli_command(self, args: List[str]) -> Dict[str, Any]:
+        """Run vastai CLI command safely with rate limiting"""
+        if not self.cli_path:
+            raise RuntimeError("vastai CLI not available")
+        
+        await _respect_global_rate_limit()  # Enforce rate limiting
+        
+        cmd = [self.cli_path] + args
         try:
-            await _respect_global_rate_limit()  # Enforce rate limiting
-            async with self.session.get(f"{self.base_url}{endpoint}/", params=params, allow_redirects=True) as resp:
-                content_type = resp.headers.get('Content-Type', '')
+            logger.debug("Running CLI command", cmd=cmd)
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"}
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode != 0:
+                error_msg = stderr.decode().strip()
+                logger.error("CLI command failed", cmd=cmd, error=error_msg, returncode=result.returncode)
                 
-                # Handle rate limiting with backoff
-                if resp.status == 429:
-                    logger.warning("search_offers rate limited, backing off", status_code=resp.status)
+                # Check for rate limiting in CLI output
+                if "rate" in error_msg.lower() or "too many" in error_msg.lower():
+                    logger.warning("CLI rate limited, backing off")
                     await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL * 2))
-                    return []
                 
-                # Handle server errors with backoff
-                if resp.status >= 500:
-                    logger.warning("search_offers server error, backing off", status_code=resp.status)
-                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
-                    return []
-                
-                if 'application/json' not in content_type.lower():
-                    text = await resp.text()
-                    logger.error("search_offers: Non-JSON response", status_code=resp.status, content_type=content_type, response_preview=text[:500])
-                    return []
-                
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error("search_offers failed", status_code=resp.status, response_preview=text[:500])
-                    return []
-                
-                data = await resp.json()
-                offers = data if isinstance(data, list) else []
-                logger.info("search_offers success", offer_count=len(offers))
-                return offers
+                return {"error": error_msg, "returncode": result.returncode}
+            
+            output = stdout.decode().strip()
+            if not output:
+                return {"data": []}
+            
+            # Try to parse JSON output
+            try:
+                if output.startswith("[") or output.startswith("{"):
+                    return {"data": json.loads(output)}
+                else:
+                    # Non-JSON output (like instance ID)
+                    return {"data": output}
+            except json.JSONDecodeError:
+                # Fallback for non-JSON responses
+                return {"data": output}
                 
         except Exception as e:
-            logger.error("search_offers exception", error=str(e))
+            logger.error("CLI command exception", cmd=cmd, error=str(e))
+            return {"error": str(e)}
+    
+    async def search_offers(self, gpu_type: str = "RTX 4060", max_price: float = 0.50, region: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search for offers using vastai CLI"""
+        query = self._build_search_query(gpu_type, max_price, region)
+        
+        # Use CLI search command with raw JSON output
+        result = await self._run_cli_command([
+            "search", "offers", 
+            "--raw",  # JSON output
+            "--no-default",  # No default filters
+            query,
+            "-o", "dph-"  # Sort by price (lowest first)
+        ])
+        
+        if "error" in result:
+            logger.error("CLI search failed", gpu_type=gpu_type, error=result["error"])
+            return []
+        
+        offers = result.get("data", [])
+        if isinstance(offers, list):
+            logger.info("CLI search success", gpu_type=gpu_type, offer_count=len(offers))
+            return offers
+        else:
+            logger.warning("CLI search returned non-list", gpu_type=gpu_type, data_type=type(offers))
             return []
     
     async def buy_instance(self, ask_id: int, pod_annotations: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        if not self.session:
-            raise RuntimeError("Client session not initialized")
-        
+        """Buy instance using vastai CLI"""
+        image = pod_annotations.get("vast.ai/image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel")
         disk_str = pod_annotations.get("vast.ai/disk", "50")
-        disk_gb = self._parse_disk_space(disk_str)
-        payload = {
-            "image": pod_annotations.get("vast.ai/image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"),
-            "disk": disk_gb,
-            "runtype": pod_annotations.get("vast.ai/runtype", "ssh_direct"),
-        }
+        
+        # Parse disk size
+        try:
+            disk_gb = float(re.match(r'(\d+(?:\.\d+)?)', disk_str).group(1))
+        except (AttributeError, ValueError):
+            disk_gb = 50.0
+        
+        # Build create command
+        cmd_args = [
+            "create", "instance", 
+            str(ask_id),
+            "--raw",  # JSON output
+            "--image", image,
+            "--disk", str(int(disk_gb))
+        ]
+        
+        # Add optional parameters
+        if "vast.ai/onstart-cmd" in pod_annotations:
+            cmd_args.extend(["--onstart", pod_annotations["vast.ai/onstart-cmd"]])
         
         if "vast.ai/env" in pod_annotations:
-            payload["env"] = pod_annotations["vast.ai/env"]
-        if "vast.ai/price-max" in pod_annotations:
-            try:
-                payload["price"] = float(pod_annotations["vast.ai/price-max"])
-            except ValueError:
-                pass
-        if "vast.ai/onstart-cmd" in pod_annotations:
-            payload["onstart_cmd"] = pod_annotations["vast.ai/onstart-cmd"]
+            cmd_args.extend(["--env", pod_annotations["vast.ai/env"]])
         
-        endpoint = f"/asks/{ask_id}/"
-        try:
-            await _respect_global_rate_limit()  # Enforce rate limiting
-            async with self.session.put(f"{self.base_url}{endpoint}", json=payload, allow_redirects=True) as resp:
-                body = await resp.read()
-                content_type = resp.headers.get('Content-Type', '')
-                text_preview = body.decode(errors='ignore')[:500]
-                
-                logger.info("Instance creation response", ask_id=ask_id, status_code=resp.status, content_type=content_type, response_preview=text_preview)
-                
-                # Handle rate limiting with backoff
-                if resp.status == 429:
-                    logger.warning("buy_instance rate limited, backing off", status_code=resp.status)
-                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL * 2))
-                    return None
-                
-                # Handle server errors with backoff
-                if resp.status >= 500:
-                    logger.warning("buy_instance server error, backing off", status_code=resp.status)
-                    await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL))
-                    return None
-                
-                if resp.status not in (200, 201):
-                    logger.error("buy_instance failed (non-2xx)", ask_id=ask_id, status_code=resp.status, content_type=content_type, response=text_preview)
-                    return None
-                
-                data = None
-                if 'application/json' in content_type.lower():
-                    try:
-                        data = await resp.json()
-                    except Exception as je:
-                        logger.error("Failed to parse JSON response", error=str(je), response_preview=text_preview)
-                        return None
-                else:
-                    stripped = text_preview.strip()
-                    if stripped.isdigit():
-                        data = {"new_contract": int(stripped)}
-                    else:
-                        logger.error("Non-JSON, non-numeric response", response_preview=text_preview)
-                        return None
-                
-                instance_id = data.get("new_contract")
-                if not instance_id:
-                    logger.error("Missing new_contract in response", data=str(data)[:300])
-                    return None
-                
-                logger.info("Instance creation initiated", ask_id=ask_id, instance_id=instance_id)
-                return data
-                
-        except Exception as e:
-            logger.error("buy_instance exception", ask_id=ask_id, error=str(e), endpoint=endpoint)
+        result = await self._run_cli_command(cmd_args)
+        
+        if "error" in result:
+            logger.error("CLI create instance failed", ask_id=ask_id, error=result["error"])
+            return None
+        
+        # CLI returns instance ID or JSON with instance info
+        data = result.get("data")
+        if isinstance(data, str) and data.isdigit():
+            instance_id = int(data)
+            logger.info("Instance creation initiated via CLI", ask_id=ask_id, instance_id=instance_id)
+            return {"new_contract": instance_id}
+        elif isinstance(data, dict) and "new_contract" in data:
+            logger.info("Instance creation initiated via CLI", ask_id=ask_id, instance_id=data["new_contract"])
+            return data
+        else:
+            logger.error("CLI create returned unexpected format", ask_id=ask_id, data=data)
             return None
     
     async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 300) -> Optional[Dict[str, Any]]:
-        if not self.session:
-            raise RuntimeError("Client session not initialized")
+        """Poll instance status using vastai CLI"""
+        start_time = time.time()
         
-        endpoint = f"/instances/{instance_id}"
-        start_time = asyncio.get_event_loop().time()
-        
-        while (asyncio.get_event_loop().time() - start_time) < timeout_seconds:
-            try:
-                await _respect_global_rate_limit()  # Enforce rate limiting
-                async with self.session.get(f"{self.base_url}{endpoint}", allow_redirects=True) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        status = data.get("actual_status")
-                        if status == "running" and data.get("ssh_host"):
-                            logger.info("Instance ready", instance_id=instance_id, ssh_host=data.get("ssh_host"))
-                            return data
-                        logger.debug("Instance not ready yet", instance_id=instance_id, status=status)
-                
+        while (time.time() - start_time) < timeout_seconds:
+            result = await self._run_cli_command([
+                "show", "instance", str(instance_id), "--raw"
+            ])
+            
+            if "error" in result:
+                logger.warning("Error polling instance via CLI", instance_id=instance_id, error=result["error"])
                 await asyncio.sleep(10)
-            except Exception as e:
-                logger.warning("Error polling instance", instance_id=instance_id, error=str(e))
-                await asyncio.sleep(10)
+                continue
+            
+            data = result.get("data")
+            if isinstance(data, dict):
+                status = data.get("actual_status")
+                if status == "running" and data.get("ssh_host"):
+                    logger.info("Instance ready via CLI", instance_id=instance_id, ssh_host=data.get("ssh_host"))
+                    return data
+                logger.debug("Instance not ready yet via CLI", instance_id=instance_id, status=status)
+            
+            await asyncio.sleep(10)
         
-        logger.error("Instance readiness timeout", instance_id=instance_id, timeout_seconds=timeout_seconds)
+        logger.error("Instance readiness timeout via CLI", instance_id=instance_id, timeout_seconds=timeout_seconds)
         return None
     
     async def delete_instance(self, instance_id: int) -> bool:
-        if not self.session:
-            raise RuntimeError("Client session not initialized")
+        """Delete instance using vastai CLI"""
+        result = await self._run_cli_command([
+            "destroy", "instance", str(instance_id)
+        ])
         
-        endpoint = f"/instances/{instance_id}"
-        try:
-            await _respect_global_rate_limit()  # Enforce rate limiting
-            async with self.session.delete(f"{self.base_url}{endpoint}", allow_redirects=True) as resp:
-                if resp.status in (200, 404):
-                    logger.info("Instance deleted", instance_id=instance_id)
-                    return True
-                else:
-                    logger.error("Failed to delete instance", instance_id=instance_id, status_code=resp.status)
-                    return False
-        except Exception as e:
-            logger.error("delete_instance exception", instance_id=instance_id, error=str(e))
+        if "error" in result:
+            # 404-like errors are OK (instance already gone)
+            error = result["error"].lower()
+            if "not found" in error or "does not exist" in error:
+                logger.info("Instance already deleted via CLI", instance_id=instance_id)
+                return True
+            
+            logger.error("Failed to delete instance via CLI", instance_id=instance_id, error=result["error"])
             return False
+        
+        logger.info("Instance deleted via CLI", instance_id=instance_id)
+        return True
 
 
 class VirtualKubelet:
-    """Virtual Kubelet implementation for Vast.ai with node heartbeats, pod watch, and circuit breaker"""
+    """Virtual Kubelet implementation for Vast.ai with CLI integration and circuit breaker"""
     
     def __init__(self, api_key: str, node_name: str):
         self.api_key = api_key
@@ -340,8 +372,8 @@ class VirtualKubelet:
                     operating_system="linux",
                     architecture="amd64",
                     container_runtime_version="docker://24.0.0",
-                    kubelet_version="v1.28.0-vk-vast-python",
-                    kube_proxy_version="v1.28.0-vk-vast-python",
+                    kubelet_version="v1.28.0-vk-vast-python-cli",
+                    kube_proxy_version="v1.28.0-vk-vast-python-cli",
                 ),
                 conditions=[
                     k8s_client.V1NodeCondition(type="Ready", status="True", last_heartbeat_time=self._now(), last_transition_time=self._now(), reason="KubeletReady", message="kubelet is posting ready status"),
@@ -479,7 +511,7 @@ class VirtualKubelet:
                 logger.error("pod_watch_loop error", error=str(e))
                 await asyncio.sleep(3)
 
-    # ----------------------- Vast.ai Pod lifecycle with safety -----------------------
+    # ----------------------- Vast.ai Pod lifecycle using CLI -----------------------
     def _parse_annotations(self, pod) -> tuple:
         annotations = pod.metadata.annotations or {}
         gpu_primary = annotations.get("vast.ai/gpu-type", "RTX 4060")  # Default to available GPU
@@ -496,50 +528,51 @@ class VirtualKubelet:
         limited_gpu_list = gpu_list[:2] if len(gpu_list) > 2 else gpu_list
         
         for gpu_type in limited_gpu_list:
-            logger.info("Searching offers", gpu_type=gpu_type)
+            logger.info("Searching offers via CLI", gpu_type=gpu_type)
             offers = await vast.search_offers(gpu_type=gpu_type, max_price=price_max, region=region)
             if offers:
+                # Sort by price (lowest first)
                 offers_sorted = sorted(offers, key=lambda x: x.get("dph_total", 999))
                 best_offer = offers_sorted[0]
-                logger.info("Offer match found", gpu_type=gpu_type, offer_id=best_offer.get("id"), price=best_offer.get("dph_total"))
+                logger.info("Offer match found via CLI", gpu_type=gpu_type, offer_id=best_offer.get("id"), price=best_offer.get("dph_total"))
                 return best_offer
         
-        logger.warning("No offers found", gpu_list=limited_gpu_list)
+        logger.warning("No offers found via CLI", gpu_list=limited_gpu_list)
         return None
     
     async def create_pod(self, pod):
         pod_name = pod.metadata.name
-        logger.info("Creating pod on Vast.ai", pod_name=pod_name)
+        logger.info("Creating pod on Vast.ai via CLI", pod_name=pod_name)
         try:
             gpu_list, price_max, region = self._parse_annotations(pod)
             async with VastAIClient(self.api_key) as vast:
                 offer = await self._find_offer(vast, gpu_list, price_max, region)
                 if not offer:
-                    await self.update_pod_status_failed(pod, "No GPU instances available (rate-limited or none found)")
+                    await self.update_pod_status_failed(pod, "No GPU instances available via CLI")
                     return
                 
                 async with INSTANCE_BUY_SEMAPHORE:
                     buy_result = await vast.buy_instance(offer["id"], pod.metadata.annotations or {})
                 
                 if not buy_result:
-                    await self.update_pod_status_failed(pod, "Failed to create instance")
+                    await self.update_pod_status_failed(pod, "Failed to create instance via CLI")
                     return
                 
                 instance_id = buy_result.get("new_contract")
                 if not instance_id:
-                    await self.update_pod_status_failed(pod, "Invalid instance ID in response")
+                    await self.update_pod_status_failed(pod, "Invalid instance ID in CLI response")
                     return
                 
                 try:
                     instance_id_int = int(instance_id)
                 except (ValueError, TypeError):
-                    await self.update_pod_status_failed(pod, f"Invalid instance ID format: {instance_id}")
+                    await self.update_pod_status_failed(pod, f"Invalid instance ID format from CLI: {instance_id}")
                     return
                 
                 ready_instance = await vast.poll_instance_ready(instance_id_int, timeout_seconds=300)
                 if not ready_instance:
                     await vast.delete_instance(instance_id_int)
-                    await self.update_pod_status_failed(pod, "Instance failed to start")
+                    await self.update_pod_status_failed(pod, "Instance failed to start via CLI")
                     return
                 
                 instance = {
@@ -553,10 +586,10 @@ class VirtualKubelet:
                 
                 self.pod_instances[pod_name] = instance
                 await self.update_pod_status_running(pod, instance)
-                logger.info("Pod created successfully", pod_name=pod_name, instance_id=instance_id_int)
+                logger.info("Pod created successfully via CLI", pod_name=pod_name, instance_id=instance_id_int)
                 
         except Exception as e:
-            logger.error("Error creating pod", pod_name=pod_name, error=str(e))
+            logger.error("Error creating pod via CLI", pod_name=pod_name, error=str(e))
             await self.update_pod_status_failed(pod, str(e))
     
     async def update_pod_status_failed(self, pod, reason: str):
@@ -587,9 +620,9 @@ class VirtualKubelet:
             async with VastAIClient(self.api_key) as vast:
                 await vast.delete_instance(instance["id"])
             del self.pod_instances[pod_name]
-            logger.info("Pod deleted", pod_name=pod_name, instance_id=instance["id"])
+            logger.info("Pod deleted via CLI", pod_name=pod_name, instance_id=instance["id"])
         except Exception as e:
-            logger.error("Error deleting pod", pod_name=pod_name, error=str(e))
+            logger.error("Error deleting pod via CLI", pod_name=pod_name, error=str(e))
 
 
 # HTTP server for health checks
@@ -622,7 +655,7 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', 10255)
     await site.start()
     
-    logger.info("Virtual Kubelet started", node_name=NODE_NAME)
+    logger.info("Virtual Kubelet started with CLI integration", node_name=NODE_NAME)
     
     heartbeat_task = asyncio.create_task(vk.heartbeat_loop())
     reconcile_task = asyncio.create_task(vk.reconcile_existing_pods())
