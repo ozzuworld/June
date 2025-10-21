@@ -5,8 +5,6 @@ Provides better debugging and error visibility than Go version
 """
 
 import asyncio
-import json
-import logging
 import os
 import signal
 import sys
@@ -41,8 +39,6 @@ logger = structlog.get_logger()
 
 
 class VastAIClient:
-    """Client for Vast.ai API operations"""
-    
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://console.vast.ai/api/v0"
@@ -101,6 +97,7 @@ class VirtualKubelet:
         self.pod_instances: Dict[str, Dict] = {}
         self.running = False
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._poller_task: Optional[asyncio.Task] = None
         
     async def initialize(self):
         logger.info("Initializing Virtual Kubelet", node_name=self.node_name)
@@ -122,7 +119,7 @@ class VirtualKubelet:
 
     def _parse_annotations(self, pod: V1Pod) -> Tuple[List[str], Optional[float], Optional[str]]:
         ann = pod.metadata.annotations or {}
-        primary = ann.get("vast.ai/gpu-type", "RTX 3060").strip()
+        primary = ann.get("vast.ai/gpu-type", "RTX 3060").replace("_", " ").strip()
         fallbacks = ann.get("vast.ai/gpu-fallbacks", "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000")
         fallback_list = [primary] + [g.strip() for g in fallbacks.split(",") if g.strip()]
         price_max = ann.get("vast.ai/price-max")
@@ -195,15 +192,45 @@ class VirtualKubelet:
             except Exception as e:
                 logger.error("Error in heartbeat loop", error=str(e))
                 await asyncio.sleep(5)
-    
-    async def watch_pods(self):
-        logger.info("Starting pod watcher", node_name=self.node_name)
+
+    async def pod_poller(self):
+        logger.info("Starting pod poller")
         while self.running:
             try:
+                pods = self.k8s_client.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}")
+                for pod in pods.items:
+                    await self._reconcile_pod(pod)
+                await asyncio.sleep(15)
+            except Exception as e:
+                logger.error("Error in pod poller", error=str(e))
+                await asyncio.sleep(5)
+
+    async def _reconcile_pod(self, pod: V1Pod):
+        # Process Pending pods not yet handled
+        phase = (pod.status and pod.status.phase) or "Pending"
+        if phase in ("Pending", "Unknown") and pod.metadata and pod.metadata.name not in self.pod_instances:
+            logger.info("Reconciling pending pod", pod_name=pod.metadata.name)
+            try:
+                await self.create_pod(pod)
+            except Exception as e:
+                logger.error("Reconcile create_pod failed", pod_name=pod.metadata.name, error=str(e))
+
+    async def watch_pods(self):
+        logger.info("Starting pod watcher", node_name=self.node_name)
+        resource_version = None
+        while self.running:
+            try:
+                # Initial list to get current resourceVersion
+                pod_list = self.k8s_client.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}")
+                resource_version = pod_list.metadata.resource_version
+                for pod in pod_list.items:
+                    await self._reconcile_pod(pod)
+
                 w = watch.Watch()
-                for event in w.stream(self.k8s_client.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}"):
+                for event in w.stream(self.k8s_client.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", resource_version=resource_version, timeout_seconds=60):
                     event_type = event['type']
                     pod = event['object']
+                    resource_version = pod.metadata.resource_version
                     logger.info("Pod event received", event_type=event_type, pod_name=pod.metadata.name, namespace=pod.metadata.namespace)
                     try:
                         if event_type == "ADDED":
@@ -216,7 +243,7 @@ class VirtualKubelet:
                         logger.error("Error handling pod event", event_type=event_type, pod_name=pod.metadata.name, error=str(e))
             except ApiException as e:
                 if e.status == 410:
-                    logger.warning("Watch expired, restarting", error=str(e))
+                    logger.warning("Watch expired, relisting to refresh resourceVersion", error=str(e))
                     await asyncio.sleep(1)
                     continue
                 logger.error("API error in pod watcher", error=str(e))
@@ -300,7 +327,8 @@ class VirtualKubelet:
             await self.initialize()
             await self.start_health_server()
             self._heartbeat_task = asyncio.create_task(self.heartbeat_loop())
-            logger.info("Node heartbeat loop started")
+            self._poller_task = asyncio.create_task(self.pod_poller())
+            logger.info("Node heartbeat and poller started")
             await self.watch_pods()
         except Exception as e:
             logger.error("Virtual Kubelet crashed", error=str(e))
@@ -308,12 +336,16 @@ class VirtualKubelet:
         finally:
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
+            if self._poller_task:
+                self._poller_task.cancel()
     
     def stop(self):
         logger.info("Stopping Virtual Kubelet")
         self.running = False
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+        if self._poller_task:
+            self._poller_task.cancel()
 
 
 async def main():
