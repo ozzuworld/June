@@ -125,7 +125,8 @@ ENV TTS_HOME=/app/models
 ENV COQUI_TOS_AGREED=1
 ENV CUDA_VISIBLE_DEVICES=0
 
-USER juneuser
+# Don't switch to juneuser here - supervisor needs root to create socket
+# The services will still run as juneuser (configured in supervisord.conf)
 
 # Expose both service ports
 EXPOSE 8000 8001

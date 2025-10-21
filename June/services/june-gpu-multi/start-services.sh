@@ -57,9 +57,6 @@ done
 mkdir -p /var/log/supervisor /var/run
 touch /var/log/supervisor/supervisord.log
 
-# Ensure proper permissions (even though we're already juneuser)
-chown -R juneuser:juneuser /var/log/supervisor /var/run 2>/dev/null || true
-
 echo "[INIT] Pre-flight checks completed ✓"
 echo "[INIT] Starting services with Supervisor..."
 
