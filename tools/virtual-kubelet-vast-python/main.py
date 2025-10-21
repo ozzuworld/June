@@ -156,10 +156,11 @@ class VastAIClient:
         if "vast.ai/onstart-cmd" in pod_annotations:
             payload["onstart_cmd"] = pod_annotations["vast.ai/onstart-cmd"]
         
-        endpoint = f"/instances/create/{ask_id}/"
+        endpoint = f"/asks/{ask_id}/"  # FIXED: Correct Vast.ai endpoint
         
         try:
-            async with self.session.post(
+            # FIXED: Use PUT method as per Vast.ai API spec
+            async with self.session.put(
                 f"{self.base_url}{endpoint}", 
                 json=payload
             ) as resp:
