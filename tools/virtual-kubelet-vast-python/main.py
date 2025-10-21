@@ -40,6 +40,11 @@ logger = structlog.get_logger()
 VAST_API_KEY = os.getenv("VAST_API_KEY")
 NODE_NAME = os.getenv("NODE_NAME", "vast-gpu-node-python")
 
+# Optional forced overrides via env (to bypass stale annotations)
+FORCE_GPU_TYPE = os.getenv("FORCE_GPU_TYPE")
+FORCE_IMAGE = os.getenv("FORCE_IMAGE")
+FORCE_PRICE_MAX = os.getenv("FORCE_PRICE_MAX")
+
 # Safety configuration - baked into the code to prevent API abuse
 from asyncio import Semaphore
 INSTANCE_BUY_SEMAPHORE = Semaphore(1)  # Only 1 concurrent purchase
@@ -161,7 +166,8 @@ class VastAIClient:
         return []
     
     async def buy_instance(self, ask_id: int, pod_annotations: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        image = pod_annotations.get("vast.ai/image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel")
+        # Prefer env override, then annotation, then sane default that works with Vast.ai
+        image = FORCE_IMAGE or pod_annotations.get("vast.ai/image", "ozzuworld/june-gpu-multi:latest")
         disk_str = pod_annotations.get("vast.ai/disk", "50")
         try:
             disk_gb = float(re.match(r"(\d+(?:\.\d+)?)", disk_str).group(1))
@@ -187,12 +193,12 @@ class VastAIClient:
         logger.error("CLI create returned unexpected format", ask_id=ask_id, data=data)
         return None
     
-    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 300) -> Optional[Dict[str, Any]]:
+    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 600) -> Optional[Dict[str, Any]]:
         start = time.time()
         while (time.time() - start) < timeout_seconds:
             res = await self._run_cli_command(["show", "instance", str(instance_id), "--raw"])
             if "error" in res:
-                logger.warning("Error polling instance via CLI", instance_id=instance_id, error=res["error"])
+                logger.warning("Error polling instance via CLI", instance_id=instance_id, error=res["error"]) 
                 await asyncio.sleep(10)
                 continue
             data = res.get("data")
@@ -413,17 +419,19 @@ class VirtualKubelet:
 
     def _parse_annotations(self, pod) -> tuple:
         annotations = pod.metadata.annotations or {}
-        gpu_primary = annotations.get("vast.ai/gpu-type", "RTX 4060")
+        # Allow env overrides to bypass stale annotations
+        gpu_primary = FORCE_GPU_TYPE or annotations.get("vast.ai/gpu-type", "RTX 4060")
         gpu_fallbacks = annotations.get("vast.ai/gpu-fallbacks", "")
         gpu_list = [gpu_primary]
         if gpu_fallbacks:
             gpu_list.extend([g.strip() for g in gpu_fallbacks.split(",")])
-        price_max = float(annotations.get("vast.ai/price-max", "0.50"))
+        price_max = float(FORCE_PRICE_MAX or annotations.get("vast.ai/price-max", "0.50"))
         region = annotations.get("vast.ai/region")
         return gpu_list, price_max, region
 
     async def _find_offer(self, vast: 'VastAIClient', gpu_list: List[str], price_max: float, region: Optional[str]) -> Optional[Dict[str, Any]]:
-        limited_gpu_list = gpu_list[:2] if len(gpu_list) > 2 else gpu_list
+        # Try up to first 3 to reduce churn
+        limited_gpu_list = gpu_list[:3] if len(gpu_list) > 3 else gpu_list
         for gpu_type in limited_gpu_list:
             logger.info("Searching offers via CLI", gpu_type=gpu_type)
             offers = await vast.search_offers(gpu_type=gpu_type, max_price=price_max, region=region)
@@ -459,7 +467,7 @@ class VirtualKubelet:
                 except (ValueError, TypeError):
                     await self.update_pod_status_failed(pod, f"Invalid instance ID format from CLI: {instance_id}")
                     return
-                ready_instance = await vast.poll_instance_ready(instance_id_int, timeout_seconds=300)
+                ready_instance = await vast.poll_instance_ready(instance_id_int, timeout_seconds=600)
                 if not ready_instance:
                     await vast.delete_instance(instance_id_int)
                     await self.update_pod_status_failed(pod, "Instance failed to start via CLI")
@@ -507,7 +515,7 @@ class VirtualKubelet:
             async with VastAIClient(self.api_key) as vast:
                 await vast.delete_instance(instance["id"])
             del self.pod_instances[pod_name]
-            logger.info("Pod deleted via CLI", pod_name=pod_name, instance_id=instance["id"])
+            logger.info("Pod deleted via CLI", pod_name=pod_name, instance_id=instance["id"]) 
         except Exception as e:
             logger.error("Error deleting pod via CLI", pod_name=pod_name, error=str(e))
 
