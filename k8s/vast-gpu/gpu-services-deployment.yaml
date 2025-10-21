@@ -1,11 +1,12 @@
-# Deployment for GPU services on Vast.ai nodes
+# Combined GPU services deployment for STT+TTS on single Vast.ai instance
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-gpu-services
-  namespace: default
+  namespace: june-services
   labels:
     app: june-gpu-services
+    component: gpu-services
 spec:
   replicas: 1
   selector:
@@ -15,13 +16,19 @@ spec:
     metadata:
       labels:
         app: june-gpu-services
+        component: gpu-services
       annotations:
-        vast.ai/gpu-type: "RTX3060"
+        vast.ai/gpu-type: "RTX 3060"
+        vast.ai/gpu-fallbacks: "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000"
+        vast.ai/price-max: "0.30"
+        vast.ai/region: "North America"
         vast.ai/memory: "12GB"
+        vast.ai/disk: "50GB"
     spec:
-      nodeSelector:
-        provider: vast.ai
-        gpu.nvidia.com/class: "RTX3060"
+      # Target the Virtual Kubelet node explicitly
+      nodeName: vast-gpu-node-python
+      
+      # Required tolerations for VK scheduling
       tolerations:
       - key: "vast.ai/gpu"
         operator: "Exists"
@@ -30,9 +37,12 @@ spec:
         operator: "Equal"
         value: "vast"
         effect: "NoSchedule"
+      
       containers:
       - name: june-multi-gpu
-        image: your-registry/june-gpu-multi:latest
+        image: ozzuworld/june-multi-gpu:latest
+        
+        # Expose both STT and TTS services
         ports:
         - containerPort: 8000
           name: tts-api
@@ -40,6 +50,8 @@ spec:
         - containerPort: 8001
           name: stt-api
           protocol: TCP
+        
+        # Environment configuration for combined service
         env:
         - name: STT_PORT
           value: "8001"
@@ -57,31 +69,40 @@ spec:
           value: "/app/models"
         - name: COQUI_TOS_AGREED
           value: "1"
+        
+        # LiveKit and orchestrator connectivity
         - name: LIVEKIT_URL
           valueFrom:
             configMapKeyRef:
               name: june-config
               key: livekit-url
+              optional: true
         - name: LIVEKIT_API_KEY
           valueFrom:
             secretKeyRef:
               name: june-secrets
               key: livekit-api-key
+              optional: true
         - name: LIVEKIT_API_SECRET
           valueFrom:
             secretKeyRef:
               name: june-secrets
               key: livekit-api-secret
+              optional: true
         - name: ORCHESTRATOR_URL
           valueFrom:
             configMapKeyRef:
               name: june-config
               key: orchestrator-url
+              optional: true
         - name: BEARER_TOKEN
           valueFrom:
             secretKeyRef:
               name: june-secrets
               key: bearer-token
+              optional: true
+        
+        # Resource requirements for GPU workload
         resources:
           limits:
             nvidia.com/gpu: 1
@@ -91,11 +112,15 @@ spec:
             nvidia.com/gpu: 1
             memory: "12Gi"
             cpu: "4"
+        
+        # Volume mounts for model caching
         volumeMounts:
         - name: models-cache
           mountPath: /app/models
         - name: temp-cache
           mountPath: /app/cache
+        
+        # Health checks for combined service
         livenessProbe:
           httpGet:
             path: /healthz
@@ -112,6 +137,8 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
+      
+      # Volumes for model and cache storage
       volumes:
       - name: models-cache
         emptyDir:
@@ -119,5 +146,29 @@ spec:
       - name: temp-cache
         emptyDir:
           sizeLimit: 5Gi
+      
       restartPolicy: Always
       terminationGracePeriodSeconds: 30
+---
+# Service to expose the combined GPU services
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-gpu-services
+  namespace: june-services
+  labels:
+    app: june-gpu-services
+    component: gpu-services
+spec:
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: tts-api
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  - name: stt-api
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  type: ClusterIP
