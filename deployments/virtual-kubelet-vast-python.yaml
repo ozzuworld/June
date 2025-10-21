@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virtual-kubelet-vast-python
+  namespace: kube-system
+  labels:
+    app: virtual-kubelet-vast-python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: virtual-kubelet-vast-python
+  template:
+    metadata:
+      labels:
+        app: virtual-kubelet-vast-python
+    spec:
+      serviceAccount: virtual-kubelet-vast
+      containers:
+      - name: virtual-kubelet
+        image: ozzuworld/virtual-kubelet-vast-python:latest
+        ports:
+        - containerPort: 10255
+        env:
+        - name: NODE_NAME
+          value: "vast-gpu-node-python"
+        - name: VAST_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: vast-api-secret
+              key: api-key
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10255
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 10255
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: virtual-kubelet-vast
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: virtual-kubelet-vast
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: virtual-kubelet-vast
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: virtual-kubelet-vast
+subjects:
+- kind: ServiceAccount
+  name: virtual-kubelet-vast
+  namespace: kube-system
