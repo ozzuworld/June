@@ -18,12 +18,17 @@ spec:
         app: june-gpu-services
         component: gpu-services
       annotations:
+        # Vast.ai instance configuration
         vast.ai/gpu-type: "RTX 3060"
         vast.ai/gpu-fallbacks: "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000"
         vast.ai/price-max: "0.30"
         vast.ai/region: "North America"
         vast.ai/memory: "12GB"
-        vast.ai/disk: "50GB"
+        vast.ai/disk: "50"
+        vast.ai/image: "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
+        vast.ai/env: "-p 8000:8000 -p 8001:8001"
+        vast.ai/runtype: "ssh_direct"
+        vast.ai/onstart-cmd: "pip install -q fastapi uvicorn aiohttp && echo 'Container ready for June services'"
     spec:
       # Target the Virtual Kubelet node explicitly
       nodeName: vast-gpu-node-python
