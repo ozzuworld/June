@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-gpu-services
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-gpu-services
+  template:
+    metadata:
+      labels:
+        app: june-gpu-services
+      annotations:
+        vast.ai/gpu-type: "RTX 3060"
+        vast.ai/gpu-fallbacks: "RTX 4070,RTX 3090,RTX A5000,RTX 4090"
+        vast.ai/price-max: "0.30"
+        vast.ai/region: "North America"
+    spec:
+      nodeName: vast-gpu-node-python
+      tolerations:
+      - key: "virtual-kubelet.io/provider"
+        operator: "Equal"
+        value: "vast"
+        effect: "NoSchedule"
+      - key: "vast.ai/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      containers:
+      - name: june-multi-gpu
+        image: YOUR_REGISTRY/june-gpu-multi:latest
+        ports:
+        - containerPort: 8000
+        - containerPort: 8001
+        resources:
+          requests:
+            cpu: "4"
+            memory: "12Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        env:
+        - name: STT_PORT
+          value: "8001"
+        - name: TTS_PORT
+          value: "8000"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: WHISPER_DEVICE
+          value: "cuda"
+        - name: WHISPER_COMPUTE_TYPE
+          value: "float16"
+        - name: TTS_CACHE_PATH
+          value: "/app/cache"
+        - name: TTS_HOME
+          value: "/app/models"
+        - name: COQUI_TOS_AGREED
+          value: "1"
+        - name: LIVEKIT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: livekit-url
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-key
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-secret
+        - name: ORCHESTRATOR_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: orchestrator-url
+        - name: BEARER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: bearer-token
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        volumeMounts:
+        - name: models-cache
+          mountPath: /app/models
+        - name: temp-cache
+          mountPath: /app/cache
+      volumes:
+      - name: models-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: temp-cache
+        emptyDir:
+          sizeLimit: 5Gi
