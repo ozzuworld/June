@@ -18,10 +18,10 @@ spec:
         app: june-gpu-services
         component: gpu-services
       annotations:
-        # Vast.ai instance configuration
-        vast.ai/gpu-type: "RTX 3060"
-        vast.ai/gpu-fallbacks: "RTX 3060 Ti,RTX 4060,RTX 4070,RTX 3090,RTX A5000"
-        vast.ai/price-max: "0.30"
+        # Vast.ai instance configuration - Optimized for availability
+        vast.ai/gpu-type: "RTX 4060"
+        vast.ai/gpu-fallbacks: "RTX 3060,RTX 3060 Ti,RTX 4060 Ti,RTX 4070,RTX 3070,RTX 3080,RTX 3090,RTX A5000"
+        vast.ai/price-max: "0.50"  # Increased budget for more reliable hosts
         vast.ai/region: "North America"
         vast.ai/memory: "12GB"
         vast.ai/disk: "50"
@@ -125,23 +125,37 @@ spec:
         - name: temp-cache
           mountPath: /app/cache
         
-        # Health checks for combined service
+        # Startup probe to handle long GPU initialization - CRITICAL FIX
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120     # Wait 2 minutes before first check
+          periodSeconds: 30            # Check every 30 seconds
+          timeoutSeconds: 15           # 15 second timeout per check
+          failureThreshold: 20         # Allow up to 10 more minutes (20 * 30s = 600s)
+          successThreshold: 1          # Only need 1 success to mark ready
+        
+        # Liveness probe - More generous timeouts
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 120
-          periodSeconds: 30
-          timeoutSeconds: 10
-          failureThreshold: 3
+          initialDelaySeconds: 300     # Increased from 120 to 5 minutes
+          periodSeconds: 60            # Check every minute instead of 30s
+          timeoutSeconds: 30           # Increased timeout to 30s
+          failureThreshold: 5          # Allow 5 failures before restart
+        
+        # Readiness probe - Even more generous
         readinessProbe:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 60
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          initialDelaySeconds: 240     # Increased from 60 to 4 minutes
+          periodSeconds: 30            # Check every 30 seconds
+          timeoutSeconds: 20           # Increased timeout to 20s
+          failureThreshold: 10         # Allow many failures during startup
+          successThreshold: 2          # Require 2 consecutive successes
       
       # Volumes for model and cache storage
       volumes:
@@ -153,7 +167,7 @@ spec:
           sizeLimit: 5Gi
       
       restartPolicy: Always
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 60  # Increased from 30 for graceful shutdown
 ---
 # Service to expose the combined GPU services
 apiVersion: v1
