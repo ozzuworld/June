@@ -3,6 +3,7 @@ FROM python:3.11-slim
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -11,6 +12,11 @@ WORKDIR /app
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install vastai CLI - try pip first, fallback to direct download
+RUN pip install --no-cache-dir vastai || \
+    (wget https://raw.githubusercontent.com/vast-ai/vast-python/master/vast.py -O /usr/local/bin/vastai && \
+     chmod +x /usr/local/bin/vastai)
 
 # Copy application code
 COPY main.py .
