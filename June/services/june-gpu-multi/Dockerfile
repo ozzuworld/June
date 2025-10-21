@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     espeak-ng \
     curl \
     supervisor \
+    dos2unix \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -65,7 +66,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies
+# Install runtime dependencies INCLUDING dos2unix for line ending fixes
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     ffmpeg \
@@ -74,6 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libportaudio2 \
     curl \
     supervisor \
+    dos2unix \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -90,13 +92,13 @@ WORKDIR /app
 RUN chown -R juneuser:juneuser /app
 
 # Create service directories
-RUN mkdir -p /app/stt /app/tts /app/models /app/cache /etc/supervisor/conf.d /var/log/supervisor
-RUN chown -R juneuser:juneuser /app /etc/supervisor /var/log/supervisor
+RUN mkdir -p /app/stt /app/tts /app/models /app/cache /etc/supervisor/conf.d /var/log/supervisor /var/run
+RUN chown -R juneuser:juneuser /app /var/log/supervisor /var/run
 
-# Copy STT service files (from local directory structure)
+# Copy STT service files
 COPY --chown=juneuser:juneuser stt/ /app/stt/
 
-# Copy TTS service files (from local directory structure)  
+# Copy TTS service files 
 COPY --chown=juneuser:juneuser tts/ /app/tts/
 
 # Copy supervisor configuration
@@ -104,7 +106,10 @@ COPY --chown=juneuser:juneuser supervisord.conf /etc/supervisor/conf.d/superviso
 
 # Copy startup script
 COPY --chown=juneuser:juneuser start-services.sh /app/start-services.sh
-RUN chmod +x /app/start-services.sh
+
+# 🔧 FIX: Convert line endings to Unix format for all shell scripts
+RUN dos2unix /app/start-services.sh && \
+    chmod +x /app/start-services.sh
 
 # Ensure module import works for both services
 ENV PYTHONPATH=/app:/app/stt:/app/tts
@@ -125,8 +130,8 @@ USER juneuser
 # Expose both service ports
 EXPOSE 8000 8001
 
-# Health check for both services
-HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \
+# 🔧 IMPROVED: More realistic health check timing for GPU model loading
+HEALTHCHECK --interval=30s --timeout=60s --start-period=180s --retries=3 \
     CMD curl -f http://localhost:8000/healthz && curl -f http://localhost:8001/healthz || exit 1
 
 # Run both services with supervisor
