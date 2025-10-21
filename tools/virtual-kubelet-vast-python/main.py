@@ -166,31 +166,64 @@ class VastAIClient:
         return []
     
     async def buy_instance(self, ask_id: int, pod_annotations: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        # Prefer env override, then annotation, then sane default that works with Vast.ai
-        image = FORCE_IMAGE or pod_annotations.get("vast.ai/image", "ozzuworld/june-gpu-multi:latest")
+        """Create Vast.ai instance with explicit image pull (not build)"""
+        
+        # Force the image - NO building, only pulling
+        image = "ozzuworld/june-gpu-multi:latest"
+        
+        # Parse disk requirement
         disk_str = pod_annotations.get("vast.ai/disk", "50")
         try:
             disk_gb = float(re.match(r"(\d+(?:\.\d+)?)", disk_str).group(1))
         except (AttributeError, ValueError):
             disk_gb = 50.0
-        args = ["create", "instance", str(ask_id), "--raw", "--image", image, "--disk", str(int(disk_gb))]
+        
+        # Build command - CRITICAL: Use --image to pull, never use --dockerfile
+        args = [
+            "create", "instance", str(ask_id),
+            "--image", image,
+            "--disk", str(int(disk_gb))
+        ]
+        
+        # Add environment variables for port mapping
+        env_vars = "-p 8000:8000 -p 8001:8001 --gpus all"
+        args.extend(["--env", env_vars])
+        
+        # Add onstart script if specified
         if "vast.ai/onstart-cmd" in pod_annotations:
             args.extend(["--onstart", pod_annotations["vast.ai/onstart-cmd"]])
-        if "vast.ai/env" in pod_annotations:
-            args.extend(["--env", pod_annotations["vast.ai/env"]])
+        
+        # Log exact command being executed
+        logger.info("Creating Vast.ai instance", ask_id=ask_id, image=image, command=" ".join(args))
+        
+        # Execute command
         result = await self._run_cli_command(args)
+        
+        # Handle errors
         if "error" in result:
-            logger.error("CLI create instance failed", ask_id=ask_id, error=result["error"])
+            logger.error("Instance creation failed", ask_id=ask_id, error=result["error"])
             return None
+        
+        # Parse response
         data = result.get("data")
-        if isinstance(data, str) and data.isdigit():
-            iid = int(data)
-            logger.info("Instance creation initiated via CLI", ask_id=ask_id, instance_id=iid)
-            return {"new_contract": iid}
+        
+        # Handle string response (instance ID)
+        if isinstance(data, str):
+            if data.isdigit():
+                iid = int(data)
+                logger.info("Instance created successfully", ask_id=ask_id, instance_id=iid)
+                return {"new_contract": iid}
+            else:
+                logger.error("Unexpected string response", ask_id=ask_id, data=data)
+                return None
+        
+        # Handle dict response
         if isinstance(data, dict) and "new_contract" in data:
-            logger.info("Instance creation initiated via CLI", ask_id=ask_id, instance_id=data["new_contract"]) 
+            logger.info("Instance created successfully", ask_id=ask_id, instance_id=data["new_contract"])
             return data
-        logger.error("CLI create returned unexpected format", ask_id=ask_id, data=data)
+        
+        # Unknown response format
+        logger.error("Unexpected response format", ask_id=ask_id, data=data, data_type=type(data))
         return None
     
     async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 600) -> Optional[Dict[str, Any]]:
