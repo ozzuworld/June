@@ -117,13 +117,13 @@ class VastAIClient:
         if region:
             r = (region or '').strip().lower()
             if r in ("north america", "na"):
-                parts.append("geolocation in [US,CA,MX]")  # FIXED: use geolocation with 'in' operator
+                parts.append("geolocation in [US,CA,MX]")
             elif r in ("us", "usa", "united states"):
                 parts.append("geolocation=US")
             elif r in ("canada", "ca"):
                 parts.append("geolocation=CA")
             elif r in ("europe", "eu"):
-                parts.append("geolocation in [DE,FR,GB,IT,ES]")  # Common EU countries
+                parts.append("geolocation in [DE,FR,GB,IT,ES]")
             elif "=" in region:
                 parts.append(region)
         return " ".join(parts)
@@ -176,7 +176,6 @@ class VastAIClient:
         return []
     
     async def buy_instance(self, ask_id: int, pod_annotations: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        # Prefer env override, then annotation, then sane default that works with Vast.ai
         image = FORCE_IMAGE or pod_annotations.get("vast.ai/image", "ozzuworld/june-gpu-multi:latest")
         disk_str = pod_annotations.get("vast.ai/disk", "50")
         try:
@@ -185,7 +184,7 @@ class VastAIClient:
             disk_gb = 50.0
         args = ["create", "instance", str(ask_id), "--raw", "--image", image, "--disk", str(int(disk_gb))]
         if "vast.ai/onstart-cmd" in pod_annotations:
-            args.extend(["--onstart", pod_annotations["vast.ai/onstart-cmd"]])
+            args.extend(["--onstart-cmd", pod_annotations["vast.ai/onstart-cmd"]])
         if "vast.ai/env" in pod_annotations:
             args.extend(["--env", pod_annotations["vast.ai/env"]])
         result = await self._run_cli_command(args)
@@ -233,7 +232,6 @@ class VastAIClient:
             return False
         logger.info("Instance deleted via CLI", instance_id=instance_id)
         return True
-
 
 class VirtualKubelet:
     def __init__(self, api_key: str, node_name: str):
