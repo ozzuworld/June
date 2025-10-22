@@ -64,10 +64,6 @@ spec:
           value: /oauth/client_secret
         - name: PROXY_IMAGE
           value: tailscale/tailscale:v1.76.1
-        - name: PROXY_TAGS
-          value: tag:k8s
-        - name: AUTH_PROXY
-          value: "true"
         volumeMounts:
         - name: oauth
           mountPath: /oauth
