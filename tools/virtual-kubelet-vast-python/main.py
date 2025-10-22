@@ -106,7 +106,7 @@ class VastAIClient:
         gpu_cli = self._gpu_name_to_cli_format(gpu_type)
         parts = [
             "rentable=true",
-            "verified=true",
+            "verified=true", 
             "rented=false",
             f"gpu_name={gpu_cli}",
             f"dph<={max_price:.2f}",
@@ -117,17 +117,16 @@ class VastAIClient:
         if region:
             r = (region or '').strip().lower()
             if r in ("north america", "na"):
-                parts.append("country=US,CA,MX")
+                parts.append("geolocation in [US,CA,MX]")  # FIXED: use geolocation with 'in' operator
             elif r in ("us", "usa", "united states"):
-                parts.append("country=US")
+                parts.append("geolocation=US")
             elif r in ("canada", "ca"):
-                parts.append("country=CA")
+                parts.append("geolocation=CA")
             elif r in ("europe", "eu"):
-                parts.append("geolocation_in=EU")
+                parts.append("geolocation in [DE,FR,GB,IT,ES]")  # Common EU countries
             elif "=" in region:
                 parts.append(region)
         return " ".join(parts)
-
     
     async def _run_cli_command(self, args: List[str]) -> Dict[str, Any]:
         if not self.cli_path:
