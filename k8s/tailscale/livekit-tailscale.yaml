@@ -1,0 +1,68 @@
+# LiveKit Service with Tailscale Integration
+# This creates a Tailscale-exposed service for LiveKit WebRTC server
+# to enable communication with external june-gpu-multi service
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-tailscale
+  namespace: livekit
+  annotations:
+    # Enable Tailscale for this service
+    tailscale.com/expose: "true"
+    # Custom hostname (optional - defaults to service name)
+    tailscale.com/hostname: "livekit"
+    # Tags for ACL policies
+    tailscale.com/tags: "tag:k8s,tag:june-platform,tag:livekit"
+  labels:
+    app: livekit
+    component: server
+    tailscale: "enabled"
+spec:
+  type: ClusterIP
+  selector:
+    app: livekit
+    component: server
+  ports:
+  # HTTP API port
+  - name: http
+    port: 7880
+    targetPort: 7880
+    protocol: TCP
+  # WebSocket port (same as HTTP in LiveKit)
+  - name: websocket
+    port: 7880
+    targetPort: 7880
+    protocol: TCP
+  # RTC port for WebRTC traffic
+  - name: rtc
+    port: 7881
+    targetPort: 7881
+    protocol: UDP
+---
+# Alternative service targeting livekit-server directly if using Helm chart
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-server-tailscale
+  namespace: livekit
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: "livekit-server"
+    tailscale.com/tags: "tag:k8s,tag:june-platform"
+  labels:
+    app.kubernetes.io/name: livekit-server
+    tailscale: "enabled"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: livekit-server
+  ports:
+  - name: http
+    port: 7880
+    targetPort: 7880
+    protocol: TCP
+  - name: rtc
+    port: 7881
+    targetPort: 7881
+    protocol: UDP
