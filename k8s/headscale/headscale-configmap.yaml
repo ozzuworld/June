@@ -1,0 +1,32 @@
+# Updated Headscale ConfigMap: fix v2 noise key and DNS deprecations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: headscale-config
+  namespace: headscale
+data:
+  config.yaml: |
+    server_url: https://headscale.ozzu.world
+    listen_addr: 0.0.0.0:50443
+    metrics_listen_addr: 0.0.0.0:50480
+    disable_check_updates: true
+
+    db_type: sqlite
+    db_path: /var/lib/headscale/db.sqlite
+
+    # Tailscale v2 noise protocol requires a private key path
+    noise:
+      private_key_path: /var/lib/headscale/noise_private.key
+
+    # DNS section (replaces deprecated dns_config)
+    dns:
+      magic_dns: true
+      base_domain: tail.ozzu.world
+      override_local_dns: false
+      nameservers:
+        global: ["1.1.1.1", "8.8.8.8"]
+
+    derp:
+      urls: ["https://controlplane.tailscale.com/derpmap/default"]
+      auto_update_enabled: true
+      update_frequency: 24h
