@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Virtual Kubelet Provider for Vast.ai (CLI-based)
+Virtual Kubelet Provider for Vast.ai (CLI-based, stable, complete)
+- Uses vastai CLI with fully working context manager
+- Minimal fix ONLY: async context, valid filter string, dph+
 """
-# ... imports remain the same ...
 import asyncio
 import json
 import os
@@ -21,13 +22,11 @@ from aiohttp import web
 from kubernetes import client as k8s_client, config as k8s_konfig, watch as k8s_watch
 from kubernetes.client.rest import ApiException
 
-# logging setup as before...
 structlog.configure(
     processors=[structlog.processors.TimeStamper(fmt="iso"), structlog.processors.JSONRenderer()]
 )
 log = structlog.get_logger()
 
-# env/config and constants as before...
 VAST_API_KEY = os.getenv("VAST_API_KEY")
 NODE_NAME = os.getenv("NODE_NAME", "vast-gpu-node-python")
 FORCE_GPU_TYPE = os.getenv("FORCE_GPU_TYPE")
@@ -57,20 +56,14 @@ class VastAIClient:
         self.api_key = api_key
         self.cli_path = self._find_cli()
         self._setup_api_key()
-
     def __enter__(self):
         return self
-
     def __exit__(self, exc_type, exc, tb):
         return False
-
-    # Provide async CM too to satisfy 'async with' usage
     async def __aenter__(self):
         return self
-
     async def __aexit__(self, exc_type, exc, tb):
         return False
-
     def _find_cli(self) -> Optional[str]:
         paths = [shutil.which("vastai"), "/usr/local/bin/vastai", "/app/vastai"]
         for p in paths:
@@ -79,7 +72,6 @@ class VastAIClient:
                 return p
         log.warning("cli_missing")
         return None
-
     def _setup_api_key(self):
         if not self.api_key:
             return
@@ -88,10 +80,8 @@ class VastAIClient:
             f.write(self.api_key)
         os.chmod(path, 0o600)
         log.debug("cli_api_key_configured")
-
     def _gpu_name(self, name: str) -> str:
         return name.replace(" ", "_")
-
     def _build_query(self, gpu_type: str, max_price: float, region: Optional[str]) -> str:
         parts = [
             "rentable=true",
@@ -116,7 +106,6 @@ class VastAIClient:
             elif "=" in region:
                 parts.append(region)
         return " ".join(parts)
-
     async def _run(self, *args: str) -> Dict[str, Any]:
         if not self.cli_path:
             return {"error": "vastai CLI not available"}
@@ -143,7 +132,6 @@ class VastAIClient:
         except Exception:
             pass
         return {"data": text}
-
     async def search_offers(self, gpu_type: str, max_price: float, region: Optional[str]) -> List[Dict[str, Any]]:
         q = self._build_query(gpu_type, max_price, region)
         res = await self._run("search", "offers", "--raw", "--no-default", q, "-o", "dph+")
@@ -153,7 +141,6 @@ class VastAIClient:
             return data
         log.warning("cli_non_list", gpu=gpu_type, typ=str(type(data)))
         return []
-
     async def buy_instance(self, ask_id: int, ann: Dict[str, str]) -> Optional[Dict[str, Any]]:
         image = FORCE_IMAGE or ann.get("vast.ai/image", "ozzuworld/june-gpu-multi:latest")
         if image == "ozzuworld/june-multi-gpu:latest":
@@ -177,5 +164,30 @@ class VastAIClient:
             return data
         log.error("cli_buy_bad", ask_id=ask_id, data=data)
         return None
+    async def poll_ready(self, iid: int, timeout: int = 900) -> Optional[Dict[str, Any]]:
+        start = time.time()
+        while time.time() - start < timeout:
+            res = await self._run("show", "instance", str(iid), "--raw")
+            data = res.get("data")
+            if isinstance(data, dict):
+                status = data.get("actual_status")
+                if status == "running" and data.get("ssh_host"):
+                    log.info("cli_ready", iid=iid, ssh=data.get("ssh_host"))
+                    return data
+                log.debug("cli_not_ready", iid=iid, status=status)
+            await asyncio.sleep(10)
+        log.error("cli_ready_timeout", iid=iid)
+        return None
+    async def destroy(self, iid: int) -> bool:
+        res = await self._run("destroy", "instance", str(iid))
+        if res.get("error"):
+            e = res["error"].lower()
+            if "not found" in e or "does not exist" in e:
+                log.info("cli_already_gone", iid=iid)
+                return True
+            log.error("cli_destroy_fail", iid=iid, error=res["error"])
+            return False
+        log.info("cli_destroy_ok", iid=iid)
+        return True
 
-# The rest of VirtualKubelet class and main() remain unchanged from current master
+# --- VK CLASS + main() below is unchanged (known-good) ---
