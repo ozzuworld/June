@@ -123,9 +123,31 @@ COPY --chown=juneuser:juneuser start-services.sh /app/start-services.sh
 # Copy Tailscale connection script
 COPY --chown=juneuser:juneuser tailscale-connect.sh /app/tailscale-connect.sh
 
+# Create a wrapper script that handles Docker flags
+RUN echo '#!/bin/bash' > /app/docker-entrypoint.sh && \
+    echo '# Filter out Docker flags that might be passed as arguments' >> /app/docker-entrypoint.sh && \
+    echo 'ARGS=()' >> /app/docker-entrypoint.sh && \
+    echo 'for arg in "$@"; do' >> /app/docker-entrypoint.sh && \
+    echo '  case "$arg" in' >> /app/docker-entrypoint.sh && \
+    echo '    --privileged|--cap-add=*|--device=*|-p|--env|-e)' >> /app/docker-entrypoint.sh && \
+    echo '      # Skip Docker flags' >> /app/docker-entrypoint.sh && \
+    echo '      ;;' >> /app/docker-entrypoint.sh && \
+    echo '    *)' >> /app/docker-entrypoint.sh && \
+    echo '      ARGS+=("$arg")' >> /app/docker-entrypoint.sh && \
+    echo '      ;;' >> /app/docker-entrypoint.sh && \
+    echo '  esac' >> /app/docker-entrypoint.sh && \
+    echo 'done' >> /app/docker-entrypoint.sh && \
+    echo '' >> /app/docker-entrypoint.sh && \
+    echo '# If no valid arguments, run our default startup script' >> /app/docker-entrypoint.sh && \
+    echo 'if [ ${#ARGS[@]} -eq 0 ]; then' >> /app/docker-entrypoint.sh && \
+    echo '  exec /app/start-services.sh' >> /app/docker-entrypoint.sh && \
+    echo 'else' >> /app/docker-entrypoint.sh && \
+    echo '  exec "${ARGS[@]}"' >> /app/docker-entrypoint.sh && \
+    echo 'fi' >> /app/docker-entrypoint.sh
+
 # Convert line endings and set perms
-RUN dos2unix /app/start-services.sh /app/tailscale-connect.sh && \
-    chmod +x /app/start-services.sh /app/tailscale-connect.sh
+RUN dos2unix /app/start-services.sh /app/tailscale-connect.sh /app/docker-entrypoint.sh && \
+    chmod +x /app/start-services.sh /app/tailscale-connect.sh /app/docker-entrypoint.sh
 
 # Ensure module import works for both services
 ENV PYTHONPATH=/app:/app/stt:/app/tts
@@ -148,5 +170,6 @@ EXPOSE 8000 8001
 HEALTHCHECK --interval=30s --timeout=60s --start-period=180s --retries=3 \
     CMD curl -f http://localhost:8000/healthz && curl -f http://localhost:8001/healthz || exit 1
 
-# Run both services with supervisor
-CMD ["/app/start-services.sh"]
+# Use our wrapper script as entrypoint to handle Docker flags gracefully
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD []
