@@ -15,8 +15,7 @@ data:
   config.yaml: |
     server_url: https://headscale.ozzu.world
 
-    addresses:
-      - 0.0.0.0:50443
+    listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 0.0.0.0:50480
 
     disable_check_updates: true
@@ -70,8 +69,8 @@ spec:
         command: ["headscale"]
         args: ["serve", "--config", "/etc/headscale/config.yaml"]
         ports:
-        - name: https
-          containerPort: 50443
+        - name: http
+          containerPort: 8080
         - name: metrics
           containerPort: 50480
         volumeMounts:
@@ -98,9 +97,9 @@ spec:
   selector:
     app: headscale
   ports:
-  - name: https
+  - name: http
     port: 443
-    targetPort: 50443
+    targetPort: 8080
   - name: metrics
     port: 80
     targetPort: 50480
@@ -111,7 +110,7 @@ metadata:
   name: headscale-ingress
   namespace: headscale
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-production
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
   tls:
