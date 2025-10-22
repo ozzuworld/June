@@ -23,7 +23,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: virtual-kubelet
-        image: ozzuworld/virtual-kubelet-vast:latest
+        image: ozzuworld/virtual-kubelet-vast-python:latest
         env:
         # Kubelet configuration
         - name: KUBELET_PORT
@@ -90,34 +90,31 @@ spec:
             cpu: 1000m
             memory: 1Gi
         
-        # Adjusted probes for longer startup times
+        # PROBE PATH FIXES: match VK HTTP server endpoints
         livenessProbe:
           httpGet:
-            path: /stats/summary
+            path: /healthz
             port: 10255
-          initialDelaySeconds: 120   # Increased from 60
-          periodSeconds: 60          # Increased from 30
-          timeoutSeconds: 20         # Increased from 10
-          failureThreshold: 5        # Increased from 3
-        
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
         readinessProbe:
           httpGet:
-            path: /stats/summary
+            path: /readyz
             port: 10255
-          initialDelaySeconds: 60    # Increased from 30
-          periodSeconds: 20          # Increased from 10
-          timeoutSeconds: 10         # Increased from 5
-          failureThreshold: 5        # Increased from 3
-        
-        # Startup probe for initial API connectivity - More generous
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 5
         startupProbe:
           httpGet:
             path: /healthz
             port: 10255
-          initialDelaySeconds: 30    # Increased from 10
-          periodSeconds: 15          # Increased from 5
-          timeoutSeconds: 10         # Increased from 3
-          failureThreshold: 40       # Increased from 12 (10 minutes total)
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
       
       volumes:
       - name: credentials
