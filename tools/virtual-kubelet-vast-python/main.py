@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced Virtual Kubelet Provider for Vast.ai
-Uses official vastai CLI instead of direct REST API calls to ensure compatibility
-Adds kubelet-like endpoints for logs and readiness via SSH checks
+Enhanced Virtual Kubelet Provider for Vast.ai - robust error handling, throttled polling, single-flight per pod, auto-heal on external deletion, and reduced log spam.
 """
 import asyncio
 import json
@@ -11,15 +9,9 @@ import re
 import shutil
 import subprocess
 import time
+from collections import defaultdict
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
-
-# 3.11 compatibility shim
-import collections as _collections
-import collections.abc as _abc
-for _n in ("Mapping", "MutableMapping", "Sequence", "Callable"):
-    if not hasattr(_collections, _n) and hasattr(_abc, _n):
-        setattr(_collections, _n, getattr(_abc, _n))
 
 import aiohttp
 import structlog
@@ -45,10 +37,13 @@ FORCE_PRICE_MAX = os.getenv("FORCE_PRICE_MAX")
 from asyncio import Semaphore
 INSTANCE_BUY_SEMAPHORE = Semaphore(1)
 GLOBAL_RPS = 0.5
-BACKOFF_INITIAL = 2.0
+BACKOFF_INITIAL = 5.0
 BACKOFF_MAX = 60.0
 CIRCUIT_FAILS_TO_OPEN = 5
 CIRCUIT_OPEN_SEC = 300.0
+SHOW_POLL_INTERVAL_MIN = 15
+SHOW_POLL_INTERVAL_JITTER = 4
+INSTANCE_RECREATE_GRACE = 120
 
 _last_call_ts = 0.0
 async def _respect_global_rate_limit():
@@ -69,9 +64,7 @@ class VastAIClient:
         paths = [shutil.which("vastai"), "/usr/local/bin/vastai", "/app/vastai"]
         for p in paths:
             if p and os.path.exists(p) and os.access(p, os.X_OK):
-                logger.info("Found vastai CLI", path=p)
                 return p
-        logger.warning("vastai CLI not found")
         return None
     def _setup_api_key(self):
         if self.api_key:
@@ -87,8 +80,12 @@ class VastAIClient:
         out, err = await proc.communicate()
         if proc.returncode != 0:
             em = (err.decode() or "").strip()
-            if "rate" in em.lower():
-                await asyncio.sleep(min(BACKOFF_MAX, BACKOFF_INITIAL * 2))
+            # Vast bug: NoneType error on show__instance means transient failure
+            if "show__instance" in em and "start_date" in em:
+                return {"transient_error": True}
+            # Vast returns 404/not found instance - treat as external delete
+            if "not found" in em.lower() or "does not exist" in em.lower():
+                return {"gone": True}
             return {"error": em, "returncode": proc.returncode}
         txt = (out.decode() or "").strip()
         try:
@@ -126,14 +123,25 @@ class VastAIClient:
         if isinstance(data, dict) and "new_contract" in data:
             return data
         return None
-    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 600) -> Optional[Dict[str, Any]]:
+    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 600, poll_min=SHOW_POLL_INTERVAL_MIN) -> Optional[Dict[str, Any]]:
         start = time.time()
+        last_log = start
         while time.time() - start < timeout_seconds:
             res = await self._run(["show","instance",str(instance_id),"--raw"])
+            if "gone" in res:
+                return {"gone": True}
+            if "transient_error" in res:
+                await asyncio.sleep(poll_min)
+                continue
             data = res.get("data")
             if isinstance(data, dict) and data.get("actual_status") == "running" and data.get("ssh_host"):
                 return data
-            await asyncio.sleep(8)
+            # Log sparsely
+            now = time.time()
+            if now - last_log > 30:
+                logger.debug("Instance not ready yet (poll)", instance_id=instance_id)
+                last_log = now
+            await asyncio.sleep(poll_min + int(time.time()) % SHOW_POLL_INTERVAL_JITTER)
         return None
     async def delete_instance(self, instance_id: int) -> bool:
         res = await self._run(["destroy","instance",str(instance_id)])
@@ -144,8 +152,10 @@ class VirtualKubelet:
         self.api_key = api_key
         self.node_name = node_name
         self.pod_instances: Dict[str, Dict[str, Any]] = {}
+        self.pod_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.consecutive_failures = 0
         self.circuit_open_until = 0.0
+        self.recreate_backoff: Dict[str, float] = defaultdict(float)  # pod_name -> next_allowed_recreate_time
         try:
             k8s_konfig.load_incluster_config()
         except Exception:
@@ -160,99 +170,187 @@ class VirtualKubelet:
             return pod and pod.spec and pod.spec.node_name == self.node_name and (pod.metadata.deletion_timestamp is None)
         except Exception:
             return False
-    def _base_node_object(self) -> k8s_client.V1Node:
-        return k8s_client.V1Node(
-            metadata=k8s_client.V1ObjectMeta(name=self.node_name, labels={"beta.kubernetes.io/arch":"amd64","beta.kubernetes.io/os":"linux","node.kubernetes.io/instance-type":"gpu","provider":"vast.ai"}, annotations={"node.alpha.kubernetes.io/ttl":"0"}),
-            spec=k8s_client.V1NodeSpec(taints=[k8s_client.V1Taint(key="vast.ai/gpu", effect="NoSchedule"), k8s_client.V1Taint(key="virtual-kubelet.io/provider", value="vast", effect="NoSchedule")]),
-            status=k8s_client.V1NodeStatus(
-                capacity={"cpu":"16","memory":"32Gi","nvidia.com/gpu":"1","pods":"10"},
-                allocatable={"cpu":"16","memory":"32Gi","nvidia.com/gpu":"1","pods":"10"},
-                addresses=[k8s_client.V1NodeAddress(type="InternalIP", address="10.0.0.1")],
-                node_info=k8s_client.V1NodeSystemInfo(machine_id="vk-machine-id", system_uuid="vk-system-uuid", boot_id=f"vk-{int(time.time())}", kernel_version="5.15.0", os_image="Ubuntu 22.04 LTS", operating_system="linux", architecture="amd64", container_runtime_version="docker://24.0.0", kubelet_version="v1.28.0-vk-vast-python-cli", kube_proxy_version="v1.28.0-vk-vast-python-cli"),
-                conditions=[
-                    k8s_client.V1NodeCondition(type="Ready", status="True", last_heartbeat_time=self._now(), last_transition_time=self._now(), reason="KubeletReady", message="vk ready"),
-                    k8s_client.V1NodeCondition(type="MemoryPressure", status="False", last_heartbeat_time=self._now(), last_transition_time=self._now(), reason="KubeletHasSufficientMemory", message="ok"),
-                    k8s_client.V1NodeCondition(type="DiskPressure", status="False", last_heartbeat_time=self._now(), last_transition_time=self._now(), reason="KubeletHasNoDiskPressure", message="ok"),
-                    k8s_client.V1NodeCondition(type="PIDPressure", status="False", last_heartbeat_time=self._now(), last_transition_time=self._now(), reason="KubeletHasSufficientPID", message="ok"),
-                ],
-            ),
-        )
-    async def register_node(self):
-        node = self._base_node_object()
+    async def create_pod(self, pod):
+        pod_name = pod.metadata.name
+        async with self.pod_locks[pod_name]:
+            instance = self.pod_instances.get(pod_name)
+            if instance and instance.get("state") in ("provisioning","running"):
+                logger.info("pod already has instance", pod=pod_name, instance_id=instance.get("id"))
+                return
+            now = time.time()
+            if now < self.recreate_backoff[pod_name]:
+                logger.debug("Delaying recreate due to backoff", pod=pod_name, delay=int(self.recreate_backoff[pod_name]-now))
+                return
+            gpu_list, price_max, region = self._parse_annotations(pod)
+            async with VastAIClient(self.api_key) as vast:
+                offer = await self._find_offer(vast, gpu_list, price_max, region)
+                if not offer:
+                    await self.update_pod_status_failed(pod, "No GPU offers available"); return
+                async with INSTANCE_BUY_SEMAPHORE:
+                    buy = await vast.buy_instance(offer["id"], pod.metadata.annotations or {})
+                if not buy or not buy.get("new_contract"):
+                    await self.update_pod_status_failed(pod, "Failed to create instance"); return
+                iid = int(buy["new_contract"])
+                self.pod_instances[pod_name] = {
+                    "id": iid, "state": "provisioning", "created": time.time(),
+                    "offer": offer, "ssh_poll_at": 0, "gone_poll_count": 0, "poll_fail_count": 0
+                }
+                logger.info("Instance created", pod=pod_name, iid=iid)
+                ready = await vast.poll_instance_ready(iid)
+                if ready and not ready.get("gone"):
+                    self.pod_instances[pod_name].update({"state": "running", "instance_data": ready, "gone_poll_count": 0, "poll_fail_count": 0})
+                    await self.update_pod_status_running(pod, self.pod_instances[pod_name])
+                elif ready and ready.get("gone"):
+                    self.pod_instances.pop(pod_name, None)
+                    self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
+                    await self.update_pod_status_failed(pod, "External deletion - will retry")
+                else:
+                    self.pod_instances.pop(pod_name, None)
+                    self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
+                    await self.update_pod_status_failed(pod, "Provisioning failed")
+    async def update_pod_status_failed(self, pod, reason: str):
         try:
-            self.v1.create_node(body=node)
-            logger.info("Node registered", node=self.node_name)
-        except ApiException as e:
-            if e.status == 409:
-                logger.info("Node exists", node=self.node_name)
-            else:
-                logger.error("Node register failed", err=str(e))
-                raise
-    async def update_node_status(self):
+            if not pod.status: pod.status = k8s_client.V1PodStatus()
+            pod.status.phase = "Failed"; pod.status.reason = reason
+            self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
+        except Exception: pass
+    async def update_pod_status_running(self, pod, instance):
         try:
-            node = self.v1.read_node(name=self.node_name)
-            if node.status and node.status.conditions:
-                for cond in node.status.conditions:
-                    cond.last_heartbeat_time = self._now()
-                    if cond.type == "Ready":
-                        cond.status = "True"
-                        cond.reason = "KubeletReady"
-                        cond.message = "vk ready"
-            self.v1.replace_node_status(name=self.node_name, body=node)
-        except ApiException as e:
-            logger.error("Node status update failed", err=str(e))
-    async def update_node_lease(self):
-        lease_name = self.node_name
-        ns = "kube-node-lease"
-        try:
+            if not pod.status: pod.status = k8s_client.V1PodStatus()
+            pod.status.phase = "Running"; pod.status.pod_ip = instance.get("instance_data",{}).get("public_ip")
+            if not pod.status.conditions: pod.status.conditions = []
+            for t in ("PodScheduled","Initialized","ContainersReady","Ready"):
+                pod.status.conditions.append(k8s_client.V1PodCondition(type=t, status="False" if t in ("ContainersReady","Ready") else "True", last_transition_time=self._now(), reason="Scheduled" if t=="PodScheduled" else ("PodCompleted" if t=="Initialized" else "ContainersNotReady")))
+            self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
+        except Exception: pass
+    async def delete_pod(self, pod):
+        pod_name = pod.metadata.name
+        async with self.pod_locks[pod_name]:
+            instance = self.pod_instances.get(pod_name)
+            if not instance: return
             try:
-                lease = self.coordination.read_namespaced_lease(name=lease_name, namespace=ns)
-                lease.spec.renew_time = self._now()
-                lease.spec.holder_identity = self.node_name
-                self.coordination.replace_namespaced_lease(name=lease_name, namespace=ns, body=lease)
-            except ApiException as e:
-                if e.status == 404:
-                    lease = k8s_client.V1Lease(metadata=k8s_client.V1ObjectMeta(name=lease_name, namespace=ns), spec=k8s_client.V1LeaseSpec(holder_identity=self.node_name, lease_duration_seconds=40, renew_time=self._now()))
-                    self.coordination.create_namespaced_lease(namespace=ns, body=lease)
-        except ApiException as e:
-            logger.error("Lease update failed", err=str(e))
+                async with VastAIClient(self.api_key) as vast:
+                    await vast.delete_instance(instance["id"])
+                self.pod_instances.pop(pod_name, None)
+                self.recreate_backoff[pod_name] = 0
+            except Exception: pass
+    def _parse_annotations(self, pod) -> tuple:
+        ann = pod.metadata.annotations or {}
+        gpu_primary = FORCE_GPU_TYPE or ann.get("vast.ai/gpu-type", "RTX 4060")
+        gpu_fallbacks = ann.get("vast.ai/gpu-fallbacks", "")
+        gpu_list = [gpu_primary] + ([g.strip() for g in gpu_fallbacks.split(",")] if gpu_fallbacks else [])
+        price_max = float(FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.50"))
+        region = ann.get("vast.ai/region")
+        return gpu_list, price_max, region
+    async def _find_offer(self, vast: 'VastAIClient', gpu_list: List[str], price_max: float, region: Optional[str]) -> Optional[Dict[str, Any]]:
+        for gpu in (gpu_list[:3] if len(gpu_list) > 3 else gpu_list):
+            offers = await vast.search_offers(gpu, price_max, region)
+            if offers:
+                offers_sorted = sorted(offers, key=lambda x: x.get("dph_total", 999))
+                return offers_sorted[0]
+        return None
+    async def reconcile_existing_pods(self):
+        try:
+            pods = self.v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}").items
+            for pod in pods:
+                if self._is_target_pod(pod):
+                    await self.create_pod(pod)
+        except Exception as e:
+            logger.error("reconcile_existing_pods error", err=str(e))
+    async def pod_watch_loop(self):
+        w = k8s_watch.Watch()
+        while True:
+            try:
+                now = time.time()
+                if now < self.circuit_open_until:
+                    await asyncio.sleep(5); continue
+                stream = w.stream(self.v1.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
+                for event in stream:
+                    typ = event.get("type"); pod = event.get("object")
+                    if not pod: continue
+                    name = pod.metadata.name
+                    logger.debug("Pod event", typ=typ, pod=name)
+                    if typ == "ADDED":
+                        await self.create_pod(pod)
+                    elif typ == "MODIFIED":
+                        if pod.metadata.deletion_timestamp or (pod.status and pod.status.phase in ("Succeeded","Failed")):
+                            await self.delete_pod(pod)
+                    elif typ == "DELETED":
+                        await self.delete_pod(pod)
+            except Exception as e:
+                logger.error("pod_watch_loop error", err=str(e))
+                await asyncio.sleep(3)
     async def heartbeat_loop(self):
         while True:
             try:
-                await self.update_node_status()
-                await self.update_node_lease()
-                await self._health_monitor()
+                pods = list(self.pod_instances.keys())
+                for pod_name in pods:
+                    await self._poll_and_healthcheck_instance(pod_name)
                 await asyncio.sleep(10)
             except Exception as e:
                 logger.error("Heartbeat error", err=str(e))
                 await asyncio.sleep(10)
-    async def _health_monitor(self):
-        for pod_name, instance in list(self.pod_instances.items()):
-            try:
-                healthy = await self._check_instance_health(instance)
-                try:
-                    pod = self.v1.read_namespaced_pod(name=pod_name, namespace="june-services")
-                except ApiException as e:
-                    if e.status == 404:
-                        continue
-                    else:
-                        raise
-                await self._set_pod_ready(pod, healthy, reason="ServiceHealthy" if healthy else "ServiceUnhealthy")
-            except Exception as e:
-                logger.warning("Health monitor error", pod=pod_name, err=str(e))
-    async def _check_instance_health(self, instance: dict) -> bool:
+    async def _poll_and_healthcheck_instance(self, pod_name):
+        instance = self.pod_instances.get(pod_name)
+        if not instance: return
+        iid = instance.get("id")
+        now = time.time()
+        # Rate limit show polling
+        if now < instance.get("ssh_poll_at", 0): return
+        instance["ssh_poll_at"] = now + SHOW_POLL_INTERVAL_MIN + int(now) % SHOW_POLL_INTERVAL_JITTER
+        gone_count = instance.get("gone_poll_count", 0)
+        fail_count = instance.get("poll_fail_count", 0)
+        try:
+            async with VastAIClient(self.api_key) as vast:
+                show = await vast._run(["show","instance",str(iid),"--raw"])
+                if "gone" in show:
+                    gone_count += 1
+                elif "transient_error" in show:
+                    return
+                else:
+                    gone_count = 0
+                data = show.get("data")
+                if data and data.get("actual_status") == "running" and data.get("ssh_host"):
+                    health = await self._check_instance_health(data)
+                else:
+                    health = False
+                # If many gone polls in a row, treat as externally deleted
+                if gone_count > 1:
+                    logger.info("Instance deleted externally; cleaning up", pod=pod_name, iid=iid)
+                    self.pod_instances.pop(pod_name, None)
+                    self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
+                    return
+                # If failed health checks > X, mark not ready
+                if not health:
+                    fail_count += 1
+                else:
+                    fail_count = 0
+                # Update for next round
+                instance["gone_poll_count"] = gone_count
+                instance["poll_fail_count"] = fail_count
+                # Update pod readiness for pod
+                pod = self.try_get_pod(pod_name)
+                if pod:
+                    await self._set_pod_ready(pod, health and gone_count == 0 and fail_count < 3, reason="Healthy" if health else "Unhealthy")
+        except Exception as e:
+            logger.error("Poll/health check failed", pod=pod_name, err=str(e))
+    async def _check_instance_health(self, data: dict) -> bool:
         if not SSH_AVAILABLE:
             return False
-        ssh_host = instance.get("instance_data", {}).get("ssh_host")
-        ssh_port = instance.get("instance_data", {}).get("ssh_port", 22)
+        ssh_host = data.get("ssh_host"); ssh_port = data.get("ssh_port", 22)
         if not ssh_host:
             return False
         try:
-            async with asyncssh.connect(ssh_host, port=ssh_port, username="root", known_hosts=None) as conn:
+            async with asyncssh.connect(ssh_host, port=ssh_port, username="root", known_hosts=None, connect_timeout=10) as conn:
                 res = await conn.run("curl -f -m 5 http://localhost:8000/healthz && curl -f -m 5 http://localhost:8001/healthz", check=False)
                 return res.exit_status == 0
         except Exception:
             return False
+    def try_get_pod(self, pod_name):
+        try:
+            return self.v1.read_namespaced_pod(name=pod_name, namespace="june-services")
+        except Exception:
+            return None
     async def _set_pod_ready(self, pod, ready: bool, reason: str):
         if not pod.status:
             pod.status = k8s_client.V1PodStatus()
@@ -272,111 +370,6 @@ class VirtualKubelet:
             c.last_transition_time = self._now()
         try:
             self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
-        except ApiException as e:
-            logger.error("Patch pod status failed", err=str(e))
-    async def reconcile_existing_pods(self):
-        try:
-            pods = self.v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}").items
-            for pod in pods:
-                if self._is_target_pod(pod):
-                    name = pod.metadata.name
-                    if name not in self.pod_instances and (not pod.status or pod.status.phase in (None, "Pending")):
-                        await self.create_pod(pod)
-                        self.consecutive_failures = 0
-        except Exception as e:
-            logger.error("reconcile_existing_pods error", err=str(e))
-    async def pod_watch_loop(self):
-        w = k8s_watch.Watch()
-        while True:
-            try:
-                now = time.time()
-                if now < self.circuit_open_until:
-                    await asyncio.sleep(5); continue
-                stream = w.stream(self.v1.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
-                for event in stream:
-                    typ = event.get("type"); pod = event.get("object")
-                    if not pod: continue
-                    name = pod.metadata.name
-                    if typ == "ADDED":
-                        if self._is_target_pod(pod) and name not in self.pod_instances:
-                            try:
-                                await self.create_pod(pod)
-                                self.consecutive_failures = 0
-                            except Exception:
-                                self.consecutive_failures += 1
-                                if self.consecutive_failures >= CIRCUIT_FAILS_TO_OPEN:
-                                    self.circuit_open_until = time.time() + CIRCUIT_OPEN_SEC
-                    elif typ == "MODIFIED":
-                        if pod.metadata.deletion_timestamp or (pod.status and pod.status.phase in ("Succeeded","Failed")):
-                            if name in self.pod_instances:
-                                await self.delete_pod(pod)
-                    elif typ == "DELETED":
-                        if name in self.pod_instances:
-                            await self.delete_pod(pod)
-            except Exception as e:
-                await asyncio.sleep(3)
-    def _parse_annotations(self, pod) -> tuple:
-        ann = pod.metadata.annotations or {}
-        gpu_primary = FORCE_GPU_TYPE or ann.get("vast.ai/gpu-type", "RTX 4060")
-        gpu_fallbacks = ann.get("vast.ai/gpu-fallbacks", "")
-        gpu_list = [gpu_primary] + ([g.strip() for g in gpu_fallbacks.split(",")] if gpu_fallbacks else [])
-        price_max = float(FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.50"))
-        region = ann.get("vast.ai/region")
-        return gpu_list, price_max, region
-    async def _find_offer(self, vast: 'VastAIClient', gpu_list: List[str], price_max: float, region: Optional[str]) -> Optional[Dict[str, Any]]:
-        for gpu in (gpu_list[:3] if len(gpu_list) > 3 else gpu_list):
-            offers = await vast.search_offers(gpu, price_max, region)
-            if offers:
-                offers_sorted = sorted(offers, key=lambda x: x.get("dph_total", 999))
-                return offers_sorted[0]
-        return None
-    async def create_pod(self, pod):
-        name = pod.metadata.name
-        try:
-            gpu_list, price_max, region = self._parse_annotations(pod)
-            async with VastAIClient(self.api_key) as vast:
-                offer = await self._find_offer(vast, gpu_list, price_max, region)
-                if not offer:
-                    await self.update_pod_status_failed(pod, "No GPU instances available via CLI"); return
-                async with INSTANCE_BUY_SEMAPHORE:
-                    buy = await vast.buy_instance(offer["id"], pod.metadata.annotations or {})
-                if not buy or not buy.get("new_contract"):
-                    await self.update_pod_status_failed(pod, "Failed to create instance via CLI"); return
-                iid = int(buy["new_contract"])
-                ready = await vast.poll_instance_ready(iid, timeout_seconds=600)
-                if not ready:
-                    await vast.delete_instance(iid)
-                    await self.update_pod_status_failed(pod, "Instance failed to start via CLI"); return
-                inst = {"id": iid, "status":"running", "public_ip": ready.get("public_ipaddr"), "ssh_port": ready.get("ssh_port"), "offer": offer, "instance_data": ready}
-                self.pod_instances[name] = inst
-                await self.update_pod_status_running(pod, inst)
-        except Exception as e:
-            await self.update_pod_status_failed(pod, str(e))
-    async def update_pod_status_failed(self, pod, reason: str):
-        try:
-            if not pod.status: pod.status = k8s_client.V1PodStatus()
-            pod.status.phase = "Failed"; pod.status.reason = reason
-            self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
-        except Exception:
-            pass
-    async def update_pod_status_running(self, pod, instance):
-        try:
-            if not pod.status: pod.status = k8s_client.V1PodStatus()
-            pod.status.phase = "Running"; pod.status.pod_ip = instance.get("public_ip")
-            if not pod.status.conditions: pod.status.conditions = []
-            for t in ("PodScheduled","Initialized","ContainersReady","Ready"):
-                pod.status.conditions.append(k8s_client.V1PodCondition(type=t, status="False" if t in ("ContainersReady","Ready") else "True", last_transition_time=self._now(), reason="Scheduled" if t=="PodScheduled" else ("PodCompleted" if t=="Initialized" else "ContainersNotReady")))
-            self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
-        except Exception:
-            pass
-    async def delete_pod(self, pod):
-        name = pod.metadata.name
-        inst = self.pod_instances.get(name)
-        if not inst: return
-        try:
-            async with VastAIClient(self.api_key) as vast:
-                await vast.delete_instance(inst["id"])
-            self.pod_instances.pop(name, None)
         except Exception:
             pass
 
@@ -390,7 +383,6 @@ async def build_app(vk: VirtualKubelet) -> web.Application:
     app = web.Application()
     app.router.add_get('/healthz', healthz)
     app.router.add_get('/readyz', readyz)
-    # Basic log endpoint for manual diagnostics
     async def logs_handler(request):
         pod = request.query.get('pod');
         inst = vk.pod_instances.get(pod or "") if pod else None
