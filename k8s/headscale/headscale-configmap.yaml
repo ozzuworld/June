@@ -1,4 +1,4 @@
-# Headscale ConfigMap (updated to use `prefixes` per 0.23+)
+# Headscale ConfigMap (latest format)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,17 +7,26 @@ metadata:
 data:
   config.yaml: |
     server_url: https://headscale.ozzu.world
-    listen_addr: 0.0.0.0:50443
+
+    # Listeners
+    addresses:
+      - 0.0.0.0:50443
     metrics_listen_addr: 0.0.0.0:50480
+
     disable_check_updates: true
 
-    db_type: sqlite
-    db_path: /var/lib/headscale/db.sqlite
+    # Database (new format)
+    database:
+      type: sqlite
+      sqlite:
+        path: /var/lib/headscale/db.sqlite
 
+    # Keys
     private_key_path: /var/lib/headscale/private.key
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
 
+    # Required prefixes (new syntax)
     prefixes:
       v4: 100.64.0.0/10
       v6: fd7a:115c:a1e0::/48
