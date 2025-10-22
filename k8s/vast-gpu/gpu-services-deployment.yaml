@@ -1,4 +1,4 @@
-# Combined GPU services deployment for STT+TTS on single Vast.ai instance
+# Combined GPU services deployment for STT+TTS on single Vast.ai instance with Tailscale
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -75,13 +75,34 @@ spec:
         - name: COQUI_TOS_AGREED
           value: "1"
         
-        # LiveKit and orchestrator connectivity
-        - name: LIVEKIT_URL
+        # Tailscale configuration for headscale VPN
+        - name: TAILSCALE_AUTH_KEY
           valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: livekit-url
-              optional: true
+            secretKeyRef:
+              name: tailscale-auth
+              key: TAILSCALE_AUTH_KEY
+        - name: TAILSCALE_LOGIN_SERVER
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: TAILSCALE_LOGIN_SERVER
+        - name: TAILSCALE_BASE_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: TAILSCALE_BASE_DOMAIN
+        
+        # Service endpoints via Tailscale MagicDNS
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator:8080"
+        - name: LIVEKIT_WS_URL
+          value: "ws://livekit:7880"
+        - name: LIVEKIT_HTTP_URL
+          value: "http://livekit:7880"
+        - name: ROOM_NAME
+          value: "ozzu-main"
+        
+        # LiveKit credentials (from existing config)
         - name: LIVEKIT_API_KEY
           valueFrom:
             secretKeyRef:
@@ -93,12 +114,6 @@ spec:
             secretKeyRef:
               name: june-secrets
               key: livekit-api-secret
-              optional: true
-        - name: ORCHESTRATOR_URL
-          valueFrom:
-            configMapKeyRef:
-              name: june-config
-              key: orchestrator-url
               optional: true
         - name: BEARER_TOKEN
           valueFrom:
@@ -118,22 +133,32 @@ spec:
             memory: "12Gi"
             cpu: "4"
         
-        # Volume mounts for model caching
+        # Volume mounts for model caching and Tailscale state
         volumeMounts:
         - name: models-cache
           mountPath: /app/models
         - name: temp-cache
           mountPath: /app/cache
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
         
-        # Startup probe to handle long GPU initialization - CRITICAL FIX
+        # Security context for Tailscale (requires NET_ADMIN)
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_RAW
+          privileged: false
+        
+        # Startup probe to handle long GPU + Tailscale initialization
         startupProbe:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 120     # Wait 2 minutes before first check
+          initialDelaySeconds: 180     # Increased for Tailscale connection time
           periodSeconds: 30            # Check every 30 seconds
           timeoutSeconds: 15           # 15 second timeout per check
-          failureThreshold: 20         # Allow up to 10 more minutes (20 * 30s = 600s)
+          failureThreshold: 25         # Allow up to 12.5 more minutes (25 * 30s = 750s)
           successThreshold: 1          # Only need 1 success to mark ready
         
         # Liveness probe - More generous timeouts
@@ -141,9 +166,9 @@ spec:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 300     # Increased from 120 to 5 minutes
-          periodSeconds: 60            # Check every minute instead of 30s
-          timeoutSeconds: 30           # Increased timeout to 30s
+          initialDelaySeconds: 360     # Increased from 300 to 6 minutes
+          periodSeconds: 60            # Check every minute
+          timeoutSeconds: 30           # 30 second timeout
           failureThreshold: 5          # Allow 5 failures before restart
         
         # Readiness probe - Even more generous
@@ -151,13 +176,13 @@ spec:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 240     # Increased from 60 to 4 minutes
+          initialDelaySeconds: 300     # Increased from 240 to 5 minutes
           periodSeconds: 30            # Check every 30 seconds
-          timeoutSeconds: 20           # Increased timeout to 20s
+          timeoutSeconds: 20           # 20 second timeout
           failureThreshold: 10         # Allow many failures during startup
           successThreshold: 2          # Require 2 consecutive successes
       
-      # Volumes for model and cache storage
+      # Volumes for model cache, temp files, and Tailscale state
       volumes:
       - name: models-cache
         emptyDir:
@@ -165,11 +190,14 @@ spec:
       - name: temp-cache
         emptyDir:
           sizeLimit: 5Gi
+      - name: tailscale-state
+        emptyDir:
+          sizeLimit: 100Mi
       
       restartPolicy: Always
-      terminationGracePeriodSeconds: 60  # Increased from 30 for graceful shutdown
+      terminationGracePeriodSeconds: 60  # Allow graceful Tailscale shutdown
 ---
-# Service to expose the combined GPU services
+# Service to expose the combined GPU services (internal cluster access)
 apiVersion: v1
 kind: Service
 metadata:
