@@ -9,7 +9,7 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies for both services
+# Install system dependencies for both services + Tailscale
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3.10-dev \
@@ -32,6 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     supervisor \
     dos2unix \
+    ca-certificates \
+    gnupg \
+    lsb-release \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -66,7 +69,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies INCLUDING dos2unix for line ending fixes
+# Install runtime dependencies INCLUDING Tailscale
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     ffmpeg \
@@ -76,6 +79,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     supervisor \
     dos2unix \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    iptables \
+    iproute2 \
+    && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
+    && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list \
+    && apt-get update \
+    && apt-get install -y tailscale \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -91,9 +103,10 @@ RUN useradd -m -u 1001 juneuser
 WORKDIR /app
 RUN chown -R juneuser:juneuser /app
 
-# Create service directories
-RUN mkdir -p /app/stt /app/tts /app/models /app/cache /etc/supervisor/conf.d /var/log/supervisor /var/run
-RUN chown -R juneuser:juneuser /app /var/log/supervisor /var/run
+# Create service directories + Tailscale state directory
+RUN mkdir -p /app/stt /app/tts /app/models /app/cache /etc/supervisor/conf.d /var/log/supervisor /var/run \
+    /var/lib/tailscale /var/run/tailscale
+RUN chown -R juneuser:juneuser /app /var/log/supervisor /var/run /var/lib/tailscale /var/run/tailscale
 
 # Copy STT service files
 COPY --chown=juneuser:juneuser stt/ /app/stt/
@@ -107,9 +120,12 @@ COPY --chown=juneuser:juneuser supervisord.conf /etc/supervisor/conf.d/superviso
 # Copy startup script
 COPY --chown=juneuser:juneuser start-services.sh /app/start-services.sh
 
+# Copy Tailscale connection script
+COPY --chown=juneuser:juneuser tailscale-connect.sh /app/tailscale-connect.sh
+
 # 🔧 FIX: Convert line endings to Unix format for all shell scripts
-RUN dos2unix /app/start-services.sh && \
-    chmod +x /app/start-services.sh
+RUN dos2unix /app/start-services.sh /app/tailscale-connect.sh && \
+    chmod +x /app/start-services.sh /app/tailscale-connect.sh
 
 # Ensure module import works for both services
 ENV PYTHONPATH=/app:/app/stt:/app/tts
