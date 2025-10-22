@@ -13,6 +13,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional, Deque, Tuple
 from collections import deque
+import os
 
 import numpy as np
 from fastapi import FastAPI
