@@ -1,5 +1,5 @@
 # Headscale - Self-hosted Tailscale Control Plane
-# Complete deployment with config, service, and ingress
+# Complete deployment with config, service, and ingress (uses org wildcard TLS)
 ---
 apiVersion: v1
 kind: Namespace
@@ -104,19 +104,74 @@ spec:
     port: 80
     targetPort: 50480
 ---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: copy-wildcard-cert
+  namespace: headscale
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      serviceAccountName: copy-wildcard-sa
+      restartPolicy: OnFailure
+      containers:
+      - name: kubectl
+        image: bitnami/kubectl:1.29
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -e
+            if kubectl get secret headscale-wildcard-tls -n headscale >/dev/null 2>&1; then
+              echo "Wildcard already present in headscale namespace"
+              exit 0
+            fi
+            kubectl get secret ozzu-world-wildcard-tls -n june-services -o yaml | \
+              sed 's/namespace: june-services/namespace: headscale/' | \
+              sed 's/name: ozzu-world-wildcard-tls/name: headscale-wildcard-tls/' | \
+              kubectl apply -f -
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: copy-wildcard-role
+  namespace: headscale
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get","create","update","patch","list","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: copy-wildcard-rb
+  namespace: headscale
+subjects:
+- kind: ServiceAccount
+  name: copy-wildcard-sa
+  namespace: headscale
+roleRef:
+  kind: Role
+  name: copy-wildcard-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copy-wildcard-sa
+  namespace: headscale
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: headscale-ingress
   namespace: headscale
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
   tls:
   - hosts:
     - headscale.ozzu.world
-    secretName: headscale-tls
+    secretName: headscale-wildcard-tls
   rules:
   - host: headscale.ozzu.world
     http:
