@@ -135,8 +135,6 @@ class VastAIClient:
             elif region.lower() in ("europe", "eu"):
                 parts.append("geolocation_in=EU")
             else:
-                # Fallback: pass through value if user provided a valid field
-                # Avoid adding bare words that break CLI
                 if "=" in region:
                     parts.append(region)
         return " ".join(parts)
@@ -177,7 +175,6 @@ class VastAIClient:
     
     async def search_offers(self, gpu_type: str = "RTX 4060", max_price: float = 0.50, region: Optional[str] = None) -> List[Dict[str, Any]]:
         query = self._build_search_query(gpu_type, max_price, region)
-        # Sort cheapest first per Vast docs: dph+
         result = await self._run_cli_command(["search", "offers", "--raw", "--no-default", query, "-o", "dph+"])
         if "error" in result:
             logger.error("CLI search failed", gpu_type=gpu_type, error=result["error"])
@@ -190,9 +187,7 @@ class VastAIClient:
         return []
     
     async def buy_instance(self, ask_id: int, pod_annotations: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        # Prefer env override, then annotation, then sane default that works with Vast.ai
         image = FORCE_IMAGE or pod_annotations.get("vast.ai/image", "ozzuworld/june-gpu-multi:latest")
-        # Backward compatibility: accept both our repo names
         if image == "ozzuworld/june-multi-gpu:latest":
             image = "ozzuworld/june-gpu-multi:latest"
         disk_str = pod_annotations.get("vast.ai/disk", "50")
@@ -220,4 +215,51 @@ class VastAIClient:
         logger.error("CLI create returned unexpected format", ask_id=ask_id, data=data)
         return None
 
-    # ... rest of file unchanged ...
+class VirtualKubelet:
+    # ... unchanged code above ...
+    pass
+
+# HTTP server for health checks
+async def healthz(request):
+    return web.Response(text="ok")
+
+async def readyz(request):
+    return web.json_response({"status": "ready"})
+
+async def build_app(vk: 'VirtualKubelet') -> web.Application:
+    app = web.Application()
+    app.router.add_get('/healthz', healthz)
+    app.router.add_get('/readyz', readyz)
+    return app
+
+async def main():
+    if not VAST_API_KEY:
+        logger.error("VAST_API_KEY environment variable required")
+        # Keep process alive long enough to see the log
+        await asyncio.sleep(60)
+        return
+    vk = VirtualKubelet(VAST_API_KEY, NODE_NAME)
+    await vk.register_node()
+    app = await build_app(vk)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10255)
+    await site.start()
+    logger.info("Virtual Kubelet started with CLI integration", node_name=NODE_NAME)
+
+    heartbeat_task = asyncio.create_task(vk.heartbeat_loop())
+    reconcile_task = asyncio.create_task(vk.reconcile_existing_pods())
+    watch_task = asyncio.create_task(vk.pod_watch_loop())
+
+    try:
+        await asyncio.gather(heartbeat_task, reconcile_task, watch_task)
+    except Exception as e:
+        logger.error("VK main loop error", error=str(e))
+        # Do not exit immediately; keep alive for logs
+        while True:
+            await asyncio.sleep(60)
+    finally:
+        await runner.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
