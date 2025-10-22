@@ -104,19 +104,30 @@ class VastAIClient:
     
     def _build_search_query(self, gpu_type: str, max_price: float, region: Optional[str] = None) -> str:
         gpu_cli = self._gpu_name_to_cli_format(gpu_type)
-        query_parts = [
-            "rentable=True",
-            "verified=True",
-            "rented=False",
+        parts = [
+            "rentable=true",
+            "verified=true",
+            "rented=false",
             f"gpu_name={gpu_cli}",
-            f"dph <= {max_price}",
-            "reliability >= 0.90",
-            "inet_down >= 100",
+            f"dph<={max_price:.2f}",
+            "reliability>=0.70",
+            "inet_down>=50",
+            "inet_up>=20",
         ]
         if region:
-            region_map = {"US": "geolocation=US", "Europe": "geolocation=DE", "Asia": "geolocation=JP"}
-            query_parts.append(region_map.get(region, region))
-        return " ".join(query_parts)
+            r = (region or '').strip().lower()
+            if r in ("north america", "na"):
+                parts.append("country=US,CA,MX")
+            elif r in ("us", "usa", "united states"):
+                parts.append("country=US")
+            elif r in ("canada", "ca"):
+                parts.append("country=CA")
+            elif r in ("europe", "eu"):
+                parts.append("geolocation_in=EU")
+            elif "=" in region:
+                parts.append(region)
+        return " ".join(parts)
+
     
     async def _run_cli_command(self, args: List[str]) -> Dict[str, Any]:
         if not self.cli_path:
@@ -154,7 +165,7 @@ class VastAIClient:
     
     async def search_offers(self, gpu_type: str = "RTX 4060", max_price: float = 0.50, region: Optional[str] = None) -> List[Dict[str, Any]]:
         query = self._build_search_query(gpu_type, max_price, region)
-        result = await self._run_cli_command(["search", "offers", "--raw", "--no-default", query, "-o", "dph-"])
+        result = await self._run_cli_command(["search", "offers", "--raw", "--no-default", query, "-o", "dph+"])
         if "error" in result:
             logger.error("CLI search failed", gpu_type=gpu_type, error=result["error"])
             return []
@@ -548,7 +559,7 @@ async def main():
     reconcile_task = asyncio.create_task(vk.reconcile_existing_pods())
     watch_task = asyncio.create_task(vk.pod_watch_loop())
     try:
-        await asyncio.gather(heartbeat_task, watch_task)
+        await asyncio.gather(heartbeat_task, reconcile_task, watch_task)
     except asyncio.CancelledError:
         logger.info("Tasks cancelled")
     except KeyboardInterrupt:
