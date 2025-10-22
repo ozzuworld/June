@@ -1,6 +1,3 @@
-# Headscale (self-hosted control plane) - ephemeral storage variant
-# Use this on clusters without a dynamic storage provisioner.
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,8 +17,8 @@ spec:
     spec:
       containers:
       - name: headscale
-        image: headscale/headscale:latest
-        imagePullPolicy: IfNotPresent
+        image: headscale/headscale:0.25.1
+        command: ["headscale"]
         args: ["serve", "--config", "/etc/headscale/config.yaml"]
         ports:
         - name: https
