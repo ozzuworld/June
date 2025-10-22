@@ -1,4 +1,4 @@
-# Updated Headscale ConfigMap: fix v2 noise key and DNS deprecations
+# Patch: add IP prefixes required by Headscale
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,11 +14,14 @@ data:
     db_type: sqlite
     db_path: /var/lib/headscale/db.sqlite
 
-    # Tailscale v2 noise protocol requires a private key path
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
 
-    # DNS section (replaces deprecated dns_config)
+    # Assign address space to your tailnet
+    ip_prefixes:
+      - 100.64.0.0/10     # CGNAT range (IPv4)
+      - fd7a:115c:a1e0::/48  # Unique local IPv6 prefix (example)
+
     dns:
       magic_dns: true
       base_domain: tail.ozzu.world
