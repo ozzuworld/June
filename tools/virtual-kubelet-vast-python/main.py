@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Virtual Kubelet Provider for Vast.ai (robust)
-- Strong idempotency
-- No async context manager usage
-- Key on ReplicaSet UID to avoid multi-provision storms
+Virtual Kubelet Provider for Vast.ai (robust, with GONE detection)
 - Single global instance cap
-- Cooldown and log throttling
-- Defensive: Only one GPU instance attempted, will not repeat for each pod retry
+- Idempotency keyed per ReplicaSet UID
+- Handles Vast GUI deletions: detects 'gone' and recreates after cooldown
+- No async context manager usage
 """
 import asyncio
 import json
@@ -71,10 +69,13 @@ class VastAIClient:
         out, err = await proc.communicate()
         if proc.returncode != 0:
             em = (err.decode() or "").strip()
+            # Detect 'gone' (user deleted/expired)
+            lowered = em.lower()
+            if "not found" in lowered or "does not exist" in lowered or "404" in lowered:
+                return {"gone": True}
+            # Vast bug: NoneType start_date in show__instance -> treat as transient
             if "show__instance" in em and "start_date" in em:
                 return {"transient_error": True}
-            if "not found" in em.lower() or "does not exist" in em.lower():
-                return {"gone": True}
             return {"error": em, "returncode": proc.returncode}
         txt = (out.decode() or "").strip()
         try:
@@ -112,28 +113,8 @@ class VastAIClient:
         if isinstance(data, dict) and "new_contract" in data:
             return data
         return None
-    async def poll_instance_ready(self, instance_id: int, timeout_seconds: int = 600, poll_min=SHOW_POLL_INTERVAL_MIN) -> Optional[Dict[str, Any]]:
-        start = time.time()
-        last_log = start
-        while time.time() - start < timeout_seconds:
-            res = await self._run(["show","instance",str(instance_id),"--raw"])
-            if "gone" in res:
-                return {"gone": True}
-            if "transient_error" in res:
-                await asyncio.sleep(poll_min)
-                continue
-            data = res.get("data")
-            if isinstance(data, dict) and data.get("actual_status") == "running" and data.get("ssh_host"):
-                return data
-            now = time.time()
-            if now - last_log > 30:
-                logger.debug("Instance not ready yet (poll)", instance_id=instance_id)
-                last_log = now
-            await asyncio.sleep(poll_min + int(time.time()) % SHOW_POLL_INTERVAL_JITTER)
-        return None
-    async def delete_instance(self, instance_id: int) -> bool:
-        res = await self._run(["destroy","instance",str(instance_id)])
-        return "error" not in res
+    async def show_instance(self, instance_id: int) -> Dict[str, Any]:
+        return await self._run(["show","instance",str(instance_id),"--raw"])
 
 class VirtualKubelet:
     def __init__(self, api_key: str, node_name: str):
@@ -141,7 +122,6 @@ class VirtualKubelet:
         self.node_name = node_name
         self.pod_instances: Dict[str, Dict[str, Any]] = {}
         self.instance_keys: Dict[str, str] = {}  # desired_key -> pod_name
-        self.consecutive_failures = 0
         self.recreate_backoff: Dict[str, float] = defaultdict(float)
         try:
             k8s_konfig.load_incluster_config()
@@ -164,10 +144,11 @@ class VirtualKubelet:
         pod_name = pod.metadata.name
         desired_key = self.get_desired_key(pod)
         now = time.time()
-        # Only one instance globally
+        # Single global instance cap
         if len(self.pod_instances) >= MAX_ACTIVE_INSTANCES:
             logger.info("Instance cap hit, not provisioning new GPU", cap=MAX_ACTIVE_INSTANCES)
             return
+        # Already tracking for desired key
         if self.instance_keys.get(desired_key) and self.pod_instances.get(self.instance_keys[desired_key]):
             logger.info("Instance already tracked for desired_key", key=desired_key)
             return
@@ -184,23 +165,44 @@ class VirtualKubelet:
         if not buy or not buy.get("new_contract"):
             await self.update_pod_status_failed(pod, "Failed to create instance"); return
         iid = int(buy["new_contract"])
-        self.pod_instances[pod_name] = {"id": iid, "state": "provisioning", "created": time.time(), "offer": offer}
+        self.pod_instances[pod_name] = {"id": iid, "state": "provisioning", "created": time.time(), "offer": offer, "gone": False}
         self.instance_keys[desired_key] = pod_name
         logger.info("Instance created", pod=pod_name, iid=iid)
-        ready = await vast.poll_instance_ready(iid)
-        if ready and not ready.get("gone"):
-            self.pod_instances[pod_name].update({"state": "running", "instance_data": ready})
-            await self.update_pod_status_running(pod, self.pod_instances[pod_name])
-        elif ready and ready.get("gone"):
-            self.pod_instances.pop(pod_name, None)
-            self.instance_keys.pop(desired_key, None)
-            self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
-            await self.update_pod_status_failed(pod, "External deletion - will retry")
-        else:
-            self.pod_instances.pop(pod_name, None)
-            self.instance_keys.pop(desired_key, None)
-            self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
-            await self.update_pod_status_failed(pod, "Provisioning failed")
+        # initial show
+        show = await vast.show_instance(iid)
+        if "gone" in show:
+            await self._handle_instance_gone(pod, pod_name, desired_key)
+            return
+        # wait loop (with gone detection)
+        start = time.time()
+        while time.time() - start < 600:
+            show = await vast.show_instance(iid)
+            if "gone" in show:
+                await self._handle_instance_gone(pod, pod_name, desired_key)
+                return
+            if "transient_error" in show:
+                await asyncio.sleep(SHOW_POLL_INTERVAL_MIN)
+                continue
+            data = show.get("data")
+            if isinstance(data, dict) and data.get("actual_status") == "running" and data.get("ssh_host"):
+                self.pod_instances[pod_name].update({"state": "running", "instance_data": data})
+                await self.update_pod_status_running(pod, self.pod_instances[pod_name])
+                return
+            await asyncio.sleep(SHOW_POLL_INTERVAL_MIN)
+        # timeout
+        await self._handle_instance_fail(pod, pod_name, desired_key, reason="Provisioning timeout")
+    async def _handle_instance_gone(self, pod, pod_name: str, desired_key: str):
+        logger.info("Instance deleted externally; scheduling recreate", pod=pod_name)
+        self.pod_instances.pop(pod_name, None)
+        self.instance_keys.pop(desired_key, None)
+        self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
+        await self.update_pod_status_failed(pod, "External deletion - will retry")
+    async def _handle_instance_fail(self, pod, pod_name: str, desired_key: str, reason: str):
+        logger.warning("Instance provisioning failure", pod=pod_name, reason=reason)
+        self.pod_instances.pop(pod_name, None)
+        self.instance_keys.pop(desired_key, None)
+        self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
+        await self.update_pod_status_failed(pod, reason)
     async def update_pod_status_failed(self, pod, reason: str):
         try:
             if not pod.status: pod.status = k8s_client.V1PodStatus()
@@ -222,7 +224,7 @@ class VirtualKubelet:
         instance = self.pod_instances.get(pod_name)
         if not instance: return
         vast = VastAIClient(self.api_key)
-        await vast.delete_instance(instance["id"])
+        await vast._run(["destroy","instance",str(instance["id"])])
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = 0
@@ -231,8 +233,8 @@ class VirtualKubelet:
         gpu_primary = FORCE_GPU_TYPE or ann.get("vast.ai/gpu-type", "RTX 4060")
         gpu_fallbacks = ann.get("vast.ai/gpu-fallbacks", "")
         gpu_list = [gpu_primary] + ([g.strip() for g in gpu_fallbacks.split(",")] if gpu_fallbacks else [])
-        price_max = float(FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.50"))
-        region = ann.get("vast.ai/region")
+        price_max = float(FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.20"))
+        region = ann.get("vast.ai/region", "north america")
         return gpu_list, price_max, region
     async def _find_offer(self, vast: 'VastAIClient', gpu_list: List[str], price_max: float, region: Optional[str]) -> Optional[Dict[str, Any]]:
         for gpu in (gpu_list[:3] if len(gpu_list) > 3 else gpu_list):
@@ -275,7 +277,7 @@ class VirtualKubelet:
                 logger.error("Heartbeat error", err=str(e))
                 await asyncio.sleep(10)
 
-# Minimal endpoints (health + log proxy as above)
+# Minimal endpoints
 async def healthz(request):
     return web.Response(text="ok")
 async def readyz(request):
