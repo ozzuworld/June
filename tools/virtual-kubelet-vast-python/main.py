@@ -5,6 +5,7 @@ Virtual Kubelet Provider for Vast.ai (robust, with GONE detection)
 - Idempotency keyed per ReplicaSet UID
 - Handles Vast GUI deletions: detects 'gone' and recreates after cooldown
 - No async context manager usage
+- Passes Tailscale environment variables for VPN connectivity
 """
 import asyncio
 import json
@@ -96,16 +97,72 @@ class VastAIClient:
         if "error" in res: return []
         data = res.get("data", [])
         return data if isinstance(data, list) else []
-    async def buy_instance(self, ask_id: int, ann: Dict[str,str]) -> Optional[Dict[str, Any]]:
+        
+    def _build_tailscale_env_string(self, pod) -> str:
+        """Build Tailscale environment variables from pod env or secrets"""
+        env_vars = []
+        
+        # Extract from pod environment variables
+        if pod.spec and pod.spec.containers:
+            for container in pod.spec.containers:
+                if container.env:
+                    for env_var in container.env:
+                        if env_var.name.startswith('TAILSCALE_'):
+                            if env_var.value:
+                                env_vars.append(f"-e {env_var.name}={env_var.value}")
+                            elif env_var.value_from and env_var.value_from.secret_key_ref:
+                                # For secrets, we need to get the value from Kubernetes
+                                try:
+                                    secret = self.v1.read_namespaced_secret(
+                                        name=env_var.value_from.secret_key_ref.name,
+                                        namespace=pod.metadata.namespace
+                                    )
+                                    if secret.data and env_var.value_from.secret_key_ref.key in secret.data:
+                                        import base64
+                                        value = base64.b64decode(secret.data[env_var.value_from.secret_key_ref.key]).decode()
+                                        env_vars.append(f"-e {env_var.name}={value}")
+                                except Exception as e:
+                                    logger.warning("Failed to get secret value", env_var=env_var.name, error=str(e))
+        
+        return " ".join(env_vars)
+    
+    async def buy_instance(self, ask_id: int, ann: Dict[str,str], pod) -> Optional[Dict[str, Any]]:
         image = FORCE_IMAGE or ann.get("vast.ai/image", "ozzuworld/june-multi-gpu:latest")
         disk_str = ann.get("vast.ai/disk", "50")
         try:
             disk_gb = float(re.match(r"(\d+(?:\.\d+)?)", disk_str).group(1))
         except Exception:
             disk_gb = 50.0
+            
         args = ["create","instance",str(ask_id),"--raw","--image",image,"--disk",str(int(disk_gb))]
-        if "vast.ai/onstart-cmd" in ann: args += ["--onstart-cmd", ann["vast.ai/onstart-cmd"]]
-        if "vast.ai/env" in ann: args += ["--env", ann["vast.ai/env"]]
+        
+        if "vast.ai/onstart-cmd" in ann: 
+            args += ["--onstart-cmd", ann["vast.ai/onstart-cmd"]]
+        
+        # Build environment string with Tailscale support and privileged flags
+        env_parts = []
+        
+        # Add port mappings
+        env_parts.append("-p 8000:8000 -p 8001:8001")
+        
+        # Add privileged container flags for Tailscale/VPN support
+        env_parts.append("--privileged --cap-add=NET_ADMIN --device /dev/net/tun")
+        
+        # Add Tailscale environment variables
+        tailscale_env = self._build_tailscale_env_string(pod)
+        if tailscale_env:
+            env_parts.append(tailscale_env)
+        
+        # Add custom env from annotations
+        if "vast.ai/env" in ann:
+            env_parts.append(ann["vast.ai/env"])
+            
+        # Combine all environment parts
+        env_string = " ".join(env_parts)
+        args += ["--env", env_string]
+        
+        logger.info("Creating Vast.ai instance", image=image, env=env_string)
+        
         res = await self._run(args)
         data = res.get("data")
         if isinstance(data, str) and data.isdigit():
@@ -157,11 +214,13 @@ class VirtualKubelet:
             return
         gpu_list, price_max, region = self._parse_annotations(pod)
         vast = VastAIClient(self.api_key)
+        # Pass the v1 client to VastAIClient for secret access
+        vast.v1 = self.v1
         offer = await self._find_offer(vast, gpu_list, price_max, region)
         if not offer:
             await self.update_pod_status_failed(pod, "No GPU offers available"); return
         async with INSTANCE_BUY_SEMAPHORE:
-            buy = await vast.buy_instance(offer["id"], pod.metadata.annotations or {})
+            buy = await vast.buy_instance(offer["id"], pod.metadata.annotations or {}, pod)
         if not buy or not buy.get("new_contract"):
             await self.update_pod_status_failed(pod, "Failed to create instance"); return
         iid = int(buy["new_contract"])
@@ -243,6 +302,93 @@ class VirtualKubelet:
                 offers_sorted = sorted(offers, key=lambda x: x.get("dph_total", 999))
                 return offers_sorted[0]
         return None
+    async def register_node(self):
+        """Register this Virtual Kubelet as a node in Kubernetes"""
+        try:
+            # Try to get existing node first
+            try:
+                node = self.v1.read_node(name=self.node_name)
+                logger.info("Node already exists", node=self.node_name)
+                return
+            except ApiException as e:
+                if e.status != 404:
+                    logger.error("Error checking node", error=str(e))
+                    return
+                    
+            # Create new node
+            node = k8s_client.V1Node(
+                metadata=k8s_client.V1ObjectMeta(
+                    name=self.node_name,
+                    labels={
+                        "beta.kubernetes.io/arch": "amd64",
+                        "beta.kubernetes.io/os": "linux", 
+                        "kubernetes.io/arch": "amd64",
+                        "kubernetes.io/os": "linux",
+                        "kubernetes.io/role": "agent",
+                        "type": "virtual-kubelet",
+                        "vast.ai/gpu-node": "true"
+                    },
+                    annotations={
+                        "node.alpha.kubernetes.io/ttl": "0"
+                    }
+                ),
+                spec=k8s_client.V1NodeSpec(
+                    taints=[
+                        k8s_client.V1Taint(
+                            key="virtual-kubelet.io/provider",
+                            value="vast-ai",
+                            effect="NoSchedule"
+                        )
+                    ]
+                ),
+                status=k8s_client.V1NodeStatus(
+                    addresses=[
+                        k8s_client.V1NodeAddress(type="InternalIP", address="127.0.0.1")
+                    ],
+                    allocatable={
+                        "cpu": "8",
+                        "memory": "32Gi", 
+                        "nvidia.com/gpu": "1",
+                        "ephemeral-storage": "100Gi",
+                        "pods": "10"
+                    },
+                    capacity={
+                        "cpu": "8",
+                        "memory": "32Gi",
+                        "nvidia.com/gpu": "1", 
+                        "ephemeral-storage": "100Gi",
+                        "pods": "10"
+                    },
+                    conditions=[
+                        k8s_client.V1NodeCondition(
+                            type="Ready",
+                            status="True",
+                            last_heartbeat_time=self._now(),
+                            last_transition_time=self._now(),
+                            reason="VirtualKubeletReady",
+                            message="Virtual Kubelet is ready"
+                        )
+                    ],
+                    node_info=k8s_client.V1NodeSystemInfo(
+                        machine_id="virtual-kubelet",
+                        system_uuid="virtual-kubelet",
+                        boot_id="virtual-kubelet",
+                        kernel_version="5.4.0",
+                        os_image="Ubuntu 22.04",
+                        container_runtime_version="docker://20.10.0",
+                        kubelet_version="v1.28.0",
+                        kube_proxy_version="v1.28.0",
+                        operating_system="linux",
+                        architecture="amd64"
+                    )
+                )
+            )
+            
+            self.v1.create_node(body=node)
+            logger.info("Node registered successfully", node=self.node_name)
+            
+        except Exception as e:
+            logger.error("Failed to register node", error=str(e))
     async def reconcile_existing_pods(self):
         try:
             pods = self.v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}").items
