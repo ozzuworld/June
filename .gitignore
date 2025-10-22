@@ -27,7 +27,6 @@ Thumbs.db
 .env.local
 .env.*.local
 
-
 # TTS large artifacts
 June/services/june-tts.zip
 June/services/june-tts/checkpoints_v2.zip
@@ -37,3 +36,20 @@ June/services/june-tts/checkpoints_v2/
 *.safetensors
 *.onnx
 *.ckpt
+
+# ============================================
+# TAILSCALE INTEGRATION
+# ============================================
+
+# Tailscale secrets and credentials
+k8s/tailscale/tailscale-secret.yaml
+.env.tailscale
+june-gpu-multi-secrets.yaml
+
+# Tailscale device state (if running locally)
+tailscaled.state
+*.ts-cookie
+
+# Deployment logs and temporary files
+scripts/*.log
+deployment-*.log
