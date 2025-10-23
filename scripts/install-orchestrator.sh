@@ -18,7 +18,7 @@ error() { echo -e "${RED}❌${NC} $1"; exit 1; }
 
 echo "==========================================="
 echo "June Platform - Modular Installation"
-echo "Fresh VM -> Full June Platform + LiveKit"
+echo "Fresh VM -> Full June Platform + Extensions"
 echo "==========================================="
 echo ""
 
@@ -46,7 +46,7 @@ fi
 log "Loading configuration from: $CONFIG_FILE"
 source "$CONFIG_FILE"
 
-# Export config for child scripts
+# Export config for child scripts (including new optional variables)
 export CONFIG_FILE
 export DOMAIN
 export LETSENCRYPT_EMAIL
@@ -57,6 +57,19 @@ export KEYCLOAK_ADMIN_PASSWORD
 export TURN_USERNAME
 export STUNNER_PASSWORD
 export GPU_TIMESLICING_REPLICAS
+
+# Export Vast.ai configuration (optional)
+export VAST_API_KEY
+export VAST_GPU_TYPE
+export VAST_MAX_PRICE_PER_HOUR
+export VAST_MIN_GPU_MEMORY
+export VAST_RELIABILITY_SCORE
+export VAST_MIN_DOWNLOAD_SPEED
+export VAST_MIN_UPLOAD_SPEED
+export VAST_DATACENTER_LOCATION
+export VAST_PREFERRED_REGIONS
+export VAST_VERIFIED_ONLY
+export VAST_RENTABLE_ONLY
 
 # Validate required variables
 REQUIRED_VARS=(
@@ -75,7 +88,7 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (FIXED ORDER - GPU Operator after Helm)
+# Define installation phases (including new phases 11 & 12)
 PHASES=(
     "01-prerequisites"
     "02-docker"
@@ -83,12 +96,14 @@ PHASES=(
     "03-kubernetes"
     "04-infrastructure"
     "05-helm"
-    "03.5-gpu-operator"    # MOVED HERE - After Helm is installed
+    "03.5-gpu-operator"    # GPU Operator after Helm is installed
     "06-certificates"
     "07-stunner"
     "08-livekit"
     "09-june-platform"
     "10-final-setup"
+    "11-headscale"          # NEW: VPN control plane
+    "12-vast-gpu"           # NEW: Remote GPU provider
 )
 
 # Function to run a phase
@@ -158,6 +173,14 @@ debug_info() {
     echo "GPU Information:"
     lspci | grep -i nvidia 2>/dev/null || echo "No NVIDIA GPU found"
     nvidia-smi 2>/dev/null || echo "nvidia-smi not available"
+    
+    echo ""
+    echo "Virtual Nodes (Vast.ai):"
+    kubectl get nodes -l type=virtual-kubelet 2>/dev/null || echo "No virtual nodes found"
+    
+    echo ""
+    echo "Headscale Status:"
+    kubectl get pods -n headscale 2>/dev/null || echo "Headscale namespace not found"
 }
 
 # Main execution function
@@ -206,15 +229,24 @@ main() {
         GPU_AVAILABLE="true"
     fi
     
+    # Check for Headscale deployment
+    HEADSCALE_AVAILABLE="false"
+    if kubectl get namespace headscale &>/dev/null; then
+        HEADSCALE_AVAILABLE="true"
+    fi
+    
+    # Check for Vast.ai virtual node
+    VAST_NODE=$(kubectl get nodes -l type=virtual-kubelet -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    
     echo ""
     echo "==========================================="
     success "June Platform Installation Complete!"
     echo "==========================================="
     echo ""
-    echo "📋 Your Services:"
+    echo "📋 Core Services:"
     echo "  API:        https://api.$DOMAIN"
     echo "  Identity:   https://idp.$DOMAIN"
-    if [ "$GPU_AVAILABLE" = "true" ]; then
+    if [ "$GPU_AVAILABLE" = "true" ] || [ -n "$VAST_NODE" ]; then
         echo "  STT:        https://stt.$DOMAIN"
         echo "  TTS:        https://tts.$DOMAIN"
     fi
@@ -223,6 +255,20 @@ main() {
     echo "  LiveKit:    livekit-livekit-server.june-services.svc.cluster.local"
     echo "  TURN:       turn:${EXTERNAL_IP}:3478"
     echo ""
+    if [ "$HEADSCALE_AVAILABLE" = "true" ]; then
+        echo "🔗 VPN Control Plane (Headscale):"
+        echo "  Control:    https://headscale.$DOMAIN"
+        echo "  Network:    100.64.0.0/10 (tail.$DOMAIN)"
+        echo "  Management: kubectl exec -n headscale deployment/headscale -- headscale"
+        echo ""
+    fi
+    if [ -n "$VAST_NODE" ]; then
+        echo "☁️ Remote GPU Resources (Vast.ai):"
+        echo "  Virtual Node: $VAST_NODE"
+        echo "  GPU Services: Automatically scheduled to cost-optimized instances"
+        echo "  Management:   kubectl logs -n kube-system deployment/virtual-kubelet-vast"
+        echo ""
+    fi
     echo "🌐 DNS Configuration:"
     echo "  Point these records to: $EXTERNAL_IP"
     echo "    $DOMAIN           A    $EXTERNAL_IP"
@@ -246,6 +292,12 @@ main() {
     echo "  kubectl get pods -n june-services   # Core services & LiveKit"
     echo "  kubectl get gateway -n stunner       # STUNner"
     echo "  kubectl get certificates -n june-services # Certificates"
+    if [ "$HEADSCALE_AVAILABLE" = "true" ]; then
+        echo "  kubectl get pods -n headscale        # VPN control plane"
+    fi
+    if [ -n "$VAST_NODE" ]; then
+        echo "  kubectl get nodes -l type=virtual-kubelet # Remote GPU nodes"
+    fi
     echo ""
     echo "==========================================="
 }
@@ -266,6 +318,8 @@ show_usage() {
     echo "  $0 --skip 06-certificates      # Skip certificate management"
     echo "  $0 --skip 02.5-gpu             # Skip GPU driver/runtime"
     echo "  $0 --skip 03.5-gpu-operator    # Skip GPU Operator/time-slicing"
+    echo "  $0 --skip 11-headscale         # Skip VPN control plane"
+    echo "  $0 --skip 12-vast-gpu          # Skip remote GPU provider"
 }
 
 # Check for help flag
