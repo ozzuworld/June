@@ -111,45 +111,58 @@ metadata:
   namespace: headscale
 spec:
   ttlSecondsAfterFinished: 300
+  backoffLimit: 6
   template:
     spec:
       serviceAccountName: copy-wildcard-sa
       restartPolicy: OnFailure
       containers:
       - name: kubectl
-        # Use registry.k8s.io image as primary, more reliable than bitnami
         image: registry.k8s.io/kubectl:v1.29.0
         command: ["/bin/sh","-c"]
         args:
           - |
             set -e
+            TARGET_SECRET="headscale-wildcard-tls"
+            SOURCE_CANDIDATES="${DOMAIN//./-}-wildcard-tls ozzu-world-wildcard-tls wildcard-tls ozzu-world-tls"
+
             echo "Checking for existing wildcard certificate in headscale namespace..."
-            if kubectl get secret headscale-wildcard-tls -n headscale >/dev/null 2>&1; then
+            if kubectl get secret "$TARGET_SECRET" -n headscale >/dev/null 2>&1; then
               echo "Wildcard certificate already present in headscale namespace"
               exit 0
             fi
-            echo "Looking for source wildcard certificate in june-services namespace..."
-            # Try different possible certificate names
+
+            echo "Waiting for source wildcard certificate in june-services namespace..."
+            tries=0
+            max_tries=20
+            sleep_seconds=6
             SOURCE_SECRET=""
-            for cert_name in "ozzu-world-wildcard-tls" "wildcard-tls" "ozzu-world-tls"; do
-              if kubectl get secret "$cert_name" -n june-services >/dev/null 2>&1; then
-                SOURCE_SECRET="$cert_name"
-                echo "Found source certificate: $cert_name"
-                break
-              fi
+            while [ $tries -lt $max_tries ]; do
+              for cert_name in $SOURCE_CANDIDATES; do
+                if kubectl get secret "$cert_name" -n june-services >/dev/null 2>&1; then
+                  SOURCE_SECRET="$cert_name"
+                  echo "Found source certificate: $cert_name"
+                  break
+                fi
+              done
+              [ -n "$SOURCE_SECRET" ] && break
+              tries=$((tries+1))
+              echo "[${tries}/${max_tries}] Source certificate not found yet. Retrying in ${sleep_seconds}s..."
+              sleep $sleep_seconds
             done
+
             if [ -z "$SOURCE_SECRET" ]; then
-              echo "No wildcard certificate found in june-services namespace. Available secrets:"
+              echo "ERROR: No wildcard certificate found in june-services namespace after waiting. Available secrets:"
               kubectl get secrets -n june-services
               exit 1
             fi
-            echo "Copying certificate from $SOURCE_SECRET to headscale-wildcard-tls..."
+
+            echo "Copying certificate from $SOURCE_SECRET to $TARGET_SECRET in headscale namespace..."
             kubectl get secret "$SOURCE_SECRET" -n june-services -o yaml | \
               sed 's/namespace: june-services/namespace: headscale/' | \
-              sed "s/name: $SOURCE_SECRET/name: headscale-wildcard-tls/" | \
+              sed "s/name: $SOURCE_SECRET/name: $TARGET_SECRET/" | \
               kubectl apply -f -
             echo "Certificate copy completed successfully"
-      # Add network access and resource limits
       dnsPolicy: ClusterFirst
       restartPolicy: OnFailure
 ---
