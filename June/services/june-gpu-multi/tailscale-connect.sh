@@ -1,10 +1,11 @@
 #!/bin/bash
 # Tailscale auto-connect script for june-gpu-multi service
-# Uses userspace networking mode for container compatibility
+# Uses userspace networking mode for container compatibility (FIXED)
 
 set -e
 
-echo "[TAILSCALE] Starting Tailscale in userspace networking mode..."
+echo "[TAILSCALE] Connecting to headscale network..."
+echo "[TAILSCALE] Starting Tailscale connection to headscale.ozzu.world..."
 
 # Check if required environment variables are set
 if [ -z "$TAILSCALE_AUTH_KEY" ]; then
@@ -15,8 +16,8 @@ fi
 # Create Tailscale directories if they don't exist
 mkdir -p /var/lib/tailscale /var/run/tailscale
 
-# Start tailscaled daemon with userspace networking mode
-echo "[TAILSCALE] Starting Tailscale daemon with userspace networking..."
+# Start tailscaled daemon with PROPER userspace networking mode
+echo "[TAILSCALE] Starting Tailscale daemon..."
 tailscaled \
     --state=/var/lib/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock \
@@ -29,14 +30,15 @@ TAILSCALED_PID=$!
 echo "[TAILSCALE] Waiting for daemon to initialize..."
 sleep 8
 
-# Connect to headscale with auth key
+# Connect to headscale with auth key using userspace mode
 echo "[TAILSCALE] Connecting to headscale.ozzu.world..."
 tailscale up \
     --login-server=https://headscale.ozzu.world \
     --authkey=$TAILSCALE_AUTH_KEY \
-    --hostname=june-gpu-$(hostname | cut -c1-8) \
+    --hostname=june-gpu-$(date +%s | tail -c 8) \
     --accept-routes \
-    --accept-dns
+    --accept-dns \
+    --netfilter-mode=off
 
 # Wait for connection to establish
 echo "[TAILSCALE] Waiting for Tailscale connection..."
@@ -81,5 +83,5 @@ fi
 
 echo "[TAILSCALE] Tailscale userspace networking active with proxies on localhost:1055"
 
-# Keep tailscaled running
+# Keep tailscaled running in foreground for supervisor
 wait $TAILSCALED_PID
