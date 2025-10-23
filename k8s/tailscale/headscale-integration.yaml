@@ -1,0 +1,123 @@
+# Headscale Integration for June Platform
+# This replaces the complex Tailscale.com setup with simple Headscale integration
+# Connects external GPU containers (vast.ai) to Kubernetes cluster via Headscale VPN
+
+# Prerequisites:
+# 1. Headscale server running at headscale.ozzu.world
+# 2. API key created with: kubectl -n headscale exec deployment/headscale -- headscale apikey create --expiration=365d k8s-subnet-router
+# 3. External GPU containers connected to same Headscale network
+
+---
+# Service Account for Subnet Router
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headscale-subnet-router
+  namespace: kube-system
+---
+# Permissions for Subnet Router
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: headscale-subnet-router
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headscale-subnet-router
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: headscale-subnet-router
+subjects:
+- kind: ServiceAccount
+  name: headscale-subnet-router
+  namespace: kube-system
+---
+# Headscale API Key Secret
+# Update this with your actual API key from Headscale
+apiVersion: v1
+kind: Secret
+metadata:
+  name: headscale-auth
+  namespace: kube-system
+type: Opaque
+stringData:
+  authkey: "REPLACE_WITH_YOUR_HEADSCALE_API_KEY"
+---
+# Tailscale Subnet Router for Headscale
+# This exposes the entire Kubernetes cluster network to your Headscale VPN
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headscale-subnet-router
+  namespace: kube-system
+  labels:
+    app: headscale-subnet-router
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: headscale-subnet-router
+  template:
+    metadata:
+      labels:
+        app: headscale-subnet-router
+    spec:
+      serviceAccountName: headscale-subnet-router
+      hostNetwork: true
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        env:
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: headscale-auth
+              key: authkey
+        # Advertise Kubernetes networks to Headscale
+        - name: TS_ROUTES
+          value: "10.96.0.0/12,10.244.0.0/16"  # Service + Pod networks
+        # Connect to your Headscale server
+        - name: TS_LOGIN_SERVER
+          value: "https://headscale.ozzu.world"
+        - name: TS_HOSTNAME
+          value: "k8s-cluster"
+        # Accept subnet routes
+        - name: TS_ACCEPT_ROUTES
+          value: "true"
+        # State directory
+        - name: TS_STATE_DIR
+          value: "/var/lib/tailscale"
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+        - name: var-lib-tailscale
+          mountPath: /var/lib/tailscale
+      volumes:
+      - name: dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+      - name: var-lib-tailscale
+        hostPath:
+          path: /var/lib/tailscale
+          type: DirectoryOrCreate
+      # Run on control plane node
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
