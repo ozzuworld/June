@@ -1,4 +1,5 @@
-# Virtual Kubelet deployment for Vast.ai integration - Troubleshooting Version
+# Virtual Kubelet deployment for Vast.ai integration - With CLI Query Fix
+# TEMPORARY: Includes initContainer shim to fix broken Vast.ai CLI query formatting
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +22,91 @@ spec:
       serviceAccountName: virtual-kubelet-vast
       nodeSelector:
         kubernetes.io/arch: amd64
+      
+      # TEMP FIX: Shim to fix Vast.ai CLI query formatting bug
+      # The Python code passes query params as separate args instead of single quoted string
+      # This initContainer creates a wrapper that fixes the command format
+      initContainers:
+      - name: vastai-cli-shim
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Installing Vast.ai CLI shim to fix query formatting..."
+          
+          # Backup original vastai binary
+          if [ -x /usr/local/bin/vastai ]; then
+            cp /usr/local/bin/vastai /usr/local/bin/vastai.real
+            echo "Backed up original vastai to vastai.real"
+            
+            # Create wrapper script that fixes query formatting
+            cat > /usr/local/bin/vastai << 'EOF'
+          #!/bin/sh
+          # Vast.ai CLI wrapper to fix query formatting bug
+          # The Python VirtualKubelet passes query params as separate args,
+          # but the CLI expects them as a single quoted string
+          
+          if [ "$1" = "search" ] && [ "$2" = "offers" ]; then
+            # This is a search offers call - need to fix query formatting
+            RAW_FLAG=""
+            ORDER_FLAG=""
+            QUERY_PARTS=""
+            
+            # Parse arguments and reconstruct properly
+            shift 2  # skip 'search offers'
+            while [ $# -gt 0 ]; do
+              case "$1" in
+                --raw)
+                  RAW_FLAG="--raw"
+                  shift
+                  ;;
+                -o|--order)
+                  ORDER_FLAG="$1 $2"
+                  shift 2
+                  ;;
+                --no-default)
+                  # Skip this flag, we'll use explicit filters
+                  shift
+                  ;;
+                *)
+                  # This is part of the query - add to query string
+                  if [ -z "$QUERY_PARTS" ]; then
+                    QUERY_PARTS="$1"
+                  else
+                    QUERY_PARTS="$QUERY_PARTS $1"
+                  fi
+                  shift
+                  ;;
+              esac
+            done
+            
+            # Execute with properly formatted query
+            echo "Fixed CLI call: vastai.real search offers $RAW_FLAG '$QUERY_PARTS' $ORDER_FLAG" >&2
+            exec /usr/local/bin/vastai.real search offers $RAW_FLAG "$QUERY_PARTS" $ORDER_FLAG
+          else
+            # Not a search offers call - pass through unchanged
+            exec /usr/local/bin/vastai.real "$@"
+          fi
+          EOF
+            
+            chmod +x /usr/local/bin/vastai
+            echo "Created vastai CLI shim wrapper"
+            
+            # Test the wrapper
+            echo "Testing wrapper..."
+            /usr/local/bin/vastai --version || echo "Version check failed, but wrapper installed"
+            
+          else
+            echo "WARNING: vastai binary not found, shim not installed"
+          fi
+          
+          echo "Shim installation complete"
+        volumeMounts:
+        - name: usr-local-bin
+          mountPath: /usr/local/bin
+        securityContext:
+          runAsUser: 0  # Need root to modify /usr/local/bin
+          
       containers:
       - name: virtual-kubelet
         image: ozzuworld/virtual-kubelet-vast-python:latest
@@ -106,6 +192,9 @@ spec:
         - name: provider-config
           mountPath: /etc/vast-config
           readOnly: true
+        - name: usr-local-bin
+          mountPath: /usr/local/bin
+          readOnly: false  # Need write access for shim
 
         resources:
           requests:
@@ -145,11 +234,17 @@ spec:
           timeoutSeconds: 15        # Increased from 5
           failureThreshold: 60      # Increased significantly from 30
           successThreshold: 1
+          
+        securityContext:
+          runAsUser: 0  # Temporary: need root for shim to work
+          readOnlyRootFilesystem: false  # Temporary: shim needs write access
 
       volumes:
       - name: provider-config
         configMap:
           name: vast-provider-config
+      - name: usr-local-bin
+        emptyDir: {}  # Shared volume for shim binary
 
       tolerations:
       - key: node.alpha.kubernetes.io/unreachable
