@@ -11,7 +11,7 @@ async def get_token_from_orchestrator(participant_identity: str) -> str:
     """Get LiveKit token from orchestrator service"""
     import httpx
     
-    orchestrator_url = config.ORCHESTRATOR_URL or "http://june-orchestrator.june-services.svc.cluster.local:8080"
+    orchestrator_url = config.ORCHESTRATOR_URL or "http://june-orchestrator:8080"
     
     payload = {
         "participant_identity": participant_identity,
@@ -60,7 +60,7 @@ async def connect_room_as_publisher(room: rtc.Room, participant_identity: str):
     try:
         token = await get_token_from_orchestrator(participant_identity)
         
-        livekit_url = config.LIVEKIT_WS_URL or "ws://livekit-livekit-server.june-services.svc.cluster.local:80"
+        livekit_url = config.LIVEKIT_WS_URL or "ws://june-livekit:7880"
         
         await room.connect(livekit_url, token)
         logger.info(f"Connected to LiveKit room as {participant_identity}")
