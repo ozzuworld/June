@@ -1,128 +1,113 @@
-# Tailscale Integration for June Platform
+# Headscale Integration for June Platform
 
-This directory contains Tailscale networking configuration for enabling secure communication between your Kubernetes cluster and external GPU services running on vast.ai.
+**Simple Headscale-based networking for connecting external GPU containers to Kubernetes cluster**
 
 ## Overview
 
-Tailscale provides a secure mesh VPN that solves NAT traversal issues common with vast.ai instances while enabling seamless service-to-service communication.
+This directory contains a **simplified Headscale integration** that connects your vast.ai GPU containers to your Kubernetes cluster through your private Headscale VPN.
 
-## Quick Start
+**What this replaces:**
+- ❌ Complex Tailscale.com OAuth setup
+- ❌ Tailscale Kubernetes operator 
+- ❌ Per-service proxy configurations
+- ✅ Simple subnet router that exposes entire cluster
 
-### 1. Get Tailscale OAuth Credentials
+## Quick Setup
 
-1. Visit [Tailscale Admin Console](https://login.tailscale.com/admin/settings/oauth)
-2. Click "Generate OAuth Client"
-3. Set scopes: **Devices (Write)**
-4. Note down `Client ID` and `Client Secret`
-
-### 2. Deploy Tailscale Operator
-
-```bash
-# Create OAuth secret
-cp k8s/tailscale/tailscale-secret.yaml.example k8s/tailscale/tailscale-secret.yaml
-# Edit and add your OAuth credentials
-nano k8s/tailscale/tailscale-secret.yaml
-
-# Deploy operator
-kubectl apply -f k8s/tailscale/tailscale-operator.yaml
-kubectl apply -f k8s/tailscale/tailscale-secret.yaml
-
-# Check operator status
-kubectl get pods -n tailscale
-```
-
-### 3. Expose Services via Tailscale
+### 1. Create Headscale API Key
 
 ```bash
-# Apply Tailscale annotations to orchestrator service
-kubectl apply -f k8s/tailscale/june-orchestrator-tailscale.yaml
-
-# Apply Tailscale annotations to LiveKit service  
-kubectl apply -f k8s/tailscale/livekit-tailscale.yaml
-
-# Check Tailscale services
-kubectl get services -n june-services -o wide
+# Create API key on your Headscale server
+kubectl -n headscale exec deployment/headscale -- headscale apikey create --expiration=365d k8s-subnet-router
 ```
 
-### 4. Configure External GPU Service
+### 2. Deploy Subnet Router
 
 ```bash
-# Install Tailscale on vast.ai instance
-curl -fsSL https://tailscale.com/install.sh | sh
+# Update the API key in the configuration
+sed -i 's/REPLACE_WITH_YOUR_HEADSCALE_API_KEY/YOUR_ACTUAL_API_KEY/' k8s/tailscale/headscale-integration.yaml
 
-# Connect to your tailnet
-sudo tailscale up
+# Deploy the subnet router
+kubectl apply -f k8s/tailscale/headscale-integration.yaml
 
-# Verify connectivity
-ping june-orchestrator.june-tailnet
-ping livekit.june-tailnet
+# Verify it's running
+kubectl -n kube-system get pods | grep headscale
+kubectl -n kube-system logs deployment/headscale-subnet-router
 ```
 
-## Service Endpoints
+### 3. Connect External GPU Container
 
-Once configured, your services will be available via Tailscale hostnames:
+Your vast.ai GPU container should already be connected to Headscale. Verify with:
 
-- **Orchestrator**: `http://june-orchestrator.june-tailnet:8080`
-- **LiveKit**: `ws://livekit.june-tailnet:7880` (WebSocket)
-- **LiveKit**: `http://livekit.june-tailnet:7880` (HTTP)
+```bash
+# From GPU container
+tailscale status  # Should show k8s-cluster device
 
-## Configuration Files
+# Test cluster connectivity
+curl http://10.104.215.160:8080/healthz  # Direct to service IP
+```
 
-- `tailscale-operator.yaml`: Main operator deployment
-- `tailscale-secret.yaml.example`: OAuth credentials template
-- `june-orchestrator-tailscale.yaml`: Orchestrator service with Tailscale
-- `livekit-tailscale.yaml`: LiveKit service with Tailscale
-- `june-gpu-multi-config.yaml`: External service configuration
+## Service Access
 
-## Security Notes
+Once the subnet router is working, your GPU containers can access Kubernetes services directly:
 
-- OAuth credentials are stored as Kubernetes secrets
-- All traffic is encrypted end-to-end
-- Services are only accessible within your tailnet
-- Use ACL policies for additional access control
+```bash
+# Orchestrator service
+ORCHESTRATOR_URL="http://10.104.215.160:8080"
+
+# Get other service IPs
+kubectl -n june-services get svc -o wide
+kubectl -n livekit get svc -o wide
+```
+
+## Configuration
+
+Update your GPU container services to use cluster IPs:
+
+```python
+# In your Python services
+ORCHESTRATOR_URL = "http://10.104.215.160:8080"  # Direct cluster IP
+LIVEKIT_URL = "ws://LIVEKIT_CLUSTER_IP:7880"     # Get from kubectl
+```
 
 ## Troubleshooting
 
 ```bash
-# Check operator logs
-kubectl logs -n tailscale deployment/operator
+# Check subnet router status
+kubectl -n kube-system logs deployment/headscale-subnet-router
 
-# Check service annotations
-kubectl describe service june-orchestrator -n june-services
+# Verify Headscale connection
+kubectl -n kube-system exec deployment/headscale-subnet-router -- tailscale status
 
-# List Tailscale devices
-tailscale status
-
-# Test connectivity from external service
-telnet june-orchestrator.june-tailnet 8080
+# Test connectivity from GPU container
+ping 10.96.0.1  # Kubernetes DNS
+curl http://10.104.215.160:8080/healthz  # Orchestrator
 ```
 
-## Advanced Configuration
+## Security
 
-### Custom Hostnames
+- All traffic stays within your private Headscale network
+- No internet exposure of services
+- Kubernetes cluster networks (10.96.0.0/12, 10.244.0.0/16) are advertised to Headscale
+- Only devices in your Headscale network can access cluster services
 
-To use custom hostnames, add the annotation:
+## Architecture
 
-```yaml
-annotations:
-  tailscale.com/hostname: "custom-name"
+```
+vast.ai GPU Container → Headscale VPN → Subnet Router → K8s Services
+     (100.64.0.5)    →    (mesh)    →  (k8s-cluster) →  (10.96.x.x)
 ```
 
-### ACL Policies
+## Old Files (Can be Removed)
 
-Configure access control in [Tailscale Admin Console](https://login.tailscale.com/admin/acls):
+These files were for Tailscale.com integration and are no longer needed:
+- `tailscale-operator.yaml` (Tailscale.com operator)
+- `tailscale-secret.yaml.example` (OAuth credentials)
+- `june-orchestrator-tailscale.yaml` (Per-service proxies)
+- `livekit-tailscale.yaml` (Per-service proxies)
+- `june-gpu-multi-config.yaml` (ConfigMap approach)
+- `subnet-router-fix.yaml` (Previous attempt)
 
-```json
-{
-  "acls": [
-    {
-      "action": "accept",
-      "src": ["tag:k8s"],
-      "dst": ["tag:k8s:*"]
-    }
-  ],
-  "tagOwners": {
-    "tag:k8s": ["your-email@domain.com"]
-  }
-}
-```
+Only keep:
+- ✅ `headscale-integration.yaml` (This file)
+- ✅ `README.md` (This README)
