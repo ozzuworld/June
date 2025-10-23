@@ -1,0 +1,92 @@
+# Tailscale Subnet Router for Headscale Integration
+# This creates a working subnet router that connects to your Headscale server
+# and advertises Kubernetes cluster networks to Tailscale clients
+
+# Service Account and Permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale-subnet-router
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tailscale-subnet-router
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale-subnet-router
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tailscale-subnet-router
+subjects:
+- kind: ServiceAccount
+  name: tailscale-subnet-router
+  namespace: kube-system
+---
+# Subnet Router Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-subnet-router
+  namespace: kube-system
+  labels:
+    app: tailscale-subnet-router
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tailscale-subnet-router
+  template:
+    metadata:
+      labels:
+        app: tailscale-subnet-router
+    spec:
+      serviceAccountName: tailscale-subnet-router
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        env:
+        # Replace with actual API key from: kubectl -n headscale exec deployment/headscale -- headscale apikey create --expiration=365d k8s-subnet-router
+        - name: TS_AUTHKEY
+          value: "REPLACE_WITH_YOUR_HEADSCALE_API_KEY"
+        # Kubernetes cluster networks to advertise
+        - name: TS_ROUTES  
+          value: "10.96.0.0/12,10.244.0.0/16"  # Service CIDR + Pod CIDR
+        # Your Headscale server URL
+        - name: TS_LOGIN_SERVER
+          value: "https://headscale.ozzu.world"
+        # Hostname for the router device
+        - name: TS_HOSTNAME
+          value: "k8s-subnet-router"
+        # Use Kubernetes secret for state storage
+        - name: TS_KUBE_SECRET
+          value: "tailscale-subnet-router-state"
+        # Enable subnet routing
+        - name: TS_USERSPACE
+          value: "false"
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN"]
+        volumeMounts:
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+      volumes:
+      - name: dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+      # Ensure it runs on a node that can route traffic
+      nodeSelector:
+        kubernetes.io/os: linux
