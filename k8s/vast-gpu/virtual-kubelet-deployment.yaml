@@ -24,32 +24,34 @@ spec:
       containers:
       - name: virtual-kubelet
         image: ozzuworld/virtual-kubelet-vast-python:latest
+        imagePullPolicy: IfNotPresent
         env:
         # Kubelet configuration
         - name: KUBELET_PORT
           value: "10250"
         - name: NODENAME
-          value: "vast-gpu-node-python"  # Match the node name from logs
-        
-        # Vast.ai API configuration
+          value: "vast-gpu-node-python"
+
+        # Vast.ai API configuration (fixed to use vast-api-secret / VAST_API_KEY)
         - name: VAST_API_KEY
           valueFrom:
             secretKeyRef:
-              name: vast-credentials
-              key: api-key
+              name: vast-api-secret
+              key: VAST_API_KEY
+              optional: false
         - name: VAST_API_URL
           value: "https://console.vast.ai/api/v0"
-        
-        # TIMEOUT CONFIGURATION - Increased to prevent recreation loop
+
+        # TIMEOUT CONFIGURATION
         - name: VAST_STARTUP_TIMEOUT
-          value: "900"  # 15 minutes for GPU container startup
+          value: "900"
         - name: VAST_HEALTH_CHECK_TIMEOUT
-          value: "600"  # 10 minutes for health checks
+          value: "600"
         - name: VAST_INSTANCE_READY_TIMEOUT
-          value: "900"  # 15 minutes for instance readiness
+          value: "900"
         - name: VAST_DEBUG_MODE
-          value: "true"  # Enable debugging
-        
+          value: "true"
+
         # North America optimization settings
         - name: VAST_PREFERRED_REGIONS
           value: "US-CA,US-WA,US-OR,US-TX,US-CO,US-AZ,US-NY,US-FL,US-VA,CA-ON,CA-BC"
@@ -58,30 +60,27 @@ spec:
         - name: VAST_FALLBACK_REGIONS
           value: "CA,MX"
         - name: VAST_BLOCKED_REGIONS
-          value: "RU,CN,KP"  # Blocked countries
-        
-        # Performance optimization - Relaxed for more availability
+          value: "RU,CN,KP"
+
+        # Performance optimization
         - name: VAST_LATENCY_CHECK_ENABLED
-          value: "false"  # Disable for troubleshooting
+          value: "false"
         - name: VAST_MAX_LATENCY_MS
-          value: "100"  # Increased from 50ms
+          value: "100"
         - name: VAST_BANDWIDTH_MIN_MBPS
-          value: "50"   # Reduced from 100 for more availability
-        
+          value: "50"
+
         # Template configuration
         - name: VAST_CONTAINER_IMAGE
           value: "ozzuworld/june-gpu-multi:latest"
         - name: VAST_DOCKER_OPTIONS
           value: "-p 8000:8000 -p 8001:8001 --gpus all --restart unless-stopped"
-        
+
         volumeMounts:
-        - name: credentials
-          mountPath: /etc/virtual-kubelet
-          readOnly: true
         - name: provider-config
           mountPath: /etc/vast-config
           readOnly: true
-        
+
         resources:
           requests:
             cpu: 100m
@@ -89,8 +88,7 @@ spec:
           limits:
             cpu: 1000m
             memory: 1Gi
-        
-        # PROBE PATH FIXES: match VK HTTP server endpoints
+
         livenessProbe:
           httpGet:
             path: /healthz
@@ -115,15 +113,12 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 30
-      
+
       volumes:
-      - name: credentials
-        secret:
-          secretName: vast-credentials
       - name: provider-config
         configMap:
           name: vast-provider-config
-      
+
       tolerations:
       - key: node.alpha.kubernetes.io/unreachable
         operator: Exists
@@ -133,8 +128,7 @@ spec:
         operator: Exists
         effect: NoExecute
         tolerationSeconds: 0
-      
-      # Prefer to run on control plane nodes
+
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -143,6 +137,5 @@ spec:
               matchExpressions:
               - key: node-role.kubernetes.io/control-plane
                 operator: Exists
-      
-      # Restart policy for reliability
+
       restartPolicy: Always
