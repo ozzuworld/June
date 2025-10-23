@@ -70,7 +70,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies INCLUDING Tailscale (userspace mode - no iptables needed)
+# Install runtime dependencies INCLUDING Tailscale AND SSH server
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     ffmpeg \
@@ -83,6 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     lsb-release \
+    openssh-server \
     && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
     && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list \
     && apt-get update \
@@ -92,6 +93,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
     ln -sf /usr/bin/python3.10 /usr/bin/python3
+
+# Configure SSH server
+RUN mkdir /var/run/sshd \
+    && echo 'root:june2024' | chpasswd \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd
 
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
@@ -143,8 +151,8 @@ ENV CUDA_VISIBLE_DEVICES=0
 # Don't switch to juneuser here - supervisor needs root to create socket
 # The services will still run as juneuser (configured in supervisord.conf)
 
-# Expose both service ports
-EXPOSE 8000 8001
+# Expose both service ports AND SSH port
+EXPOSE 8000 8001 22
 
 # 🔧 IMPROVED: More realistic health check timing for GPU model loading
 HEALTHCHECK --interval=30s --timeout=60s --start-period=180s --retries=3 \
