@@ -60,21 +60,14 @@ touch /var/log/supervisor/supervisord.log
 
 echo "[INIT] Pre-flight checks completed ✓"
 
-# Start Tailscale connection with userspace networking if auth key is provided
+# Verify Tailscale auth key if we expect to use Tailscale
 if [ -n "$TAILSCALE_AUTH_KEY" ]; then
-    echo "[TAILSCALE] Connecting to headscale network..."
-    # Let the tailscale-connect.sh script handle all Tailscale logic
-    /app/tailscale-connect.sh &
-    TAILSCALE_PID=$!
-    
-    # Give Tailscale a moment to start userspace networking
-    sleep 5
-    echo "[TAILSCALE] Tailscale userspace networking starting in background..."
+    echo "[TAILSCALE] Tailscale auth key provided - will be managed by supervisor"
 else
-    echo "[TAILSCALE] No auth key provided, skipping Tailscale connection"
+    echo "[TAILSCALE] No auth key provided, Tailscale will be disabled"
 fi
 
-echo "[INIT] Starting AI services with Supervisor..."
+echo "[INIT] Starting services with Supervisor (including Tailscale userspace networking)..."
 
-# Start supervisor in foreground
+# Start supervisor in foreground - it will manage Tailscale, STT, and TTS
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
