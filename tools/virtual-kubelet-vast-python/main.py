@@ -5,7 +5,7 @@ Virtual Kubelet Provider for Vast.ai (robust, with GONE detection)
 - Idempotency keyed per ReplicaSet UID
 - Handles Vast GUI deletions: detects 'gone' and recreates after cooldown
 - No async context manager usage
-- Passes Tailscale environment variables for VPN connectivity
+- Uses Tailscale userspace networking (no privileged containers needed)
 """
 import asyncio
 import json
@@ -136,19 +136,17 @@ class VastAIClient:
             
         args = ["create","instance",str(ask_id),"--raw","--image",image,"--disk",str(int(disk_gb))]
         
-        if "vast.ai/onstart-cmd" in ann: 
-            args += ["--onstart-cmd", ann["vast.ai/onstart-cmd"]]
+        # Use userspace startup script instead of default
+        onstart_cmd = ann.get("vast.ai/onstart-cmd", "chmod +x /app/start-services-userspace.sh && /app/start-services-userspace.sh")
+        args += ["--onstart-cmd", onstart_cmd]
         
-        # Build environment string with Tailscale support and privileged flags
+        # Build environment string with Tailscale support (no privileged flags needed)
         env_parts = []
         
         # Add port mappings
         env_parts.append("-p 8000:8000 -p 8001:8001")
         
-        # Add privileged container flags for Tailscale/VPN support
-        env_parts.append("--privileged --cap-add=NET_ADMIN --device /dev/net/tun")
-        
-        # Add Tailscale environment variables
+        # Add Tailscale environment variables for userspace networking
         tailscale_env = self._build_tailscale_env_string(pod)
         if tailscale_env:
             env_parts.append(tailscale_env)
@@ -161,7 +159,7 @@ class VastAIClient:
         env_string = " ".join(env_parts)
         args += ["--env", env_string]
         
-        logger.info("Creating Vast.ai instance", image=image, env=env_string)
+        logger.info("Creating Vast.ai instance with userspace networking", image=image, env=env_string)
         
         res = await self._run(args)
         data = res.get("data")
@@ -185,7 +183,7 @@ class VirtualKubelet:
         except Exception:
             k8s_konfig.load_kube_config()
         self.v1 = k8s_client.CoreV1Api()
-        logger.info("VK init", node=node_name, ssh_available=SSH_AVAILABLE)
+        logger.info("VK init with userspace networking", node=node_name, ssh_available=SSH_AVAILABLE)
     def _now(self):
         return datetime.now(timezone.utc)
     def _is_target_pod(self, pod) -> bool:
@@ -226,7 +224,7 @@ class VirtualKubelet:
         iid = int(buy["new_contract"])
         self.pod_instances[pod_name] = {"id": iid, "state": "provisioning", "created": time.time(), "offer": offer, "gone": False}
         self.instance_keys[desired_key] = pod_name
-        logger.info("Instance created", pod=pod_name, iid=iid)
+        logger.info("Instance created with userspace networking", pod=pod_name, iid=iid)
         # initial show
         show = await vast.show_instance(iid)
         if "gone" in show:
@@ -326,7 +324,8 @@ class VirtualKubelet:
                         "kubernetes.io/os": "linux",
                         "kubernetes.io/role": "agent",
                         "type": "virtual-kubelet",
-                        "vast.ai/gpu-node": "true"
+                        "vast.ai/gpu-node": "true",
+                        "vast.ai/networking": "userspace"
                     },
                     annotations={
                         "node.alpha.kubernetes.io/ttl": "0"
@@ -366,13 +365,13 @@ class VirtualKubelet:
                             last_heartbeat_time=self._now(),
                             last_transition_time=self._now(),
                             reason="VirtualKubeletReady",
-                            message="Virtual Kubelet is ready"
+                            message="Virtual Kubelet ready with userspace networking"
                         )
                     ],
                     node_info=k8s_client.V1NodeSystemInfo(
-                        machine_id="virtual-kubelet",
-                        system_uuid="virtual-kubelet",
-                        boot_id="virtual-kubelet",
+                        machine_id="virtual-kubelet-userspace",
+                        system_uuid="virtual-kubelet-userspace",
+                        boot_id="virtual-kubelet-userspace",
                         kernel_version="5.4.0",
                         os_image="Ubuntu 22.04",
                         container_runtime_version="docker://20.10.0",
@@ -385,7 +384,7 @@ class VirtualKubelet:
             )
             
             self.v1.create_node(body=node)
-            logger.info("Node registered successfully", node=self.node_name)
+            logger.info("Node registered successfully with userspace networking", node=self.node_name)
             
         except Exception as e:
             logger.error("Failed to register node", error=str(e))
@@ -401,7 +400,7 @@ class VirtualKubelet:
         w = k8s_watch.Watch()
         while True:
             try:
-                stream = w.stream(self.v1.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
+                stream = w.stream(self.v1.list_pod_for_all_namespages, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
                 for event in stream:
                     typ = event.get("type"); pod = event.get("object")
                     if not pod: continue
@@ -427,7 +426,7 @@ class VirtualKubelet:
 async def healthz(request):
     return web.Response(text="ok")
 async def readyz(request):
-    return web.json_response({"status":"ready","ssh":SSH_AVAILABLE})
+    return web.json_response({"status":"ready","ssh":SSH_AVAILABLE,"networking":"userspace"})
 
 async def build_app(vk: VirtualKubelet) -> web.Application:
     app = web.Application()
