@@ -1,15 +1,15 @@
 # Tailscale Integration for June Platform
 
-This document explains how the June platform uses Tailscale (via headscale) to enable secure communication between Kubernetes services and external GPU instances running on vast.ai.
+This document explains how the June platform uses Tailscale userspace networking to enable secure communication between services and external GPU instances.
 
 ## Overview
 
-The June platform uses a hybrid architecture where:
-- **Core services** (orchestrator, LiveKit, auth) run in a main Kubernetes cluster
-- **GPU-intensive services** (STT, TTS) run on vast.ai instances for cost efficiency
-- **Headscale VPN** provides secure, encrypted communication between all components
+The June platform uses Tailscale in **userspace networking mode** to connect:
+- **Core services** (orchestrator, LiveKit) 
+- **GPU-intensive services** (STT, TTS) running on vast.ai instances
+- **Headscale VPN** provides secure, encrypted communication via SOCKS5/HTTP proxy
 
-## Architecture Diagram
+## Architecture
 
 ```
 ┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
@@ -20,265 +20,176 @@ The June platform uses a hybrid architecture where:
 │ │      :8080      │ │    │      world           │    │  (STT+TTS)          │
 │ └─────────────────┘ │    │                      │    │                     │
 │ ┌─────────────────┐ │    │  ┌─────────────────┐ │    │ ┌─────────────────┐ │
-│ │    livekit      │ ├────┤  │   MagicDNS      │ ├────┤ │ tailscale client│ │
-│ │     :7880       │ │    │  │ tail.ozzu.world │ │    │ │                 │ │
+│ │    livekit      │ ├────┤  │   SOCKS5 Proxy  │ ├────┤ │ Userspace       │ │
+│ │     :7880       │ │    │  │  localhost:1055 │ │    │ │ tailscaled      │ │
 │ └─────────────────┘ │    │  └─────────────────┘ │    │ └─────────────────┘ │
 └─────────────────────┘    └──────────────────────┘    └─────────────────────┘
-     100.64.x.x                 Control Plane              100.64.x.y
 ```
 
-## Components
+## Userspace Networking Mode
 
-### 1. Headscale Server (`headscale.ozzu.world`)
-- **Location**: Kubernetes cluster (`headscale` namespace)
-- **Purpose**: Self-hosted Tailscale control plane
-- **Network**: `100.64.0.0/10` (Tailscale IP range)
-- **DNS**: `tail.ozzu.world` (MagicDNS base domain)
+**Why userspace mode?**
+- No `/dev/net/tun` device required
+- No root privileges or NET_ADMIN capability needed
+- Works in restricted container environments (vast.ai, cloud platforms)
+- Uses SOCKS5 and HTTP proxy for application connectivity
 
-### 2. Kubernetes Services (Tailscale Clients)
-- **june-orchestrator**: Main AI orchestration service
-- **livekit**: WebRTC media server for real-time communication
-- **Services exposure**: Via Tailscale operator or sidecar containers
+**How it works:**
+1. `tailscaled --tun=userspace-networking` starts without TUN device
+2. SOCKS5 proxy runs on `localhost:1055`
+3. HTTP proxy also available on `localhost:1055`
+4. Applications use proxy environment variables for connectivity
 
-### 3. GPU Services (External Tailscale Client)
-- **june-gpu-multi**: Combined STT+TTS service
-- **Deployment**: Vast.ai instances via Virtual Kubelet
-- **Connection**: Automatic headscale VPN connection on startup
+## Setup
 
-## Setup Process
+### 1. Environment Variables
 
-### Prerequisites
-
-1. **Headscale deployed and accessible**:
-   ```bash
-   kubectl get deployment -n headscale headscale
-   curl -k https://headscale.ozzu.world/health
-   ```
-
-2. **Virtual Kubelet for vast.ai configured**:
-   ```bash
-   kubectl get deployment -n kube-system virtual-kubelet-vast
-   kubectl get node vast-gpu-node-python
-   ```
-
-3. **Vast.ai API credentials configured**:
-   ```bash
-   kubectl get secret -n kube-system vast-credentials
-   ```
-
-### Installation
-
-1. **Run the setup script**:
-   ```bash
-   chmod +x scripts/setup-tailscale-integration.sh
-   ./scripts/setup-tailscale-integration.sh
-   ```
-
-2. **Deploy GPU services**:
-   ```bash
-   kubectl apply -f k8s/vast-gpu/gpu-services-deployment.yaml
-   ```
-
-3. **Monitor deployment**:
-   ```bash
-   kubectl get pods -n june-services -l app=june-gpu-services -w
-   ```
-
-## How It Works
-
-### 1. GPU Service Startup Sequence
-
-1. **Virtual Kubelet** provisions vast.ai GPU instance
-2. **Docker container** starts with june-gpu-multi image
-3. **start-services.sh** script runs Tailscale connection:
-   ```bash
-   /app/tailscale-connect.sh &  # Connect to headscale VPN
-   sleep 10                     # Wait for connection
-   /usr/bin/supervisord         # Start STT+TTS services
-   ```
-
-### 2. Tailscale Connection Process
-
-1. **tailscaled daemon** starts in background
-2. **tailscale up** connects using pre-auth key:
-   ```bash
-   tailscale up \
-     --login-server=https://headscale.ozzu.world \
-     --authkey=$TAILSCALE_AUTH_KEY \
-     --hostname=june-gpu-$(hostname | cut -c1-8) \
-     --accept-routes \
-     --accept-dns
-   ```
-3. **MagicDNS resolution** enables service discovery:
-   - `june-orchestrator:8080` → Kubernetes service
-   - `livekit:7880` → Kubernetes service
-
-### 3. Service Communication
-
-```
-STT Service (vast.ai) → Webhook → june-orchestrator:8080 (K8s)
-                                        ↓
-TTS Service (vast.ai) ← API Call ← AI Processing (K8s)
-       ↓
-LiveKit :7880 (K8s) ← Audio Stream ← Audio Generation
+Required in your `.env.tailscale` file:
+```bash
+TAILSCALE_AUTH_KEY=your-headscale-auth-key
+ORCHESTRATE_URL=http://june-orchestrator:8080
+LIVEKIT_WS_URL=ws://livekit:7880
 ```
 
-## Configuration Files
+### 2. Container Deployment
 
-### Key Files Created
+```bash
+# Build and push updated container
+docker build -f June/services/june-gpu-multi/Dockerfile -t ozzuworld/june-multi-gpu:latest .
+docker push ozzuworld/june-multi-gpu:latest
 
-- **`k8s/tailscale/tailscale-auth-secret.yaml`**: Pre-auth key for headscale
-- **`June/services/june-gpu-multi/tailscale-connect.sh`**: Auto-connection script
-- **`June/services/june-gpu-multi/Dockerfile`**: Updated with Tailscale client
-- **`k8s/vast-gpu/gpu-services-deployment.yaml`**: Deployment with Tailscale env vars
-
-### Environment Variables
-
-```yaml
-TAILSCALE_AUTH_KEY: "c84a3153377c4b39d2e4f720690786534560430110f08489"
-TAILSCALE_LOGIN_SERVER: "https://headscale.ozzu.world"
-ORCHESTRATOR_URL: "http://june-orchestrator:8080"
-LIVEKIT_WS_URL: "ws://livekit:7880"
+# Deploy to vast.ai
+docker run -d --gpus all --env-file .env.tailscale ozzuworld/june-multi-gpu:latest
 ```
 
-## Networking Details
+### 3. Expected Startup Logs
 
-### IP Address Allocation
-- **Headscale range**: `100.64.0.0/10`
-- **Kubernetes services**: `100.64.x.x` (assigned by headscale)
-- **GPU instances**: `100.64.y.y` (assigned by headscale)
+✅ **Correct userspace mode logs:**
+```
+[TAILSCALE] Starting Tailscale in userspace networking mode...
+[TAILSCALE] Starting Tailscale daemon with userspace networking...
+[TAILSCALE] Userspace networking active with proxies on localhost:1055
+```
 
-### DNS Resolution
-- **MagicDNS enabled**: `tail.ozzu.world`
-- **Service hostnames**: 
-  - `june-orchestrator.tail.ozzu.world` → `100.64.x.x`
-  - `livekit.tail.ozzu.world` → `100.64.x.x`
-- **Short names work**: `june-orchestrator` (no FQDN needed)
+❌ **Old TUN device errors (should not appear):**
+```
+tun module not loaded nor found on disk
+/dev/net/tun does not exist
+Permission denied (you must be root)
+```
 
-### Firewall & Security
-- **Encrypted tunnels**: All traffic encrypted via WireGuard
-- **No public exposure**: Services only accessible within tailnet
-- **Automatic key rotation**: Ephemeral keys expire automatically
-- **Network isolation**: Each service gets unique Tailscale IP
+## Application Integration
+
+### Automatic Proxy Configuration
+
+The `tailscale-connect.sh` script automatically sets:
+```bash
+export ALL_PROXY=socks5://localhost:1055/
+export HTTP_PROXY=http://localhost:1055/
+export HTTPS_PROXY=http://localhost:1055/
+```
+
+### Python Applications (httpx)
+
+Applications automatically detect proxy settings:
+```python
+# orchestrator_client.py automatically uses proxy
+import httpx
+import os
+
+proxy_url = os.getenv('ALL_PROXY')  # socks5://localhost:1055/
+client = httpx.AsyncClient(proxies={
+    "http://": proxy_url,
+    "https://": proxy_url
+})
+```
 
 ## Troubleshooting
 
-### 1. Check Headscale Connectivity
+### 1. Check Tailscale Status
 
 ```bash
-# Test headscale server
-curl -k https://headscale.ozzu.world/health
-
-# List connected nodes
-kubectl -n headscale exec deployment/headscale -- headscale nodes list
-
-# Check headscale logs
-kubectl logs -n headscale deployment/headscale
+# Inside container
+tailscale status
+tailscale ping june-orchestrator
 ```
 
-### 2. Debug GPU Service Connection
+### 2. Test Proxy Connectivity
 
 ```bash
-# Check pod status
-kubectl get pods -n june-services -l app=june-gpu-services
+# Test SOCKS5 proxy
+curl --proxy socks5://localhost:1055 http://june-orchestrator:8080/healthz
 
-# View container logs
-kubectl logs -n june-services deployment/june-gpu-services
+# Test HTTP proxy  
+curl --proxy http://localhost:1055 http://june-orchestrator:8080/healthz
 
-# Check Tailscale status inside container
-kubectl exec -n june-services deployment/june-gpu-services -- tailscale status
+# Test with environment variables
+ALL_PROXY=socks5://localhost:1055/ curl http://june-orchestrator:8080/healthz
 ```
 
-### 3. Network Connectivity Tests
+### 3. Debug Service Connectivity
 
 ```bash
-# From GPU service to orchestrator
-kubectl exec -n june-services deployment/june-gpu-services -- \
-  curl -v http://june-orchestrator:8080/healthz
+# Check if Tailscale daemon is running
+ps aux | grep tailscaled
 
-# From GPU service to LiveKit
-kubectl exec -n june-services deployment/june-gpu-services -- \
-  curl -v http://livekit:7880
+# Check proxy ports
+netstat -tlpn | grep 1055
+
+# Test DNS resolution
+nslookup june-orchestrator
 ```
 
-### 4. Virtual Kubelet Issues
+### 4. Common Issues
 
+**Issue: Still seeing TUN device errors**
+- Solution: Rebuild container with latest code, old script cached
+
+**Issue: Services can't reach orchestrator**
+- Check: `ALL_PROXY` environment variable set
+- Test: Direct proxy connection with curl
+
+**Issue: Tailscale won't connect to headscale**
+- Check: `TAILSCALE_AUTH_KEY` is valid
+- Verify: Headscale server is accessible
+
+**Issue: "tailscaled" not running**
+- Check: Container startup logs for script errors
+- Verify: Script has execute permissions
+
+## File Structure
+
+**Active files (current implementation):**
+- `June/services/june-gpu-multi/tailscale-connect.sh` - Main connection script
+- `June/services/june-gpu-multi/start-services.sh` - Container startup
+- `June/services/june-gpu-multi/Dockerfile` - Container build
+- `June/services/june-gpu-multi/stt/orchestrator_client.py` - Proxy-aware HTTP client
+
+**Environment Variables:**
 ```bash
-# Check Virtual Kubelet status
-kubectl get deployment -n kube-system virtual-kubelet-vast
-kubectl logs -n kube-system deployment/virtual-kubelet-vast
-
-# Check virtual node
-kubectl get node vast-gpu-node-python
-kubectl describe node vast-gpu-node-python
+TAILSCALE_AUTH_KEY=<headscale-auth-key>
+ORCHESTRATE_URL=http://june-orchestrator:8080
+LIVEKIT_WS_URL=ws://livekit:7880
 ```
 
-### Common Issues
+## Security & Performance
 
-1. **"User not found"** in headscale:
-   ```bash
-   kubectl -n headscale exec deployment/headscale -- headscale users create ozzu
-   ```
+### Security Benefits
+- **No privileged containers**: Userspace mode doesn't need root
+- **Encrypted tunnels**: All traffic via WireGuard encryption
+- **Proxy isolation**: Applications use localhost proxy only
 
-2. **Tailscale connection timeout**:
-   - Check headscale server accessibility
-   - Verify pre-auth key is valid and not expired
-   - Check container has NET_ADMIN capabilities
+### Performance Characteristics
+- **Latency**: ~5-10ms additional overhead via proxy
+- **Throughput**: Minimal impact for typical AI workloads
+- **Resource usage**: Lower than kernel TUN device mode
 
-3. **Services unreachable**:
-   - Verify Tailscale operator is exposing K8s services
-   - Check MagicDNS configuration in headscale
-   - Test with explicit Tailscale IPs instead of hostnames
+## Migration Notes
 
-4. **GPU instance not provisioning**:
-   - Check vast.ai API credentials
-   - Verify Virtual Kubelet logs for errors
-   - Check price limits and GPU availability
+If migrating from old TUN device mode:
+1. **Remove** privileged container settings
+2. **Remove** `--cap-add=NET_ADMIN` and `--device=/dev/net/tun`
+3. **Update** applications to use proxy environment variables
+4. **Test** connectivity via SOCKS5/HTTP proxy
 
-## Security Considerations
-
-### Best Practices
-
-1. **Rotate auth keys regularly**:
-   ```bash
-   kubectl -n headscale exec deployment/headscale -- \
-     headscale preauthkeys create --user ozzu --reusable --ephemeral
-   ```
-
-2. **Use ephemeral keys**: Nodes auto-expire when disconnected
-
-3. **Monitor connected devices**:
-   ```bash
-   kubectl -n headscale exec deployment/headscale -- headscale nodes list
-   ```
-
-4. **Implement ACL policies** in headscale config for access control
-
-5. **Regular security updates**: Keep Tailscale client updated in Docker images
-
-## Performance
-
-### Latency Impact
-- **Overhead**: ~5-10ms additional latency via VPN
-- **Encryption**: Negligible performance impact on modern hardware
-- **Bandwidth**: No throughput degradation for typical AI workloads
-
-### Optimization Tips
-- Use geographically close vast.ai instances
-- Configure DERP servers for optimal routing
-- Monitor connection quality via `tailscale status`
-
-## Monitoring & Observability
-
-### Key Metrics
-- **Connection status**: `tailscale status`
-- **Network latency**: `ping june-orchestrator`
-- **Service health**: HTTP health checks via Tailscale network
-- **Headscale metrics**: Exposed on port 50480
-
-### Logging
-- **Tailscale logs**: In container stdout/stderr
-- **Headscale logs**: `kubectl logs -n headscale deployment/headscale`
-- **Virtual Kubelet**: `kubectl logs -n kube-system deployment/virtual-kubelet-vast`
-
-This integration provides a robust, secure, and scalable solution for connecting your Kubernetes-based AI orchestration with cost-effective GPU resources on vast.ai.
+This userspace networking approach provides a more portable and secure solution for Tailscale connectivity in containerized environments.
