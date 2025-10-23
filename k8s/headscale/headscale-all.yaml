@@ -110,26 +110,48 @@ metadata:
   name: copy-wildcard-cert
   namespace: headscale
 spec:
-  ttlSecondsAfterFinished: 60
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       serviceAccountName: copy-wildcard-sa
       restartPolicy: OnFailure
       containers:
       - name: kubectl
-        image: bitnami/kubectl:1.29
+        # Use registry.k8s.io image as primary, more reliable than bitnami
+        image: registry.k8s.io/kubectl:v1.29.0
         command: ["/bin/sh","-c"]
         args:
           - |
             set -e
+            echo "Checking for existing wildcard certificate in headscale namespace..."
             if kubectl get secret headscale-wildcard-tls -n headscale >/dev/null 2>&1; then
-              echo "Wildcard already present in headscale namespace"
+              echo "Wildcard certificate already present in headscale namespace"
               exit 0
             fi
-            kubectl get secret ozzu-world-wildcard-tls -n june-services -o yaml | \
+            echo "Looking for source wildcard certificate in june-services namespace..."
+            # Try different possible certificate names
+            SOURCE_SECRET=""
+            for cert_name in "ozzu-world-wildcard-tls" "wildcard-tls" "ozzu-world-tls"; do
+              if kubectl get secret "$cert_name" -n june-services >/dev/null 2>&1; then
+                SOURCE_SECRET="$cert_name"
+                echo "Found source certificate: $cert_name"
+                break
+              fi
+            done
+            if [ -z "$SOURCE_SECRET" ]; then
+              echo "No wildcard certificate found in june-services namespace. Available secrets:"
+              kubectl get secrets -n june-services
+              exit 1
+            fi
+            echo "Copying certificate from $SOURCE_SECRET to headscale-wildcard-tls..."
+            kubectl get secret "$SOURCE_SECRET" -n june-services -o yaml | \
               sed 's/namespace: june-services/namespace: headscale/' | \
-              sed 's/name: ozzu-world-wildcard-tls/name: headscale-wildcard-tls/' | \
+              sed "s/name: $SOURCE_SECRET/name: headscale-wildcard-tls/" | \
               kubectl apply -f -
+            echo "Certificate copy completed successfully"
+      # Add network access and resource limits
+      dnsPolicy: ClusterFirst
+      restartPolicy: OnFailure
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -140,6 +162,19 @@ rules:
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["get","create","update","patch","list","watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: copy-wildcard-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get","list"]
+  resourceNames: []
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get","list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -154,6 +189,43 @@ roleRef:
   kind: Role
   name: copy-wildcard-role
   apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: copy-wildcard-cluster-rb
+subjects:
+- kind: ServiceAccount
+  name: copy-wildcard-sa
+  namespace: headscale
+roleRef:
+  kind: ClusterRole
+  name: copy-wildcard-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: copy-wildcard-source-rb
+  namespace: june-services
+subjects:
+- kind: ServiceAccount
+  name: copy-wildcard-sa
+  namespace: headscale
+roleRef:
+  kind: Role
+  name: copy-wildcard-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: copy-wildcard-role
+  namespace: june-services
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get","list"]
 ---
 apiVersion: v1
 kind: ServiceAccount
