@@ -1,221 +1,93 @@
-# Combined GPU services deployment for STT+TTS on single Vast.ai instance with Tailscale
+# Vast.ai GPU Services - Schedule only on Virtual Kubelet node
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: june-gpu-services
-  namespace: june-services
+  name: june-gpu-multi
+  namespace: default
   labels:
-    app: june-gpu-services
-    component: gpu-services
+    app: june-gpu-multi
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: june-gpu-services
+      app: june-gpu-multi
   template:
     metadata:
       labels:
-        app: june-gpu-services
-        component: gpu-services
-      annotations:
-        # Vast.ai instance configuration - Optimized for availability
-        vast.ai/gpu-type: "RTX 4060"
-        vast.ai/gpu-fallbacks: "RTX 3060,RTX 3060 Ti,RTX 4060 Ti,RTX 4070,RTX 3070,RTX 3080,RTX 3090,RTX A5000"
-        vast.ai/price-max: "0.50"  # Increased budget for more reliable hosts
-        vast.ai/region: "North America"
-        vast.ai/memory: "12GB"
-        vast.ai/disk: "50"
-        vast.ai/image: "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-devel"
-        vast.ai/env: "-p 8000:8000 -p 8001:8001"
-        vast.ai/runtype: "ssh_direct"
-        vast.ai/onstart-cmd: "pip install -q fastapi uvicorn aiohttp && echo 'Container ready for June services'"
+        app: june-gpu-multi
     spec:
-      # Target the Virtual Kubelet node explicitly
-      nodeName: vast-gpu-node-python
-      
-      # Required tolerations for VK scheduling
+      nodeSelector:
+        type: virtual-kubelet
       tolerations:
-      - key: "vast.ai/gpu"
-        operator: "Exists"
-        effect: "NoSchedule"
-      - key: "virtual-kubelet.io/provider"
-        operator: "Equal"
-        value: "vast"
-        effect: "NoSchedule"
-      
+      - key: virtual-kubelet.io/provider
+        operator: Exists
+        effect: NoSchedule
       containers:
-      - name: june-multi-gpu
-        image: ozzuworld/june-multi-gpu:latest
-        
-        # Expose both STT and TTS services
+      - name: june-gpu-multi
+        image: ozzuworld/june-gpu-multi:latest
         ports:
         - containerPort: 8000
-          name: tts-api
-          protocol: TCP
         - containerPort: 8001
-          name: stt-api
-          protocol: TCP
-        
-        # Environment configuration for combined service
-        env:
-        - name: STT_PORT
-          value: "8001"
-        - name: TTS_PORT
-          value: "8000"
-        - name: CUDA_VISIBLE_DEVICES
-          value: "0"
-        - name: WHISPER_DEVICE
-          value: "cuda"
-        - name: WHISPER_COMPUTE_TYPE
-          value: "float16"
-        - name: TTS_CACHE_PATH
-          value: "/app/cache"
-        - name: TTS_HOME
-          value: "/app/models"
-        - name: COQUI_TOS_AGREED
-          value: "1"
-        
-        # Tailscale configuration for headscale VPN
-        - name: TAILSCALE_AUTH_KEY
-          valueFrom:
-            secretKeyRef:
-              name: tailscale-auth
-              key: TAILSCALE_AUTH_KEY
-        - name: TAILSCALE_LOGIN_SERVER
-          valueFrom:
-            secretKeyRef:
-              name: tailscale-auth
-              key: TAILSCALE_LOGIN_SERVER
-        - name: TAILSCALE_BASE_DOMAIN
-          valueFrom:
-            secretKeyRef:
-              name: tailscale-auth
-              key: TAILSCALE_BASE_DOMAIN
-        
-        # Service endpoints via Tailscale MagicDNS
-        - name: ORCHESTRATOR_URL
-          value: "http://june-orchestrator:8080"
-        - name: LIVEKIT_WS_URL
-          value: "ws://livekit:7880"
-        - name: LIVEKIT_HTTP_URL
-          value: "http://livekit:7880"
-        - name: ROOM_NAME
-          value: "ozzu-main"
-        
-        # LiveKit credentials (from existing config)
-        - name: LIVEKIT_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: livekit-api-key
-              optional: true
-        - name: LIVEKIT_API_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: livekit-api-secret
-              optional: true
-        - name: BEARER_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: june-secrets
-              key: bearer-token
-              optional: true
-        
-        # Resource requirements for GPU workload
+        envFrom:
+        - secretRef:
+            name: june-gpu-secrets
+        - configMapRef:
+            name: june-config
         resources:
-          limits:
-            nvidia.com/gpu: 1
-            memory: "16Gi"
-            cpu: "8"
           requests:
-            nvidia.com/gpu: 1
-            memory: "12Gi"
-            cpu: "4"
-        
-        # Volume mounts for model caching and Tailscale state
-        volumeMounts:
-        - name: models-cache
-          mountPath: /app/models
-        - name: temp-cache
-          mountPath: /app/cache
-        - name: tailscale-state
-          mountPath: /var/lib/tailscale
-        
-        # Security context for Tailscale (requires NET_ADMIN)
-        securityContext:
-          capabilities:
-            add:
-            - NET_ADMIN
-            - NET_RAW
-          privileged: false
-        
-        # Startup probe to handle long GPU + Tailscale initialization
-        startupProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 180     # Increased for Tailscale connection time
-          periodSeconds: 30            # Check every 30 seconds
-          timeoutSeconds: 15           # 15 second timeout per check
-          failureThreshold: 25         # Allow up to 12.5 more minutes (25 * 30s = 750s)
-          successThreshold: 1          # Only need 1 success to mark ready
-        
-        # Liveness probe - More generous timeouts
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 360     # Increased from 300 to 6 minutes
-          periodSeconds: 60            # Check every minute
-          timeoutSeconds: 30           # 30 second timeout
-          failureThreshold: 5          # Allow 5 failures before restart
-        
-        # Readiness probe - Even more generous
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8000
-          initialDelaySeconds: 300     # Increased from 240 to 5 minutes
-          periodSeconds: 30            # Check every 30 seconds
-          timeoutSeconds: 20           # 20 second timeout
-          failureThreshold: 10         # Allow many failures during startup
-          successThreshold: 2          # Require 2 consecutive successes
-      
-      # Volumes for model cache, temp files, and Tailscale state
-      volumes:
-      - name: models-cache
-        emptyDir:
-          sizeLimit: 10Gi
-      - name: temp-cache
-        emptyDir:
-          sizeLimit: 5Gi
-      - name: tailscale-state
-        emptyDir:
-          sizeLimit: 100Mi
-      
-      restartPolicy: Always
-      terminationGracePeriodSeconds: 60  # Allow graceful Tailscale shutdown
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
 ---
-# Service to expose the combined GPU services (internal cluster access)
 apiVersion: v1
 kind: Service
 metadata:
-  name: june-gpu-services
-  namespace: june-services
+  name: june-tts
+  namespace: default
   labels:
     app: june-gpu-services
-    component: gpu-services
 spec:
   selector:
-    app: june-gpu-services
+    app: june-gpu-multi
   ports:
-  - name: tts-api
+  - name: http
     port: 8000
     targetPort: 8000
-    protocol: TCP
-  - name: stt-api
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: default
+  labels:
+    app: june-gpu-services
+spec:
+  selector:
+    app: june-gpu-multi
+  ports:
+  - name: http
     port: 8001
     targetPort: 8001
-    protocol: TCP
   type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-gpu-services-headless
+  namespace: default
+  labels:
+    app: june-gpu-services
+spec:
+  selector:
+    app: june-gpu-multi
+  clusterIP: None
+  ports:
+  - name: tts
+    port: 8000
+    targetPort: 8000
+  - name: stt
+    port: 8001
+    targetPort: 8001
