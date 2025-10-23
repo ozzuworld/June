@@ -60,21 +60,16 @@ touch /var/log/supervisor/supervisord.log
 
 echo "[INIT] Pre-flight checks completed ✓"
 
-# Start Tailscale connection if auth key is provided
+# Start Tailscale connection with userspace networking if auth key is provided
 if [ -n "$TAILSCALE_AUTH_KEY" ]; then
     echo "[TAILSCALE] Connecting to headscale network..."
+    # Let the tailscale-connect.sh script handle all Tailscale logic
     /app/tailscale-connect.sh &
     TAILSCALE_PID=$!
     
-    # Wait a moment for Tailscale to initialize
-    sleep 10
-    
-    # Verify Tailscale connection (non-blocking)
-    if tailscale status >/dev/null 2>&1; then
-        echo "[TAILSCALE] ✅ Connected to headscale network!"
-    else
-        echo "[TAILSCALE] ⚠️  Tailscale connecting in background..."
-    fi
+    # Give Tailscale a moment to start userspace networking
+    sleep 5
+    echo "[TAILSCALE] Tailscale userspace networking starting in background..."
 else
     echo "[TAILSCALE] No auth key provided, skipping Tailscale connection"
 fi
