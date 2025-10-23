@@ -88,6 +88,39 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
+# Function to detect external IP with multiple fallbacks
+get_external_ip() {
+    local ip=""
+    
+    # Try multiple IP detection services
+    local services=(
+        "http://checkip.amazonaws.com/"
+        "https://ifconfig.me"
+        "https://ipinfo.io/ip"
+        "https://api.ipify.org"
+        "http://whatismyip.akamai.com/"
+    )
+    
+    for service in "${services[@]}"; do
+        ip=$(curl -s --max-time 10 "$service" 2>/dev/null | tr -d '\n' | grep -oE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || echo "")
+        if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    
+    # Fallback to hostname -I (local IP)
+    ip=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "")
+    if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "$ip"
+        return 0
+    fi
+    
+    # Final fallback
+    echo "unknown"
+    return 1
+}
+
 # Define installation phases (including new phases 11 & 12)
 PHASES=(
     "01-prerequisites"
@@ -221,7 +254,14 @@ main() {
     done
     
     # Get external IP for final summary
-    EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
+    log "Detecting external IP address..."
+    EXTERNAL_IP=$(get_external_ip)
+    if [ "$EXTERNAL_IP" = "unknown" ]; then
+        warn "Could not detect external IP address automatically"
+        echo "Please manually check your public IP and update DNS accordingly"
+    else
+        success "Detected external IP: $EXTERNAL_IP"
+    fi
     
     # Detect GPU availability for final summary
     GPU_AVAILABLE="false"
@@ -270,9 +310,16 @@ main() {
         echo ""
     fi
     echo "🌐 DNS Configuration:"
-    echo "  Point these records to: $EXTERNAL_IP"
-    echo "    $DOMAIN           A    $EXTERNAL_IP"
-    echo "    *.$DOMAIN         A    $EXTERNAL_IP"
+    if [ "$EXTERNAL_IP" != "unknown" ]; then
+        echo "  Point these records to: $EXTERNAL_IP"
+        echo "    $DOMAIN           A    $EXTERNAL_IP"
+        echo "    *.$DOMAIN         A    $EXTERNAL_IP"
+    else
+        echo "  Point these records to YOUR_PUBLIC_IP:"
+        echo "    $DOMAIN           A    YOUR_PUBLIC_IP"
+        echo "    *.$DOMAIN         A    YOUR_PUBLIC_IP"
+        echo "  ⚠️  Get your public IP: curl ifconfig.me"
+    fi
     echo ""
     echo "🔐 Access Credentials:"
     echo "  Keycloak Admin: https://idp.$DOMAIN/admin"
@@ -289,7 +336,7 @@ main() {
     echo "  Backup File: /root/.june-certs/${DOMAIN}-wildcard-tls-backup.yaml"
     echo ""
     echo "📊 Status Check:"
-    echo "  kubectl get pods -n june-services   # Core services & LiveKit"
+    echo "  kubectl get pods -n june-services   # Core services"
     echo "  kubectl get gateway -n stunner       # STUNner"
     echo "  kubectl get certificates -n june-services # Certificates"
     if [ "$HEADSCALE_AVAILABLE" = "true" ]; then
@@ -299,6 +346,14 @@ main() {
         echo "  kubectl get nodes -l type=virtual-kubelet # Remote GPU nodes"
     fi
     echo ""
+    if [ "$EXTERNAL_IP" = "unknown" ]; then
+        echo "🔧 Next Steps:"
+        echo "  1. Get your public IP: curl ifconfig.me"
+        echo "  2. Update DNS A records to point to your IP"
+        echo "  3. Wait 5-10 minutes for DNS propagation"
+        echo "  4. Test: curl -k https://api.$DOMAIN/health"
+        echo ""
+    fi
     echo "==========================================="
 }
 
