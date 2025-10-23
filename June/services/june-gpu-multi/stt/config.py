@@ -5,18 +5,18 @@ class Config:
     # Port configuration (multi-service)
     PORT: int = int(os.getenv("STT_PORT", "8001"))
     
-    # LiveKit configuration  
+    # LiveKit configuration - Updated for Tailscale/standalone deployment
     LIVEKIT_WS_URL: str = os.getenv(
         "LIVEKIT_WS_URL", 
-        "ws://livekit-livekit-server.june-services.svc.cluster.local:80"
+        "ws://june-livekit:7880"  # Updated for Tailscale network
     )
     LIVEKIT_API_KEY: Optional[str] = os.getenv("LIVEKIT_API_KEY")
     LIVEKIT_API_SECRET: Optional[str] = os.getenv("LIVEKIT_API_SECRET")
     
-    # Orchestrator configuration
+    # Orchestrator configuration - Updated for Tailscale network
     ORCHESTRATOR_URL: str = os.getenv(
         "ORCHESTRATOR_URL", 
-        "http://june-orchestrator.june-services.svc.cluster.local:8080"
+        "http://june-orchestrator:8080"  # Updated for Tailscale network
     )
     
     # Whisper configuration
