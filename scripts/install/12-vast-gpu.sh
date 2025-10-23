@@ -40,7 +40,7 @@ if [ -z "$VAST_API_KEY" ]; then
     echo "   4. Add VAST_API_KEY=your_key to config.env"
     echo ""
     warn "Skipping Vast.ai provider deployment (no API key)"
-    return 0
+    exit 0
 fi
 
 log "Vast.ai API key detected, proceeding with deployment..."
@@ -71,15 +71,35 @@ TEMP_CONFIG=$(mktemp)
 TEMP_DEPLOYMENT=$(mktemp)
 trap "rm -f $TEMP_SECRETS $TEMP_CONFIG $TEMP_DEPLOYMENT" EXIT
 
-# Process secrets template
+# Process secrets template with proper validation
 log "Creating Vast.ai secrets..."
+if [ ! -f "$ROOT_DIR/k8s/vast-gpu/secrets-template.yaml" ]; then
+    error "Secrets template not found: $ROOT_DIR/k8s/vast-gpu/secrets-template.yaml"
+fi
+
+# Validate API key format
+if [[ ! "$VAST_API_KEY" =~ ^[a-f0-9]{64}$ ]] && [[ ! "$VAST_API_KEY" =~ ^vast_api_key_ ]]; then
+    warn "VAST_API_KEY format appears invalid (should be 64-char hex or start with 'vast_api_key_')"
+fi
+
+# Process secrets with variable substitution
+log "Substituting variables in secrets template..."
 cat "$ROOT_DIR/k8s/vast-gpu/secrets-template.yaml" | \
     sed "s/YOUR_VAST_API_KEY_HERE/$VAST_API_KEY/g" | \
     sed "s/YOUR_GEMINI_API_KEY_HERE/${GEMINI_API_KEY:-changeme}/g" > "$TEMP_SECRETS"
 
+# Validate the processed secrets file
+if ! kubectl apply --dry-run=client -f "$TEMP_SECRETS" &>/dev/null; then
+    error "Generated secrets file is invalid. Check your API keys for special characters."
+fi
+
 # Process provider config with environment substitution
 log "Configuring Vast.ai provider settings..."
-envsubst < "$ROOT_DIR/k8s/vast-gpu/vast-provider-config.yaml" > "$TEMP_CONFIG"
+if [ -f "$ROOT_DIR/k8s/vast-gpu/vast-provider-config.yaml" ]; then
+    envsubst < "$ROOT_DIR/k8s/vast-gpu/vast-provider-config.yaml" > "$TEMP_CONFIG"
+else
+    warn "Provider config not found, using default configuration"
+fi
 
 # Process virtual kubelet deployment
 log "Preparing Virtual Kubelet deployment..."
@@ -87,15 +107,25 @@ cp "$ROOT_DIR/k8s/vast-gpu/virtual-kubelet-deployment.yaml" "$TEMP_DEPLOYMENT"
 
 # Apply RBAC first
 log "Setting up RBAC permissions..."
-kubectl apply -f "$ROOT_DIR/k8s/vast-gpu/rbac.yaml"
+if kubectl apply -f "$ROOT_DIR/k8s/vast-gpu/rbac.yaml"; then
+    success "RBAC permissions applied"
+else
+    error "Failed to apply RBAC permissions"
+fi
 
-# Apply secrets
+# Apply secrets with better error handling
 log "Creating API key secrets..."
-kubectl apply -f "$TEMP_SECRETS"
+if kubectl apply -f "$TEMP_SECRETS"; then
+    success "Secrets created successfully"
+else
+    error "Failed to create secrets. Check the secrets template and API key format."
+fi
 
 # Apply provider configuration
-log "Installing Vast.ai provider configuration..."
-kubectl apply -f "$TEMP_CONFIG"
+if [ -f "$TEMP_CONFIG" ] && [ -s "$TEMP_CONFIG" ]; then
+    log "Installing Vast.ai provider configuration..."
+    kubectl apply -f "$TEMP_CONFIG"
+fi
 
 # Apply Virtual Kubelet deployment
 log "Deploying Virtual Kubelet with Vast.ai provider..."
@@ -103,7 +133,9 @@ kubectl apply -f "$TEMP_DEPLOYMENT"
 
 # Apply services
 log "Creating Vast.ai GPU services..."
-kubectl apply -f "$ROOT_DIR/k8s/vast-gpu/services.yaml"
+if [ -f "$ROOT_DIR/k8s/vast-gpu/services.yaml" ]; then
+    kubectl apply -f "$ROOT_DIR/k8s/vast-gpu/services.yaml"
+fi
 
 # Wait for Virtual Kubelet to be ready
 log "Waiting for Virtual Kubelet to be ready..."
@@ -111,6 +143,10 @@ if ! kubectl wait --for=condition=available --timeout=180s deployment/virtual-ku
     warn "Virtual Kubelet not ready after 3 minutes, checking status..."
     kubectl get pods -n kube-system -l app=virtual-kubelet-vast
     kubectl describe deployment/virtual-kubelet-vast -n kube-system
+    # Show logs for debugging
+    echo ""
+    log "Recent Virtual Kubelet logs:"
+    kubectl logs -n kube-system deployment/virtual-kubelet-vast --tail=50 || true
 fi
 
 # Check for the virtual node
@@ -125,6 +161,7 @@ for i in {1..30}; do
     echo -n "."
     sleep 2
 done
+echo "" # New line after dots
 
 if [ -z "$VIRTUAL_NODE" ]; then
     warn "Virtual node not detected yet, checking logs..."
@@ -132,7 +169,7 @@ if [ -z "$VIRTUAL_NODE" ]; then
 fi
 
 # Apply GPU services deployment if virtual node is ready
-if [ -n "$VIRTUAL_NODE" ]; then
+if [ -n "$VIRTUAL_NODE" ] && [ -f "$ROOT_DIR/k8s/vast-gpu/gpu-services-deployment.yaml" ]; then
     log "Deploying GPU services to Vast.ai virtual node..."
     kubectl apply -f "$ROOT_DIR/k8s/vast-gpu/gpu-services-deployment.yaml"
 else
@@ -145,7 +182,7 @@ echo ""
 log "=== Vast.ai Provider Deployment Status ==="
 echo ""
 echo "📋 Virtual Kubelet Status:"
-kubectl get deployment -n kube-system virtual-kubelet-vast
+kubectl get deployment -n kube-system virtual-kubelet-vast || echo "Deployment not found"
 
 echo ""
 echo "🖥️ Virtual Nodes:"
@@ -157,11 +194,11 @@ kubectl get svc | grep "stt\|tts" || echo "GPU services not deployed yet"
 
 echo ""
 echo "📊 ConfigMap:"
-kubectl get configmap vast-provider-config -n kube-system
+kubectl get configmap vast-provider-config -n kube-system || echo "ConfigMap not found"
 
 echo ""
 echo "🔐 Secrets:"
-kubectl get secret vast-api-secret -n kube-system
+kubectl get secret vast-api-secret -n kube-system || echo "Secret not found"
 
 echo ""
 log "=== Vast.ai Management Commands ==="
