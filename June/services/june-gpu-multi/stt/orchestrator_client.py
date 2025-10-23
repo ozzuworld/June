@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from typing import Optional, Dict, Any
 import httpx
 from config import config
@@ -10,6 +11,23 @@ class OrchestratorClient:
     def __init__(self):
         self.base_url = config.ORCHESTRATOR_URL
         self.timeout = 10.0
+        
+        # Configure proxy for Tailscale userspace networking
+        self.proxy_url = None
+        if os.getenv('ALL_PROXY'):
+            self.proxy_url = os.getenv('ALL_PROXY')
+            logger.info(f"Using proxy for orchestrator client: {self.proxy_url}")
+        elif os.path.exists('/etc/environment'):
+            # Try to read proxy from environment file
+            try:
+                with open('/etc/environment', 'r') as f:
+                    for line in f:
+                        if line.startswith('ALL_PROXY='):
+                            self.proxy_url = line.split('=', 1)[1].strip()
+                            logger.info(f"Loaded proxy from /etc/environment: {self.proxy_url}")
+                            break
+            except Exception as e:
+                logger.debug(f"Could not read proxy from /etc/environment: {e}")
     
     async def send_transcript(self, 
                             transcript_id: str,
@@ -33,7 +51,17 @@ class OrchestratorClient:
         }
         
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            # Configure client with proxy if available
+            client_kwargs = {"timeout": self.timeout}
+            if self.proxy_url:
+                # Use proxy for Tailscale connectivity
+                client_kwargs["proxies"] = {
+                    "http://": self.proxy_url,
+                    "https://": self.proxy_url
+                }
+                logger.debug(f"Using proxy {self.proxy_url} for orchestrator connection")
+            
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 headers = {}
                 if config.BEARER_TOKEN:
                     headers["Authorization"] = f"Bearer {config.BEARER_TOKEN}"
