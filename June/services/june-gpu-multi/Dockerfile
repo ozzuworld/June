@@ -1,4 +1,5 @@
 # Multi-service container with both STT and TTS for Vast.ai GPU sharing
+# Uses Tailscale userspace networking mode for container compatibility
 FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -69,7 +70,7 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Install runtime dependencies INCLUDING Tailscale
+# Install runtime dependencies INCLUDING Tailscale (userspace mode - no iptables needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     ffmpeg \
@@ -82,8 +83,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gnupg \
     lsb-release \
-    iptables \
-    iproute2 \
     && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null \
     && curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list \
     && apt-get update \
@@ -120,7 +119,7 @@ COPY --chown=juneuser:juneuser supervisord.conf /etc/supervisor/conf.d/superviso
 # Copy startup script
 COPY --chown=juneuser:juneuser start-services.sh /app/start-services.sh
 
-# Copy Tailscale connection script
+# Copy Tailscale connection script (now uses userspace networking)
 COPY --chown=juneuser:juneuser tailscale-connect.sh /app/tailscale-connect.sh
 
 # 🔧 FIX: Convert line endings to Unix format for all shell scripts
