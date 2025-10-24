@@ -348,7 +348,7 @@ class VirtualKubelet:
         instance = self.pod_instances.get(pod_name)
         if not instance: return
         vast = VastAIClient(self.api_key)
-        await vast._run(["destroy","instance",str(instance["id")])
+        await vast._run(["destroy","instance",str(instance["id"])])
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = 0
