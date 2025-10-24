@@ -15,6 +15,14 @@ else
     echo "[WARN] nvidia-smi not found (OK for local testing without GPU)"
 fi
 
+# Baseline env for numerical libs to avoid caching issues
+export NUMBA_DISABLE_JIT=${NUMBA_DISABLE_JIT:-1}
+export NUMBA_CACHE_DIR=${NUMBA_CACHE_DIR:-/tmp/numba_cache}
+export PYTORCH_JIT=${PYTORCH_JIT:-0}
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+mkdir -p "$NUMBA_CACHE_DIR" /tmp/torch_cache
+chown -R juneuser:juneuser "$NUMBA_CACHE_DIR" /tmp/torch_cache || true
+
 # Display environment
 echo "[INIT] Environment Variables:"
 echo "  STT_PORT: ${STT_PORT:-8001}"
@@ -24,10 +32,12 @@ echo "  WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}"
 echo "  TTS_HOME: ${TTS_HOME:-/app/models}"
 echo "  PYTHONPATH: ${PYTHONPATH:-/app}"
 echo "  TAILSCALE_AUTH_KEY: ${TAILSCALE_AUTH_KEY:+[SET]}"
+echo "  NUMBA_DISABLE_JIT: ${NUMBA_DISABLE_JIT}"
+echo "  NUMBA_CACHE_DIR: ${NUMBA_CACHE_DIR}"
 
 # Validate critical directories
 echo "[INIT] Validating directories..."
-for dir in /app/models /app/cache /var/log/supervisor /var/run /var/lib/tailscale /var/run/tailscale; do
+for dir in /app/models /app/cache /var/log/supervisor /var/run /var/lib/tailscale /var/run/tailscale "$NUMBA_CACHE_DIR"; do
     if [ ! -d "$dir" ]; then
         echo "[ERROR] Required directory missing: $dir"
         exit 1
