@@ -9,12 +9,26 @@ Virtual Kubelet Provider for Vast.ai with Headscale (robust, with GONE detection
 - Annotations standardized (vast.ai/disk-gb, june.ai/tts-port) and cluster access clarified
 """
 
-# Fix for Python 3.10 compatibility - patch collections.Callable before importing asyncssh
+# CRITICAL: Fix for Python 3.10+ compatibility - must be FIRST imports
+# This patches collections.Callable for ALL subsequent imports including kubernetes client
+import sys
 import collections
-try:
-    collections.Callable = collections.abc.Callable
-except AttributeError:
-    pass  # Already exists in older Python versions
+import collections.abc
+
+# Patch collections.Callable globally for Python 3.10+ compatibility
+if sys.version_info >= (3, 10):
+    try:
+        # For Python 3.10+, collections.Callable was moved to collections.abc.Callable
+        if not hasattr(collections, 'Callable'):
+            collections.Callable = collections.abc.Callable
+            collections.MutableMapping = collections.abc.MutableMapping 
+            collections.Mapping = collections.abc.Mapping
+            collections.Iterable = collections.abc.Iterable
+            collections.MutableSet = collections.abc.MutableSet
+            collections.MutableSequence = collections.abc.MutableSequence
+    except AttributeError:
+        # Fallback in case the abc versions don't exist
+        pass
 
 import asyncio
 import base64
