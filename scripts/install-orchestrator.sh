@@ -71,6 +71,13 @@ export VAST_PREFERRED_REGIONS
 export VAST_VERIFIED_ONLY
 export VAST_RENTABLE_ONLY
 
+# Export Headscale configuration (optional)
+export HEADSCALE_DOMAIN
+export HEADSCALE_NAMESPACE
+export HEADSCALE_USER
+export K8S_SERVICE_CIDR
+export K8S_POD_CIDR
+
 # Validate required variables
 REQUIRED_VARS=(
     "DOMAIN"
@@ -121,7 +128,7 @@ get_external_ip() {
     return 1
 }
 
-# Define installation phases (including new phases 11 & 12)
+# Define installation phases (including new phases 11, 11.5 & 12)
 PHASES=(
     "01-prerequisites"
     "02-docker"
@@ -135,8 +142,9 @@ PHASES=(
     "08-livekit"
     "09-june-platform"
     "10-final-setup"
-    "11-headscale"          # NEW: VPN control plane
-    "12-vast-gpu"           # NEW: Remote GPU provider
+    "11-headscale"          # VPN control plane server
+    "11.5-headscale-node"   # Connect this node to Headscale with subnet routing
+    "12-vast-gpu"           # Remote GPU provider
 )
 
 # Function to run a phase
@@ -214,6 +222,10 @@ debug_info() {
     echo ""
     echo "Headscale Status:"
     kubectl get pods -n headscale 2>/dev/null || echo "Headscale namespace not found"
+    
+    echo ""
+    echo "Tailscale Node Status:"
+    tailscale status 2>/dev/null || echo "Tailscale not installed or not connected"
 }
 
 # Main execution function
@@ -275,6 +287,12 @@ main() {
         HEADSCALE_AVAILABLE="true"
     fi
     
+    # Check for Tailscale node connection
+    TAILSCALE_CONNECTED="false"
+    if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
+        TAILSCALE_CONNECTED="true"
+    fi
+    
     # Check for Vast.ai virtual node
     VAST_NODE=$(kubectl get nodes -l type=virtual-kubelet -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     
@@ -300,6 +318,11 @@ main() {
         echo "  Control:    https://headscale.$DOMAIN"
         echo "  Network:    100.64.0.0/10 (tail.$DOMAIN)"
         echo "  Management: kubectl exec -n headscale deployment/headscale -- headscale"
+        if [ "$TAILSCALE_CONNECTED" = "true" ]; then
+            echo "  Node Status: ✅ Connected (subnet routes advertised)"
+        else
+            echo "  Node Status: ⚠️  Not connected (run phase 11.5-headscale-node)"
+        fi
         echo ""
     fi
     if [ -n "$VAST_NODE" ]; then
@@ -341,6 +364,9 @@ main() {
     echo "  kubectl get certificates -n june-services # Certificates"
     if [ "$HEADSCALE_AVAILABLE" = "true" ]; then
         echo "  kubectl get pods -n headscale        # VPN control plane"
+        if [ "$TAILSCALE_CONNECTED" = "true" ]; then
+            echo "  tailscale status                     # Node VPN status"
+        fi
     fi
     if [ -n "$VAST_NODE" ]; then
         echo "  kubectl get nodes -l type=virtual-kubelet # Remote GPU nodes"
@@ -374,6 +400,7 @@ show_usage() {
     echo "  $0 --skip 02.5-gpu             # Skip GPU driver/runtime"
     echo "  $0 --skip 03.5-gpu-operator    # Skip GPU Operator/time-slicing"
     echo "  $0 --skip 11-headscale         # Skip VPN control plane"
+    echo "  $0 --skip 11.5-headscale-node  # Skip node subnet routing"
     echo "  $0 --skip 12-vast-gpu          # Skip remote GPU provider"
 }
 
