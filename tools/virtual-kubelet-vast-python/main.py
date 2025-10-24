@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Virtual Kubelet Provider for Vast.ai (robust, with GONE detection)
+Virtual Kubelet Provider for Vast.ai with Headscale (robust, with GONE detection)
 - Single global instance cap
 - Idempotency keyed per ReplicaSet UID
 - Handles Vast GUI deletions: detects 'gone' and recreates after cooldown
-- No async context manager usage
-- Uses Tailscale userspace networking (no privileged containers needed)
-- Launches separate STT/TTS prebuilt images on the Vast instance via docker compose
+- Hardened for Headscale-only: prefers HEADSCALE_AUTH_KEY, empty Tailscale, headscale DNS
+- Launches june-tts and june-stt via docker compose on the remote Vast instance
+- Annotations standardized (vast.ai/disk-gb, june.ai/tts-port) and cluster access clarified
 """
 import asyncio
 import base64
@@ -38,17 +38,16 @@ logger = structlog.get_logger()
 VAST_API_KEY = os.getenv("VAST_API_KEY")
 NODE_NAME = os.getenv("NODE_NAME", "vast-gpu-node-python")
 FORCE_GPU_TYPE = os.getenv("FORCE_GPU_TYPE")
-FORCE_IMAGE = os.getenv("FORCE_IMAGE")  # optional: starting image (base) on Vast
+FORCE_IMAGE = os.getenv("FORCE_IMAGE")
 FORCE_PRICE_MAX = os.getenv("FORCE_PRICE_MAX")
 MAX_ACTIVE_INSTANCES = 1
+MAX_HOURLY_COST = float(os.getenv("VAST_MAX_HOURLY_COST", "2.00"))
 
 from asyncio import Semaphore
 INSTANCE_BUY_SEMAPHORE = Semaphore(1)
 SHOW_POLL_INTERVAL_MIN = 15
-SHOW_POLL_INTERVAL_JITTER = 4
 INSTANCE_RECREATE_GRACE = 120
 
-# Compose + onstart templates used to bring up june-tts and june-stt on Vast instance
 COMPOSE_YAML = r"""
 version: "3.9"
 services:
@@ -63,13 +62,12 @@ services:
       - NUMBA_CACHE_DIR=/tmp/numba_cache
       - PYTORCH_JIT=0
       - OMP_NUM_THREADS=1
-      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY}
+      - HEADSCALE_AUTH_KEY=${HEADSCALE_AUTH_KEY}
     volumes:
       - tts-models:/app/models
       - tts-cache:/app/cache
     ports:
       - "${TTS_PORT:-8000}:8000"
-
   june-stt:
     image: ghcr.io/ozzuworld/june-stt:latest
     container_name: june-stt
@@ -80,13 +78,12 @@ services:
       - WHISPER_COMPUTE_TYPE=float16
       - NUMBA_DISABLE_JIT=1
       - NUMBA_CACHE_DIR=/tmp/numba_cache
-      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY}
+      - HEADSCALE_AUTH_KEY=${HEADSCALE_AUTH_KEY}
     volumes:
       - stt-models:/app/models
       - stt-cache:/app/cache
     ports:
       - "${STT_PORT:-8001}:8001"
-
 volumes:
   tts-models: {}
   tts-cache: {}
@@ -96,48 +93,30 @@ volumes:
 
 BASH_ONSTART = r"""
 set -euo pipefail
-
-# Ensure docker-compose or docker compose is available
-if ! docker compose version >/dev/null 2>&1; then
-  if ! command -v docker-compose >/dev/null 2>&1; then
-    echo "[INIT] Installing docker-compose..."
-    curl -L "https://github.com/docker/compose/releases/download/2.27.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-  fi
-fi
-
-# Write compose file
 mkdir -p /root/june
 cat > /root/june/june-stack.yml <<'EOF'
 {compose}
 EOF
-
-# Prepare .env with values provided by provider
 cat > /root/june/.env <<EOF
-TAILSCALE_AUTH_KEY={tailscale_auth}
+HEADSCALE_AUTH_KEY={headscale_auth}
+TAILSCALE_AUTH_KEY=
 TTS_PORT={tts_port}
 STT_PORT={stt_port}
 EOF
-
-# Bring up the stack
 cd /root/june
 if docker compose version >/dev/null 2>&1; then
   docker compose --env-file .env -f june-stack.yml up -d
 else
   docker-compose --env-file .env -f june-stack.yml up -d
 fi
-
-# Basic health loop
 for i in $(seq 1 40); do
   if curl -sf http://localhost:${{TTS_PORT:-8000}}/healthz >/dev/null 2>&1 && \
      curl -sf http://localhost:${{STT_PORT:-8001}}/healthz >/dev/null 2>&1; then
-    echo "[INIT] Both services healthy"; exit 0
+    exit 0
   fi
-  echo "[INIT] Waiting for services... ($i/40)"; sleep 6
+  sleep 6
 done
-
-echo "[INIT] Services not healthy within timeout"; exit 1
+exit 1
 """
 
 class VastAIClient:
@@ -145,21 +124,18 @@ class VastAIClient:
         self.api_key = api_key
         self.cli_path = self._find_cli_path()
         self._setup_api_key()
-
     def _find_cli_path(self) -> Optional[str]:
         paths = [shutil.which("vastai"), "/usr/local/bin/vastai", "/app/vastai"]
         for p in paths:
             if p and os.path.exists(p) and os.access(p, os.X_OK):
                 return p
         return None
-
     def _setup_api_key(self):
         if self.api_key:
             fpath = os.path.expanduser("~/.vastai_api_key")
             with open(fpath, "w") as f:
                 f.write(self.api_key)
             os.chmod(fpath, 0o600)
-
     async def _run(self, args: List[str]) -> Dict[str, Any]:
         if not self.cli_path:
             return {"error": "vastai CLI not available"}
@@ -183,7 +159,6 @@ class VastAIClient:
             return {"data": json.loads(txt)} if txt and txt[0] in "[{" else {"data": txt}
         except Exception:
             return {"data": txt}
-
     async def search_offers(self, gpu_type: str, max_price: float, region: Optional[str]) -> List[Dict[str, Any]]:
         gpu_cli = gpu_type.replace(" ", "_")
         parts = ["rentable=true","verified=true","rented=false",f"gpu_name={gpu_cli}",f"dph<={max_price:.2f}","reliability>=0.70","inet_down>=50","inet_up>=20"]
@@ -198,78 +173,39 @@ class VastAIClient:
         if "error" in res: return []
         data = res.get("data", [])
         return data if isinstance(data, list) else []
-
-    def _build_tailscale_env_string(self, pod) -> str:
-        """Build Tailscale environment variables from pod env or secrets"""
-        env_vars = []
-        if pod.spec and pod.spec.containers:
-            for container in pod.spec.containers:
-                if container.env:
-                    for env_var in container.env:
-                        if env_var.name.startswith('TAILSCALE_'):
-                            if env_var.value:
-                                env_vars.append(f"-e {env_var.name}={env_var.value}")
-                            elif env_var.value_from and env_var.value_from.secret_key_ref:
-                                try:
-                                    secret = self.v1.read_namespaced_secret(
-                                        name=env_var.value_from.secret_key_ref.name,
-                                        namespace=pod.metadata.namespace
-                                    )
-                                    if secret.data and env_var.value_from.secret_key_ref.key in secret.data:
-                                        import base64
-                                        value = base64.b64decode(secret.data[env_var.value_from.secret_key_ref.key]).decode()
-                                        env_vars.append(f"-e {env_var.name}={value}")
-                                except Exception as e:
-                                    logger.warning("Failed to get secret value", env_var=env_var.name, error=str(e))
-        return " ".join(env_vars)
-
+    def _extract_headscale_auth_key(self, pod) -> str:
+        for container in getattr(pod.spec, 'containers', []):
+            if getattr(container, 'env', None):
+                for env_var in container.env:
+                    if env_var.name == 'HEADSCALE_AUTH_KEY' and getattr(env_var, 'value', None):
+                        return env_var.value
+        return os.getenv("HEADSCALE_AUTH_KEY", "")
     async def buy_instance(self, ask_id: int, ann: Dict[str,str], pod) -> Optional[Dict[str, Any]]:
-        # Starting/base image for Vast instance
         image = os.getenv("VAST_START_IMAGE") or FORCE_IMAGE or ann.get("vast.ai/start-image", "ubuntu:22.04")
-        disk_str = ann.get("vast.ai/disk", "50")
+        disk_str = ann.get("vast.ai/disk-gb", ann.get("vast.ai/disk", "50"))
         try:
-            disk_gb = float(re.match(r"(\d+(?:\.\d+)?)", disk_str).group(1))
+            disk_gb = float(re.match(r"(\d+(?:\.\d+)?)", str(disk_str).replace("GB", "").strip()).group(1))
         except Exception:
             disk_gb = 50.0
-
-        # Ports (configurable via annotations)
-        tts_port = ann.get("june.tts/port", "8000")
-        stt_port = ann.get("june.stt/port", "8001")
-
-        # Extract TAILSCALE_AUTH_KEY from Pod env if present
-        tailscale_env = self._build_tailscale_env_string(pod)
-        tailscale_key = ""
-        if tailscale_env:
-            m = re.search(r"-e TAILSCALE_AUTH_KEY=([^\s]+)", tailscale_env)
-            if m:
-                tailscale_key = m.group(1)
-
-        # Render onstart script with embedded compose
+        tts_port = ann.get("june.ai/tts-port", "8000")
+        stt_port = ann.get("june.ai/stt-port", "8001")
+        headscale_key = self._extract_headscale_auth_key(pod)
         onstart_script = BASH_ONSTART.format(
             compose=COMPOSE_YAML,
-            tailscale_auth=tailscale_key,
+            headscale_auth=headscale_key,
             tts_port=tts_port,
             stt_port=stt_port,
         )
-
-        args = [
-            "create","instance",str(ask_id),"--raw",
-            "--image", image,
-            "--disk", str(int(disk_gb)),
-            "--onstart-cmd", onstart_script,
-        ]
-
-        logger.info("Creating Vast.ai instance with compose-based runtime",
-                    image=image, tts_port=tts_port, stt_port=stt_port)
-
+        args = ["create","instance",str(ask_id),"--raw","--image", image,"--disk", str(int(disk_gb)),"--onstart-cmd", onstart_script]
+        logger.info("Creating Vast.ai instance for Headscale", image=image, tts_port=tts_port, stt_port=stt_port)
         res = await self._run(args)
         data = res.get("data")
         if isinstance(data, str) and data.isdigit():
             return {"new_contract": int(data)}
         if isinstance(data, dict) and "new_contract" in data:
             return data
+        logger.error("Failed to create instance", response=res)
         return None
-
     async def show_instance(self, instance_id: int) -> Dict[str, Any]:
         return await self._run(["show","instance",str(instance_id),"--raw"])
 
@@ -285,57 +221,78 @@ class VirtualKubelet:
         except Exception:
             k8s_konfig.load_kube_config()
         self.v1 = k8s_client.CoreV1Api()
-        logger.info("VK init with userspace networking", node=node_name, ssh_available=SSH_AVAILABLE)
-
+        logger.info("VK Headscale-only mode", node=node_name, ssh_available=SSH_AVAILABLE)
     def _now(self):
         return datetime.now(timezone.utc)
-
     def _is_target_pod(self, pod) -> bool:
         try:
             return pod and pod.spec and pod.spec.node_name == self.node_name and (pod.metadata.deletion_timestamp is None)
         except Exception:
             return False
-
     def get_desired_key(self, pod):
         if pod.metadata.owner_references:
             return pod.metadata.owner_references[0].uid
         return pod.metadata.uid
-
+    def _validate_pod_annotations(self, pod) -> Dict[str, Any]:
+        ann = pod.metadata.annotations or {}
+        validated = {
+            "vast.ai/gpu-type": FORCE_GPU_TYPE or ann.get("vast.ai/gpu-type", "RTX 4060"),
+            "vast.ai/price-max": FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.30"),
+            "vast.ai/region": ann.get("vast.ai/region", "north america"),
+            "vast.ai/disk-gb": ann.get("vast.ai/disk-gb", ann.get("vast.ai/disk", "50")),
+            "june.ai/tts-port": ann.get("june.ai/tts-port", ann.get("june.tts/port", "8000")),
+            "june.ai/stt-port": ann.get("june.ai/stt-port", ann.get("june.stt/port", "8001")),
+        }
+        try:
+            price = float(validated["vast.ai/price-max"])
+            if price > MAX_HOURLY_COST:
+                logger.warning("Pod price exceeds cap", requested=price, cap=MAX_HOURLY_COST)
+                validated["vast.ai/price-max"] = str(MAX_HOURLY_COST)
+        except Exception as e:
+            logger.warning("Invalid price, using default", price=validated["vast.ai/price-max"], err=str(e))
+            validated["vast.ai/price-max"] = "0.30"
+        return validated
     async def create_pod(self, pod):
         pod_name = pod.metadata.name
         desired_key = self.get_desired_key(pod)
         now = time.time()
         if len(self.pod_instances) >= MAX_ACTIVE_INSTANCES:
-            logger.info("Instance cap hit, not provisioning new GPU", cap=MAX_ACTIVE_INSTANCES)
+            logger.info("Instance cap hit", cap=MAX_ACTIVE_INSTANCES)
             return
         if self.instance_keys.get(desired_key) and self.pod_instances.get(self.instance_keys[desired_key]):
-            logger.info("Instance already tracked for desired_key", key=desired_key)
+            logger.info("Already tracked for desired_key", key=desired_key)
             return
         if now < self.recreate_backoff[pod_name]:
-            logger.debug("Delaying recreate due to backoff", pod=pod_name, delay=int(self.recreate_backoff[pod_name]-now))
+            logger.debug("Delaying recreate due to backoff", pod=pod_name)
             return
-        gpu_list, price_max, region = self._parse_annotations(pod)
+        try:
+            validated_ann = self._validate_pod_annotations(pod)
+        except Exception as e:
+            logger.error("Pod annotation validation failed", pod=pod_name, error=str(e))
+            await self.update_pod_status_failed(pod, f"Invalid annotations: {str(e)}")
+            return
+        gpu_list, price_max, region = self._parse_validated_annotations(validated_ann)
         vast = VastAIClient(self.api_key)
         vast.v1 = self.v1
         offer = await self._find_offer(vast, gpu_list, price_max, region)
         if not offer:
-            await self.update_pod_status_failed(pod, "No GPU offers available"); return
+            await self.update_pod_status_failed(pod, "No GPU offers available")
+            return
         async with INSTANCE_BUY_SEMAPHORE:
-            buy = await vast.buy_instance(offer["id"], pod.metadata.annotations or {}, pod)
+            buy = await vast.buy_instance(offer["id"], validated_ann, pod)
         if not buy or not buy.get("new_contract"):
-            await self.update_pod_status_failed(pod, "Failed to create instance"); return
+            await self.update_pod_status_failed(pod, "Failed to create instance")
+            return
         iid = int(buy["new_contract"])
-        self.pod_instances[pod_name] = {"id": iid, "state": "provisioning", "created": time.time(), "offer": offer, "gone": False}
+        self.pod_instances[pod_name] = {"id": iid, "state": "provisioning", "created": time.time(), "offer": offer, "gone": False, "validated_annotations": validated_ann}
         self.instance_keys[desired_key] = pod_name
-        logger.info("Instance created with userspace networking", pod=pod_name, iid=iid)
-
+        logger.info("Instance provisioned, Headscale", pod=pod_name, iid=iid)
         show = await vast.show_instance(iid)
         if "gone" in show:
             await self._handle_instance_gone(pod, pod_name, desired_key)
             return
-
         start = time.time()
-        while time.time() - start < 600:
+        while time.time() - start < 900:
             show = await vast.show_instance(iid)
             if "gone" in show:
                 await self._handle_instance_gone(pod, pod_name, desired_key)
@@ -349,23 +306,19 @@ class VirtualKubelet:
                 await self.update_pod_status_running(pod, self.pod_instances[pod_name])
                 return
             await asyncio.sleep(SHOW_POLL_INTERVAL_MIN)
-
         await self._handle_instance_fail(pod, pod_name, desired_key, reason="Provisioning timeout")
-
     async def _handle_instance_gone(self, pod, pod_name: str, desired_key: str):
         logger.info("Instance deleted externally; scheduling recreate", pod=pod_name)
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
         await self.update_pod_status_failed(pod, "External deletion - will retry")
-
     async def _handle_instance_fail(self, pod, pod_name: str, desired_key: str, reason: str):
         logger.warning("Instance provisioning failure", pod=pod_name, reason=reason)
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = time.time() + INSTANCE_RECREATE_GRACE
         await self.update_pod_status_failed(pod, reason)
-
     async def update_pod_status_failed(self, pod, reason: str):
         try:
             if not pod.status: pod.status = k8s_client.V1PodStatus()
@@ -373,7 +326,6 @@ class VirtualKubelet:
             self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
         except Exception:
             pass
-
     async def update_pod_status_running(self, pod, instance):
         try:
             if not pod.status: pod.status = k8s_client.V1PodStatus()
@@ -383,35 +335,30 @@ class VirtualKubelet:
                 pod.status.conditions.append(
                     k8s_client.V1PodCondition(
                         type=t,
-                        status="False" if t in ("ContainersReady","Ready") else "True",
+                        status="True",
                         last_transition_time=self._now(),
-                        reason="Scheduled" if t=="PodScheduled" else ("PodCompleted" if t=="Initialized" else "ContainersNotReady")
-                    )
+                        reason="Scheduled")
                 )
             self.v1.patch_namespaced_pod_status(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
         except Exception:
             pass
-
     async def delete_pod(self, pod):
         pod_name = pod.metadata.name
         desired_key = self.get_desired_key(pod)
         instance = self.pod_instances.get(pod_name)
         if not instance: return
         vast = VastAIClient(self.api_key)
-        await vast._run(["destroy","instance",str(instance["id"])])
+        await vast._run(["destroy","instance",str(instance["id")])
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = 0
-
-    def _parse_annotations(self, pod) -> tuple:
-        ann = pod.metadata.annotations or {}
-        gpu_primary = FORCE_GPU_TYPE or ann.get("vast.ai/gpu-type", "RTX 4060")
+    def _parse_validated_annotations(self, ann: Dict[str, str]) -> tuple:
+        gpu_primary = ann["vast.ai/gpu-type"]
         gpu_fallbacks = ann.get("vast.ai/gpu-fallbacks", "")
         gpu_list = [gpu_primary] + ([g.strip() for g in gpu_fallbacks.split(",")] if gpu_fallbacks else [])
-        price_max = float(FORCE_PRICE_MAX or ann.get("vast.ai/price-max", "0.20"))
-        region = ann.get("vast.ai/region", "north america")
+        price_max = float(ann["vast.ai/price-max"])
+        region = ann["vast.ai/region"]
         return gpu_list, price_max, region
-
     async def _find_offer(self, vast: 'VastAIClient', gpu_list: List[str], price_max: float, region: Optional[str]) -> Optional[Dict[str, Any]]:
         for gpu in (gpu_list[:3] if len(gpu_list) > 3 else gpu_list):
             offers = await vast.search_offers(gpu, price_max, region)
@@ -419,7 +366,6 @@ class VirtualKubelet:
                 offers_sorted = sorted(offers, key=lambda x: x.get("dph_total", 999))
                 return offers_sorted[0]
         return None
-
     async def register_node(self):
         try:
             try:
@@ -430,7 +376,6 @@ class VirtualKubelet:
                 if e.status != 404:
                     logger.error("Error checking node", error=str(e))
                     return
-
             node = k8s_client.V1Node(
                 metadata=k8s_client.V1ObjectMeta(
                     name=self.node_name,
@@ -442,7 +387,8 @@ class VirtualKubelet:
                         "kubernetes.io/role": "agent",
                         "type": "virtual-kubelet",
                         "vast.ai/gpu-node": "true",
-                        "vast.ai/networking": "userspace"
+                        "vast.ai/networking": "userspace",
+                        "june.ai/provider": "headscale"
                     },
                     annotations={"node.alpha.kubernetes.io/ttl": "0"}
                 ),
@@ -480,10 +426,9 @@ class VirtualKubelet:
                 )
             )
             self.v1.create_node(body=node)
-            logger.info("Node registered successfully with userspace networking", node=self.node_name)
+            logger.info("Node registered successfully with userspace networking (Headscale)", node=self.node_name)
         except Exception as e:
             logger.error("Failed to register node", error=str(e))
-
     async def reconcile_existing_pods(self):
         try:
             pods = self.v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={self.node_name}").items
@@ -491,13 +436,11 @@ class VirtualKubelet:
                 if self._is_target_pod(pod):
                     await self.create_pod(pod)
         except Exception as e:
-            logger.error("reconcile_existing_pods error", err=str(e))
-
+            logger.error("Existing pods reconciliation error", err=str(e))
     async def pod_watch_loop(self):
         w = k8s_watch.Watch()
         while True:
             try:
-                # NOTE: your original code had a minor typo list_pod_for_all_namespages
                 stream = w.stream(self.v1.list_pod_for_all_namespaces, field_selector=f"spec.nodeName={self.node_name}", timeout_seconds=60)
                 for event in stream:
                     typ = event.get("type"); pod = event.get("object")
@@ -512,7 +455,6 @@ class VirtualKubelet:
             except Exception as e:
                 logger.error("pod_watch_loop error", err=str(e))
                 await asyncio.sleep(3)
-
     async def heartbeat_loop(self):
         while True:
             try:
@@ -520,20 +462,15 @@ class VirtualKubelet:
             except Exception as e:
                 logger.error("Heartbeat error", err=str(e))
                 await asyncio.sleep(10)
-
-# Minimal endpoints
 async def healthz(request):
     return web.Response(text="ok")
-
 async def readyz(request):
     return web.json_response({"status":"ready","ssh":SSH_AVAILABLE,"networking":"userspace"})
-
 async def build_app(vk: 'VirtualKubelet') -> web.Application:
     app = web.Application()
     app.router.add_get('/healthz', healthz)
     app.router.add_get('/readyz', readyz)
     return app
-
 async def main():
     if not VAST_API_KEY:
         logger.error("VAST_API_KEY required"); return
@@ -549,6 +486,5 @@ async def main():
         await asyncio.gather(hb, rec, watch)
     finally:
         await runner.cleanup()
-
 if __name__ == "__main__":
     asyncio.run(main())
