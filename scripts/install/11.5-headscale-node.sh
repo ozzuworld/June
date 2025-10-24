@@ -4,7 +4,7 @@
 # - Installs Tailscale on the K8s node
 # - Connects to Headscale with preauth key
 # - Advertises Kubernetes Service/Pod routes
-# - Approves routes in Headscale automatically
+# - Approves routes in Headscale automatically with verification
 # 
 # IMPORTANT: This phase assumes Headscale server is already installed and running
 # in your cluster (from an earlier phase). It does NOT install Headscale itself.
@@ -128,29 +128,68 @@ success "Node connected to Headscale network"
 log "Waiting for routes to propagate..."
 sleep 5
 
-# Auto-approve routes
+# Auto-approve routes with robust node ID resolution and verification
 NODE_NAME=$(hostname)
-log "Looking for node '$NODE_NAME' in Headscale"
-NODE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale nodes list 2>/dev/null | awk -v n="$NODE_NAME" 'NR>1 && $2==n {print $1; exit}')
+log "Resolving Headscale node ID for Name='$NODE_NAME'"
 
-if [ -z "$NODE_ID" ]; then
+# Try JSON + jq first (most reliable)
+NODE_ID=$(
+  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- \
+    headscale nodes list --output json 2>/dev/null \
+  | jq -r --arg n "$NODE_NAME" '.[] | select(.name==$n) | .id' 2>/dev/null \
+  | head -n1
+)
+
+# Fallback to table parsing if JSON/jq not available
+if [ -z "$NODE_ID" ] || ! [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
+  NODE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale nodes list 2>/dev/null \
+    | awk -v n="$NODE_NAME" 'NR>1 && $2==n {print $1; exit}')
+fi
+
+if [ -z "$NODE_ID" ] || ! [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
   warn "Could not determine node ID for '${NODE_NAME}'. Listing all nodes:"
   kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale nodes list || true
-  warn "You may need to manually approve routes using:"
-  warn "  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_SERVICE_CIDR --node NODE_ID"
-  warn "  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_POD_CIDR --node NODE_ID"
-else
-  log "Found node ID: $NODE_ID, approving subnet routes"
-  # Approve both CIDRs (ignore errors if already approved)
-  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_SERVICE_CIDR" --node "$NODE_ID" 2>/dev/null || true
-  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_POD_CIDR" --node "$NODE_ID" 2>/dev/null || true
-  success "Subnet routes approved for node $NODE_ID"
+  error "Automatic route approval skipped. Approve manually:
+  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_SERVICE_CIDR --node NODE_ID
+  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_POD_CIDR --node NODE_ID"
+fi
+
+log "Approving subnet routes for node id: $NODE_ID"
+# Attempt to enable both routes
+kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_SERVICE_CIDR" --node "$NODE_ID" >/dev/null 2>&1 || true
+kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_POD_CIDR"    --node "$NODE_ID" >/dev/null 2>&1 || true
+
+# Verify with retry (3 attempts, 2s apart)
+STATUS="fail"
+for i in 1 2 3; do
+  STATUS=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null | awk -v n="$NODE_NAME" -v s="$K8S_SERVICE_CIDR" -v p="$K8S_POD_CIDR" '
+    $2==n && $3==s {svc=$5}
+    $2==n && $3==p {pod=$5}
+    END {print (svc=="true" && pod=="true") ? "ok" : "fail"}')
+  
+  if [ "$STATUS" = "ok" ]; then
+    success "Subnet routes enabled and verified for node $NODE_ID"
+    break
+  fi
+  
+  if [ $i -lt 3 ]; then
+    log "Routes not yet enabled, retrying in 2s... (attempt $i/3)"
+    sleep 2
+  fi
+done
+
+if [ "$STATUS" != "ok" ]; then
+  warn "Routes not fully enabled after retries. Current routes:"
+  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list || true
+  error "Automatic route approval did not verify as enabled. You may need to approve manually:
+  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_SERVICE_CIDR --node $NODE_ID
+  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_POD_CIDR --node $NODE_ID"
 fi
 
 log "Current Tailscale status:"
 tailscale status || warn "Failed to get Tailscale status"
 
-log "Current Headscale routes:"
+log "Final Headscale routes status:"
 kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null || warn "Failed to list Headscale routes"
 
 success "Phase 11.5 complete: Node configured as Headscale subnet router"
