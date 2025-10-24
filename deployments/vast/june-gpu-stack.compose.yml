@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  june-tts:
+    image: ghcr.io/ozzuworld/june-tts:latest
+    container_name: june-tts
+    restart: unless-stopped
+    environment:
+      - TTS_PORT=8000
+      - TTS_HOME=/app/models
+      - NUMBA_DISABLE_JIT=1
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - PYTORCH_JIT=0
+      - OMP_NUM_THREADS=1
+      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY}
+    volumes:
+      - tts-models:/app/models
+      - tts-cache:/app/cache
+    ports:
+      - "8000:8000"
+    command: ["/bin/bash","-lc","/app/start-services.sh || true && /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf"]
+
+  june-stt:
+    image: ghcr.io/ozzuworld/june-stt:latest
+    container_name: june-stt
+    restart: unless-stopped
+    environment:
+      - STT_PORT=8001
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - NUMBA_DISABLE_JIT=1
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - TAILSCALE_AUTH_KEY=${TAILSCALE_AUTH_KEY}
+    volumes:
+      - stt-models:/app/models
+      - stt-cache:/app/cache
+    ports:
+      - "8001:8001"
+
+volumes:
+  tts-models: {}
+  tts-cache: {}
+  stt-models: {}
+  stt-cache: {}
