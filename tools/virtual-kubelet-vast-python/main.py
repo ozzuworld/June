@@ -8,6 +8,14 @@ Virtual Kubelet Provider for Vast.ai with Headscale (robust, with GONE detection
 - Launches june-tts and june-stt via docker compose on the remote Vast instance
 - Annotations standardized (vast.ai/disk-gb, june.ai/tts-port) and cluster access clarified
 """
+
+# Fix for Python 3.10 compatibility - patch collections.Callable before importing asyncssh
+import collections
+try:
+    collections.Callable = collections.abc.Callable
+except AttributeError:
+    pass  # Already exists in older Python versions
+
 import asyncio
 import base64
 import json
