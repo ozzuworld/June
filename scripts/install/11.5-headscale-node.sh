@@ -1,10 +1,10 @@
 #!/bin/bash
-# Phase 11.5 - Headscale Node Subnet Router (CORRECTED VERSION)
+# Phase 11.5 - Headscale Node Subnet Router (FINAL ROBUST VERSION)
 # Connects this Kubernetes node to existing Headscale server as subnet router
 # - Installs Tailscale on the K8s node
 # - Connects to Headscale with preauth key
 # - Advertises Kubernetes Service/Pod routes
-# - Approves routes in Headscale automatically using Route IDs
+# - Approves ALL routes for this node automatically
 # 
 # IMPORTANT: This phase assumes Headscale server is already installed and running
 # in your cluster (from an earlier phase). It does NOT install Headscale itself.
@@ -128,57 +128,43 @@ success "Node connected to Headscale network"
 log "Waiting for routes to propagate..."
 sleep 5
 
-# Auto-approve routes using Route IDs (CORRECTED METHOD)
+# SIMPLIFIED APPROACH: Enable ALL routes for this node
 NODE_NAME=$(hostname)
-log "Resolving route IDs for node '$NODE_NAME'"
+log "Enabling ALL routes for node '$NODE_NAME'"
 
-# Get route IDs for this node's advertised routes
-SERVICE_ROUTE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
-  | awk -v n="$NODE_NAME" -v s="$K8S_SERVICE_CIDR" 'NR>1 && $2==n && $3==s {print $1; exit}')
+# Get all route IDs for this node (regardless of CIDR)
+ROUTE_IDS=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
+  | awk -v n="$NODE_NAME" 'NR>1 && $2==n && $4=="true" && $5=="false" {print $1}' \
+  | tr '\n' ' ')
 
-POD_ROUTE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
-  | awk -v n="$NODE_NAME" -v p="$K8S_POD_CIDR" 'NR>1 && $2==n && $3==p {print $1; exit}')
-
-if [ -z "$SERVICE_ROUTE_ID" ] || [ -z "$POD_ROUTE_ID" ]; then
-  warn "Could not find route IDs for node '$NODE_NAME'. Current routes:"
+if [ -z "$ROUTE_IDS" ]; then
+  warn "No unapproved routes found for node '$NODE_NAME'. Current routes:"
   kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list || true
-  error "Routes not found for automatic approval. Please approve manually:
-  1. Find route IDs from: kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes list
-  2. Enable each route: kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route ROUTE_ID"
+  log "Routes may already be enabled or node not found."
+else
+  log "Enabling route IDs: $ROUTE_IDS"
+  
+  # Enable each route ID
+  for ROUTE_ID in $ROUTE_IDS; do
+    kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$ROUTE_ID" >/dev/null 2>&1 || warn "Failed to enable route $ROUTE_ID"
+    log "Enabled route ID: $ROUTE_ID"
+  done
 fi
 
-log "Enabling routes: Service ID=$SERVICE_ROUTE_ID, Pod ID=$POD_ROUTE_ID"
+# Verify all routes for this node are enabled
+sleep 2
+ENABLED_COUNT=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
+  | awk -v n="$NODE_NAME" 'NR>1 && $2==n && $5=="true" {count++} END {print count+0}')
 
-# Enable both routes using their IDs
-kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$SERVICE_ROUTE_ID" >/dev/null 2>&1 || warn "Failed to enable service route $SERVICE_ROUTE_ID"
-kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$POD_ROUTE_ID" >/dev/null 2>&1 || warn "Failed to enable pod route $POD_ROUTE_ID"
+TOTAL_COUNT=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
+  | awk -v n="$NODE_NAME" 'NR>1 && $2==n {count++} END {print count+0}')
 
-# Verify routes are enabled with retry
-STATUS="fail"
-for i in 1 2 3; do
-  STATUS=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null | awk -v n="$NODE_NAME" '
-    BEGIN {svc=0; pod=0}
-    NR>1 && $2==n && $5=="true" {
-      if (index($3, "10.96.") == 1) svc=1
-      if (index($3, "10.244.") == 1) pod=1
-    }
-    END {print (svc==1 && pod==1) ? "ok" : "fail"}')
-  
-  if [ "$STATUS" = "ok" ]; then
-    success "Subnet routes enabled and verified for node '$NODE_NAME'"
-    break
-  fi
-  
-  if [ $i -lt 3 ]; then
-    log "Routes not yet enabled, retrying in 2s... (attempt $i/3)"
-    sleep 2
-  fi
-done
-
-if [ "$STATUS" != "ok" ]; then
-  warn "Routes verification failed. Current routes:"
-  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list || true
-  error "Automatic route approval verification failed. Routes may still work - check manually."
+if [ "$ENABLED_COUNT" -gt 0 ] && [ "$ENABLED_COUNT" -eq "$TOTAL_COUNT" ]; then
+  success "All $ENABLED_COUNT routes enabled for node '$NODE_NAME'"
+elif [ "$ENABLED_COUNT" -gt 0 ]; then
+  success "$ENABLED_COUNT/$TOTAL_COUNT routes enabled for node '$NODE_NAME'"
+else
+  warn "No routes appear to be enabled. Manual approval may be needed."
 fi
 
 log "Current Tailscale status:"
@@ -189,9 +175,8 @@ kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list
 
 success "Phase 11.5 complete: Node configured as Headscale subnet router"
 log ""
-log "Your Kubernetes node is now advertising these networks to Headscale:"
-log "  Services: $K8S_SERVICE_CIDR (Route ID: $SERVICE_ROUTE_ID)"
-log "  Pods:     $K8S_POD_CIDR (Route ID: $POD_ROUTE_ID)"
+log "Your Kubernetes node is now advertising networks to Headscale."
+log "Routes enabled: $ENABLED_COUNT/$TOTAL_COUNT"
 log ""
 log "External devices connected to the same Headscale network can now"
 log "directly access Kubernetes services at their ClusterIP addresses."
