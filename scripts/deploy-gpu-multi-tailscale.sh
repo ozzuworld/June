@@ -1,13 +1,13 @@
 #!/bin/bash
-# Deploy june-gpu-multi service on vast.ai with Tailscale integration
+# Deploy june-gpu-multi service on vast.ai with optimized Tailscale integration
 # 
 # Usage: ./scripts/deploy-gpu-multi-tailscale.sh [vast_instance_id]
 #
 # Prerequisites:
-# 1. Tailscale operator deployed in Kubernetes cluster
-# 2. Services exposed via Tailscale annotations
-# 3. Vast.ai instance with GPU support
-# 4. Docker installed on vast.ai instance
+# 1. Vast.ai instance with GPU support
+# 2. Docker installed on vast.ai instance
+# 3. TAILSCALE_AUTH_KEY environment variable for container
+# Note: Tailscale is managed internally by the container
 
 set -e
 
@@ -22,7 +22,6 @@ NC='\033[0m' # No Color
 REPO_NAME="ozzuworld/june"
 IMAGE_TAG="latest"
 CONTAINER_NAME="june-gpu-multi"
-TAILSCALE_HOSTNAME="june-gpu-$(date +%s)"
 
 # Function to print colored output
 print_info() {
@@ -50,66 +49,9 @@ check_vast_instance() {
     fi
 }
 
-# Install Tailscale
-install_tailscale() {
-    print_info "Installing Tailscale..."
-    
-    if command -v tailscale &> /dev/null; then
-        print_success "Tailscale already installed"
-        return 0
-    fi
-    
-    curl -fsSL https://tailscale.com/install.sh | sh
-    
-    if command -v tailscale &> /dev/null; then
-        print_success "Tailscale installed successfully"
-    else
-        print_error "Failed to install Tailscale"
-        exit 1
-    fi
-}
-
-# Connect to Tailscale network
-connect_tailscale() {
-    print_info "Connecting to Tailscale network..."
-    print_info "Please follow the authentication link that will be displayed"
-    
-    sudo tailscale up --hostname="$TAILSCALE_HOSTNAME"
-    
-    # Wait for connection
-    sleep 5
-    
-    if tailscale status &> /dev/null; then
-        print_success "Connected to Tailscale network"
-        tailscale status
-    else
-        print_error "Failed to connect to Tailscale"
-        exit 1
-    fi
-}
-
-# Test connectivity to Kubernetes services
-test_connectivity() {
-    print_info "Testing connectivity to Kubernetes services..."
-    
-    # Test orchestrator
-    if curl -s --connect-timeout 5 http://june-orchestrator:8080/healthz &> /dev/null; then
-        print_success "✓ Orchestrator service reachable"
-    else
-        print_warning "✗ Orchestrator service not reachable (may take a few minutes to propagate)"
-    fi
-    
-    # Test LiveKit
-    if nc -z livekit 7880 2>/dev/null; then
-        print_success "✓ LiveKit service reachable"
-    else
-        print_warning "✗ LiveKit service not reachable (may take a few minutes to propagate)"
-    fi
-}
-
 # Pull and run the container
 deploy_container() {
-    print_info "Deploying june-gpu-multi container..."
+    print_info "Deploying june-gpu-multi container with optimized networking..."
     
     # Stop existing container if running
     if docker ps -a --format 'table {{.Names}}' | grep -q "$CONTAINER_NAME"; then
@@ -124,11 +66,10 @@ deploy_container() {
     
     # Create environment file
     cat > .env << EOF
-# Tailscale service endpoints
-ORCHESTRATOR_URL=http://june-orchestrator:8080
-LIVEKIT_WS_URL=ws://livekit:7880
+# Tailscale authentication (required)
+TAILSCALE_AUTH_KEY=your_headscale_auth_key_here
 
-# Service ports
+# Service configuration
 STT_PORT=8001
 TTS_PORT=8000
 
@@ -136,21 +77,25 @@ TTS_PORT=8000
 WHISPER_DEVICE=cuda
 WHISPER_COMPUTE_TYPE=float16
 
-# LiveKit configuration
+# LiveKit configuration (if using LiveKit)
 ROOM_NAME=ozzu-main
-
-# Add your credentials here:
 # LIVEKIT_API_KEY=your_key_here
 # LIVEKIT_API_SECRET=your_secret_here
 # BEARER_TOKEN=your_token_here
 EOF
     
-    print_warning "Please edit .env file with your actual credentials:"
+    print_warning "Please edit .env file with your actual TAILSCALE_AUTH_KEY and other credentials:"
     print_info "nano .env"
     read -p "Press Enter after editing .env file..."
     
-    # Run container
-    print_info "Starting container..."
+    # Validate required environment variables
+    if ! grep -q "TAILSCALE_AUTH_KEY=.*[^[:space:]]" .env; then
+        print_error "TAILSCALE_AUTH_KEY is required in .env file"
+        exit 1
+    fi
+    
+    # Run container with optimized configuration
+    print_info "Starting container with direct Tailscale networking..."
     docker run -d \
         --name "$CONTAINER_NAME" \
         --gpus all \
@@ -160,13 +105,33 @@ EOF
         --restart unless-stopped \
         "$REPO_NAME/june-gpu-multi:$IMAGE_TAG"
     
-    # Wait for container to start
-    sleep 10
+    # Wait for container to start and connect to Tailscale
+    print_info "Waiting for container startup and Tailscale connection..."
+    sleep 15
     
     # Check container status
     if docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -q "$CONTAINER_NAME.*Up"; then
         print_success "Container started successfully"
-        docker logs --tail 20 "$CONTAINER_NAME"
+        
+        # Show recent logs to verify Tailscale connection
+        print_info "Recent container logs:"
+        docker logs --tail 30 "$CONTAINER_NAME"
+        
+        # Test service health
+        sleep 10
+        print_info "Testing service health..."
+        if curl -s --max-time 5 http://localhost:8000/healthz >/dev/null 2>&1; then
+            print_success "✓ TTS service is healthy"
+        else
+            print_warning "✗ TTS service not ready yet (may need more time)"
+        fi
+        
+        if curl -s --max-time 5 http://localhost:8001/healthz >/dev/null 2>&1; then
+            print_success "✓ STT service is healthy"
+        else
+            print_warning "✗ STT service not ready yet (may need more time)"
+        fi
+        
     else
         print_error "Container failed to start"
         docker logs "$CONTAINER_NAME"
@@ -176,22 +141,21 @@ EOF
 
 # Main deployment function
 main() {
-    print_info "Starting june-gpu-multi deployment with Tailscale integration"
+    print_info "Starting optimized june-gpu-multi deployment"
+    print_info "Tailscale networking is managed internally by the container"
     
     check_vast_instance
-    install_tailscale
-    connect_tailscale
-    test_connectivity
     deploy_container
     
     print_success "Deployment completed!"
     print_info "Container status:"
     docker ps --filter "name=$CONTAINER_NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
     
-    print_info "To check logs: docker logs -f $CONTAINER_NAME"
-    print_info "To test services:"
-    print_info "  - STT: curl http://localhost:8001/healthz"
-    print_info "  - TTS: curl http://localhost:8000/healthz"
+    print_info "Useful commands:"
+    print_info "  - Check logs: docker logs -f $CONTAINER_NAME"
+    print_info "  - Test STT: curl http://localhost:8001/healthz"
+    print_info "  - Test TTS: curl http://localhost:8000/healthz"
+    print_info "  - Check Tailscale status: docker exec $CONTAINER_NAME tailscale status"
 }
 
 # Run main function
