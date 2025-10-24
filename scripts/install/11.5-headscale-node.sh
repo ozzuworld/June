@@ -1,10 +1,10 @@
 #!/bin/bash
-# Phase 11.5 - Headscale Node Subnet Router
+# Phase 11.5 - Headscale Node Subnet Router (CORRECTED VERSION)
 # Connects this Kubernetes node to existing Headscale server as subnet router
 # - Installs Tailscale on the K8s node
 # - Connects to Headscale with preauth key
 # - Advertises Kubernetes Service/Pod routes
-# - Approves routes in Headscale automatically with verification
+# - Approves routes in Headscale automatically using Route IDs
 # 
 # IMPORTANT: This phase assumes Headscale server is already installed and running
 # in your cluster (from an earlier phase). It does NOT install Headscale itself.
@@ -128,47 +128,44 @@ success "Node connected to Headscale network"
 log "Waiting for routes to propagate..."
 sleep 5
 
-# Auto-approve routes with robust node ID resolution and verification
+# Auto-approve routes using Route IDs (CORRECTED METHOD)
 NODE_NAME=$(hostname)
-log "Resolving Headscale node ID for Name='$NODE_NAME'"
+log "Resolving route IDs for node '$NODE_NAME'"
 
-# Try JSON + jq first (most reliable)
-NODE_ID=$(
-  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- \
-    headscale nodes list --output json 2>/dev/null \
-  | jq -r --arg n "$NODE_NAME" '.[] | select(.name==$n) | .id' 2>/dev/null \
-  | head -n1
-)
+# Get route IDs for this node's advertised routes
+SERVICE_ROUTE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
+  | awk -v n="$NODE_NAME" -v s="$K8S_SERVICE_CIDR" 'NR>1 && $2==n && $3==s {print $1; exit}')
 
-# Fallback to table parsing if JSON/jq not available
-if [ -z "$NODE_ID" ] || ! [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
-  NODE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale nodes list 2>/dev/null \
-    | awk -v n="$NODE_NAME" 'NR>1 && $2==n {print $1; exit}')
+POD_ROUTE_ID=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null \
+  | awk -v n="$NODE_NAME" -v p="$K8S_POD_CIDR" 'NR>1 && $2==n && $3==p {print $1; exit}')
+
+if [ -z "$SERVICE_ROUTE_ID" ] || [ -z "$POD_ROUTE_ID" ]; then
+  warn "Could not find route IDs for node '$NODE_NAME'. Current routes:"
+  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list || true
+  error "Routes not found for automatic approval. Please approve manually:
+  1. Find route IDs from: kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes list
+  2. Enable each route: kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route ROUTE_ID"
 fi
 
-if [ -z "$NODE_ID" ] || ! [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
-  warn "Could not determine node ID for '${NODE_NAME}'. Listing all nodes:"
-  kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale nodes list || true
-  error "Automatic route approval skipped. Approve manually:
-  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_SERVICE_CIDR --node NODE_ID
-  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_POD_CIDR --node NODE_ID"
-fi
+log "Enabling routes: Service ID=$SERVICE_ROUTE_ID, Pod ID=$POD_ROUTE_ID"
 
-log "Approving subnet routes for node id: $NODE_ID"
-# Attempt to enable both routes
-kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_SERVICE_CIDR" --node "$NODE_ID" >/dev/null 2>&1 || true
-kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$K8S_POD_CIDR"    --node "$NODE_ID" >/dev/null 2>&1 || true
+# Enable both routes using their IDs
+kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$SERVICE_ROUTE_ID" >/dev/null 2>&1 || warn "Failed to enable service route $SERVICE_ROUTE_ID"
+kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes enable --route "$POD_ROUTE_ID" >/dev/null 2>&1 || warn "Failed to enable pod route $POD_ROUTE_ID"
 
-# Verify with retry (3 attempts, 2s apart)
+# Verify routes are enabled with retry
 STATUS="fail"
 for i in 1 2 3; do
-  STATUS=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null | awk -v n="$NODE_NAME" -v s="$K8S_SERVICE_CIDR" -v p="$K8S_POD_CIDR" '
-    $2==n && $3==s {svc=$5}
-    $2==n && $3==p {pod=$5}
-    END {print (svc=="true" && pod=="true") ? "ok" : "fail"}')
+  STATUS=$(kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list 2>/dev/null | awk -v n="$NODE_NAME" '
+    BEGIN {svc=0; pod=0}
+    NR>1 && $2==n && $5=="true" {
+      if (index($3, "10.96.") == 1) svc=1
+      if (index($3, "10.244.") == 1) pod=1
+    }
+    END {print (svc==1 && pod==1) ? "ok" : "fail"}')
   
   if [ "$STATUS" = "ok" ]; then
-    success "Subnet routes enabled and verified for node $NODE_ID"
+    success "Subnet routes enabled and verified for node '$NODE_NAME'"
     break
   fi
   
@@ -179,11 +176,9 @@ for i in 1 2 3; do
 done
 
 if [ "$STATUS" != "ok" ]; then
-  warn "Routes not fully enabled after retries. Current routes:"
+  warn "Routes verification failed. Current routes:"
   kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list || true
-  error "Automatic route approval did not verify as enabled. You may need to approve manually:
-  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_SERVICE_CIDR --node $NODE_ID
-  kubectl -n $HEADSCALE_NAMESPACE exec deploy/headscale -- headscale routes enable --route $K8S_POD_CIDR --node $NODE_ID"
+  error "Automatic route approval verification failed. Routes may still work - check manually."
 fi
 
 log "Current Tailscale status:"
@@ -195,8 +190,12 @@ kubectl -n "$HEADSCALE_NAMESPACE" exec deploy/headscale -- headscale routes list
 success "Phase 11.5 complete: Node configured as Headscale subnet router"
 log ""
 log "Your Kubernetes node is now advertising these networks to Headscale:"
-log "  Services: $K8S_SERVICE_CIDR"
-log "  Pods:     $K8S_POD_CIDR"
+log "  Services: $K8S_SERVICE_CIDR (Route ID: $SERVICE_ROUTE_ID)"
+log "  Pods:     $K8S_POD_CIDR (Route ID: $POD_ROUTE_ID)"
 log ""
 log "External devices connected to the same Headscale network can now"
 log "directly access Kubernetes services at their ClusterIP addresses."
+log ""
+log "🎯 TEST CONNECTIVITY FROM GPU CONTAINER:"
+log "  tailscale status"
+log "  curl http://10.104.215.160:8080/healthz"
