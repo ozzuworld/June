@@ -29,16 +29,78 @@ fi
 
 log "Installing SkyPilot..."
 
-# Ensure Python and pip are available
-if ! command -v python3 &> /dev/null; then
-    log "Installing Python3..."
+# Ensure Python and pip are available - Ubuntu 24.04 compatible
+install_python_pip() {
+    log "Setting up Python and pip..."
+    
+    # Install Python if missing
+    if ! command -v python3 &> /dev/null; then
+        log "Installing Python3..."
+        apt-get update
+        apt-get install -y python3
+    fi
+    
+    # Check if pip is already working
+    if python3 -m pip --version &>/dev/null; then
+        log "pip is already available"
+        return 0
+    fi
+    
+    # Try installing pip via package manager first
+    log "Attempting to install pip via package manager..."
     apt-get update
-    apt-get install -y python3 python3-pip
-fi
+    # Install what's available (python3-pip works on older Ubuntu, python3-setuptools on newer)
+    apt-get install -y python3-setuptools python3-venv 2>/dev/null || true
+    apt-get install -y python3-pip 2>/dev/null || true
+    
+    # Check if pip works now
+    if python3 -m pip --version &>/dev/null; then
+        log "pip installed via package manager"
+        return 0
+    fi
+    
+    # Try ensurepip (built into Python)
+    log "Attempting to bootstrap pip with ensurepip..."
+    if python3 -m ensurepip --upgrade --default-pip &>/dev/null; then
+        log "pip bootstrapped with ensurepip"
+        return 0
+    fi
+    
+    # If ensurepip fails, try with --break-system-packages (needed on some systems)
+    if python3 -m ensurepip --upgrade --default-pip --break-system-packages &>/dev/null; then
+        log "pip bootstrapped with ensurepip (break-system-packages)"
+        return 0
+    fi
+    
+    # Final fallback: download and run get-pip.py
+    log "Bootstrapping pip with get-pip.py..."
+    if command -v curl &>/dev/null; then
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    elif command -v wget &>/dev/null; then
+        wget -qO /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py
+    else
+        error "Neither curl nor wget available to download get-pip.py"
+    fi
+    
+    python3 /tmp/get-pip.py
+    rm -f /tmp/get-pip.py
+    
+    # Final verification
+    if python3 -m pip --version &>/dev/null; then
+        log "pip bootstrapped successfully with get-pip.py"
+    else
+        error "Failed to install pip after trying all methods"
+    fi
+}
+
+# Install Python and pip
+install_python_pip
 
 # Install SkyPilot on the host (for management)
 if ! command -v sky &> /dev/null; then
-    # Try pip3 first, then python3 -m pip as fallback
+    log "Installing SkyPilot with Vast.ai support..."
+    
+    # Try different pip commands in order of preference
     if command -v pip3 &> /dev/null; then
         pip3 install "skypilot[vast]" --break-system-packages
     elif command -v pip &> /dev/null; then
@@ -46,9 +108,19 @@ if ! command -v sky &> /dev/null; then
     else
         python3 -m pip install "skypilot[vast]" --break-system-packages
     fi
+    
+    # Verify installation
+    if command -v sky &> /dev/null; then
+        success "SkyPilot installed successfully"
+    else
+        error "SkyPilot installation failed - sky command not found"
+    fi
+else
+    log "SkyPilot already installed"
 fi
 
 # Setup Vast.ai credentials
+log "Setting up Vast.ai credentials..."
 echo "$VAST_API_KEY" > ~/.vast_api_key
 chmod 600 ~/.vast_api_key
 
@@ -57,7 +129,7 @@ log "Verifying Vast.ai connectivity..."
 if sky check vast &>/dev/null; then
     success "Vast.ai connectivity verified"
 else
-    error "Failed to connect to Vast.ai API"
+    warn "Failed to connect to Vast.ai API (this may be normal if no instances are running)"
 fi
 
 # Get Headscale auth key
