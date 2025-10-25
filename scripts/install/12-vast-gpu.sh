@@ -149,6 +149,24 @@ if ! kubectl wait --for=condition=available --timeout=180s deployment/virtual-ku
     kubectl logs -n kube-system deployment/virtual-kubelet-vast --tail=50 || true
 fi
 
+# Apply kube-proxy patch to prevent system pods from scheduling to virtual nodes
+log "Applying kube-proxy DaemonSet patch to avoid virtual-kubelet nodes..."
+if kubectl get ds kube-proxy -n kube-system >/dev/null 2>&1; then
+    if [ -f "$ROOT_DIR/tools/virtual-kubelet-vast-python/kube-proxy-patch.yaml" ]; then
+        if kubectl patch daemonset kube-proxy -n kube-system --patch-file "$ROOT_DIR/tools/virtual-kubelet-vast-python/kube-proxy-patch.yaml"; then
+            success "kube-proxy DaemonSet patched to avoid virtual nodes"
+            # Wait for the patch to take effect
+            kubectl rollout status ds/kube-proxy -n kube-system --timeout=60s || true
+        else
+            warn "Failed to patch kube-proxy DaemonSet (not critical)"
+        fi
+    else
+        warn "kube-proxy patch file not found, system pods may schedule to virtual nodes"
+    fi
+else
+    warn "kube-proxy DaemonSet not found, skipping patch"
+fi
+
 # Check for the virtual node
 log "Checking for Vast.ai virtual node..."
 VIRTUAL_NODE=""
