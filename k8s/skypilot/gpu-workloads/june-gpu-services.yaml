@@ -8,8 +8,8 @@ resources:
     - RTX4080:1    # acceptable
     - RTX4070:1    # acceptable
   disk_size: 50
-  memory: 16
-  cpus: 8
+  memory: 16+   # allow larger bundles
+  cpus: 8+      # allow larger bundles
 
 setup: |
   set -e
