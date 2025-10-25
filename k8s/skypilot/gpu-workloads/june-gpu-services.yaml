@@ -2,6 +2,8 @@
 name: june-gpu-services
 
 resources:
+  # Restrict to USA/Canada regions only
+  infra: vast:US,CA
   # Preferred and fallback GPUs in order of preference
   accelerators:
     - RTX3090:1    # preferred
