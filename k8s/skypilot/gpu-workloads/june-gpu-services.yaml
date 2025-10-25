@@ -8,6 +8,8 @@ resources:
     - RTX4080:1    # acceptable
     - RTX4070:1    # acceptable
   disk_size: 50
+  memory: 16
+  cpus: 8
 
 setup: |
   set -e
@@ -112,6 +114,3 @@ envs:
   HEADSCALE_AUTH_KEY: ${HEADSCALE_AUTH_KEY}
   ORCHESTRATOR_URL: ${ORCHESTRATOR_URL}
   LIVEKIT_URL: ${LIVEKIT_URL}
-
-# Removed file_mounts because ~/.sky/june-models may not exist on fresh hosts
-# Re-add when persistent model storage is prepared on the SkyPilot controller
