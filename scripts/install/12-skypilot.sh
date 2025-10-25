@@ -207,6 +207,7 @@ echo "✅ Vast.ai credentials set up"
 if [ -n "$HEADSCALE_KEY" ]; then
     echo "✅ Headscale VPN integration ready"
 fi
+
 echo ""
 echo "📋 Next Steps:"
 echo "  1. Deploy GPU services:"
@@ -218,7 +219,9 @@ echo "     sky status --all"
 echo "  3. View logs:"
 echo "     sky logs june-gpu-services -f"
 
+echo ""
 echo "📚 SkyPilot Documentation:"
 echo "   https://docs.skypilot.co"
 
-a success "Phase 12: SkyPilot installation completed"
+echo ""
+success "Phase 12: SkyPilot installation completed"
