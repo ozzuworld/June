@@ -1,0 +1,14 @@
+# Patch to prevent kube-proxy from scheduling to virtual-kubelet nodes
+# Usage: kubectl patch daemonset kube-proxy -n kube-system --patch-file kube-proxy-patch.yaml
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: type
+                operator: NotIn
+                values:
+                - virtual-kubelet
