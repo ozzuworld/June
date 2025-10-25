@@ -96,34 +96,37 @@ install_python_pip() {
 # Install Python and pip
 install_python_pip
 
+# Helper: choose pip command (avoid 'local' outside functions)
+choose_pip_cmd() {
+    if command -v pip3 &> /dev/null; then
+        echo "pip3"
+    elif command -v pip &> /dev/null; then
+        echo "pip"
+    else
+        echo "python3 -m pip"
+    fi
+}
+
 # Install SkyPilot on the host (for management)
 if ! command -v sky &> /dev/null; then
     log "Installing SkyPilot with Vast.ai support..."
     
-    # Use robust pip installation with system package handling
-    local pip_cmd=""
-    if command -v pip3 &> /dev/null; then
-        pip_cmd="pip3"
-    elif command -v pip &> /dev/null; then
-        pip_cmd="pip"
-    else
-        pip_cmd="python3 -m pip"
-    fi
+    PIP_CMD=$(choose_pip_cmd)
     
     # Install with flags to handle system packages
-    log "Running: $pip_cmd install \"skypilot[vast]\" --break-system-packages --force-reinstall"
+    log "Running: $PIP_CMD install \"skypilot[vast]\" --break-system-packages --force-reinstall"
     
     # Try installation with system package handling
-    if ! $pip_cmd install "skypilot[vast]" --break-system-packages --force-reinstall; then
+    if ! $PIP_CMD install "skypilot[vast]" --break-system-packages --force-reinstall; then
         warn "Standard installation failed, trying alternative approach..."
         
-        # Alternative: Install in user space first, then move to system
+        # Alternative: Install in user space first, then ensure PATH
         log "Attempting user installation first..."
-        $pip_cmd install --user "skypilot[vast]" --force-reinstall || true
+        $PIP_CMD install --user "skypilot[vast]" --force-reinstall || true
         
         # Then try system installation ignoring conflicts
         log "Installing system-wide, ignoring existing packages..."
-        $pip_cmd install "skypilot[vast]" --break-system-packages --ignore-installed --force-reinstall
+        $PIP_CMD install "skypilot[vast]" --break-system-packages --ignore-installed --force-reinstall
     fi
     
     # Verify installation
@@ -208,15 +211,14 @@ echo ""
 echo "📋 Next Steps:"
 echo "  1. Deploy GPU services:"
 echo "     ./scripts/skypilot/deploy-gpu-services.sh"
-echo ""
+
 echo "  2. Check status:"
 echo "     sky status --all"
-echo ""
+
 echo "  3. View logs:"
 echo "     sky logs june-gpu-services -f"
-echo ""
+
 echo "📚 SkyPilot Documentation:"
 echo "   https://docs.skypilot.co"
-echo ""
 
-success "Phase 12: SkyPilot installation completed"
+a success "Phase 12: SkyPilot installation completed"
