@@ -61,10 +61,9 @@ export LIVEKIT_URL="http://livekit-livekit-server.june-services.svc.cluster.loca
 
 # Launch GPU services
 log "Launching GPU services on Vast.ai..."
-# --detach-setup flag no longer exists; use --detach-run for background run, and rely on cache for setup
+# Use modern --infra and rely on YAML accelerators priority (3090, 4080, 4070)
 sky launch k8s/skypilot/gpu-workloads/june-gpu-services.yaml \
-    --cloud vast \
-    --gpus RTX4060:1 \
+    --infra vast \
     --retry-until-up \
     --detach-run
 
