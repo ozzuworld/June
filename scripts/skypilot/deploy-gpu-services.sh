@@ -61,9 +61,10 @@ export LIVEKIT_URL="http://livekit-livekit-server.june-services.svc.cluster.loca
 
 # Launch GPU services with budget cap and auto selection across preferred GPUs
 log "Launching GPU services on Vast.ai (cap $0.20/hr)..."
-# Use cost cap and let SkyPilot auto-select from YAML accelerators
+# Correct syntax uses --cost with --cloud/--infra
 sky launch k8s/skypilot/gpu-workloads/june-gpu-services.yaml \
-    --infra vast:cost=0.20 \
+    --cloud vast \
+    --cost 0.20 \
     --retry-until-up \
     --detach-run "$@"
 
