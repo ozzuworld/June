@@ -1,47 +1,68 @@
-FROM python:3.10-slim
+# Enhanced Dockerfile for Virtual Kubelet Vast.ai Provider
+FROM python:3.11-slim
 
-# Install system dependencies including SSL certificates
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
     openssh-client \
     ca-certificates \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Update CA certificates to fix SSL verification issues
+# Update CA certificates
 RUN update-ca-certificates
+
+# Create application user and directories
+RUN useradd --create-home --shell /bin/bash --uid 1000 vk
+RUN mkdir -p /app /tmp/vk /home/vk/.cache
+RUN chown -R vk:vk /app /tmp/vk /home/vk
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
+# Copy requirements first for better caching
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install vastai CLI with SSL certificate fixes
+# Install vastai CLI with enhanced error handling
 RUN pip install --no-cache-dir vastai || \
     (wget https://raw.githubusercontent.com/vast-ai/vast-python/master/vast.py -O /usr/local/bin/vastai && \
-     chmod +x /usr/local/bin/vastai)
+     chmod +x /usr/local/bin/vastai) && \
+    ln -sf /usr/local/bin/vastai /usr/bin/vastai
 
-# Configure Python to use proper SSL certificates
+# Configure SSL certificates and Python environment
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
 
 # Copy application code
 COPY main.py .
 COPY runtime_templates.py .
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash vk
+# Create necessary directories and fix permissions
+RUN mkdir -p /tmp/vk /home/vk/.kube /home/vk/.vastai
+RUN chown -R vk:vk /app /tmp/vk /home/vk
+
+# Switch to non-root user
 USER vk
 
-# Health check
+# Health check with enhanced validation
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:10255/healthz || exit 1
+    CMD curl -f http://localhost:10255/health || exit 1
 
-# Expose health check port
+# Expose health check and metrics port
 EXPOSE 10255
 
-# Run the Virtual Kubelet
+# Add labels for better container management
+LABEL maintainer="ozzuworld"
+LABEL version="2.0.0"
+LABEL description="Enhanced Virtual Kubelet for Vast.ai GPU instances"
+LABEL org.opencontainers.image.source="https://github.com/ozzuworld/June"
+
+# Run the Enhanced Virtual Kubelet
 CMD ["python", "main.py"]
