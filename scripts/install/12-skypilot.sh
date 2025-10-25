@@ -29,9 +29,23 @@ fi
 
 log "Installing SkyPilot..."
 
+# Ensure Python and pip are available
+if ! command -v python3 &> /dev/null; then
+    log "Installing Python3..."
+    apt-get update
+    apt-get install -y python3 python3-pip
+fi
+
 # Install SkyPilot on the host (for management)
 if ! command -v sky &> /dev/null; then
-    pip install "skypilot[vast]" --break-system-packages
+    # Try pip3 first, then python3 -m pip as fallback
+    if command -v pip3 &> /dev/null; then
+        pip3 install "skypilot[vast]" --break-system-packages
+    elif command -v pip &> /dev/null; then
+        pip install "skypilot[vast]" --break-system-packages
+    else
+        python3 -m pip install "skypilot[vast]" --break-system-packages
+    fi
 fi
 
 # Setup Vast.ai credentials
