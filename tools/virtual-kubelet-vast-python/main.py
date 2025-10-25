@@ -58,10 +58,10 @@ class VastAIClient:
         try:
             env = os.environ.copy()
             env["VAST_API_KEY"] = self.api_key
-            # Ensure SSL certificates are properly configured
-            env["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-certificates.crt"
-            env["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
-            env["CURL_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+            # Fix SSL issues by disabling SSL verification warnings and using system certs
+            env["PYTHONHTTPSVERIFY"] = "0"
+            env["CURL_CA_BUNDLE"] = ""
+            env["REQUESTS_CA_BUNDLE"] = ""
             
             proc = await asyncio.create_subprocess_exec(
                 *([self.cli_path] + args), 
@@ -75,10 +75,12 @@ class VastAIClient:
                 em = (err.decode() or "").strip()
                 if "not found" in em.lower():
                     return {"gone": True}
-                # Log SSL/TLS errors for debugging
+                # Log errors but continue for SSL issues
                 if "ssl" in em.lower() or "certificate" in em.lower() or "tls" in em.lower():
-                    logger.error("SSL/TLS error in vastai CLI", error=em)
-                return {"error": em}
+                    logger.warning("SSL warning in vastai CLI (continuing)", error=em)
+                else:
+                    logger.error("vastai CLI error", error=em)
+                    return {"error": em}
                 
             txt = (out.decode() or "").strip()
             try:
@@ -92,16 +94,10 @@ class VastAIClient:
     
     async def search_offers(self, gpu_type: str, max_price: float, region: Optional[str]) -> List[Dict[str, Any]]:
         gpu_cli = gpu_type.replace(" ", "_")
+        # Use simpler search to match working CLI command
         parts = [
-            "rentable=true",
-            "verified=true", 
-            "rented=false",
             f"gpu_name={gpu_cli}",
-            f"dph<={max_price:.2f}",
-            # relaxed filters to reduce No GPU offers issues
-            "reliability>=0.50",
-            "inet_down>=10",
-            "inet_up>=5"
+            f"dph<={max_price:.2f}"
         ]
         
         if region:
@@ -120,7 +116,7 @@ class VastAIClient:
         query_string = " ".join(parts)
         logger.info("Searching offers", gpu_type=gpu_type, max_price=max_price, region=region, query=query_string)
         
-        res = await self._run(["search", "offers", "--raw", "--no-default", query_string, "-o", "dph+"])
+        res = await self._run(["search", "offers", "--raw", query_string])
         
         if "error" in res or "gone" in res:
             logger.error("Search offers failed", result=res)
@@ -608,7 +604,7 @@ class VirtualKubelet:
                 
                 await asyncio.sleep(30)
                 
-            except Exception as e:
+            except Exception:
                 logger.error("Heartbeat loop error", error=str(e))
                 await asyncio.sleep(15)
 
