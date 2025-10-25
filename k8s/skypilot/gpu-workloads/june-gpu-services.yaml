@@ -3,18 +3,21 @@ name: june-gpu-services
 
 resources:
   accelerators: RTX4090:1  # Preferred GPU
-  cloud: vast
+  # Use new infra selector instead of deprecated 'cloud' field
+  # Cloud selection is now passed via CLI --infra or resolved automatically
   disk_size: 50
   
-  # Fallback GPUs (SkyPilot will try these in order if RTX4060 unavailable)
+  # Fallback GPUs (SkyPilot will try these in order if RTX4090 unavailable)
   any_of:
     - accelerators: RTX4060:1
     - accelerators: RTX3060:1
     - accelerators: RTX4060Ti:1
     - accelerators: RTX3060Ti:1
 
-# Budget constraints
-max_price: 0.20  # USD per hour
+# Budget constraints (use cost field under resources for newer SkyPilot versions)
+# max_price is deprecated in task root; prefer resources.cost or set via --infra
+# Keeping a hint comment only.
+# max_price: 0.20  # USD per hour
 
 # Setup phase (runs once when instance is created)
 setup: |
