@@ -1,0 +1,262 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-gpu-services
+  namespace: june-services
+  labels:
+    app: june-gpu-services
+    component: ai-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-gpu-services
+  template:
+    metadata:
+      labels:
+        app: june-gpu-services
+        component: ai-services
+      annotations:
+        vast.ai/gpu-type: "RTX 3090"
+        vast.ai/price-max: "0.30"
+        vast.ai/region: "US"
+        vast.ai/min-gpu-memory: "12"
+        vast.ai/reliability-score: "0.95"
+    spec:
+      # Pin to virtual-kubelet node for Vast.ai provisioning
+      nodeName: vast-gpu-node-python
+      tolerations:
+      - key: "virtual-kubelet.io/provider"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "vast.ai/gpu-only"
+        operator: "Exists"
+        effect: "NoExecute"
+      - key: "dedicated"
+        operator: "Equal"
+        value: "gpu-workloads"
+        effect: "NoExecute"
+      
+      containers:
+      # TTS Service - Claims the GPU resource
+      - name: june-tts
+        image: ozzuworld/june-tts:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http-tts
+        env:
+        - name: SERVICE_NAME
+          value: "june-tts"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: GPU_MEMORY_FRACTION
+          value: "0.5"  # Use 50% of GPU memory
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:512"
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "8Gi"
+            cpu: "2"
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "4Gi"
+            cpu: "1"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        volumeMounts:
+        - name: models-cache
+          mountPath: /app/models
+        - name: tmp-volume
+          mountPath: /tmp
+
+      # STT Service - Shares the GPU
+      - name: june-stt
+        image: ozzuworld/june-stt:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8001
+          name: http-stt
+        env:
+        - name: SERVICE_NAME
+          value: "june-stt"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"  # Same GPU as TTS
+        - name: GPU_MEMORY_FRACTION
+          value: "0.4"  # Use 40% of GPU memory
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: "max_split_size_mb:256"
+        resources:
+          limits:
+            memory: "6Gi"
+            cpu: "2"
+          requests:
+            memory: "3Gi"
+            cpu: "1"
+          # Note: No GPU request - shares with TTS container
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8001
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        volumeMounts:
+        - name: models-cache
+          mountPath: /app/models
+        - name: tmp-volume
+          mountPath: /tmp
+
+      # Tailscale Sidecar for secure networking
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        imagePullPolicy: Always
+        securityContext:
+          runAsUser: 0
+          capabilities:
+            add:
+            - NET_ADMIN
+        env:
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: TS_AUTHKEY
+        - name: TS_STATE_DIR
+          value: /var/lib/tailscale
+        - name: TS_HOSTNAME
+          value: june-gpu-services
+        - name: TS_EXTRA_ARGS
+          value: "--accept-dns=false --ssh=false --tun=userspace-networking --reset"
+        - name: TS_SERVE_CONFIG
+          value: |
+            {
+              "TCP": {
+                "8000": {"HTTPS": true},
+                "8001": {"HTTPS": true}
+              }
+            }
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+        volumeMounts:
+        - name: ts-state
+          mountPath: /var/lib/tailscale
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "tailscale status --json | grep -q '\"BackendState\":\"Running\"'"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+
+      volumes:
+      - name: models-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: tmp-volume
+        emptyDir:
+          sizeLimit: 2Gi
+      - name: ts-state
+        emptyDir: {}
+
+      # Restart policy and scheduling
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+      
+      # Node selector as backup (nodeName takes precedence)
+      nodeSelector:
+        type: virtual-kubelet
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-tts
+  namespace: june-services
+  labels:
+    app: june-gpu-services
+    service: tts
+spec:
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-stt
+  namespace: june-services
+  labels:
+    app: june-gpu-services
+    service: stt
+spec:
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: http
+    port: 8001
+    targetPort: 8001
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-gpu-services-headless
+  namespace: june-services
+  labels:
+    app: june-gpu-services
+spec:
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: tts
+    port: 8000
+    targetPort: 8000
+  - name: stt
+    port: 8001
+    targetPort: 8001
+  clusterIP: None
+  type: ClusterIP

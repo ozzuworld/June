@@ -26,8 +26,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install vastai CLI with enhanced error handling
-RUN pip install --no-cache-dir vastai || \
+# Install vastai CLI with enhanced error handling and fix for system conflicts
+RUN pip install --no-cache-dir vastai --break-system-packages --force-reinstall --no-deps || \
     (wget https://raw.githubusercontent.com/vast-ai/vast-python/master/vast.py -O /usr/local/bin/vastai && \
      chmod +x /usr/local/bin/vastai) && \
     ln -sf /usr/local/bin/vastai /usr/bin/vastai
@@ -60,8 +60,8 @@ EXPOSE 10255
 
 # Add labels for better container management
 LABEL maintainer="ozzuworld"
-LABEL version="2.0.0"
-LABEL description="Enhanced Virtual Kubelet for Vast.ai GPU instances"
+LABEL version="2.1.0"
+LABEL description="Enhanced Virtual Kubelet for Vast.ai GPU instances with fixed vastai CLI"
 LABEL org.opencontainers.image.source="https://github.com/ozzuworld/June"
 
 # Run the Enhanced Virtual Kubelet

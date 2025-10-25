@@ -58,6 +58,10 @@ class VastAIClient:
         try:
             env = os.environ.copy()
             env["VAST_API_KEY"] = self.api_key
+            # Ensure SSL certificates are properly configured
+            env["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-certificates.crt"
+            env["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+            env["CURL_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
             
             proc = await asyncio.create_subprocess_exec(
                 *([self.cli_path] + args), 
@@ -71,6 +75,9 @@ class VastAIClient:
                 em = (err.decode() or "").strip()
                 if "not found" in em.lower():
                     return {"gone": True}
+                # Log SSL/TLS errors for debugging
+                if "ssl" in em.lower() or "certificate" in em.lower() or "tls" in em.lower():
+                    logger.error("SSL/TLS error in vastai CLI", error=em)
                 return {"error": em}
                 
             txt = (out.decode() or "").strip()
@@ -80,6 +87,7 @@ class VastAIClient:
                 return {"data": txt}
                 
         except Exception as e:
+            logger.error("Error running vastai CLI", error=str(e))
             return {"error": str(e)}
     
     async def search_offers(self, gpu_type: str, max_price: float, region: Optional[str]) -> List[Dict[str, Any]]:
@@ -109,13 +117,19 @@ class VastAIClient:
             elif "=" in region: 
                 parts.append(region)
                 
-        res = await self._run(["search", "offers", "--raw", "--no-default", " ".join(parts), "-o", "dph+"])
+        query_string = " ".join(parts)
+        logger.info("Searching offers", gpu_type=gpu_type, max_price=max_price, region=region, query=query_string)
+        
+        res = await self._run(["search", "offers", "--raw", "--no-default", query_string, "-o", "dph+"])
         
         if "error" in res or "gone" in res:
+            logger.error("Search offers failed", result=res)
             return []
             
         data = res.get("data", [])
-        return data if isinstance(data, list) else []
+        offers = data if isinstance(data, list) else []
+        logger.info("Found offers", count=len(offers))
+        return offers
     
     async def buy_instance(self, ask_id: int, ann: Dict[str,str]) -> Optional[Dict[str, Any]]:
         image = ann.get("vast.ai/image", "ozzuworld/june-multi-gpu:latest")
@@ -144,6 +158,7 @@ class VastAIClient:
         res = await self._run(args)
         
         if "error" in res:
+            logger.error("Failed to create instance", error=res["error"])
             return None
             
         data = res.get("data")
@@ -420,12 +435,12 @@ class VirtualKubelet:
         """Parse pod annotations for Vast.ai configuration"""
         ann = pod.metadata.annotations or {}
         
-        gpu_primary = ann.get("vast.ai/gpu-type", "RTX 4060")
+        gpu_primary = ann.get("vast.ai/gpu-type", "RTX 3060")
         gpu_fallbacks = ann.get("vast.ai/gpu-fallbacks", "")
         gpu_list = [gpu_primary] + ([g.strip() for g in gpu_fallbacks.split(",")] 
                                    if gpu_fallbacks else [])
         
-        price_max = float(ann.get("vast.ai/price-max", "0.20"))
+        price_max = float(ann.get("vast.ai/price-max", "0.50"))
         region = ann.get("vast.ai/region", "US")
         
         return gpu_list, price_max, region
