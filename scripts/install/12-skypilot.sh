@@ -82,7 +82,7 @@ install_python_pip() {
         error "Neither curl nor wget available to download get-pip.py"
     fi
     
-    python3 /tmp/get-pip.py
+    python3 /tmp/get-pip.py --break-system-packages
     rm -f /tmp/get-pip.py
     
     # Final verification
@@ -100,20 +100,45 @@ install_python_pip
 if ! command -v sky &> /dev/null; then
     log "Installing SkyPilot with Vast.ai support..."
     
-    # Try different pip commands in order of preference
+    # Use robust pip installation with system package handling
+    local pip_cmd=""
     if command -v pip3 &> /dev/null; then
-        pip3 install "skypilot[vast]" --break-system-packages
+        pip_cmd="pip3"
     elif command -v pip &> /dev/null; then
-        pip install "skypilot[vast]" --break-system-packages
+        pip_cmd="pip"
     else
-        python3 -m pip install "skypilot[vast]" --break-system-packages
+        pip_cmd="python3 -m pip"
+    fi
+    
+    # Install with flags to handle system packages
+    log "Running: $pip_cmd install \"skypilot[vast]\" --break-system-packages --force-reinstall"
+    
+    # Try installation with system package handling
+    if ! $pip_cmd install "skypilot[vast]" --break-system-packages --force-reinstall; then
+        warn "Standard installation failed, trying alternative approach..."
+        
+        # Alternative: Install in user space first, then move to system
+        log "Attempting user installation first..."
+        $pip_cmd install --user "skypilot[vast]" --force-reinstall || true
+        
+        # Then try system installation ignoring conflicts
+        log "Installing system-wide, ignoring existing packages..."
+        $pip_cmd install "skypilot[vast]" --break-system-packages --ignore-installed --force-reinstall
     fi
     
     # Verify installation
     if command -v sky &> /dev/null; then
         success "SkyPilot installed successfully"
     else
-        error "SkyPilot installation failed - sky command not found"
+        # Check if it's in user bin
+        if [ -f "$HOME/.local/bin/sky" ]; then
+            log "SkyPilot installed in user directory, adding to PATH..."
+            export PATH="$HOME/.local/bin:$PATH"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+            success "SkyPilot installed successfully (user installation)"
+        else
+            error "SkyPilot installation failed - sky command not found"
+        fi
     fi
 else
     log "SkyPilot already installed"
@@ -126,6 +151,7 @@ chmod 600 ~/.vast_api_key
 
 # Verify Vast.ai connectivity
 log "Verifying Vast.ai connectivity..."
+export PATH="$HOME/.local/bin:$PATH"  # Ensure sky is in PATH
 if sky check vast &>/dev/null; then
     success "Vast.ai connectivity verified"
 else
