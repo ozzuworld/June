@@ -144,7 +144,7 @@ PHASES=(
     "10-final-setup"
     "11-headscale"          # VPN control plane server
     "11.5-headscale-node"   # Connect this node to Headscale with subnet routing
-    "12-vast-gpu"           # Remote GPU provider
+    "12-skypilot"           # Remote GPU provider
 )
 
 # Function to run a phase

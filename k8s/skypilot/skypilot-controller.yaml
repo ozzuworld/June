@@ -1,0 +1,130 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skypilot-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skypilot-controller
+  namespace: skypilot-system
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: skypilot-credentials
+  namespace: skypilot-system
+type: Opaque
+stringData:
+  vast-api-key: "YOUR_VAST_API_KEY"  # Replace with your key
+  headscale-auth-key: "YOUR_HEADSCALE_KEY"  # From headscale namespace
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skypilot-config
+  namespace: skypilot-system
+data:
+  config.yaml: |
+    # SkyPilot configuration
+    allowed_clouds:
+      - vast
+    
+    vast:
+      # Prefer US regions for low latency
+      regions:
+        - US-CA
+        - US-TX
+        - US-NY
+      
+      # GPU preferences (ordered by preference)
+      gpu_preferences:
+        - RTX4060
+        - RTX3060
+        - RTX4060Ti
+        - RTX3060Ti
+      
+      # Budget constraints
+      max_price_per_hour: 0.50
+      
+      # Quality requirements
+      min_reliability: 0.85
+      min_download_speed: 50
+      min_upload_speed: 50
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skypilot-controller
+  namespace: skypilot-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skypilot-controller
+  template:
+    metadata:
+      labels:
+        app: skypilot-controller
+    spec:
+      serviceAccountName: skypilot-controller
+      containers:
+      - name: controller
+        image: berkeleyskypilot/skypilot:latest
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            # Configure Vast.ai credentials
+            mkdir -p ~/.sky
+            echo "$VAST_API_KEY" > ~/.vast_api_key
+            
+            # Setup SkyPilot
+            sky check vast
+            
+            # Start controller loop
+            python /app/controller.py
+        env:
+        - name: VAST_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: skypilot-credentials
+              key: vast-api-key
+        - name: HEADSCALE_AUTH_KEY
+          valueFrom:
+            secretKeyRef:
+              name: skypilot-credentials
+              key: headscale-auth-key
+        - name: ORCHESTRATOR_URL
+          value: "http://june-orchestrator.june-services.svc.cluster.local:8080"
+        - name: LIVEKIT_URL
+          value: "http://livekit-livekit-server.june-services.svc.cluster.local:7880"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/skypilot
+        - name: workdir
+          mountPath: /sky-workdir
+      volumes:
+      - name: config
+        configMap:
+          name: skypilot-config
+      - name: workdir
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skypilot-controller
+  namespace: skypilot-system
+spec:
+  selector:
+    app: skypilot-controller
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
