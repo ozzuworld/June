@@ -5,6 +5,16 @@ Virtual Kubelet Provider for Vast.ai
 - Single instance limit for development
 - Uses VAST_API_KEY from environment
 """
+# Python 3.10+ compatibility shim for libraries importing collections.Callable
+try:
+    from collections.abc import Callable as _VKCallable
+    import collections as _VKCollections
+    if not hasattr(_VKCollections, "Callable"):
+        _VKCollections.Callable = _VKCallable
+except Exception:
+    # Best-effort; safe no-op if not needed
+    pass
+
 import asyncio
 import json
 import os
@@ -80,9 +90,10 @@ class VastAIClient:
             "rented=false",
             f"gpu_name={gpu_cli}",
             f"dph<={max_price:.2f}",
-            "reliability>=0.70",
-            "inet_down>=50",
-            "inet_up>=20"
+            # relaxed filters to reduce No GPU offers issues
+            "reliability>=0.50",
+            "inet_down>=10",
+            "inet_up>=5"
         ]
         
         if region:
@@ -448,7 +459,7 @@ class VirtualKubelet:
                     logger.error("Error checking node", error=str(e))
                     return
             
-            # Create new node
+            # Create new node with stronger taints to keep DaemonSets off
             node = k8s_client.V1Node(
                 metadata=k8s_client.V1ObjectMeta(
                     name=self.node_name,
@@ -468,6 +479,11 @@ class VirtualKubelet:
                             key="virtual-kubelet.io/provider",
                             value="vast-ai",
                             effect="NoSchedule"
+                        ),
+                        k8s_client.V1Taint(
+                            key="vast.ai/gpu-only",
+                            value="true",
+                            effect="NoExecute"
                         )
                     ]
                 ),
@@ -563,12 +579,14 @@ class VirtualKubelet:
                 try:
                     node = self.v1.read_node(name=self.node_name)
                     
-                    # Update Ready condition
-                    for condition in node.status.conditions:
-                        if condition.type == "Ready":
-                            condition.last_heartbeat_time = self._now()
+                    # Update Ready condition heartbeat timestamp
+                    if node.status and node.status.conditions:
+                        for condition in node.status.conditions:
+                            if condition.type == "Ready":
+                                condition.last_heartbeat_time = self._now()
                     
                     self.v1.patch_node_status(name=self.node_name, body=node)
+                    logger.debug("Heartbeat sent", node=self.node_name)
                     
                 except Exception as e:
                     logger.error("Heartbeat failed", error=str(e))
