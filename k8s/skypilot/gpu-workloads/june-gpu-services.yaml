@@ -113,7 +113,5 @@ envs:
   ORCHESTRATOR_URL: ${ORCHESTRATOR_URL}
   LIVEKIT_URL: ${LIVEKIT_URL}
 
-file_mounts:
-  /sky-models:
-    source: ~/.sky/june-models
-    mode: MOUNT
+# Removed file_mounts because ~/.sky/june-models may not exist on fresh hosts
+# Re-add when persistent model storage is prepared on the SkyPilot controller
