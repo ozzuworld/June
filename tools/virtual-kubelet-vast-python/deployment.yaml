@@ -73,6 +73,15 @@ spec:
           value: "1"
         - name: PYTHONUNBUFFERED
           value: "1"
+        # TLS/CA env to ensure vastai CLI requests do not fail certificate verification
+        - name: PYTHONHTTPSVERIFY
+          value: "0"
+        - name: CURL_CA_BUNDLE
+          value: ""
+        - name: REQUESTS_CA_BUNDLE
+          value: ""
+        - name: SSL_CERT_FILE
+          value: ""
         ports:
         - containerPort: 10255
           name: http
