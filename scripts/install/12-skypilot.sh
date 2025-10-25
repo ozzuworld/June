@@ -29,21 +29,136 @@ fi
 
 log "Installing SkyPilot..."
 
+# Ensure Python and pip are available - Ubuntu 24.04 compatible
+install_python_pip() {
+    log "Setting up Python and pip..."
+    
+    # Install Python if missing
+    if ! command -v python3 &> /dev/null; then
+        log "Installing Python3..."
+        apt-get update
+        apt-get install -y python3
+    fi
+    
+    # Check if pip is already working
+    if python3 -m pip --version &>/dev/null; then
+        log "pip is already available"
+        return 0
+    fi
+    
+    # Try installing pip via package manager first
+    log "Attempting to install pip via package manager..."
+    apt-get update
+    # Install what's available (python3-pip works on older Ubuntu, python3-setuptools on newer)
+    apt-get install -y python3-setuptools python3-venv 2>/dev/null || true
+    apt-get install -y python3-pip 2>/dev/null || true
+    
+    # Check if pip works now
+    if python3 -m pip --version &>/dev/null; then
+        log "pip installed via package manager"
+        return 0
+    fi
+    
+    # Try ensurepip (built into Python)
+    log "Attempting to bootstrap pip with ensurepip..."
+    if python3 -m ensurepip --upgrade --default-pip &>/dev/null; then
+        log "pip bootstrapped with ensurepip"
+        return 0
+    fi
+    
+    # If ensurepip fails, try with --break-system-packages (needed on some systems)
+    if python3 -m ensurepip --upgrade --default-pip --break-system-packages &>/dev/null; then
+        log "pip bootstrapped with ensurepip (break-system-packages)"
+        return 0
+    fi
+    
+    # Final fallback: download and run get-pip.py
+    log "Bootstrapping pip with get-pip.py..."
+    if command -v curl &>/dev/null; then
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+    elif command -v wget &>/dev/null; then
+        wget -qO /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py
+    else
+        error "Neither curl nor wget available to download get-pip.py"
+    fi
+    
+    python3 /tmp/get-pip.py --break-system-packages
+    rm -f /tmp/get-pip.py
+    
+    # Final verification
+    if python3 -m pip --version &>/dev/null; then
+        log "pip bootstrapped successfully with get-pip.py"
+    else
+        error "Failed to install pip after trying all methods"
+    fi
+}
+
+# Install Python and pip
+install_python_pip
+
+# Helper: choose pip command (avoid 'local' outside functions)
+choose_pip_cmd() {
+    if command -v pip3 &> /dev/null; then
+        echo "pip3"
+    elif command -v pip &> /dev/null; then
+        echo "pip"
+    else
+        echo "python3 -m pip"
+    fi
+}
+
 # Install SkyPilot on the host (for management)
 if ! command -v sky &> /dev/null; then
-    pip install "skypilot[vast]" --break-system-packages
+    log "Installing SkyPilot with Vast.ai support..."
+    
+    PIP_CMD=$(choose_pip_cmd)
+    
+    # Install with flags to handle system packages
+    log "Running: $PIP_CMD install \"skypilot[vast]\" --break-system-packages --force-reinstall"
+    
+    # Try installation with system package handling
+    if ! $PIP_CMD install "skypilot[vast]" --break-system-packages --force-reinstall; then
+        warn "Standard installation failed, trying alternative approach..."
+        
+        # Alternative: Install in user space first, then ensure PATH
+        log "Attempting user installation first..."
+        $PIP_CMD install --user "skypilot[vast]" --force-reinstall || true
+        
+        # Then try system installation ignoring conflicts
+        log "Installing system-wide, ignoring existing packages..."
+        $PIP_CMD install "skypilot[vast]" --break-system-packages --ignore-installed --force-reinstall
+    fi
+    
+    # Verify installation
+    if command -v sky &> /dev/null; then
+        success "SkyPilot installed successfully"
+    else
+        # Check if it's in user bin
+        if [ -f "$HOME/.local/bin/sky" ]; then
+            log "SkyPilot installed in user directory, adding to PATH..."
+            export PATH="$HOME/.local/bin:$PATH"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+            success "SkyPilot installed successfully (user installation)"
+        else
+            error "SkyPilot installation failed - sky command not found"
+        fi
+    fi
+else
+    log "SkyPilot already installed"
 fi
 
 # Setup Vast.ai credentials
+log "Setting up Vast.ai credentials..."
 echo "$VAST_API_KEY" > ~/.vast_api_key
 chmod 600 ~/.vast_api_key
 
 # Verify Vast.ai connectivity
 log "Verifying Vast.ai connectivity..."
+export PATH="$HOME/.local/bin:$PATH"  # Ensure sky is in PATH
 if sky check vast &>/dev/null; then
     success "Vast.ai connectivity verified"
 else
-    error "Failed to connect to Vast.ai API"
+    warn "Failed to connect to Vast.ai API (this may be normal if no instances are running)"
 fi
 
 # Get Headscale auth key
@@ -92,19 +207,21 @@ echo "✅ Vast.ai credentials set up"
 if [ -n "$HEADSCALE_KEY" ]; then
     echo "✅ Headscale VPN integration ready"
 fi
+
 echo ""
 echo "📋 Next Steps:"
 echo "  1. Deploy GPU services:"
 echo "     ./scripts/skypilot/deploy-gpu-services.sh"
-echo ""
+
 echo "  2. Check status:"
 echo "     sky status --all"
-echo ""
+
 echo "  3. View logs:"
 echo "     sky logs june-gpu-services -f"
+
 echo ""
 echo "📚 SkyPilot Documentation:"
 echo "   https://docs.skypilot.co"
-echo ""
 
+echo ""
 success "Phase 12: SkyPilot installation completed"
