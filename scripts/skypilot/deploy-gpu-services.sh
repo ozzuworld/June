@@ -59,13 +59,13 @@ fi
 export ORCHESTRATOR_URL="http://june-orchestrator.june-services.svc.cluster.local:8080"
 export LIVEKIT_URL="http://livekit-livekit-server.june-services.svc.cluster.local:7880"
 
-# Launch GPU services
-log "Launching GPU services on Vast.ai..."
-# Use modern --infra and rely on YAML accelerators priority (3090, 4080, 4070)
+# Launch GPU services with budget cap and auto selection across preferred GPUs
+log "Launching GPU services on Vast.ai (cap $0.20/hr)..."
+# Use cost cap and let SkyPilot auto-select from YAML accelerators
 sky launch k8s/skypilot/gpu-workloads/june-gpu-services.yaml \
-    --infra vast \
+    --infra vast:cost=0.20 \
     --retry-until-up \
-    --detach-run
+    --detach-run "$@"
 
 success "GPU services deployment initiated"
 
