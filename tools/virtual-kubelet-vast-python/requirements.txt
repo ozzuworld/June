@@ -1,7 +1,8 @@
 # Core dependencies for Virtual Kubelet Vast.ai Provider
-aiohttp>=3.9.0
-kubernetes>=27.0.0
+aiohttp>=3.9.0,<4.0.0
+kubernetes>=29.0.0
 structlog>=23.0.0
+vastai>=0.2.0
 
 # Optional SSH connectivity for debugging
 asyncssh>=2.14.0
