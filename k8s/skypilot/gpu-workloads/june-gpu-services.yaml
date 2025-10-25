@@ -2,58 +2,33 @@
 name: june-gpu-services
 
 resources:
-  accelerators: RTX4090:1  # Preferred GPU
-  # Use new infra selector instead of deprecated 'cloud' field
-  # Cloud selection is now passed via CLI --infra or resolved automatically
+  # Preferred and fallback GPUs in order of preference
+  accelerators:
+    - RTX3090:1    # preferred
+    - RTX4080:1    # acceptable
+    - RTX4070:1    # acceptable
   disk_size: 50
-  
-  # Fallback GPUs (SkyPilot will try these in order if RTX4090 unavailable)
-  any_of:
-    - accelerators: RTX4060:1
-    - accelerators: RTX3060:1
-    - accelerators: RTX4060Ti:1
-    - accelerators: RTX3060Ti:1
 
-# Budget constraints (use cost field under resources for newer SkyPilot versions)
-# max_price is deprecated in task root; prefer resources.cost or set via --infra
-# Keeping a hint comment only.
-# max_price: 0.20  # USD per hour
-
-# Setup phase (runs once when instance is created)
 setup: |
   set -e
-  
-  # Install Tailscale
   echo "📦 Installing Tailscale..."
   curl -fsSL https://tailscale.com/install.sh | sh
-  
-  # Connect to Headscale VPN
   echo "🔗 Connecting to Headscale VPN..."
   tailscale up --authkey=${HEADSCALE_AUTH_KEY} \
     --login-server=https://headscale.ozzu.world \
     --hostname=skypilot-gpu-${SKYPILOT_TASK_ID}
-  
-  # Install Docker Compose if needed
   if ! command -v docker-compose &> /dev/null; then
     echo "📦 Installing Docker Compose..."
-    curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/bin/docker-compose
+    curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
   fi
-  
-  # Verify GPU access
   nvidia-smi
-  
   echo "✅ Setup complete"
 
-# Run phase (your actual GPU services)
 run: |
   set -e
-  
-  # Create compose file for split services
   cat > docker-compose.yaml << 'EOF'
   version: '3.8'
-  
   services:
     june-tts:
       image: ozzuworld/june-tts:latest
@@ -81,7 +56,7 @@ run: |
         interval: 30s
         timeout: 10s
         retries: 3
-    
+
     june-stt:
       image: ozzuworld/june-stt:latest
       container_name: june-stt
@@ -110,44 +85,34 @@ run: |
         interval: 30s
         timeout: 10s
         retries: 3
-  
+
   volumes:
     tts-models:
     tts-cache:
     stt-models:
     stt-cache:
   EOF
-  
-  # Start services
+
   echo "🚀 Starting GPU services..."
   docker-compose up -d
-  
-  # Wait for services to be healthy
   echo "⏳ Waiting for services to be healthy..."
   for i in {1..30}; do
-    if curl -sf http://localhost:8000/healthz && \
-       curl -sf http://localhost:8001/healthz; then
+    if curl -sf http://localhost:8000/healthz && curl -sf http://localhost:8001/healthz; then
       echo "✅ All services healthy"
       break
     fi
     echo "Waiting... ($i/30)"
     sleep 10
   done
-  
-  # Show Tailscale status
   echo "📊 Tailscale Status:"
   tailscale status
-  
-  # Keep container running and show logs
   docker-compose logs -f
 
-# Environment variables (injected from secrets)
 envs:
   HEADSCALE_AUTH_KEY: ${HEADSCALE_AUTH_KEY}
   ORCHESTRATOR_URL: ${ORCHESTRATOR_URL}
   LIVEKIT_URL: ${LIVEKIT_URL}
 
-# File mounts (optional - for persistent model storage)
 file_mounts:
   /sky-models:
     source: ~/.sky/june-models
