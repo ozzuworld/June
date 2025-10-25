@@ -6,7 +6,7 @@ resources:
   accelerators:
     - RTX3090:1    # preferred
     - RTX4080:1    # acceptable
-    - RTX4070:1    # acceptable
+    - RTX4070S:1   # acceptable
   disk_size: 50
   memory: 16+   # allow larger bundles
   cpus: 8+      # allow larger bundles
