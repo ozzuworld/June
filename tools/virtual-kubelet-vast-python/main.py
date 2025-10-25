@@ -105,7 +105,7 @@ if ! docker compose version >/dev/null 2>&1; then
     chmod +x /usr/local/bin/docker-compose
     ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
   fi
-fi
+end
 
 # Write compose file
 mkdir -p /root/june
@@ -194,7 +194,9 @@ class VastAIClient:
             elif r in ("canada","ca"): parts.append("geolocation=CA")
             elif r in ("europe","eu"): parts.append("geolocation in [DE,FR,GB,IT,ES]")
             elif "=" in region: parts.append(region)
-        res = await self._run(["search","offers","--raw","--no-default"," ".join(parts),"-o","dph+"])
+        # IMPORTANT: Pass query tokens separately, not as one string
+        query_parts = " ".join(parts).split()
+        res = await self._run(["search","offers","--raw"] + query_parts + ["-o","dph+"])
         if "error" in res: return []
         data = res.get("data", [])
         return data if isinstance(data, list) else []
@@ -398,7 +400,7 @@ class VirtualKubelet:
         instance = self.pod_instances.get(pod_name)
         if not instance: return
         vast = VastAIClient(self.api_key)
-        await vast._run(["destroy","instance",str(instance["id"])])
+        await vast._run(["destroy","instance",str(instance["id")])
         self.pod_instances.pop(pod_name, None)
         self.instance_keys.pop(desired_key, None)
         self.recreate_backoff[pod_name] = 0
