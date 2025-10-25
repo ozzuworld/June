@@ -29,6 +29,8 @@ install_prerequisites() {
         "openssl"
         "unzip"
         "software-properties-common"
+        "python3"
+        "python3-pip"
     )
     
     # Check which packages are missing
@@ -71,6 +73,12 @@ install_prerequisites() {
     verify_command "git" "git is required for repository operations"
     verify_command "jq" "jq is required for JSON processing"
     verify_command "openssl" "openssl is required for certificate operations"
+    verify_command "python3" "python3 is required for Python-based tools"
+    
+    # Verify pip is available (could be pip3 or python3 -m pip)
+    if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null && ! python3 -m pip --version &> /dev/null; then
+        error "pip is not available - Python package installation will fail"
+    fi
     
     success "Prerequisites installed"
     
@@ -80,6 +88,12 @@ install_prerequisites() {
     log "  git: $(git --version)"
     log "  jq: $(jq --version)"
     log "  openssl: $(openssl version)"
+    log "  python3: $(python3 --version)"
+    if command -v pip3 &> /dev/null; then
+        log "  pip3: $(pip3 --version)"
+    elif command -v pip &> /dev/null; then
+        log "  pip: $(pip --version)"
+    fi
 }
 
 # Main execution
