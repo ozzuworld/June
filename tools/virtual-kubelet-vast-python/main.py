@@ -116,7 +116,9 @@ class VastAIClient:
         query_string = " ".join(parts)
         logger.info("Searching offers", gpu_type=gpu_type, max_price=max_price, region=region, query=query_string)
         
-        res = await self._run(["search", "offers", "--raw", query_string])
+        # FIX: Split query into separate arguments to match manual CLI usage
+        query_parts = query_string.split()
+        res = await self._run(["search", "offers", "--raw"] + query_parts)
         
         if "error" in res or "gone" in res:
             logger.error("Search offers failed", result=res)
