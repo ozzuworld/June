@@ -75,53 +75,36 @@ for service in "${SERVICES[@]}"; do
     else
         print_warning "User $service may already exist"
     fi
-done
+endone
 
 # Step 2: Generate auth keys
 echo -e "\n${BLUE}🔑 Generating authentication keys...${NC}"
 
-# Function to generate a single auth key with better error handling
-generate_auth_key() {
-    local service=$1
-    echo "Generating key for: $service"
-    
-    # Try to generate the key and capture full output
-    local output
-    output=$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1)
-    
-    # Look for the key in the output using multiple patterns
-    local key
-    key=$(echo "$output" | grep -o 'tskey-auth-[a-zA-Z0-9-]*' | head -1)
-    
-    if [ -z "$key" ]; then
-        # Try alternative pattern
-        key=$(echo "$output" | grep -o 'Key: tskey-auth-[a-zA-Z0-9-]*' | cut -d' ' -f2 | head -1)
-    fi
-    
-    if [ -z "$key" ]; then
-        # Try yet another pattern
-        key=$(echo "$output" | grep -E 'tskey-[a-zA-Z0-9-]+' | head -1)
-    fi
-    
-    if [ -n "$key" ]; then
-        echo "$key"
-        return 0
-    else
-        print_error "Failed to extract key from output:"
-        echo "$output" >&2
-        return 1
-    fi
-}
-
 AUTH_KEYS=""
 for service in "${SERVICES[@]}"; do
-    if KEY=$(generate_auth_key "$service"); then
+    echo "Generating key for: $service"
+    OUTPUT="$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1 || true)"
+
+    # Prefer tskey-* formats
+    KEY="$(echo "$OUTPUT" | grep -oE 'tskey-[a-zA-Z0-9-]+' | head -n1)"
+
+    # Fallback to 64-char hex (observed on your output)
+    if [ -z "$KEY" ]; then
+        KEY="$(echo "$OUTPUT" | grep -oE '^[0-9a-fA-F]{64}$' | head -n1)"
+    fi
+
+    # Last-resort: first non-empty non-log line
+    if [ -z "$KEY" ]; then
+        KEY="$(echo "$OUTPUT" | grep -vE '^(\s*|\[|[A-Z]{2,}|[0-9:-]{6,}|TRC|DBG|INF)' | head -n1 | tr -d '\r' | xargs)"
+    fi
+
+    if [ -n "$KEY" ]; then
         AUTH_KEYS="${AUTH_KEYS}  ${service}-authkey: \"${KEY}\"\n"
         print_status "Generated key for: $service"
     else
-        print_error "Failed to generate key for: $service"
-        echo "Please generate the key manually using:"
-        echo "  kubectl -n $HEADSCALE_NAMESPACE exec -it deployment/headscale -c headscale -- headscale --user $service preauthkeys create --reusable --expiration 180d"
+        print_error "Failed to parse key for: $service"
+        echo "Headscale output was:"
+        echo "$OUTPUT"
         exit 1
     fi
 done
@@ -154,7 +137,7 @@ if [ -f "k8s/june-services/deployments/june-orchestrator-headscale.yaml" ]; then
     kubectl apply -f k8s/june-services/deployments/june-orchestrator-headscale.yaml
     print_status "Deployed June Orchestrator"
 else
-    print_warning "june-orchestrator-headscale.yaml not found, skipping"
+    print_warning "k8s/june-services/deployments/june-orchestrator-headscale.yaml not found, skipping"
 fi
 
 # Deploy June IDP
@@ -162,7 +145,7 @@ if [ -f "k8s/june-services/deployments/june-idp-headscale.yaml" ]; then
     kubectl apply -f k8s/june-services/deployments/june-idp-headscale.yaml
     print_status "Deployed June IDP"
 else
-    print_warning "june-idp-headscale.yaml not found, skipping"
+    print_warning "k8s/june-services/deployments/june-idp-headscale.yaml not found, skipping"
 fi
 
 # Deploy GPU Services (updated existing file)
@@ -178,7 +161,7 @@ if [ -f "k8s/livekit/livekit-values-headscale.yaml" ] && command -v helm &> /dev
         print_warning "LiveKit Helm release not found, please deploy manually"
     fi
 else
-    print_warning "Helm not available or livekit-values-headscale.yaml not found, skipping LiveKit"
+    print_warning "Helm not available or k8s/livekit/livekit-values-headscale.yaml not found, skipping LiveKit"
 fi
 
 # Step 5: Wait for deployments
