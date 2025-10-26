@@ -17,8 +17,8 @@ NAMESPACE="june-services"
 HEADSCALE_NAMESPACE="headscale"
 HEADSCALE_SERVER="https://headscale.ozzu.world"
 
-# Services to deploy
-SERVICES=("june-orchestrator" "june-idp" "june-gpu-services" "livekit")
+# Services to deploy (GPU removed)
+SERVICES=("june-orchestrator" "june-idp" "livekit")
 
 echo -e "${BLUE}🚀 Starting Headscale Sidecar Deployment${NC}"
 echo "=========================================="
@@ -130,7 +130,7 @@ print_status "Created Kubernetes secret with auth keys"
 # Clean up temp file
 rm -f /tmp/headscale-auth-secrets.yaml
 
-# Step 4: Deploy services
+# Step 4: Deploy services (GPU removed)
 echo -e "\n${BLUE}🚢 Deploying services with sidecars...${NC}"
 
 # Deploy June Orchestrator
@@ -149,11 +149,7 @@ else
     print_warning "k8s/june-services/deployments/june-idp-headscale.yaml not found, skipping"
 fi
 
-# Deploy GPU Services (updated existing file)
-kubectl apply -f k8s/june-services/deployments/june-gpu-services.yaml
-print_status "Deployed June GPU Services"
-
-# Deploy LiveKit (if using Helm)
+# LiveKit (if using Helm)
 if [ -f "k8s/livekit/livekit-values-headscale.yaml" ] && command -v helm &> /dev/null; then
     if helm list -n "$NAMESPACE" | grep -q livekit; then
         helm upgrade livekit ./helm/livekit -n "$NAMESPACE" -f k8s/livekit/livekit-values-headscale.yaml
@@ -165,10 +161,10 @@ else
     print_warning "Helm not available or k8s/livekit/livekit-values-headscale.yaml not found, skipping LiveKit"
 fi
 
-# Step 5: Wait for deployments
+# Step 5: Wait for deployments (GPU removed)
 echo -e "\n${BLUE}⏳ Waiting for deployments to be ready...${NC}"
 
-for service in june-orchestrator june-idp june-gpu-services; do
+for service in june-orchestrator june-idp; do
     echo "Waiting for $service..."
     if kubectl wait --for=condition=available deployment/"$service" -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
         print_status "$service is ready"
@@ -192,15 +188,13 @@ echo ""
 echo "• June Orchestrator: https://june-orchestrator.tail.ozzu.world"
 echo "• June IDP (Keycloak): https://june-idp.tail.ozzu.world"  
 echo "• LiveKit: https://livekit.tail.ozzu.world"
-echo "• TTS Service: https://june-tts.tail.ozzu.world"
-echo "• STT Service: https://june-stt.tail.ozzu.world"
 echo ""
 echo "To check pod status:"
 echo "kubectl get pods -n $NAMESPACE"
-echo ""
+
 echo "To check sidecar logs:"
 echo "kubectl logs -n $NAMESPACE deployment/SERVICE_NAME -c tailscale"
-echo ""
+
 echo "To check Headscale status:"
 echo "kubectl -n $HEADSCALE_NAMESPACE exec -it deployment/headscale -c headscale -- headscale nodes list"
 
