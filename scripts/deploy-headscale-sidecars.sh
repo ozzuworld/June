@@ -18,8 +18,8 @@ NAMESPACE="june-services"
 HEADSCALE_NAMESPACE="headscale"
 HEADSCALE_SERVER="https://headscale.ozzu.world"
 
-# Services to deploy with sidecars
-SERVICES=("june-orchestrator" "june-idp")
+# Services to deploy with sidecars (now includes LiveKit)
+SERVICES=("june-orchestrator" "june-idp" "livekit")
 
 # Get script directory for relative path resolution
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -210,7 +210,8 @@ print_status "June Platform deployed with Tailscale sidecars"
 # Step 5: Wait for deployments
 echo -e "\n${BLUE}⏳ Waiting for deployments to be ready...${NC}"
 
-for service in "${SERVICES[@]}"; do
+# Wait for core services
+for service in "june-orchestrator" "june-idp"; do
     echo "Waiting for $service..."
     if kubectl wait --for=condition=available deployment/"$service" -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
         print_status "$service is ready"
@@ -218,6 +219,18 @@ for service in "${SERVICES[@]}"; do
         print_warning "$service is taking longer than expected"
     fi
 done
+
+# Wait for LiveKit (may have different naming)
+echo "Waiting for LiveKit..."
+if kubectl get deployment livekit-livekit-server -n "$NAMESPACE" &>/dev/null; then
+    if kubectl wait --for=condition=available deployment/livekit-livekit-server -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
+        print_status "LiveKit is ready"
+    else
+        print_warning "LiveKit is taking longer than expected"
+    fi
+else
+    print_warning "LiveKit deployment not found - it may be deployed separately"
+fi
 
 # Step 6: Verify registrations
 echo -e "\n${BLUE}🔍 Verifying Headscale registrations...${NC}"
@@ -232,11 +245,13 @@ echo "==========================================="
 echo "Your services should now be accessible via Tailscale:"
 echo ""
 echo "• June Orchestrator: https://june-orchestrator.tail.ozzu.world"
-echo "• June IDP (Keycloak): https://june-idp.tail.ozzu.world"  
+echo "• June IDP (Keycloak): https://june-idp.tail.ozzu.world"
+echo "• LiveKit: https://livekit.tail.ozzu.world"
 echo ""
 echo "Standard access (unchanged):"
 echo "• API: https://api.ozzu.world"
 echo "• Identity: https://idp.ozzu.world"
+echo "• LiveKit: https://livekit.ozzu.world"
 echo ""
 echo "To check pod status:"
 echo "kubectl get pods -n $NAMESPACE"
