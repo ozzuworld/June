@@ -60,9 +60,9 @@ fi
 
 print_status "Prerequisites check completed"
 
-# Create headscale alias function
+# Create headscale alias function (non-TTY to avoid control sequences)
 headscale_cmd() {
-    kubectl -n "$HEADSCALE_NAMESPACE" exec -it deployment/headscale -c headscale -- headscale "$@"
+    kubectl -n "$HEADSCALE_NAMESPACE" exec -i deployment/headscale -c headscale -- headscale "$@"
 }
 
 # Step 1: Create Headscale users
@@ -85,24 +85,26 @@ for service in "${SERVICES[@]}"; do
     echo "Generating key for: $service"
     OUTPUT="$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1 || true)"
     
-    echo "Debug - Raw output for $service:"
-    echo "$OUTPUT"
-    echo "---"
-
-    # Try different parsing methods
+    # Normalize output: remove CR, strip ANSI escape codes, remove control chars
+    OUTPUT_CLEAN="$(printf "%s" "$OUTPUT" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' | sed 's/[[:cntrl:]]//g')"
+    
     KEY=""
     
     # Method 1: Look for tskey-* format
-    KEY="$(echo "$OUTPUT" | grep -oE 'tskey-[a-zA-Z0-9-]+' | head -n1)"
+    KEY="$(printf "%s" "$OUTPUT_CLEAN" | grep -oE 'tskey-[A-Za-z0-9-]+' | head -n1)"
     
-    # Method 2: Look for 64-char hex anywhere in the output
+    # Method 2: Look for 64-char hex (prefer last occurrence)
     if [ -z "$KEY" ]; then
-        KEY="$(echo "$OUTPUT" | grep -oE '[0-9a-fA-F]{64}' | head -n1)"
+        KEY="$(printf "%s" "$OUTPUT_CLEAN" | grep -oE '[0-9a-fA-F]{64}' | tail -n1)"
     fi
     
-    # Method 3: Get the last line that looks like a key (non-log line)
+    # Method 3: JSON fallback if available
     if [ -z "$KEY" ]; then
-        KEY="$(echo "$OUTPUT" | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^TRC|^DBG|^INF|^WRN|^ERR' | grep -E '^[a-fA-F0-9]{32,}$' | tail -n1 | tr -d '\r\n' | xargs)"
+        JSON_OUT="$(headscale_cmd --output json --user "$service" preauthkeys create --reusable --expiration 180d 2>/dev/null || true)"
+        KEY="$(printf "%s" "$JSON_OUT" | grep -oE 'tskey-[A-Za-z0-9-]+' | head -n1)"
+        if [ -z "$KEY" ]; then
+            KEY="$(printf "%s" "$JSON_OUT" | grep -oE '[0-9a-fA-F]{64}' | head -n1)"
+        fi
     fi
 
     if [ -n "$KEY" ] && [ ${#KEY} -ge 32 ]; then
@@ -110,8 +112,10 @@ for service in "${SERVICES[@]}"; do
         print_status "Generated key for: $service (${KEY:0:8}...${KEY: -8})"
     else
         print_error "Failed to parse key for: $service"
-        echo "Headscale output was:"
+        echo "Headscale output (raw):"
         echo "$OUTPUT"
+        echo "Headscale output (clean):"
+        echo "$OUTPUT_CLEAN"
         echo "Parsed key: '$KEY' (length: ${#KEY})"
         exit 1
     fi
