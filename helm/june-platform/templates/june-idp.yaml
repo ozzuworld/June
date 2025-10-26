@@ -36,7 +36,7 @@ spec:
         - name: KC_DB
           value: postgres
         - name: KC_DB_URL
-          value: "jdbc:postgresql://june-postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
+          value: "jdbc:postgresql://postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
         - name: KC_DB_USERNAME
           value: {{ .Values.postgresql.username }}
         - name: KC_DB_PASSWORD
