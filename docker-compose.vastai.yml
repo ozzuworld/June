@@ -1,0 +1,180 @@
+# Docker Compose for June STT/TTS on vast.ai
+# Optimized for single GPU sharing with Tailscale networking
+version: '3.8'
+
+services:
+  june-stt:
+    build: 
+      context: ./June/services/june-stt
+      dockerfile: Dockerfile
+    container_name: june-stt-vastai
+    restart: unless-stopped
+    
+    # GPU Configuration - Share with TTS
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # Access to all GPUs on instance
+              capabilities: [gpu]
+    
+    # Environment Variables
+    environment:
+      # Service Configuration
+      - PORT=8001
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      
+      # GPU/CUDA Settings
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+      - WHISPER_CACHE_DIR=/app/models
+      - CUDA_VISIBLE_DEVICES=0  # Explicit GPU assignment
+      
+      # Memory Management
+      - CUDA_MEMORY_FRACTION=0.4  # Reserve 40% GPU memory for STT
+      
+      # Orchestrator Integration
+      - ORCHESTRATOR_URL=http://localhost:8080
+      - LIVEKIT_WS_URL=ws://june-orchestrator:7880
+      
+      # Tailscale Network
+      - ROOM_NAME=ozzu-main
+      
+    # Port Exposure
+    ports:
+      - "8001:8001"
+    
+    # Volume Mounts - Shared model storage
+    volumes:
+      - shared_models:/app/models:rw
+      - stt_temp:/tmp:rw
+    
+    # Network Configuration
+    network_mode: host  # Direct host networking for Tailscale
+    
+    # Health Check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s  # Allow time for model loading
+    
+    # Resource Limits
+    mem_limit: 8g
+    memswap_limit: 8g
+    
+    # Logging Configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  june-tts:
+    build:
+      context: ./June/services/june-tts
+      dockerfile: Dockerfile
+    container_name: june-tts-vastai
+    restart: unless-stopped
+    
+    # GPU Configuration - Share with STT
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # Access to all GPUs on instance
+              capabilities: [gpu]
+    
+    # Environment Variables
+    environment:
+      # Service Configuration
+      - PORT=8000
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      
+      # TTS Configuration
+      - TTS_CACHE_PATH=/app/cache
+      - TTS_HOME=/app/models
+      - COQUI_TOS_AGREED=1
+      
+      # GPU/CUDA Settings
+      - CUDA_VISIBLE_DEVICES=0  # Same GPU as STT
+      - CUDA_MEMORY_FRACTION=0.5  # Reserve 50% GPU memory for TTS
+      
+      # Orchestrator Integration
+      - ORCHESTRATOR_URL=http://localhost:8080
+      - LIVEKIT_WS_URL=ws://june-orchestrator:7880
+      
+      # Tailscale Network
+      - ROOM_NAME=ozzu-main
+      
+    # Port Exposure
+    ports:
+      - "8000:8000"
+    
+    # Volume Mounts
+    volumes:
+      - shared_models:/app/models:rw
+      - tts_cache:/app/cache:rw
+      - tts_temp:/tmp:rw
+    
+    # Network Configuration
+    network_mode: host  # Direct host networking for Tailscale
+    
+    # Health Check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 15s  # TTS models take longer to respond
+      retries: 3
+      start_period: 120s  # TTS models need more startup time
+    
+    # Resource Limits
+    mem_limit: 12g
+    memswap_limit: 12g
+    
+    # Logging Configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    
+    # Dependency - Start after STT (optional optimization)
+    depends_on:
+      june-stt:
+        condition: service_healthy
+
+# Shared Volumes for Model Caching
+volumes:
+  shared_models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /workspace/models  # vast.ai workspace persistence
+      
+  tts_cache:
+    driver: local
+    driver_opts:
+      type: none  
+      o: bind
+      device: /workspace/cache
+      
+  stt_temp:
+    driver: local
+    
+  tts_temp:
+    driver: local
+
+# Network Configuration (if needed for internal communication)
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
