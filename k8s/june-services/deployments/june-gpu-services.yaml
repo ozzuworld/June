@@ -1,0 +1,209 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-gpu-services
+  namespace: june-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-gpu-services
+  template:
+    metadata:
+      labels:
+        app: june-gpu-services
+      annotations:
+        vast.ai/gpu-type: "RTX 3060"
+        vast.ai/gpu-fallbacks: "RTX 4070,RTX 3090,RTX A5000,RTX 4090"
+        vast.ai/price-max: "0.30"
+        vast.ai/region: "North America"
+    spec:
+      serviceAccountName: tailscale
+      containers:
+      # Main GPU services container
+      - name: june-multi-gpu
+        image: ozzuworld/june-gpu-multi:latest
+        ports:
+        - containerPort: 8000
+          name: tts
+        - containerPort: 8001
+          name: stt
+        resources:
+          requests:
+            cpu: "4"
+            memory: "12Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        env:
+        - name: STT_PORT
+          value: "8001"
+        - name: TTS_PORT
+          value: "8000"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: WHISPER_DEVICE
+          value: "cuda"
+        - name: WHISPER_COMPUTE_TYPE
+          value: "float16"
+        - name: TTS_CACHE_PATH
+          value: "/app/cache"
+        - name: TTS_HOME
+          value: "/app/models"
+        - name: COQUI_TOS_AGREED
+          value: "1"
+        - name: LIVEKIT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: livekit-url
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-key
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-secret
+        - name: ORCHESTRATOR_URL
+          valueFrom:
+            configMapKeyRef:
+              name: june-config
+              key: orchestrator-url
+        - name: BEARER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: bearer-token
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        volumeMounts:
+        - name: models-cache
+          mountPath: /app/models
+        - name: temp-cache
+          mountPath: /app/cache
+        - name: tailscale-cache
+          mountPath: /tmp
+          readOnly: true
+      
+      # Tailscale sidecar container
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        env:
+        - name: TS_KUBE_SECRET
+          value: tailscale-auth
+        - name: TS_USERSPACE
+          value: "true"
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: headscale-auth-keys
+              key: june-gpu-services-authkey
+        - name: TS_LOGIN_SERVER
+          value: "https://headscale.ozzu.world"
+        - name: TS_HOSTNAME
+          value: "june-gpu-services"
+        - name: TS_SERVE_CONFIG
+          value: |
+            {
+              "TCP": {
+                "443": {
+                  "HTTPS": true
+                }
+              },
+              "Web": {
+                "june-tts.tail.ozzu.world:443": {
+                  "Handlers": {
+                    "/": {
+                      "Proxy": "http://127.0.0.1:8000"
+                    }
+                  }
+                },
+                "june-stt.tail.ozzu.world:443": {
+                  "Handlers": {
+                    "/": {
+                      "Proxy": "http://127.0.0.1:8001"
+                    }
+                  }
+                }
+              }
+            }
+        - name: TS_STATE_DIR
+          value: "/tmp/tailscaled"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: tailscale-cache
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      
+      # GPU node affinity for vast.ai if available
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+      - key: "virtual-kubelet.io/provider"
+        operator: "Equal"
+        value: "vast"
+        effect: "NoSchedule"
+      - key: "vast.ai/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      
+      volumes:
+      - name: models-cache
+        emptyDir:
+          sizeLimit: 10Gi
+      - name: temp-cache
+        emptyDir:
+          sizeLimit: 5Gi
+      - name: tailscale-cache
+        emptyDir:
+          sizeLimit: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-gpu-services
+  namespace: june-services
+spec:
+  selector:
+    app: june-gpu-services
+  ports:
+  - name: tts
+    port: 8000
+    targetPort: 8000
+  - name: stt
+    port: 8001
+    targetPort: 8001
+  type: ClusterIP
