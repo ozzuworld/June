@@ -1,13 +1,20 @@
 ---
 # helm/june-platform/templates/june-idp.yaml
-{{- if .Values.keycloak.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: june-idp
   namespace: {{ .Release.Namespace }}
+  labels:
+    app: june-idp
+    version: "3.0.0"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: june-idp
@@ -15,66 +22,138 @@ spec:
     metadata:
       labels:
         app: june-idp
+        version: "3.0.0"
     spec:
-      initContainers:
-      - name: wait-for-postgres
-        image: postgres:15-alpine
-        command:
-        - sh
-        - -c
-        - |
-          echo "⏳ Waiting for PostgreSQL..."
-          until pg_isready -h postgresql.{{ .Release.Namespace }}.svc.cluster.local -p 5432 -U keycloak; do
-            sleep 3
-          done
-          echo "✅ PostgreSQL ready!"
       containers:
       - name: keycloak
-        image: docker.io/ozzuworld/june-idp:latest
-        command: ["/opt/keycloak/bin/kc.sh"]
-        args: ["start", "--optimized"]
-        ports:
-        - containerPort: 8080
-          name: http
-        - containerPort: 9000
-          name: management
+        image: quay.io/keycloak/keycloak:26.0.0
+        args: ["start"]
         env:
+        - name: KEYCLOAK_ADMIN
+          value: {{ .Values.keycloak.adminUsername }}
+        - name: KEYCLOAK_ADMIN_PASSWORD
+          value: {{ .Values.keycloak.adminPassword }}
         - name: KC_DB
           value: postgres
         - name: KC_DB_URL
-          value: "jdbc:postgresql://postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
+          value: "jdbc:postgresql://june-postgresql.{{ .Release.Namespace }}.svc.cluster.local:5432/{{ .Values.postgresql.database }}"
         - name: KC_DB_USERNAME
           value: {{ .Values.postgresql.username }}
         - name: KC_DB_PASSWORD
           value: {{ .Values.postgresql.password }}
-        - name: KC_BOOTSTRAP_ADMIN_USERNAME
-          value: {{ .Values.keycloak.adminUsername }}
-        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
-          value: {{ .Values.keycloak.adminPassword }}
-        - name: KC_HTTP_ENABLED
-          value: "true"
         - name: KC_HOSTNAME
-          value: {{ .Values.domains.idp }}
+          value: "idp.{{ .Values.domains.primary }}"
         - name: KC_HOSTNAME_STRICT
           value: "false"
+        - name: KC_HOSTNAME_STRICT_HTTPS
+          value: "false"
+        - name: KC_HTTP_ENABLED
+          value: "true"
         - name: KC_PROXY_HEADERS
-          value: xforwarded
+          value: "xforwarded"
         - name: KC_HEALTH_ENABLED
           value: "true"
         - name: KC_METRICS_ENABLED
           value: "true"
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 8443
+          name: https
+          protocol: TCP
         readinessProbe:
           httpGet:
             path: /health/ready
-            port: 9000
-          initialDelaySeconds: 60
+            port: 8080
+          initialDelaySeconds: 120
           periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10
         livenessProbe:
           httpGet:
             path: /health/live
-            port: 9000
-          initialDelaySeconds: 90
-          periodSeconds: 20
+            port: 8080
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+
+      # ============================================
+      # TAILSCALE SIDECAR (Optional)
+      # ============================================
+      {{- if .Values.tailscale.enabled }}
+      - name: tailscale
+        image: {{ .Values.tailscale.image }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: headscale-auth-keys
+              key: {{ .Values.tailscale.authKeyRefs.idp }}
+        - name: TS_USERSPACE
+          value: "{{ .Values.tailscale.userspace }}"
+        - name: TS_STATE_DIR
+          value: /var/lib/tailscale
+        - name: TS_CONTROL_URL
+          value: "{{ .Values.tailscale.controlUrl }}"
+        - name: TS_SOCKET
+          value: /var/run/tailscale/tailscaled.sock
+        - name: TS_HOSTNAME
+          value: "june-idp"
+        - name: TS_KUBE_SECRET
+          value: ""  # not used; we supply auth keys explicitly
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
+        - name: tailscale-run
+          mountPath: /var/run/tailscale
+        resources:
+          requests:
+            cpu: {{ .Values.tailscale.resources.requests.cpu }}
+            memory: {{ .Values.tailscale.resources.requests.memory }}
+          limits:
+            cpu: {{ .Values.tailscale.resources.limits.cpu }}
+            memory: {{ .Values.tailscale.resources.limits.memory }}
+        # Auto-start tailscaled and register with Headscale
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                # Start tailscaled daemon in background
+                tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+                sleep 2
+                # Connect to Headscale with auth key
+                tailscale up --login-server="${TS_CONTROL_URL}" --authkey="${TS_AUTHKEY}" --hostname="${TS_HOSTNAME}" --accept-routes --accept-dns=true
+      {{- end }}
+
+      # ============================================
+      # VOLUMES (for Tailscale sidecars)
+      # ============================================
+      {{- if .Values.tailscale.enabled }}
+      volumes:
+      - name: tailscale-state
+        emptyDir: {}
+      - name: tailscale-run
+        emptyDir: {}
+      {{- end }}
 
 ---
 apiVersion: v1
@@ -82,14 +161,18 @@ kind: Service
 metadata:
   name: june-idp
   namespace: {{ .Release.Namespace }}
+  labels:
+    app: june-idp
 spec:
+  type: ClusterIP
   selector:
     app: june-idp
   ports:
   - port: 8080
     targetPort: 8080
     name: http
-  - port: 9000
-    targetPort: 9000
-    name: management
-{{- end }}
+    protocol: TCP
+  - port: 8443
+    targetPort: 8443
+    name: https
+    protocol: TCP
