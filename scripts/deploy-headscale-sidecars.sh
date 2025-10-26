@@ -45,6 +45,12 @@ if ! command -v kubectl &> /dev/null; then
     exit 1
 fi
 
+# Check if jq is available (required for JSON parsing)
+if ! command -v jq &> /dev/null; then
+    print_error "jq is required but not installed. Please install jq and rerun."
+    exit 1
+fi
+
 # Check if headscale namespace exists
 if ! kubectl get namespace "$HEADSCALE_NAMESPACE" &> /dev/null; then
     print_error "Headscale namespace '$HEADSCALE_NAMESPACE' not found"
@@ -77,46 +83,29 @@ for service in "${SERVICES[@]}"; do
     fi
 done
 
-# Step 2: Generate auth keys
+# Step 2: Generate auth keys via JSON output only
+# This avoids fragile text parsing and TTY/log artifacts entirely.
 echo -e "\n${BLUE}🔑 Generating authentication keys...${NC}"
 
 AUTH_KEYS=""
 for service in "${SERVICES[@]}"; do
     echo "Generating key for: $service"
-    OUTPUT="$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1 || true)"
-    
-    # Normalize output: remove CR, strip ANSI escape codes, remove control chars
-    OUTPUT_CLEAN="$(printf "%s" "$OUTPUT" | tr -d '\r' | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' | sed 's/[[:cntrl:]]//g')"
-    
-    KEY=""
-    
-    # Method 1: Look for tskey-* format
-    KEY="$(printf "%s" "$OUTPUT_CLEAN" | grep -oE 'tskey-[A-Za-z0-9-]+' | head -n1)"
-    
-    # Method 2: Look for 64-char hex (prefer last occurrence)
-    if [ -z "$KEY" ]; then
-        KEY="$(printf "%s" "$OUTPUT_CLEAN" | grep -oE '[0-9a-fA-F]{64}' | tail -n1)"
-    fi
-    
-    # Method 3: JSON fallback if available
-    if [ -z "$KEY" ]; then
-        JSON_OUT="$(headscale_cmd --output json --user "$service" preauthkeys create --reusable --expiration 180d 2>/dev/null || true)"
-        KEY="$(printf "%s" "$JSON_OUT" | grep -oE 'tskey-[A-Za-z0-9-]+' | head -n1)"
-        if [ -z "$KEY" ]; then
-            KEY="$(printf "%s" "$JSON_OUT" | grep -oE '[0-9a-fA-F]{64}' | head -n1)"
-        fi
-    fi
+    OUTPUT_JSON="$(headscale_cmd --output json --user "$service" preauthkeys create --reusable --expiration 180d 2>/dev/null || true)"
+
+    # Extract either tskey-* or 64-hex from structured or string fields
+    KEY="$(printf "%s" "$OUTPUT_JSON" | jq -r '
+        .AuthKey? // .Key? // .auth_key? // .key? //
+        (.. | .? | select(type=="string") | select(test("^tskey-[A-Za-z0-9-]+$"))) //
+        (.. | .? | select(type=="string") | select(test("^[0-9a-fA-F]{64}$")))
+    ' | head -n1)"
 
     if [ -n "$KEY" ] && [ ${#KEY} -ge 32 ]; then
         AUTH_KEYS="${AUTH_KEYS}  ${service}-authkey: \"${KEY}\"\n"
         print_status "Generated key for: $service (${KEY:0:8}...${KEY: -8})"
     else
         print_error "Failed to parse key for: $service"
-        echo "Headscale output (raw):"
-        echo "$OUTPUT"
-        echo "Headscale output (clean):"
-        echo "$OUTPUT_CLEAN"
-        echo "Parsed key: '$KEY' (length: ${#KEY})"
+        echo "JSON response was:"
+        echo "$OUTPUT_JSON"
         exit 1
     fi
 done
@@ -192,7 +181,8 @@ done
 echo -e "\n${BLUE}🔍 Verifying Headscale registrations...${NC}"
 
 echo "Registered nodes:"
-headscale_cmd nodes list
+# Use TTY only for interactive list
+kubectl -n "$HEADSCALE_NAMESPACE" exec -it deployment/headscale -c headscale -- headscale nodes list
 
 # Step 7: Display access information
 echo -e "\n${GREEN}🎉 Deployment completed!${NC}"
