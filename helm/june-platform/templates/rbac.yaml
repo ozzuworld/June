@@ -1,0 +1,46 @@
+{{- if .Values.tailscale.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale-sidecar
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: tailscale-sidecar
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: tailscale-sidecar
+  labels:
+    app: tailscale-sidecar
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "create", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tailscale-sidecar
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: tailscale-sidecar
+subjects:
+- kind: ServiceAccount
+  name: tailscale-sidecar
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: tailscale-sidecar
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
