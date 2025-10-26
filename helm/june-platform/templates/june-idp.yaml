@@ -62,18 +62,21 @@ spec:
         - containerPort: 8443
           name: https
           protocol: TCP
+        - containerPort: 9000
+          name: management
+          protocol: TCP
         readinessProbe:
           httpGet:
-            path: /q/health/ready
-            port: 8080
+            path: /health/ready
+            port: 9000
           initialDelaySeconds: 120
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 10
         livenessProbe:
           httpGet:
-            path: /q/health/live
-            port: 8080
+            path: /health/live
+            port: 9000
           initialDelaySeconds: 180
           periodSeconds: 30
           timeoutSeconds: 10
@@ -145,4 +148,8 @@ spec:
   - port: 8443
     targetPort: 8443
     name: https
+    protocol: TCP
+  - port: 9000
+    targetPort: 9000
+    name: management
     protocol: TCP
