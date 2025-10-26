@@ -100,7 +100,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: headscale-auth-keys
-              key: idp-authkey
+              key: june-idp-authkey
         - name: TS_HOSTNAME
           value: "june-idp"
         - name: TS_SERVE_CONFIG
