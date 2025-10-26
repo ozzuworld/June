@@ -75,7 +75,7 @@ for service in "${SERVICES[@]}"; do
     else
         print_warning "User $service may already exist"
     fi
-endone
+done
 
 # Step 2: Generate auth keys
 echo -e "\n${BLUE}🔑 Generating authentication keys...${NC}"
