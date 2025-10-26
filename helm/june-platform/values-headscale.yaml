@@ -30,6 +30,7 @@ tailscale:
     idp: "june-idp-authkey"
     stt: "june-stt-authkey"
     tts: "june-tts-authkey"
+    livekit: "livekit-authkey"
 
 # Enable all core services
 orchestrator:
@@ -40,6 +41,10 @@ postgresql:
   enabled: true
 
 keycloak:
+  enabled: true
+
+# LiveKit WebRTC - enable with Tailscale sidecar
+livekit:
   enabled: true
 
 # STT/TTS services - enable based on GPU availability
