@@ -30,6 +30,16 @@ echo "==========================================="
 echo "Root directory: $ROOT_DIR"
 echo "Helm chart: $ROOT_DIR/helm/june-platform"
 
+# Source configuration from environment or config file
+if [ -f "${ROOT_DIR}/config.env" ]; then
+    source "${ROOT_DIR}/config.env"
+    echo -e "${GREEN}✅ Loaded configuration from ${ROOT_DIR}/config.env${NC}"
+else
+    echo -e "${RED}❌ Configuration file not found at ${ROOT_DIR}/config.env${NC}"
+    echo -e "${YELLOW}⚠️  Please ensure config.env exists with required variables${NC}"
+    exit 1
+fi
+
 # Function to print status messages
 print_status() {
     echo -e "${GREEN}✅ $1${NC}"
@@ -43,8 +53,33 @@ print_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
+# Validate required environment variables
+validate_environment() {
+    echo -e "${BLUE}🔍 Validating environment variables...${NC}"
+    
+    local required_vars=(
+        "DOMAIN"
+        "LETSENCRYPT_EMAIL"
+        "GEMINI_API_KEY"
+        "CLOUDFLARE_TOKEN"
+    )
+    
+    for var in "${required_vars[@]}"; do
+        if [ -z "${!var}" ]; then
+            print_error "Required environment variable $var is not set"
+            echo "Please check your config.env file"
+            exit 1
+        fi
+    done
+    
+    print_status "Environment variables validated"
+}
+
 # Check prerequisites
 echo -e "${BLUE}📋 Checking prerequisites...${NC}"
+
+# Validate environment first
+validate_environment
 
 # Check if kubectl is available
 if ! command -v kubectl &> /dev/null; then
@@ -157,11 +192,17 @@ else
     HELM_COMMAND="install"
 fi
 
-# Deploy using Helm with Tailscale values
+# Deploy using Helm with Tailscale values and environment configuration
 helm $HELM_COMMAND june-platform "$ROOT_DIR/helm/june-platform" \
     --namespace "$NAMESPACE" \
     --create-namespace \
     -f "$ROOT_DIR/helm/june-platform/values-headscale.yaml" \
+    --set secrets.geminiApiKey="$GEMINI_API_KEY" \
+    --set secrets.cloudflareToken="$CLOUDFLARE_TOKEN" \
+    --set global.domain="$DOMAIN" \
+    --set certificate.email="$LETSENCRYPT_EMAIL" \
+    --set postgresql.password="${POSTGRESQL_PASSWORD:-Pokemon123!}" \
+    --set keycloak.adminPassword="${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}" \
     --timeout 15m
 
 print_status "June Platform deployed with Tailscale sidecars"
