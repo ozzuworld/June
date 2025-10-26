@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-idp
+  namespace: june-services
+spec:
+  selector:
+    matchLabels:
+      app: june-idp
+  template:
+    metadata:
+      labels:
+        app: june-idp
+    spec:
+      volumes:
+      - name: tailscale-state
+        emptyDir: {}
+      containers:
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        env:
+        - name: TS_AUTHKEY
+          valueFrom:
+            secretKeyRef:
+              name: tailscale-auth
+              key: TS_AUTHKEY
+        - name: TS_EXTRA_ARGS
+          value: "--login-server=https://headscale.ozzu.world --accept-routes"
+        - name: TS_HOSTNAME
+          value: "june-idp"
+        - name: TS_STATE_DIR
+          value: "/var/lib/tailscale"
+        securityContext:
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW"]
+        volumeMounts:
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
+      - name: june-idp
+        image: ozzuworld/june-idp:latest
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: june-config
