@@ -2,6 +2,7 @@
 
 # Headscale Sidecar Deployment Script
 # This script automates the deployment of June services with Tailscale sidecars
+# Updated to work with the actual Helm-based architecture
 
 set -e
 
@@ -17,15 +18,17 @@ NAMESPACE="june-services"
 HEADSCALE_NAMESPACE="headscale"
 HEADSCALE_SERVER="https://headscale.ozzu.world"
 
-# Services to deploy
-SERVICES=("june-orchestrator" "june-idp" "livekit")
+# Services to deploy with sidecars
+SERVICES=("june-orchestrator" "june-idp")
 
-LIVEKIT_HELM_REPO_NAME="livekit"
-LIVEKIT_HELM_REPO_URL="https://livekit.github.io/helm"
-LIVEKIT_CHART="livekit/livekit-server"
+# Get script directory for relative path resolution
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo -e "${BLUE}🚀 Starting Headscale Sidecar Deployment${NC}"
-echo "=========================================="
+echo "==========================================="
+echo "Root directory: $ROOT_DIR"
+echo "Helm chart: $ROOT_DIR/helm/june-platform"
 
 # Function to print status messages
 print_status() {
@@ -55,12 +58,10 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Check if helm is available for LiveKit
+# Check if helm is available
 if ! command -v helm &> /dev/null; then
-    print_warning "helm not found; LiveKit helm install will be skipped"
-    HELM_AVAILABLE=false
-else
-    HELM_AVAILABLE=true
+    print_error "helm is required but not installed. Please install helm and rerun."
+    exit 1
 fi
 
 # Check if headscale namespace exists
@@ -74,6 +75,13 @@ fi
 if ! kubectl get namespace "$NAMESPACE" &> /dev/null; then
     print_warning "Creating namespace '$NAMESPACE'"
     kubectl create namespace "$NAMESPACE"
+fi
+
+# Check if Helm chart exists
+if [ ! -d "$ROOT_DIR/helm/june-platform" ]; then
+    print_error "Helm chart not found at: $ROOT_DIR/helm/june-platform"
+    print_warning "Please ensure you're running this script from the June repository root"
+    exit 1
 fi
 
 print_status "Prerequisites check completed"
@@ -96,7 +104,6 @@ for service in "${SERVICES[@]}"; do
 done
 
 # Step 2: Generate auth keys via JSON output only
-# This avoids fragile text parsing and TTY/log artifacts entirely.
 echo -e "\n${BLUE}🔑 Generating authentication keys...${NC}"
 
 AUTH_KEYS=""
@@ -104,12 +111,8 @@ for service in "${SERVICES[@]}"; do
     echo "Generating key for: $service"
     OUTPUT_JSON="$(headscale_cmd --output json --user "$service" preauthkeys create --reusable --expiration 180d 2>/dev/null || true)"
 
-    # Extract either tskey-* or 64-hex from structured or string fields
-    KEY="$(printf "%s" "$OUTPUT_JSON" | jq -r '
-        .AuthKey? // .Key? // .auth_key? // .key? //
-        (.. | .? | select(type=="string") | select(test("^tskey-[A-Za-z0-9-]+$"))) //
-        (.. | .? | select(type=="string") | select(test("^[0-9a-fA-F]{64}$")))
-    ' | head -n1)"
+    # Simplified key extraction
+    KEY="$(printf "%s" "$OUTPUT_JSON" | jq -r '.key // .authKey // .auth_key // empty' 2>/dev/null | head -n1)"
 
     if [ -n "$KEY" ] && [ ${#KEY} -ge 32 ]; then
         AUTH_KEYS="${AUTH_KEYS}  ${service}-authkey: \"${KEY}\"\n"
@@ -142,46 +145,31 @@ print_status "Created Kubernetes secret with auth keys"
 # Clean up temp file
 rm -f /tmp/headscale-auth-secrets.yaml
 
-# Step 4: Deploy services
-echo -e "\n${BLUE}🚢 Deploying services with sidecars...${NC}"
+# Step 4: Deploy services with sidecars using Helm
+echo -e "\n${BLUE}🚢 Deploying services with Tailscale sidecars...${NC}"
 
-# Deploy June Orchestrator
-if [ -f "k8s/june-services/deployments/june-orchestrator-headscale.yaml" ]; then
-    kubectl apply -f k8s/june-services/deployments/june-orchestrator-headscale.yaml
-    print_status "Deployed June Orchestrator"
+# Check if june-platform release exists
+if helm list -n "$NAMESPACE" | grep -q "june-platform"; then
+    print_status "Upgrading existing june-platform release with Tailscale sidecars"
+    HELM_COMMAND="upgrade"
 else
-    print_warning "k8s/june-services/deployments/june-orchestrator-headscale.yaml not found, skipping"
+    print_status "Installing june-platform release with Tailscale sidecars"
+    HELM_COMMAND="install"
 fi
 
-# Deploy June IDP
-if [ -f "k8s/june-services/deployments/june-idp-headscale.yaml" ]; then
-    kubectl apply -f k8s/june-services/deployments/june-idp-headscale.yaml
-    print_status "Deployed June IDP"
-else
-    print_warning "k8s/june-services/deployments/june-idp-headscale.yaml not found, skipping"
-fi
+# Deploy using Helm with Tailscale values
+helm $HELM_COMMAND june-platform "$ROOT_DIR/helm/june-platform" \
+    --namespace "$NAMESPACE" \
+    --create-namespace \
+    -f "$ROOT_DIR/helm/june-platform/values-headscale.yaml" \
+    --timeout 15m
 
-# LiveKit via official Helm chart
-if [ "$HELM_AVAILABLE" = true ] && [ -f "k8s/livekit/livekit-values-headscale.yaml" ]; then
-    if ! helm repo list | awk '{print $1}' | grep -qx "$LIVEKIT_HELM_REPO_NAME"; then
-        helm repo add "$LIVEKIT_HELM_REPO_NAME" "$LIVEKIT_HELM_REPO_URL" || {
-            print_warning "Failed to add LiveKit helm repo; skipping LiveKit install"
-            SKIP_LIVEKIT=1
-        }
-    fi
-    if [ -z "$SKIP_LIVEKIT" ]; then
-        helm repo update
-        helm upgrade --install livekit "$LIVEKIT_CHART" -n "$NAMESPACE" -f k8s/livekit/livekit-values-headscale.yaml
-        print_status "Installed/updated LiveKit via official chart"
-    fi
-else
-    print_warning "Helm unavailable or values file missing; skipping LiveKit"
-fi
+print_status "June Platform deployed with Tailscale sidecars"
 
 # Step 5: Wait for deployments
 echo -e "\n${BLUE}⏳ Waiting for deployments to be ready...${NC}"
 
-for service in june-orchestrator june-idp; do
+for service in "${SERVICES[@]}"; do
     echo "Waiting for $service..."
     if kubectl wait --for=condition=available deployment/"$service" -n "$NAMESPACE" --timeout=300s 2>/dev/null; then
         print_status "$service is ready"
@@ -194,25 +182,31 @@ done
 echo -e "\n${BLUE}🔍 Verifying Headscale registrations...${NC}"
 
 echo "Registered nodes:"
-# Use TTY only for interactive list
-kubectl -n "$HEADSCALE_NAMESPACE" exec -it deployment/headscale -c headscale -- headscale nodes list
+# Use non-interactive mode for automation
+kubectl -n "$HEADSCALE_NAMESPACE" exec deployment/headscale -c headscale -- headscale nodes list
 
 # Step 7: Display access information
 echo -e "\n${GREEN}🎉 Deployment completed!${NC}"
-echo "=========================================="
+echo "==========================================="
 echo "Your services should now be accessible via Tailscale:"
 echo ""
 echo "• June Orchestrator: https://june-orchestrator.tail.ozzu.world"
 echo "• June IDP (Keycloak): https://june-idp.tail.ozzu.world"  
-echo "• LiveKit: https://livekit.tail.ozzu.world"
+echo ""
+echo "Standard access (unchanged):"
+echo "• API: https://api.ozzu.world"
+echo "• Identity: https://idp.ozzu.world"
 echo ""
 echo "To check pod status:"
 echo "kubectl get pods -n $NAMESPACE"
-
+echo ""
 echo "To check sidecar logs:"
 echo "kubectl logs -n $NAMESPACE deployment/SERVICE_NAME -c tailscale"
-
+echo ""
 echo "To check Headscale status:"
 echo "kubectl -n $HEADSCALE_NAMESPACE exec -it deployment/headscale -c headscale -- headscale nodes list"
+echo ""
+echo "To disable Tailscale sidecars:"
+echo "helm upgrade june-platform $ROOT_DIR/helm/june-platform --namespace $NAMESPACE --set tailscale.enabled=false"
 
 print_status "Headscale sidecar deployment completed successfully!"
