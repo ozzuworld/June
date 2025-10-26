@@ -77,6 +77,7 @@ export HEADSCALE_NAMESPACE
 export HEADSCALE_USER
 export K8S_SERVICE_CIDR
 export K8S_POD_CIDR
+export ENABLE_TAILSCALE_SIDECARS
 
 # Validate required variables
 REQUIRED_VARS=(
@@ -128,7 +129,7 @@ get_external_ip() {
     return 1
 }
 
-# Define installation phases (including new phases 11, 11.5 & 12)
+# Define installation phases (including new phases 11, 11.2, 11.5 & 12)
 PHASES=(
     "01-prerequisites"
     "02-docker"
@@ -143,6 +144,7 @@ PHASES=(
     "09-june-platform"
     "10-final-setup"
     "11-headscale"          # VPN control plane server
+    "11.2-headscale-sidecars" # Add Tailscale sidecars to June services
     "11.5-headscale-node"   # Connect this node to Headscale with subnet routing
     "12-skypilot"           # Remote GPU provider
 )
@@ -226,6 +228,10 @@ debug_info() {
     echo ""
     echo "Tailscale Node Status:"
     tailscale status 2>/dev/null || echo "Tailscale not installed or not connected"
+    
+    echo ""
+    echo "Tailscale Sidecars:"
+    kubectl get pods -n june-services -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}' 2>/dev/null | grep tailscale || echo "No Tailscale sidecars found"
 }
 
 # Main execution function
@@ -293,6 +299,12 @@ main() {
         TAILSCALE_CONNECTED="true"
     fi
     
+    # Check for Tailscale sidecars
+    TAILSCALE_SIDECARS="false"
+    if kubectl get pods -n june-services -o jsonpath='{.items[*].spec.containers[*].name}' 2>/dev/null | grep -q tailscale; then
+        TAILSCALE_SIDECARS="true"
+    fi
+    
     # Check for Vast.ai virtual node
     VAST_NODE=$(kubectl get nodes -l type=virtual-kubelet -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     
@@ -322,6 +334,13 @@ main() {
             echo "  Node Status: ✅ Connected (subnet routes advertised)"
         else
             echo "  Node Status: ⚠️  Not connected (run phase 11.5-headscale-node)"
+        fi
+        if [ "$TAILSCALE_SIDECARS" = "true" ]; then
+            echo "  Sidecars:   ✅ Deployed (services available on tailnet)"
+            echo "    • june-orchestrator.tail.$DOMAIN"
+            echo "    • june-idp.tail.$DOMAIN"
+        else
+            echo "  Sidecars:   ⚠️  Not deployed (run phase 11.2-headscale-sidecars)"
         fi
         echo ""
     fi
@@ -367,6 +386,9 @@ main() {
         if [ "$TAILSCALE_CONNECTED" = "true" ]; then
             echo "  tailscale status                     # Node VPN status"
         fi
+        if [ "$TAILSCALE_SIDECARS" = "true" ]; then
+            echo "  kubectl logs -n june-services deployment/june-orchestrator -c tailscale  # Sidecar logs"
+        fi
     fi
     if [ -n "$VAST_NODE" ]; then
         echo "  kubectl get nodes -l type=virtual-kubelet # Remote GPU nodes"
@@ -393,15 +415,16 @@ show_usage() {
     done
     echo ""
     echo "Examples:"
-    echo "  $0                              # Run all phases"
-    echo "  $0 --skip 01-prerequisites     # Skip prerequisites"
-    echo "  $0 --skip kubernetes docker    # Skip multiple phases"
-    echo "  $0 --skip 06-certificates      # Skip certificate management"
-    echo "  $0 --skip 02.5-gpu             # Skip GPU driver/runtime"
-    echo "  $0 --skip 03.5-gpu-operator    # Skip GPU Operator/time-slicing"
-    echo "  $0 --skip 11-headscale         # Skip VPN control plane"
-    echo "  $0 --skip 11.5-headscale-node  # Skip node subnet routing"
-    echo "  $0 --skip 12-vast-gpu          # Skip remote GPU provider"
+    echo "  $0                                    # Run all phases"
+    echo "  $0 --skip 01-prerequisites           # Skip prerequisites"
+    echo "  $0 --skip kubernetes docker          # Skip multiple phases"
+    echo "  $0 --skip 06-certificates            # Skip certificate management"
+    echo "  $0 --skip 02.5-gpu                   # Skip GPU driver/runtime"
+    echo "  $0 --skip 03.5-gpu-operator          # Skip GPU Operator/time-slicing"
+    echo "  $0 --skip 11-headscale               # Skip VPN control plane"
+    echo "  $0 --skip 11.2-headscale-sidecars    # Skip Tailscale sidecars"
+    echo "  $0 --skip 11.5-headscale-node        # Skip node subnet routing"
+    echo "  $0 --skip 12-vast-gpu                # Skip remote GPU provider"
 }
 
 # Check for help flag
