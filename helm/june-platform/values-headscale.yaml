@@ -1,0 +1,51 @@
+# June Platform - Tailscale Sidecar Override Values
+# Use this file to deploy June Platform with Tailscale sidecars for Headscale connectivity
+#
+# Usage:
+#   helm upgrade --install june-platform ./helm/june-platform \
+#     --namespace june-services \
+#     -f ./helm/june-platform/values-headscale.yaml
+#
+# Prerequisites:
+#   1. Headscale server must be deployed and accessible
+#   2. Secret 'headscale-auth-keys' must exist in june-services namespace
+#   3. Run ./scripts/deploy-headscale-sidecars.sh to set everything up
+
+# Enable Tailscale sidecars
+tailscale:
+  enabled: true
+  controlUrl: "https://headscale.ozzu.world"
+  userspace: true
+  image: "ghcr.io/tailscale/tailscale:latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # These key names must match what deploy-headscale-sidecars.sh creates
+  authKeyRefs:
+    orchestrator: "june-orchestrator-authkey"
+    idp: "june-idp-authkey"
+    stt: "june-stt-authkey"
+    tts: "june-tts-authkey"
+
+# Enable all core services
+orchestrator:
+  enabled: true
+
+# PostgreSQL and Keycloak are required
+postgresql:
+  enabled: true
+
+keycloak:
+  enabled: true
+
+# STT/TTS services - enable based on GPU availability
+# Set these via --set flags or environment variables
+stt:
+  enabled: false  # Set to true if you have GPU resources
+
+tts:
+  enabled: false  # Set to true if you have GPU resources
