@@ -80,15 +80,48 @@ done
 # Step 2: Generate auth keys
 echo -e "\n${BLUE}🔑 Generating authentication keys...${NC}"
 
+# Function to generate a single auth key with better error handling
+generate_auth_key() {
+    local service=$1
+    echo "Generating key for: $service"
+    
+    # Try to generate the key and capture full output
+    local output
+    output=$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1)
+    
+    # Look for the key in the output using multiple patterns
+    local key
+    key=$(echo "$output" | grep -o 'tskey-auth-[a-zA-Z0-9-]*' | head -1)
+    
+    if [ -z "$key" ]; then
+        # Try alternative pattern
+        key=$(echo "$output" | grep -o 'Key: tskey-auth-[a-zA-Z0-9-]*' | cut -d' ' -f2 | head -1)
+    fi
+    
+    if [ -z "$key" ]; then
+        # Try yet another pattern
+        key=$(echo "$output" | grep -E 'tskey-[a-zA-Z0-9-]+' | head -1)
+    fi
+    
+    if [ -n "$key" ]; then
+        echo "$key"
+        return 0
+    else
+        print_error "Failed to extract key from output:"
+        echo "$output" >&2
+        return 1
+    fi
+}
+
 AUTH_KEYS=""
 for service in "${SERVICES[@]}"; do
-    echo "Generating key for: $service"
-    KEY=$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d | grep tskey)
-    if [ -n "$KEY" ]; then
+    if KEY=$(generate_auth_key "$service"); then
         AUTH_KEYS="${AUTH_KEYS}  ${service}-authkey: \"${KEY}\"\n"
         print_status "Generated key for: $service"
     else
         print_error "Failed to generate key for: $service"
+        echo "Please generate the key manually using:"
+        echo "  kubectl -n $HEADSCALE_NAMESPACE exec -it deployment/headscale -c headscale -- headscale --user $service preauthkeys create --reusable --expiration 180d"
         exit 1
     fi
 done
