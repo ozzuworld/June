@@ -87,7 +87,8 @@ spec:
             cpu: 1000m
 
       # ============================================
-      # TAILSCALE SIDECAR (Optional)
+      # TAILSCALE SIDECAR (Optional - DISABLED by default)
+      # Only add if explicitly enabled in values
       # ============================================
       {{- if .Values.tailscale.enabled }}
       - name: tailscale
@@ -145,7 +146,7 @@ spec:
       {{- end }}
 
       # ============================================
-      # VOLUMES (for Tailscale sidecars)
+      # VOLUMES (Only add Tailscale volumes if enabled)
       # ============================================
       {{- if .Values.tailscale.enabled }}
       volumes:
