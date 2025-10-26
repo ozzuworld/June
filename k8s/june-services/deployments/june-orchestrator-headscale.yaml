@@ -99,7 +99,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: headscale-auth-keys
-              key: orchestrator-authkey
+              key: june-orchestrator-authkey
         - name: TS_HOSTNAME
           value: "june-orchestrator"
         - name: TS_SERVE_CONFIG
