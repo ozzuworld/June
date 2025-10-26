@@ -14,6 +14,7 @@ domains:
   stt: stt.ozzu.world
   tts: tts.ozzu.world
   turn: turn.ozzu.world
+  livekit: livekit.ozzu.world
 
 # Certificate Configuration
 certificate:
@@ -40,12 +41,29 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# LiveKit WebRTC Server (replaces Janus)
-# Note: LiveKit is now deployed separately via k8s/ manifests
-# This section is kept for reference and future Helm integration
+# LiveKit WebRTC Server
 livekit:
-  enabled: false  # Deployed via install-livekit.sh
-  namespace: media
+  enabled: false  # Set to true when deploying with Tailscale sidecars
+  replicas: 1
+  image:
+    repository: livekit/livekit-server
+    tag: latest
+    pullPolicy: Always
+  config:
+    port: 7880
+    rtc:
+      tcp_port: 7881
+      port_range_start: 50000
+      port_range_end: 60000
+      use_external_ip: true
+      use_ice_lite: false
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 200m
+    limits:
+      memory: 1Gi
+      cpu: 500m
   
 # June Orchestrator Service
 orchestrator:
@@ -128,6 +146,7 @@ tailscale:
     idp: "june-idp-authkey"
     stt: "june-stt-authkey"
     tts: "june-tts-authkey"
+    livekit: "livekit-authkey"
 
 # Secrets (Set via --set or separate values file)
 secrets:
