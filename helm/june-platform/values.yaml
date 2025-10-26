@@ -108,6 +108,27 @@ stunner:
   username: june-user
   password: Pokemon123!
 
+# Tailscale Sidecar Configuration
+# Adds Tailscale sidecars to services for private network access via Headscale
+tailscale:
+  enabled: false  # Set to true to enable sidecars
+  controlUrl: "https://headscale.ozzu.world"
+  userspace: true  # Use userspace networking for better security
+  image: "ghcr.io/tailscale/tailscale:latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # Secret key names for auth keys (created by deploy-headscale-sidecars.sh)
+  authKeyRefs:
+    orchestrator: "june-orchestrator-authkey"
+    idp: "june-idp-authkey"
+    stt: "june-stt-authkey"
+    tts: "june-tts-authkey"
+
 # Secrets (Set via --set or separate values file)
 secrets:
   geminiApiKey: ""  # REQUIRED: Set via --set secrets.geminiApiKey=xxx
