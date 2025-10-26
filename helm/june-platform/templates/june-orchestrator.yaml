@@ -25,6 +25,9 @@ spec:
         app: june-orchestrator
         version: "3.0.0"
     spec:
+      {{- if .Values.tailscale.enabled }}
+      serviceAccountName: tailscale-sidecar
+      {{- end }}
       containers:
       - name: orchestrator
         image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
@@ -163,13 +166,23 @@ spec:
         - name: TS_HOSTNAME
           value: "june-orchestrator"
         - name: TS_KUBE_SECRET
-          value: ""  # not used; we supply auth keys explicitly
+          value: "tailscale"
+        # Kubernetes integration environment variables
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
         securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
+          runAsUser: 0  # Run as root to fix permission issues
+          runAsGroup: 0
           allowPrivilegeEscalation: false
           capabilities:
             drop: ["ALL"]
+            add: ["NET_ADMIN"]  # Required for networking
         volumeMounts:
         - name: tailscale-state
           mountPath: /var/lib/tailscale
@@ -182,19 +195,33 @@ spec:
           limits:
             cpu: {{ .Values.tailscale.resources.limits.cpu }}
             memory: {{ .Values.tailscale.resources.limits.memory }}
-        # Auto-start tailscaled and register with Headscale
-        lifecycle:
-          postStart:
-            exec:
-              command:
-              - /bin/sh
-              - -c
-              - |
-                # Start tailscaled daemon in background
-                tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
-                sleep 2
-                # Connect to Headscale with auth key
-                tailscale up --login-server="${TS_CONTROL_URL}" --authkey="${TS_AUTHKEY}" --hostname="${TS_HOSTNAME}" --accept-routes --accept-dns=true
+        # Simplified startup - let the container handle initialization
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          # Ensure state directory is writable
+          mkdir -p /var/lib/tailscale /var/run/tailscale
+          chmod 755 /var/lib/tailscale /var/run/tailscale
+          
+          # Start tailscaled in userspace mode
+          tailscaled --socket=/var/run/tailscale/tailscaled.sock \
+                     --statedir=/var/lib/tailscale \
+                     --tun=userspace-networking &
+          
+          # Wait for socket to be ready
+          sleep 5
+          
+          # Register with Headscale
+          tailscale up --login-server="${TS_CONTROL_URL}" \
+                       --authkey="${TS_AUTHKEY}" \
+                       --hostname="${TS_HOSTNAME}" \
+                       --accept-routes \
+                       --accept-dns=true
+          
+          # Keep container running
+          wait
       {{- end }}
 
       # ============================================
