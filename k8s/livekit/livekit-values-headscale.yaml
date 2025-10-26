@@ -1,0 +1,105 @@
+# Updated LiveKit Helm Values with Tailscale Sidecar Integration
+# This updates your existing livekit-values.yaml to include Tailscale sidecar
+
+livekit:
+  # Existing LiveKit configuration
+  image:
+    repository: livekit/livekit-server
+    tag: latest
+    pullPolicy: Always
+    
+  config:
+    port: 7880
+    rtc:
+      tcp_port: 7881
+      port_range_start: 50000
+      port_range_end: 60000
+    
+  # Pod configuration with sidecar
+  podTemplate:
+    metadata:
+      annotations:
+        tailscale.com/hostname: "livekit"
+    spec:
+      volumes:
+      - name: tailscale-state
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+        
+      containers:
+      # Main LiveKit container (this will be managed by Helm chart)
+      - name: livekit
+        # Configuration handled by chart values
+        
+      # Tailscale sidecar container
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        imagePullPolicy: Always
+        env:
+        - name: TS_KUBE_SECRET
+          value: ""
+        - name: TS_USERSPACE
+          value: "true"
+        - name: TS_AUTH_KEY
+          valueFrom:
+            secretKeyRef:
+              name: headscale-auth-keys
+              key: livekit-authkey
+        - name: TS_HOSTNAME
+          value: "livekit"
+        - name: TS_SERVE_CONFIG
+          value: |
+            {
+              "TCP": {
+                "7880": {
+                  "HTTPS": true
+                },
+                "7881": {
+                  "HTTPS": false
+                }
+              },
+              "Web": {
+                "livekit.tail.ozzu.world:443": {
+                  "Handlers": {
+                    "/": {
+                      "Proxy": "http://127.0.0.1:7880"
+                    }
+                  }
+                }
+              }
+            }
+        - name: TS_LOGIN_SERVER
+          value: "https://headscale.ozzu.world"
+        - name: TS_STATE_DIR
+          value: "/var/lib/tailscale"
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: "0.1"
+            memory: 128Mi
+          limits:
+            cpu: "0.5"
+            memory: 256Mi
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 7880
+    targetPort: 7880
+  - name: rtc-tcp
+    port: 7881 
+    targetPort: 7881
