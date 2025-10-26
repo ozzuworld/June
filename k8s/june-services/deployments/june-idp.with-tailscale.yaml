@@ -12,6 +12,7 @@ spec:
       labels:
         app: june-idp
     spec:
+      serviceAccountName: tailscale
       volumes:
       - name: tailscale-state
         emptyDir: {}
@@ -30,6 +31,16 @@ spec:
           value: "june-idp"
         - name: TS_STATE_DIR
           value: "/var/lib/tailscale"
+        - name: TS_KUBE_SECRET
+          value: "tailscale-state-june-idp"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
         securityContext:
           capabilities:
             add: ["NET_ADMIN", "NET_RAW"]
@@ -43,3 +54,9 @@ spec:
         envFrom:
         - configMapRef:
             name: june-config
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tailscale-state-june-idp
+  namespace: june-services
