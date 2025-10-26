@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  template:
+    metadata:
+      labels:
+        app: june-orchestrator
+      annotations:
+        tailscale.com/hostname: "june-orchestrator"
+    spec:
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+      
+      # Shared volumes for Tailscale state
+      volumes:
+      - name: tailscale-state
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+        
+      containers:
+      # Main orchestrator container
+      - name: june-orchestrator
+        image: ozzuworld/june-orchestrator:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: STT_SERVICE_URL
+          value: "http://june-gpu-services:8001"
+        - name: TTS_SERVICE_URL
+          value: "http://june-gpu-services:8000"
+        - name: LLM_SERVICE_URL
+          value: "http://june-llm:8080"
+        - name: LIVEKIT_WS_URL
+          value: "ws://livekit:7880"
+        - name: LIVEKIT_HTTP_URL
+          value: "http://livekit:7880"
+        - name: BEARER_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: bearer-token
+              optional: true
+        - name: LIVEKIT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-key
+              optional: true
+        - name: LIVEKIT_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: june-secrets
+              key: livekit-api-secret
+              optional: true
+        resources:
+          requests:
+            cpu: "0.5"
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          
+      # Tailscale sidecar container
+      - name: tailscale
+        image: tailscale/tailscale:latest
+        imagePullPolicy: Always
+        env:
+        - name: TS_KUBE_SECRET
+          value: ""
+        - name: TS_USERSPACE
+          value: "true"
+        - name: TS_AUTH_KEY
+          valueFrom:
+            secretKeyRef:
+              name: headscale-auth-keys
+              key: orchestrator-authkey
+        - name: TS_HOSTNAME
+          value: "june-orchestrator"
+        - name: TS_SERVE_CONFIG
+          value: |
+            {
+              "TCP": {
+                "8080": {
+                  "HTTPS": true
+                }
+              },
+              "Web": {
+                "june-orchestrator.tail.ozzu.world:443": {
+                  "Handlers": {
+                    "/": {
+                      "Proxy": "http://127.0.0.1:8080"
+                    }
+                  }
+                }
+              }
+            }
+        - name: TS_LOGIN_SERVER
+          value: "https://headscale.ozzu.world"
+        - name: TS_STATE_DIR
+          value: "/var/lib/tailscale"
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: "0.1"
+            memory: 128Mi
+          limits:
+            cpu: "0.5"
+            memory: 256Mi
+            
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  selector:
+    app: june-orchestrator
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  type: ClusterIP
