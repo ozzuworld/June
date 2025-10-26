@@ -22,7 +22,7 @@ SERVICES=("june-orchestrator" "june-idp" "livekit")
 
 LIVEKIT_HELM_REPO_NAME="livekit"
 LIVEKIT_HELM_REPO_URL="https://livekit.github.io/helm"
-LIVEKIT_CHART="livekit/livekit"
+LIVEKIT_CHART="livekit/livekit-server"
 
 echo -e "${BLUE}🚀 Starting Headscale Sidecar Deployment${NC}"
 echo "=========================================="
