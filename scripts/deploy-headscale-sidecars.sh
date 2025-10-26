@@ -84,27 +84,35 @@ AUTH_KEYS=""
 for service in "${SERVICES[@]}"; do
     echo "Generating key for: $service"
     OUTPUT="$(headscale_cmd --user "$service" preauthkeys create --reusable --expiration 180d 2>&1 || true)"
+    
+    echo "Debug - Raw output for $service:"
+    echo "$OUTPUT"
+    echo "---"
 
-    # Prefer tskey-* formats
+    # Try different parsing methods
+    KEY=""
+    
+    # Method 1: Look for tskey-* format
     KEY="$(echo "$OUTPUT" | grep -oE 'tskey-[a-zA-Z0-9-]+' | head -n1)"
-
-    # Fallback to 64-char hex (observed on your output)
+    
+    # Method 2: Look for 64-char hex anywhere in the output
     if [ -z "$KEY" ]; then
-        KEY="$(echo "$OUTPUT" | grep -oE '^[0-9a-fA-F]{64}$' | head -n1)"
+        KEY="$(echo "$OUTPUT" | grep -oE '[0-9a-fA-F]{64}' | head -n1)"
+    fi
+    
+    # Method 3: Get the last line that looks like a key (non-log line)
+    if [ -z "$KEY" ]; then
+        KEY="$(echo "$OUTPUT" | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T|^TRC|^DBG|^INF|^WRN|^ERR' | grep -E '^[a-fA-F0-9]{32,}$' | tail -n1 | tr -d '\r\n' | xargs)"
     fi
 
-    # Last-resort: first non-empty non-log line
-    if [ -z "$KEY" ]; then
-        KEY="$(echo "$OUTPUT" | grep -vE '^(\s*|\[|[A-Z]{2,}|[0-9:-]{6,}|TRC|DBG|INF)' | head -n1 | tr -d '\r' | xargs)"
-    fi
-
-    if [ -n "$KEY" ]; then
+    if [ -n "$KEY" ] && [ ${#KEY} -ge 32 ]; then
         AUTH_KEYS="${AUTH_KEYS}  ${service}-authkey: \"${KEY}\"\n"
-        print_status "Generated key for: $service"
+        print_status "Generated key for: $service (${KEY:0:8}...${KEY: -8})"
     else
         print_error "Failed to parse key for: $service"
         echo "Headscale output was:"
         echo "$OUTPUT"
+        echo "Parsed key: '$KEY' (length: ${#KEY})"
         exit 1
     fi
 done
