@@ -17,8 +17,12 @@ NAMESPACE="june-services"
 HEADSCALE_NAMESPACE="headscale"
 HEADSCALE_SERVER="https://headscale.ozzu.world"
 
-# Services to deploy (GPU removed)
+# Services to deploy
 SERVICES=("june-orchestrator" "june-idp" "livekit")
+
+LIVEKIT_HELM_REPO_NAME="livekit"
+LIVEKIT_HELM_REPO_URL="https://livekit.github.io/helm"
+LIVEKIT_CHART="livekit/livekit"
 
 echo -e "${BLUE}🚀 Starting Headscale Sidecar Deployment${NC}"
 echo "=========================================="
@@ -49,6 +53,14 @@ fi
 if ! command -v jq &> /dev/null; then
     print_error "jq is required but not installed. Please install jq and rerun."
     exit 1
+fi
+
+# Check if helm is available for LiveKit
+if ! command -v helm &> /dev/null; then
+    print_warning "helm not found; LiveKit helm install will be skipped"
+    HELM_AVAILABLE=false
+else
+    HELM_AVAILABLE=true
 fi
 
 # Check if headscale namespace exists
@@ -130,7 +142,7 @@ print_status "Created Kubernetes secret with auth keys"
 # Clean up temp file
 rm -f /tmp/headscale-auth-secrets.yaml
 
-# Step 4: Deploy services (GPU removed)
+# Step 4: Deploy services
 echo -e "\n${BLUE}🚢 Deploying services with sidecars...${NC}"
 
 # Deploy June Orchestrator
@@ -149,19 +161,24 @@ else
     print_warning "k8s/june-services/deployments/june-idp-headscale.yaml not found, skipping"
 fi
 
-# LiveKit (if using Helm)
-if [ -f "k8s/livekit/livekit-values-headscale.yaml" ] && command -v helm &> /dev/null; then
-    if helm list -n "$NAMESPACE" | grep -q livekit; then
-        helm upgrade livekit ./helm/livekit -n "$NAMESPACE" -f k8s/livekit/livekit-values-headscale.yaml
-        print_status "Updated LiveKit deployment"
-    else
-        print_warning "LiveKit Helm release not found, please deploy manually"
+# LiveKit via official Helm chart
+if [ "$HELM_AVAILABLE" = true ] && [ -f "k8s/livekit/livekit-values-headscale.yaml" ]; then
+    if ! helm repo list | awk '{print $1}' | grep -qx "$LIVEKIT_HELM_REPO_NAME"; then
+        helm repo add "$LIVEKIT_HELM_REPO_NAME" "$LIVEKIT_HELM_REPO_URL" || {
+            print_warning "Failed to add LiveKit helm repo; skipping LiveKit install"
+            SKIP_LIVEKIT=1
+        }
+    fi
+    if [ -z "$SKIP_LIVEKIT" ]; then
+        helm repo update
+        helm upgrade --install livekit "$LIVEKIT_CHART" -n "$NAMESPACE" -f k8s/livekit/livekit-values-headscale.yaml
+        print_status "Installed/updated LiveKit via official chart"
     fi
 else
-    print_warning "Helm not available or k8s/livekit/livekit-values-headscale.yaml not found, skipping LiveKit"
+    print_warning "Helm unavailable or values file missing; skipping LiveKit"
 fi
 
-# Step 5: Wait for deployments (GPU removed)
+# Step 5: Wait for deployments
 echo -e "\n${BLUE}⏳ Waiting for deployments to be ready...${NC}"
 
 for service in june-orchestrator june-idp; do
