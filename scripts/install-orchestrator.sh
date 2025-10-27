@@ -129,7 +129,7 @@ get_external_ip() {
     return 1
 }
 
-# Define installation phases (including new phases 11, 11.2, 11.5 & 12)
+# Define installation phases (REMOVED 08-livekit - now integrated in 09-june-platform)
 PHASES=(
     "01-prerequisites"
     "02-docker"
@@ -140,8 +140,7 @@ PHASES=(
     "03.5-gpu-operator"    # GPU Operator after Helm is installed
     "06-certificates"
     "07-stunner"
-    "08-livekit"
-    "09-june-platform"
+    "09-june-platform"     # LiveKit now included as part of June platform
     "10-final-setup"
     "11-headscale"          # VPN control plane server
     "11.2-headscale-sidecars" # Add Tailscale sidecars to June services
