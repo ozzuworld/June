@@ -72,14 +72,14 @@ spec:
           service:
             name: livekit-backend
             port:
-              number: 80
+              number: 7880
       - path: /
         pathType: Prefix
         backend:
           service:
             name: livekit-backend
             port:
-              number: 80
+              number: 7880
   - host: {{ .Values.domains.idp }}
     http:
       paths:
