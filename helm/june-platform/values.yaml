@@ -41,9 +41,9 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# LiveKit WebRTC Server
+# LiveKit WebRTC Server - NOW ENABLED BY DEFAULT
 livekit:
-  enabled: false  # Set to true when deploying with Tailscale sidecars
+  enabled: true  # ✅ CHANGED: Enable LiveKit with Tailscale integration
   replicas: 1
   image:
     repository: livekit/livekit-server
@@ -122,14 +122,14 @@ tts:
 # STUNner Configuration (for reference)
 # Note: STUNner is now configured via k8s/stunner/ manifests
 stunner:
-  enabled: false  # Deployed via install-livekit.sh
+  enabled: false  # Deployed via Phase 07-stunner
   username: june-user
   password: Pokemon123!
 
-# Tailscale Sidecar Configuration
+# Tailscale Sidecar Configuration - NOW ENABLED BY DEFAULT
 # Adds Tailscale sidecars to services for private network access via Headscale
 tailscale:
-  enabled: false  # Set to true to enable sidecars
+  enabled: true  # ✅ CHANGED: Enable Tailscale sidecars by default
   controlUrl: "https://headscale.ozzu.world"
   userspace: true  # Use userspace networking for better security
   image: "ghcr.io/tailscale/tailscale:latest"
