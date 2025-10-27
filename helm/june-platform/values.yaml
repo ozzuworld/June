@@ -41,9 +41,9 @@ keycloak:
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
 
-# LiveKit WebRTC Server - NOW ENABLED BY DEFAULT
+# LiveKit WebRTC Server - KEEP ENABLED
 livekit:
-  enabled: true  # ✅ CHANGED: Enable LiveKit with Tailscale integration
+  enabled: true
   replicas: 1
   image:
     repository: livekit/livekit-server
@@ -126,12 +126,12 @@ stunner:
   username: june-user
   password: Pokemon123!
 
-# Tailscale Sidecar Configuration - NOW ENABLED BY DEFAULT
-# Adds Tailscale sidecars to services for private network access via Headscale
+# Tailscale Sidecar Configuration - DISABLED BY DEFAULT (Option B)
+# Sidecars are enabled later by phase 11.2 using values-headscale.yaml
 tailscale:
-  enabled: true  # ✅ CHANGED: Enable Tailscale sidecars by default
+  enabled: false  # CHANGED: disable here; enabled in 11.2 via override
   controlUrl: "https://headscale.ozzu.world"
-  userspace: true  # Use userspace networking for better security
+  userspace: true
   image: "ghcr.io/tailscale/tailscale:latest"
   resources:
     requests:
@@ -140,7 +140,6 @@ tailscale:
     limits:
       cpu: 200m
       memory: 256Mi
-  # Secret key names for auth keys (created by deploy-headscale-sidecars.sh)
   authKeyRefs:
     orchestrator: "june-orchestrator-authkey"
     idp: "june-idp-authkey"
