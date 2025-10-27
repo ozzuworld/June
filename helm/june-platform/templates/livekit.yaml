@@ -59,7 +59,7 @@ spec:
               use_external_ip: {{ .Values.livekit.config.rtc.use_external_ip }}
               use_ice_lite: {{ .Values.livekit.config.rtc.use_ice_lite }}
             keys:
-              devkey: secret
+              devkey: bbUEBtMjPHrvdZwFEwcpPDJkePL5yTrJ
         
         resources:
           requests:
