@@ -126,6 +126,50 @@ headscale_cmd() {
     kubectl -n "$HEADSCALE_NAMESPACE" exec -i deployment/headscale -c headscale -- headscale "$@"
 }
 
+# Step X: Reconcile LiveKit ownership to june-platform
+echo -e "\n${BLUE}🧹 Reconciling LiveKit resources ownership...${NC}"
+
+# Detect a separate Helm release that owns LiveKit
+LIVEKIT_RELEASES="$(helm list -A -o json | jq -r '.[] | select(.name|test("^livekit$")) | "\(.namespace):\(.name)"')"
+
+if [ -n "$LIVEKIT_RELEASES" ]; then
+  echo "Found standalone LiveKit Helm release(s):"
+  echo "$LIVEKIT_RELEASES"
+  while IFS= read -r rel; do
+    rel_ns="$(echo "$rel" | cut -d: -f1)"
+    rel_name="$(echo "$rel" | cut -d: -f2)"
+    echo "Uninstalling release $rel_name in namespace $rel_ns..."
+    helm uninstall "$rel_name" -n "$rel_ns" || true
+  done <<< "$LIVEKIT_RELEASES"
+fi
+
+# Remove orphaned LiveKit resources that block june-platform ownership
+echo "Deleting any orphaned LiveKit resources in namespace $NAMESPACE..."
+kubectl delete deployment livekit-livekit-server -n "$NAMESPACE" --ignore-not-found
+kubectl delete service livekit-livekit-server -n "$NAMESPACE" --ignore-not-found
+
+# If still present with wrong Helm ownership, forcefully remove finalizers & delete
+if kubectl get svc livekit-livekit-server -n "$NAMESPACE" &>/dev/null; then
+  echo "Force-clearing finalizers on Service livekit-livekit-server..."
+  kubectl patch service livekit-livekit-server -n "$NAMESPACE" \
+    -p '{"metadata":{"finalizers":[]}}' --type=merge || true
+  kubectl delete service livekit-livekit-server -n "$NAMESPACE" --force --grace-period=0 || true
+fi
+
+if kubectl get deploy livekit-livekit-server -n "$NAMESPACE" &>/dev/null; then
+  echo "Force-clearing finalizers on Deployment livekit-livekit-server..."
+  kubectl patch deployment livekit-livekit-server -n "$NAMESPACE" \
+    -p '{"metadata":{"finalizers":[]}}' --type=merge || true
+  kubectl delete deployment livekit-livekit-server -n "$NAMESPACE" --force --grace-period=0 || true
+fi
+
+# Ensure namespace is “owned” by Helm with june-platform labels (helps ownership)
+kubectl label namespace "$NAMESPACE" app.kubernetes.io/managed-by=Helm --overwrite || true
+kubectl annotate namespace "$NAMESPACE" meta.helm.sh/release-name=june-platform --overwrite || true
+kubectl annotate namespace "$NAMESPACE" meta.helm.sh/release-namespace="$NAMESPACE" --overwrite || true
+
+print_status "LiveKit ownership reconciled for june-platform"
+
 # Step 1: Create Headscale users
 echo -e "\n${BLUE}👥 Creating Headscale users...${NC}"
 
