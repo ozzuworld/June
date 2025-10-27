@@ -1,7 +1,7 @@
 apiVersion: stunner.l7mp.io/v1
 kind: UDPRoute
 metadata:
-  name: livekit-media
+  name: livekit-udp-route
   namespace: stunner
 spec:
   parentRefs:
@@ -9,6 +9,6 @@ spec:
     namespace: stunner
   rules:
   - backendRefs:
-    - name: livekit-livekit-server
+    - name: livekit-udp
       namespace: june-services
-      port: 7881
+      port: 7882
