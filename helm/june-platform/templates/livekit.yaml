@@ -44,7 +44,7 @@ spec:
         - containerPort: {{ .Values.livekit.config.rtc.tcp_port }}
           name: rtc-tcp
           protocol: TCP
-        - containerPort: {{ .Values.livekit.config.rtc.port_range_start }}
+        - containerPort: {{ .Values.livekit.config.rtc.udp_port | default 7882 }}
           name: rtc-udp
           protocol: UDP
         
@@ -54,6 +54,7 @@ spec:
             port: {{ .Values.livekit.config.port }}
             rtc:
               tcp_port: {{ .Values.livekit.config.rtc.tcp_port }}
+              udp_port: {{ .Values.livekit.config.rtc.udp_port | default 7882 }}
               port_range_start: {{ .Values.livekit.config.rtc.port_range_start }}
               port_range_end: {{ .Values.livekit.config.rtc.port_range_end }}
               use_external_ip: {{ .Values.livekit.config.rtc.use_external_ip }}
@@ -181,6 +182,7 @@ spec:
       {{- end }}
 
 ---
+# TCP Service for HTTP and RTC TCP traffic
 apiVersion: v1
 kind: Service
 metadata:
@@ -203,4 +205,26 @@ spec:
     targetPort: {{ .Values.livekit.config.rtc.tcp_port }}
     name: rtc-tcp
     protocol: TCP
+
+---
+# UDP Service for RTC UDP traffic (required for STUNner)
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-udp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: livekit-udp
+    app.kubernetes.io/name: livekit
+    service.stunner.l7mp.io/type: media  # STUNner annotation
+spec:
+  type: ClusterIP
+  selector:
+    app: livekit-livekit-server
+    app.kubernetes.io/name: livekit
+  ports:
+  - port: {{ .Values.livekit.config.rtc.udp_port | default 7882 }}
+    targetPort: {{ .Values.livekit.config.rtc.udp_port | default 7882 }}
+    name: rtc-udp
+    protocol: UDP
 {{- end }}
