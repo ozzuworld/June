@@ -9,5 +9,5 @@ spec:
   rules:
     - backendRefs:
         - name: livekit-udp
-          namespace: media
+          namespace: june-services
           port: 7882
