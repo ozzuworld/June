@@ -13,10 +13,11 @@ helm repo update >/dev/null
 helm upgrade --install stunner stunner/stunner-gateway-operator -n stunner-system --create-namespace
 kubectl -n stunner-system rollout status deploy/stunner-gateway-operator
 
-echo "==> Creating TURN Secret (from env TURN_USERNAME / TURN_PASSWORD)"
+echo "==> Creating TURN Secret in stunner-system namespace (from env TURN_USERNAME / TURN_PASSWORD)"
 : "${TURN_USERNAME:=demo}"
 : "${TURN_PASSWORD:=supersecret}"
-kubectl -n "$STUNNER_NS" create secret generic stunner-auth-secret \
+# Create secret in stunner-system namespace where GatewayConfig expects it
+kubectl -n stunner-system create secret generic stunner-auth-secret \
   --from-literal=type=static \
   --from-literal=username="$TURN_USERNAME" \
   --from-literal=password="$TURN_PASSWORD" \
@@ -40,3 +41,8 @@ for i in {1..30}; do
   sleep 2
 done
 kubectl -n "$STUNNER_NS" get gateway stunner-gateway -o wide
+
+echo "==> STUNner deployment completed successfully"
+echo "    TURN Server: turn:${PUBIP}:3478"
+echo "    Username: ${TURN_USERNAME}"
+echo "    Password: ${TURN_PASSWORD}"
