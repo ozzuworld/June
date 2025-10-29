@@ -158,12 +158,7 @@ async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
     _ensure_buffer(pid).append(pcm16k)
 
 
-async def join_livekit_room():
-    global room, room_connected
-    logger.info("Connecting STT to LiveKit via orchestrator token")
-
-    room = rtc.Room()
-
+def join_livekit_room_sync_callbacks(room: rtc.Room):
     @room.on("participant_connected")
     def _p_join(p):
         logger.info(f"👤 Participant joined: {p.identity}")
@@ -181,7 +176,8 @@ async def join_livekit_room():
         logger.info(f"📢 Track unpublished by {participant.identity}: {pub.kind} - {pub.name}")
 
     @room.on("track_subscribed")
-    async def _track_sub(track: rtc.Track, pub, participant):
+    def _track_sub(track: rtc.Track, pub, participant):
+        # Synchronous callback: create async task for consumption
         logger.info(f"🎵 TRACK SUBSCRIBED: kind={track.kind}, participant={participant.identity}")
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             logger.info(f"❌ Skipping non-audio track: {track.kind}")
@@ -198,6 +194,14 @@ async def join_livekit_room():
     @room.on("track_unsubscribed")
     def _track_unsub(track, pub, participant):
         logger.info(f"🔇 Unsubscribed from track of {participant.identity}")
+
+
+async def join_livekit_room():
+    global room, room_connected
+    logger.info("Connecting STT to LiveKit via orchestrator token")
+
+    room = rtc.Room()
+    join_livekit_room_sync_callbacks(room)
 
     await connect_room_as_subscriber(room, "june-stt")
     room_connected = True
@@ -223,7 +227,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.0", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.1", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -236,7 +240,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.0", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.1", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
