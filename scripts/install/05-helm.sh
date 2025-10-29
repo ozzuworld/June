@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Phase 5: Helm Installation
-# Installs Helm package manager for Kubernetes
+# Installs Helm package manager for Kubernetes with fallback methods
 
 set -e
 
@@ -19,29 +19,122 @@ cleanup_stale_nvidia_repo() {
     fi
 }
 
+install_helm_official() {
+    log "Attempting official Helm installation method..."
+    
+    # Test if get.helm.sh is accessible
+    if curl -fsSL https://get.helm.sh/helm-latest-version >/dev/null 2>&1; then
+        log "Official Helm CDN is accessible, using official installer..."
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
+        return 0
+    else
+        warn "Official Helm CDN (get.helm.sh) is not accessible"
+        return 1
+    fi
+}
+
+install_helm_github() {
+    log "Attempting GitHub releases installation method..."
+    
+    # Get latest version from GitHub API
+    if curl -s https://api.github.com/repos/helm/helm/releases/latest >/dev/null 2>&1; then
+        local helm_version
+        helm_version=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        
+        if [ -n "$helm_version" ]; then
+            log "Latest Helm version from GitHub: $helm_version"
+            local download_url="https://github.com/helm/helm/releases/download/${helm_version}/helm-${helm_version}-linux-amd64.tar.gz"
+            
+            local temp_dir
+            temp_dir=$(mktemp -d)
+            
+            log "Downloading Helm from GitHub releases..."
+            if curl -L "$download_url" -o "$temp_dir/helm.tar.gz" 2>/dev/null; then
+                if tar -zxf "$temp_dir/helm.tar.gz" -C "$temp_dir" 2>/dev/null; then
+                    if cp "$temp_dir/linux-amd64/helm" /usr/local/bin/helm; then
+                        chmod +x /usr/local/bin/helm
+                        rm -rf "$temp_dir"
+                        log "Helm installed from GitHub releases"
+                        return 0
+                    fi
+                fi
+            fi
+            rm -rf "$temp_dir"
+        fi
+    fi
+    
+    warn "GitHub releases method failed"
+    return 1
+}
+
+install_helm_snap() {
+    log "Attempting snap installation method..."
+    
+    if command -v snap >/dev/null 2>&1; then
+        log "Snap is available, installing Helm..."
+        if snap install helm --classic >/dev/null 2>&1; then
+            log "Helm installed via snap"
+            return 0
+        fi
+    fi
+    
+    warn "Snap installation method failed"
+    return 1
+}
+
+install_helm_apt() {
+    log "Attempting APT installation method..."
+    
+    # Try to add Helm APT repository
+    if curl -fsSL https://baltocdn.com/helm/signing.asc 2>/dev/null | gpg --dearmor 2>/dev/null | tee /usr/share/keyrings/helm.gpg > /dev/null 2>&1; then
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | tee /etc/apt/sources.list.d/helm-stable-debian.list >/dev/null
+        
+        if apt-get update >/dev/null 2>&1 && apt-get install helm -y >/dev/null 2>&1; then
+            log "Helm installed via APT"
+            return 0
+        fi
+    fi
+    
+    warn "APT installation method failed"
+    return 1
+}
+
 install_helm() {
     log "Phase 5/9: Installing Helm..."
     
     # Check if Helm is already installed
-    if command -v helm &> /dev/null; then
+    if command -v helm >/dev/null 2>&1; then
         success "Helm already installed"
-        log "Helm version: $(helm version --short)"
+        log "Helm version: $(helm version --short 2>/dev/null || helm version 2>/dev/null || echo 'Unknown version')"
         return 0
     fi
     
-    log "Downloading and installing Helm..."
+    log "Downloading and installing Helm with fallback methods..."
     
     # Defensive cleanup of stale repos that could break curl/apt in this phase
     cleanup_stale_nvidia_repo
     
-    # Download and install Helm using the official script
-    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash > /dev/null 2>&1
+    # Try multiple installation methods in order of preference
+    local methods=(
+        "install_helm_official"
+        "install_helm_github" 
+        "install_helm_snap"
+        "install_helm_apt"
+    )
+    
+    for method in "${methods[@]}"; do
+        log "Trying installation method: ${method#install_helm_}"
+        if $method; then
+            break
+        fi
+        warn "Method ${method#install_helm_} failed, trying next method..."
+    done
     
     # Verify Helm installation
-    verify_command "helm" "Helm installation failed"
+    verify_command "helm" "All Helm installation methods failed"
     
-    success "Helm installed"
-    log "Helm version: $(helm version --short)"
+    success "Helm installed successfully"
+    log "Helm version: $(helm version --short 2>/dev/null || helm version 2>/dev/null || echo 'Version check failed')"
 }
 
 setup_helm_repos() {
@@ -121,7 +214,7 @@ verify_helm() {
     
     # Show Helm environment
     log "Helm environment:"
-    helm env
+    helm env 2>/dev/null || log "Helm environment not available"
 }
 
 # Main execution
