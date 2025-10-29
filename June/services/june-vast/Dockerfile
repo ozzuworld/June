@@ -1,4 +1,4 @@
-# June vast.ai combined STT+TTS image with isolated venvs and Tailscale
+# June vast.ai combined STT+TTS image with isolated venvs
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -7,15 +7,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Base system deps (both services) + Tailscale
+# Base system deps (both services)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
-    ca-certificates curl iptables iproute2 \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Tailscale (inside container)
-RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /app
 
@@ -57,7 +54,7 @@ ENV TTS_CACHE_PATH=/app/cache \
 # Expose service ports
 EXPOSE 8000 8001
 
-# Add entrypoint script that starts tailscale and both services
+# Add entrypoint script that starts both services
 COPY June/services/june-vast/start-both.sh /app/start-both.sh
 RUN chmod +x /app/start-both.sh
 
