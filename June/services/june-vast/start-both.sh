@@ -1,52 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tailscale: join tailnet if TS_AUTHKEY provided
-if command -v tailscale >/dev/null 2>&1; then
-  if [ -n "${TS_AUTHKEY:-}" ]; then
-    echo "[tailscale] starting and joining tailnet in userspace mode (vast.ai compatible)"
-    
-    # Create required directories
-    mkdir -p /var/lib/tailscale /var/run/tailscale
-    
-    # Run tailscaled in userspace networking mode (no kernel TUN required)
-    /usr/sbin/tailscaled \
-      --state=/var/lib/tailscale/tailscaled.state \
-      --socket=/var/run/tailscale/tailscaled.sock \
-      --tun=userspace-networking &
-    
-    TSDAEMON_PID=$!
-    
-    # Wait longer for socket to be ready in userspace mode
-    sleep 10
-    
-    echo "[tailscale] connecting to headscale..."
-    # Connect using socket and specify login server
-    tailscale --socket=/var/run/tailscale/tailscaled.sock up \
-      --login-server="https://headscale.ozzu.world" \
-      --authkey="$TS_AUTHKEY" \
-      --accept-routes \
-      --hostname="june-vast-$(hostname)" || {
-      echo "[tailscale] connection failed, continuing without VPN"
-    }
-    
-    # Quick connectivity test
-    if tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null 2>&1; then
-      echo "[tailscale] connected successfully"
-      # Use private network for service communication
-      export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://june-orchestrator.tail.ozzu.world}"
-    else
-      echo "[tailscale] not connected, using public endpoints"
-      export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
-    fi
-  else
-    echo "[tailscale] TS_AUTHKEY not set; using public endpoints"
-    export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
-  fi
-else
-  echo "[tailscale] not installed, using public endpoints"
-  export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
-fi
+echo "[june-vast] Starting june-vast services without Tailscale"
+
+# Use direct communication with orchestrator
+export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
 
 mkdir -p /app/models /app/cache
 
@@ -76,10 +34,6 @@ term() {
   echo "[entrypoint] terminating services"
   kill -TERM "$STT_PID" "$TTS_PID" 2>/dev/null || true
   wait "$STT_PID" "$TTS_PID" 2>/dev/null || true
-  if [ -n "${TSDAEMON_PID:-}" ]; then
-    kill -TERM "$TSDAEMON_PID" 2>/dev/null || true
-    wait "$TSDAEMON_PID" 2>/dev/null || true
-  fi
 }
 trap term SIGINT SIGTERM
 
