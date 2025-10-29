@@ -187,8 +187,8 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
         stream = rtc.AudioStream(track)
         async def consume():
             logger.info(f"🎧 Starting audio consumption for {pid}")
-            async for f in stream:
-                await _on_audio_frame(pid, f)
+            async for event in stream:
+                await _on_audio_frame(pid, event.frame)
         asyncio.create_task(consume())
 
     @room.on("track_unsubscribed")
@@ -227,7 +227,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.1", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.2", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -240,7 +240,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.1", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.2", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
