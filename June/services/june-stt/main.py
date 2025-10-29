@@ -30,7 +30,7 @@ room_connected: bool = False
 
 ParticipantKey = str
 buffers: dict[ParticipantKey, Deque[np.ndarray]] = {}
-BUFFER_TARGET_SEC = 1.0
+BUFFER_TARGET_SEC = 0.2  # lowered threshold for faster processing
 SAMPLE_RATE = 16000
 
 
@@ -38,6 +38,13 @@ def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
     if pid not in buffers:
         buffers[pid] = deque()
     return buffers[pid]
+
+
+def _analyze_audio(pcm: np.ndarray) -> dict:
+    if pcm.size == 0:
+        return {"rms": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0}
+    rms = float(np.sqrt(np.mean(pcm ** 2)))
+    return {"rms": rms, "min": float(pcm.min()), "max": float(pcm.max()), "mean": float(pcm.mean())}
 
 
 def _gather_seconds(pid: ParticipantKey, seconds: float) -> Optional[np.ndarray]:
@@ -110,21 +117,24 @@ async def _process_loop():
         try:
             loop_count += 1
             active_participants = len(buffers)
-            if loop_count % 50 == 0 and active_participants > 0:  # Log every 10 seconds
+            if loop_count % 25 == 0 and active_participants > 0:  # more frequent
                 logger.info(f"🔊 Processing loop #{loop_count}: {active_participants} participants")
             
             for pid in list(buffers.keys()):
                 buffer_size = len(buffers[pid])
-                if buffer_size > 0 and loop_count % 25 == 0:  # Log every 5 seconds
+                if buffer_size > 0 and loop_count % 10 == 0:  # more frequent
                     logger.info(f"📈 Buffer for {pid}: {buffer_size} chunks")
                 
                 audio = _gather_seconds(pid, BUFFER_TARGET_SEC)
-                if audio is None or len(audio) < int(0.5 * SAMPLE_RATE):
+                if audio is None or len(audio) < int(0.1 * SAMPLE_RATE):  # lowered from 0.5s
                     continue
                 if not whisper_service.is_model_ready():
                     logger.warning("⚠️ Whisper model not ready")
                     continue
-                    
+                
+                stats = _analyze_audio(audio)
+                logger.info(f"🔍 Audio stats [{pid}]: rms={stats['rms']:.6f} min={stats['min']:.3f} max={stats['max']:.3f} mean={stats['mean']:.6f} samples={len(audio)}")
+                
                 logger.info(f"🎯 Processing {len(audio)} audio samples for {pid}")
                 res = await whisper_service.transcribe_array(audio, SAMPLE_RATE)
                 text = res.get("text", "").strip()
@@ -132,14 +142,13 @@ async def _process_loop():
                     logger.info(f"✅ ASR[{pid}]: {text}")
                     await _notify_orchestrator(pid, text, res.get("language"))
                 else:
-                    logger.debug(f"🔇 No speech detected for {pid}")
+                    logger.info(f"🔇 No speech detected for {pid}")
         except Exception as e:
             logger.warning(f"❌ Process loop error: {e}")
         await asyncio.sleep(0.2)
 
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
-    global frame_counts
     if not hasattr(_on_audio_frame, 'frame_counts'):
         _on_audio_frame.frame_counts = {}
     
@@ -148,11 +157,9 @@ async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
         
     _on_audio_frame.frame_counts[pid] += 1
     
-    # Log every 100 frames
     if _on_audio_frame.frame_counts[pid] % 100 == 0:
         logger.info(f"📊 Received {_on_audio_frame.frame_counts[pid]} audio frames from {pid}")
     
-    logger.debug(f"🎤 Audio frame from {pid}: {len(frame.data)} bytes, {frame.sample_rate}Hz")
     pcm, sr = _frame_to_float32_mono(frame)
     pcm16k = _resample_to_16k_mono(pcm, sr)
     _ensure_buffer(pid).append(pcm16k)
@@ -177,7 +184,6 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
 
     @room.on("track_subscribed")
     def _track_sub(track: rtc.Track, pub, participant):
-        # Synchronous callback: create async task for consumption
         logger.info(f"🎵 TRACK SUBSCRIBED: kind={track.kind}, participant={participant.identity}")
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             logger.info(f"❌ Skipping non-audio track: {track.kind}")
@@ -227,7 +233,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.2", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.3-debug", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -240,7 +246,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.2", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.3-debug", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
