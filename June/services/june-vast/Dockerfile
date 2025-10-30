@@ -1,5 +1,5 @@
 # June vast.ai combined STT+TTS image with isolated venvs
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -23,19 +23,19 @@ RUN python3.10 -m venv /venv-stt && python3.10 -m venv /venv-tts
 COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
 COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
-# STT deps (torch 2.1.2 cu118)
+# STT deps (torch 2.1.2 cu121 for CUDA 12.2 compatibility)
 RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
     /venv-stt/bin/pip install "numpy<2.0" && \
     /venv-stt/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
-      --index-url https://download.pytorch.org/whl/cu118 && \
+      --index-url https://download.pytorch.org/whl/cu121 && \
     /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
-# TTS deps (torch 2.2.2 cu118)
+# TTS deps (torch 2.2.2 cu121 for CUDA 12.2 compatibility)
 RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
     /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
-      --index-url https://download.pytorch.org/whl/cu118 && \
+      --index-url https://download.pytorch.org/whl/cu121 && \
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
