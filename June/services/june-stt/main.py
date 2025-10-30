@@ -33,6 +33,9 @@ buffers: dict[ParticipantKey, Deque[np.ndarray]] = {}
 BUFFER_TARGET_SEC = 0.2  # lowered threshold for faster processing
 SAMPLE_RATE = 16000
 
+# Filter out TTS services from STT processing
+EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt"}
+
 
 def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
     if pid not in buffers:
@@ -136,6 +139,12 @@ async def _process_loop():
                 logger.info(f"🔊 Processing loop #{loop_count}: {active_participants} participants")
             
             for pid in list(buffers.keys()):
+                # Skip TTS services - only process human participants
+                if pid in EXCLUDE_PARTICIPANTS:
+                    if loop_count % 50 == 0:  # Log occasionally
+                        logger.info(f"⏭️ Skipping TTS participant: {pid}")
+                    continue
+                    
                 buffer_size = len(buffers[pid])
                 if buffer_size > 0 and loop_count % 10 == 0:
                     logger.info(f"📈 Buffer for {pid}: {buffer_size} chunks")
@@ -150,7 +159,6 @@ async def _process_loop():
                     continue
                 logger.info(f"🎯 Processing {len(audio)} audio samples for {pid}")
                 # Write chunk to a temp WAV and call whisper_service.transcribe on the path
-                # Use an in-memory NamedTemporaryFile to avoid disk persistence
                 import tempfile, soundfile as sf
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
                     sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
@@ -237,7 +245,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.4-fix", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.5-final", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -250,7 +258,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.4-fix", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.5-final", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
