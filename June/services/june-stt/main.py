@@ -86,7 +86,7 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
         import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
-                f"{config.ORCHESTRATOR_URL}/api/webhooks/transcript",
+                f"{config.ORCHESTRATOR_URL}/api/webhooks/stt",
                 json=payload,
             )
             if r.status_code != 200:
@@ -245,7 +245,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.5-final", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.6-webhook", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -258,7 +258,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.5-final", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.6-webhook", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
