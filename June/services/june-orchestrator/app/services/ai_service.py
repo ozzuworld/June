@@ -100,7 +100,6 @@ async def summarize_conversation(
     
     try:
         from google import genai
-        from google.genai import types
         
         client = genai.Client(api_key=gemini_api_key)
         
@@ -117,9 +116,9 @@ async def summarize_conversation(
 Summary:"""
         
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model='gemini-2.0-flash',
             contents=summary_prompt,
-            config=types.GenerateContentConfig(
+            config=genai.types.GenerateContentConfig(
                 temperature=0.3,
                 max_output_tokens=150
             )
@@ -212,7 +211,6 @@ async def generate_response(
             return fallback_response(text), int((time.time() - start_time) * 1000)
         
         from google import genai
-        from google.genai import types
         
         client = genai.Client(api_key=config.services.gemini_api_key)
         
@@ -226,20 +224,20 @@ async def generate_response(
         
         # Generate response with optimized settings for voice
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model='gemini-2.0-flash',
             contents=prompt,
-            config=types.GenerateContentConfig(
+            config=genai.types.GenerateContentConfig(
                 temperature=0.7,  # Natural but consistent
                 top_p=0.95,
                 top_k=40,
                 max_output_tokens=200,  # Keep responses short for voice
                 # Safety settings for voice assistant
                 safety_settings=[
-                    types.SafetySetting(
+                    genai.types.SafetySetting(
                         category="HARM_CATEGORY_HATE_SPEECH",
                         threshold="BLOCK_MEDIUM_AND_ABOVE"
                     ),
-                    types.SafetySetting(
+                    genai.types.SafetySetting(
                         category="HARM_CATEGORY_DANGEROUS_CONTENT",
                         threshold="BLOCK_MEDIUM_AND_ABOVE"
                     ),
