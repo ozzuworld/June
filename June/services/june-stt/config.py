@@ -27,14 +27,14 @@ class Config:
     USE_BATCHED_INFERENCE: bool = os.getenv("STT_USE_BATCHED", "true").lower() == "true"
     BATCH_SIZE: int = int(os.getenv("STT_BATCH_SIZE", "8"))
     
-    # VAD Configuration (compatible set)
-    VAD_ENABLED: bool = os.getenv("VAD_ENABLED", "true").lower() == "true"
-    VAD_THRESHOLD: float = float(os.getenv("VAD_THRESHOLD", "0.5"))
-    VAD_MIN_SPEECH_DURATION_MS: int = int(os.getenv("VAD_MIN_SPEECH_DURATION_MS", "250"))
-    VAD_MIN_SILENCE_DURATION_MS: int = int(os.getenv("VAD_MIN_SILENCE_DURATION_MS", "100"))
-    VAD_SPEECH_PAD_MS: int = int(os.getenv("VAD_SPEECH_PAD_MS", "30"))
+    # VAD Configuration (disabled by default - too strict)
+    VAD_ENABLED: bool = os.getenv("VAD_ENABLED", "false").lower() == "true"
+    VAD_THRESHOLD: float = float(os.getenv("VAD_THRESHOLD", "0.2"))  # Lowered from 0.5
+    VAD_MIN_SPEECH_DURATION_MS: int = int(os.getenv("VAD_MIN_SPEECH_DURATION_MS", "100"))  # Lowered from 250
+    VAD_MIN_SILENCE_DURATION_MS: int = int(os.getenv("VAD_MIN_SILENCE_DURATION_MS", "50"))   # Lowered from 100
+    VAD_SPEECH_PAD_MS: int = int(os.getenv("VAD_SPEECH_PAD_MS", "50"))  # Increased from 30
     
-    # Silence Detection (Pre-filter before Whisper)
+    # Silence Detection (Pre-filter before Whisper) - this works perfectly
     SILENCE_RMS_THRESHOLD: float = float(os.getenv("SILENCE_RMS_THRESHOLD", "0.001"))
     SILENCE_FRAMES_THRESHOLD: int = int(os.getenv("SILENCE_FRAMES_THRESHOLD", "5"))
     
@@ -66,7 +66,7 @@ class Config:
     
     @property
     def vad_parameters(self) -> dict:
-        """Get VAD parameters (compat set)"""
+        """Get VAD parameters (more permissive settings)"""
         return {
             "threshold": self.VAD_THRESHOLD,
             "min_speech_duration_ms": self.VAD_MIN_SPEECH_DURATION_MS,
