@@ -68,7 +68,7 @@ class OptimizedWhisperService:
     
     async def transcribe(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         """
-        Optimized transcription with best practices VAD settings
+        Optimized transcription with adjustable VAD settings
         """
         if not self.is_model_ready():
             raise RuntimeError("Model not ready")
@@ -76,15 +76,10 @@ class OptimizedWhisperService:
         start_time = time.time()
         
         try:
-            # OPTIMIZED VAD parameters from best practices
-            vad_parameters = {
-                "threshold": 0.35,                    # Optimal threshold
-                "min_silence_duration_ms": 750,       # Shorter for responsiveness  
-                "speech_pad_ms": 400                  # Standard padding
-                # Remove window_size_samples - not supported in current VAD version
-            }
+            # Start without VAD to avoid dropping short/quiet speech
+            vad_filter = False
+            vad_parameters = None
 
-            
             logger.info(f"Transcribing with optimized settings: beam_size={config.WHISPER_BEAM_SIZE}")
             
             loop = asyncio.get_event_loop()
@@ -96,12 +91,11 @@ class OptimizedWhisperService:
                     language=language,
                     task="transcribe",
                     temperature=0.0,
-                    vad_filter=True,  # Always use VAD for better quality
+                    vad_filter=vad_filter,
                     vad_parameters=vad_parameters
                 )
             )
             
-            # Convert generator to list (required by faster-whisper)
             segment_list = list(segments)
             full_text = " ".join([segment.text.strip() for segment in segment_list]).strip()
             
