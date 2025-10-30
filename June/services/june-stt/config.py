@@ -27,12 +27,11 @@ class Config:
     USE_BATCHED_INFERENCE: bool = os.getenv("STT_USE_BATCHED", "true").lower() == "true"
     BATCH_SIZE: int = int(os.getenv("STT_BATCH_SIZE", "8"))
     
-    # VAD Configuration (faster-whisper v1.1.1+ restored parameter names)
+    # VAD Configuration (compatible set)
     VAD_ENABLED: bool = os.getenv("VAD_ENABLED", "true").lower() == "true"
     VAD_THRESHOLD: float = float(os.getenv("VAD_THRESHOLD", "0.5"))
     VAD_MIN_SPEECH_DURATION_MS: int = int(os.getenv("VAD_MIN_SPEECH_DURATION_MS", "250"))
     VAD_MIN_SILENCE_DURATION_MS: int = int(os.getenv("VAD_MIN_SILENCE_DURATION_MS", "100"))
-    VAD_WINDOW_SIZE_SAMPLES: int = int(os.getenv("VAD_WINDOW_SIZE_SAMPLES", "512"))
     VAD_SPEECH_PAD_MS: int = int(os.getenv("VAD_SPEECH_PAD_MS", "30"))
     
     # Silence Detection (Pre-filter before Whisper)
@@ -67,12 +66,11 @@ class Config:
     
     @property
     def vad_parameters(self) -> dict:
-        """Get VAD parameters dict for faster-whisper v1.1.1+ format"""
+        """Get VAD parameters (compat set)"""
         return {
             "threshold": self.VAD_THRESHOLD,
             "min_speech_duration_ms": self.VAD_MIN_SPEECH_DURATION_MS,
             "min_silence_duration_ms": self.VAD_MIN_SILENCE_DURATION_MS,
-            "window_size_samples": self.VAD_WINDOW_SIZE_SAMPLES,
             "speech_pad_ms": self.VAD_SPEECH_PAD_MS
         }
 
