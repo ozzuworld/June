@@ -1,13 +1,9 @@
-# June STT Service Dependencies (PyAV-free)
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
-openai-whisper==20231117
-faster-whisper==1.0.3
-livekit==0.11.1
-livekit-api==0.6.0
-httpx==0.25.2
-pydantic==2.5.0
-python-multipart==0.0.6
-numpy==1.24.3
-scipy==1.11.4
+uvicorn==0.24.0
+livekit==0.10.1
+faster-whisper==1.2.0
+torch>=2.0.0
 soundfile==0.12.1
+scipy==1.11.4
+httpx==0.25.2
+numpy>=1.24.0
