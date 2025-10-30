@@ -1,42 +1,51 @@
 """
-Optimized Faster-Whisper Service with silence detection to prevent false transcriptions
+Modern Faster-Whisper v1.2.0 Service with batched inference and native VAD
+Supports both regular and batched transcription with advanced silence handling
 """
 import os
 import time
 import asyncio
 import logging
 import threading
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 import torch
 import numpy as np
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, BatchedInferencePipeline
 
 from config import config
 
 logger = logging.getLogger(__name__)
 
-class OptimizedWhisperService:
+class ModernWhisperService:
     """
-    Faster-Whisper service with silence detection to prevent "You" loop from silent audio
+    faster-whisper v1.2.0 service with batched inference and advanced VAD
+    Features:
+    - 4x faster batched inference
+    - Native silence removal in batched mode
+    - Advanced VAD with tuned parameters
+    - RMS pre-filtering for efficiency
+    - False positive filtering
     """
     
     def __init__(self):
         self.model = None
+        self.batched_pipeline = None
         self.is_ready = threading.Event()
         self.load_error = None
         self._lock = threading.Lock()
         
     async def initialize(self):
-        """Initialize model with optimized settings"""
+        """Initialize model with modern faster-whisper v1.2.0 features"""
         if self.model:
             return
             
         try:
             os.makedirs(config.WHISPER_CACHE_DIR, exist_ok=True)
             
-            logger.info(f"Loading Faster-Whisper {config.WHISPER_MODEL} on {config.WHISPER_DEVICE}")
-            logger.info(f"Using optimized compute_type: {config.WHISPER_COMPUTE_TYPE}")
+            logger.info(f"Loading faster-whisper v1.2.0 - {config.WHISPER_MODEL} on {config.WHISPER_DEVICE}")
+            logger.info(f"Batched inference: {config.USE_BATCHED_INFERENCE}, VAD: {config.VAD_ENABLED}")
+            logger.info(f"Compute type: {config.WHISPER_COMPUTE_TYPE}, Batch size: {config.BATCH_SIZE}")
             
             loop = asyncio.get_event_loop()
             self.model = await loop.run_in_executor(
@@ -44,8 +53,14 @@ class OptimizedWhisperService:
                 self._create_model
             )
             
+            # Initialize batched pipeline if enabled
+            if config.USE_BATCHED_INFERENCE:
+                logger.info("Initializing BatchedInferencePipeline for 4x speed boost...")
+                self.batched_pipeline = BatchedInferencePipeline(model=self.model)
+                logger.info("✅ Batched inference ready - 4x performance boost enabled")
+            
             self.is_ready.set()
-            logger.info("✅ Faster-Whisper model ready")
+            logger.info("✅ faster-whisper v1.2.0 ready with modern features")
             
         except Exception as e:
             logger.error(f"❌ Model initialization failed: {e}")
@@ -53,7 +68,7 @@ class OptimizedWhisperService:
             raise
     
     def _create_model(self) -> WhisperModel:
-        """Create model with optimized parameters"""
+        """Create model with optimized v1.2.0 parameters"""
         return WhisperModel(
             config.WHISPER_MODEL,
             device=config.WHISPER_DEVICE,
@@ -61,7 +76,7 @@ class OptimizedWhisperService:
             cpu_threads=config.WHISPER_CPU_THREADS if config.WHISPER_DEVICE == "cpu" else 0,
             num_workers=config.WHISPER_NUM_WORKERS,
             download_root=config.WHISPER_CACHE_DIR,
-            local_files_only=False  # Allow downloads for first run
+            local_files_only=False
         )
     
     def is_model_ready(self) -> bool:
@@ -69,43 +84,63 @@ class OptimizedWhisperService:
     
     def _has_speech_activity(self, audio_path: str) -> bool:
         """
-        Simple silence detection to prevent transcribing empty audio
-        Returns True if audio contains potential speech activity
+        RMS-based speech activity detection (first-line filter)
+        Prevents wasting GPU on obviously silent audio
         """
         try:
             import soundfile as sf
             audio, sr = sf.read(audio_path)
             
-            # Convert to numpy array if needed
             if not isinstance(audio, np.ndarray):
                 audio = np.array(audio)
             
             # Calculate RMS energy
             rms = np.sqrt(np.mean(audio ** 2))
             
-            # Calculate zero-crossing rate (speech typically has higher ZCR than silence)
+            # Calculate zero-crossing rate for speech characteristics
             zero_crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / (2 * len(audio))
             
-            # Thresholds to detect actual speech vs silence/noise
-            rms_threshold = 0.001  # Minimum RMS energy
-            zcr_threshold = 0.01   # Minimum zero-crossing rate
+            # Thresholds based on config
+            has_energy = rms > config.SILENCE_RMS_THRESHOLD
+            has_variation = zero_crossings > 0.01
             
-            has_energy = rms > rms_threshold
-            has_variation = zero_crossings > zcr_threshold
-            
-            logger.debug(f"Speech detection: RMS={rms:.6f}, ZCR={zero_crossings:.6f}, "
-                        f"has_energy={has_energy}, has_variation={has_variation}")
+            logger.debug(f"RMS gate: RMS={rms:.6f}, ZCR={zero_crossings:.6f}, "
+                        f"energy={has_energy}, variation={has_variation}")
             
             return has_energy and has_variation
             
         except Exception as e:
-            logger.warning(f"Speech activity detection failed: {e}")
-            # If detection fails, process the audio (conservative approach)
-            return True
+            logger.warning(f"RMS speech detection failed: {e}")
+            return True  # Conservative: process if detection fails
+    
+    def _filter_false_positives(self, text: str) -> bool:
+        """
+        Filter common false positives from silent/noise audio
+        Returns True if text should be kept, False if filtered
+        """
+        if not text or len(text.strip()) <= 2:
+            return False
+            
+        # Common false positives from silent audio
+        false_positives = {
+            'you', 'a', 'i', 'the', 'to', 'and', 'of', 'is', 'it', 'that',
+            'he', 'she', 'we', 'they', 'in', 'on', 'at', 'for', 'with'
+        }
+        
+        clean_text = text.lower().strip()
+        if clean_text in false_positives:
+            logger.info(f"🚫 Filtered false positive: '{text}'")
+            return False
+            
+        return True
     
     async def transcribe(self, audio_path: str, language: Optional[str] = None) -> Dict[str, Any]:
         """
-        Transcription with silence detection to prevent "You" loop
+        Modern transcription with faster-whisper v1.2.0 features
+        - RMS pre-filtering
+        - Batched inference (4x speed) or regular transcription
+        - Native VAD with tuned parameters
+        - False positive filtering
         """
         if not self.is_model_ready():
             raise RuntimeError("Model not ready")
@@ -113,68 +148,50 @@ class OptimizedWhisperService:
         start_time = time.time()
         
         try:
-            # Check if audio contains speech before processing
+            # First-line filter: RMS-based speech detection
             if not self._has_speech_activity(audio_path):
-                logger.info("🔇 No speech activity detected, skipping transcription")
+                logger.info("🔇 No speech activity detected by RMS gate, skipping transcription")
                 return {
                     "text": "",
                     "language": language or "en",
                     "language_probability": 0.0,
                     "processing_time_ms": int((time.time() - start_time) * 1000),
                     "segments": [],
-                    "skipped_reason": "no_speech_activity"
+                    "skipped_reason": "no_speech_activity_rms"
                 }
 
-            # Enable VAD in Whisper for additional filtering
-            vad_filter = True
-            vad_parameters = {
-                "threshold": 0.5,
-                "min_speech_duration_ms": 250,
-                "min_silence_duration_ms": 100
-            }
-
-            logger.info(f"Transcribing with VAD enabled: beam_size={config.WHISPER_BEAM_SIZE}")
-            
-            loop = asyncio.get_event_loop()
-            segments, info = await loop.run_in_executor(
-                None,
-                lambda: self.model.transcribe(
-                    audio_path,
-                    beam_size=config.WHISPER_BEAM_SIZE,
-                    language=language,
-                    task="transcribe",
-                    temperature=0.0,
-                    vad_filter=vad_filter,
-                    vad_parameters=vad_parameters,
-                    condition_on_previous_text=False,  # Prevent hallucination
-                    no_speech_threshold=0.6,           # Higher threshold to skip non-speech
-                    logprob_threshold=-1.0,           # Skip low-confidence transcriptions
-                    compression_ratio_threshold=2.4    # Skip repetitive audio
-                )
-            )
+            # Choose transcription method based on config
+            if config.USE_BATCHED_INFERENCE and self.batched_pipeline:
+                segments, info = await self._transcribe_batched(audio_path, language)
+                method = "batched_4x_speed"
+            else:
+                segments, info = await self._transcribe_regular(audio_path, language)
+                method = "regular"
             
             segment_list = list(segments)
             full_text = " ".join([segment.text.strip() for segment in segment_list]).strip()
             
-            # Filter out common false positives from silent audio
-            if len(full_text) <= 2 or full_text.lower() in ['you', 'a', 'i', 'the', 'to', 'and', 'of', 'is', 'it']:
-                logger.info(f"🚫 Filtering likely false positive: '{full_text}'")
+            # Filter false positives
+            if not self._filter_false_positives(full_text):
                 return {
                     "text": "",
                     "language": getattr(info, 'language', language),
                     "language_probability": getattr(info, 'language_probability', 0.0),
                     "processing_time_ms": int((time.time() - start_time) * 1000),
                     "segments": [],
-                    "skipped_reason": "likely_false_positive"
+                    "skipped_reason": "filtered_false_positive",
+                    "method": method
                 }
             
             processing_time = int((time.time() - start_time) * 1000)
+            logger.info(f"✅ Transcribed via {method} ({processing_time}ms): {full_text[:50]}...")
             
             return {
                 "text": full_text,
                 "language": getattr(info, 'language', language),
                 "language_probability": getattr(info, 'language_probability', 0.0),
                 "processing_time_ms": processing_time,
+                "method": method,
                 "segments": [
                     {
                         "start": segment.start,
@@ -189,8 +206,51 @@ class OptimizedWhisperService:
             logger.error(f"Transcription failed after {processing_time}ms: {e}")
             raise
     
+    async def _transcribe_batched(self, audio_path: str, language: Optional[str] = None):
+        """Batched inference transcription (v1.1.0+ feature - 4x faster)"""
+        logger.debug("Using batched inference pipeline")
+        
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.batched_pipeline.transcribe(
+                audio_path,
+                batch_size=config.BATCH_SIZE,
+                language=language,
+                task="transcribe",
+                beam_size=config.WHISPER_BEAM_SIZE,
+                temperature=config.TEMPERATURE,
+                condition_on_previous_text=config.CONDITION_ON_PREVIOUS_TEXT,
+                # Batched mode in v1.2.0 includes native silence removal
+                vad_parameters=config.vad_parameters if config.VAD_ENABLED else None
+            )
+        )
+    
+    async def _transcribe_regular(self, audio_path: str, language: Optional[str] = None):
+        """Regular transcription with modern VAD parameters"""
+        logger.debug("Using regular transcription with VAD")
+        
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.model.transcribe(
+                audio_path,
+                beam_size=config.WHISPER_BEAM_SIZE,
+                language=language,
+                task="transcribe",
+                temperature=config.TEMPERATURE,
+                condition_on_previous_text=config.CONDITION_ON_PREVIOUS_TEXT,
+                vad_filter=config.VAD_ENABLED,
+                vad_parameters=config.vad_parameters if config.VAD_ENABLED else None
+            )
+        )
+    
     def cleanup(self):
         """Clean up resources"""
+        if self.batched_pipeline:
+            del self.batched_pipeline
+            self.batched_pipeline = None
+            
         if self.model:
             del self.model
             self.model = None
@@ -199,7 +259,7 @@ class OptimizedWhisperService:
             torch.cuda.empty_cache()
             
         self.is_ready.clear()
-        logger.info("✅ Whisper service cleaned up")
+        logger.info("✅ Modern Whisper service cleaned up")
 
 # Global service instance
-whisper_service = OptimizedWhisperService()
+whisper_service = ModernWhisperService()
