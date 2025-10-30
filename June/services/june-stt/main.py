@@ -77,6 +77,8 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
     payload = {
         "transcript_id": str(uuid.uuid4()),
         "user_id": user_id,
+        "participant": user_id,          # required by orchestrator
+        "event": "transcript",          # required by orchestrator
         "text": text,
         "language": language,
         "timestamp": datetime.utcnow().isoformat(),
@@ -245,7 +247,7 @@ async def lifespan(app: FastAPI):
         await room.disconnect()
 
 
-app = FastAPI(title="June STT", version="6.2.6-webhook", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
+app = FastAPI(title="June STT", version="6.2.7-webhook-payload", description="LiveKit PCM → Whisper (orchestrator tokens)", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],)
 
 @app.get("/healthz")
@@ -258,7 +260,7 @@ async def health():
 
 @app.get("/")
 async def root():
-    return {"service": "june-stt", "version": "6.2.6-webhook", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
+    return {"service": "june-stt", "version": "6.2.7-webhook-payload", "pcm_pipeline": True, "sample_rate": SAMPLE_RATE}
 
 if __name__ == "__main__":
     import uvicorn
