@@ -27,7 +27,6 @@ RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
     /venv-stt/bin/pip install "numpy<2.0" && \
     /venv-stt/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    /venv-stt/bin/pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.* && \
     /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
@@ -36,7 +35,6 @@ RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
     /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    /venv-tts/bin/pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.* && \
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
@@ -52,15 +50,6 @@ ENV TTS_CACHE_PATH=/app/cache \
     STT_PORT=8001 \
     TTS_PORT=8000
 
-# Set library path for CUDA/cuDNN from pip-installed packages
-RUN echo '#!/bin/bash\n\
-export CUBLAS_PATH=$(/venv-stt/bin/python -c "import nvidia.cublas.lib; print(os.path.dirname(nvidia.cublas.lib.__file__))" 2>/dev/null || echo "")\n\
-export CUDNN_PATH=$(/venv-stt/bin/python -c "import nvidia.cudnn.lib; print(os.path.dirname(nvidia.cudnn.lib.__file__))" 2>/dev/null || echo "")\n\
-if [ -n "$CUBLAS_PATH" ] && [ -n "$CUDNN_PATH" ]; then\n\
-    export LD_LIBRARY_PATH="$CUBLAS_PATH:$CUDNN_PATH:$LD_LIBRARY_PATH"\n\
-fi\n\
-exec "$@"' > /app/cuda-setup.sh && chmod +x /app/cuda-setup.sh
-
 # Expose service ports
 EXPOSE 8000 8001
 
@@ -68,4 +57,4 @@ EXPOSE 8000 8001
 COPY June/services/june-vast/start-both.sh /app/start-both.sh
 RUN chmod +x /app/start-both.sh
 
-ENTRYPOINT ["/app/cuda-setup.sh", "/app/start-both.sh"]
+ENTRYPOINT ["/app/start-both.sh"]
