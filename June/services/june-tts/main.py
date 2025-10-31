@@ -56,6 +56,37 @@ class PublishToRoomRequest(BaseModel):
     speaker_wav: Optional[str] = Field(None, description="Path/URL to reference speaker wav (XTTS v2)")
     speed: float = Field(1.0, description="Speech speed", ge=0.5, le=2.0)
 
+def process_audio_for_livekit(audio_array, source_sample_rate=24000, target_sample_rate=24000):
+    """Process audio array for LiveKit with proper format conversion"""
+    # Ensure float32 format
+    if audio_array.dtype != np.float32:
+        audio_array = audio_array.astype(np.float32)
+    
+    # Convert to mono if stereo
+    if len(audio_array.shape) > 1:
+        audio_array = audio_array.mean(axis=1)
+    
+    # Normalize audio to prevent clipping
+    max_val = np.abs(audio_array).max()
+    if max_val > 0.95:
+        audio_array = audio_array * (0.95 / max_val)
+    
+    # Use librosa for better resampling if available, fallback to scipy
+    if source_sample_rate != target_sample_rate:
+        try:
+            import librosa
+            audio_array = librosa.resample(audio_array, orig_sr=source_sample_rate, target_sr=target_sample_rate)
+        except ImportError:
+            logger.warning("librosa not available, using scipy for resampling")
+            from scipy import signal
+            num_samples = int(len(audio_array) * target_sample_rate / source_sample_rate)
+            audio_array = signal.resample(audio_array, num_samples)
+    
+    # Convert to int16 for LiveKit (this is crucial for audio quality)
+    audio_int16 = (audio_array * 32767).astype(np.int16)
+    
+    return audio_int16
+
 async def join_livekit_room():
     """Join LiveKit room as TTS participant"""
     global tts_room, audio_source, room_connected
@@ -105,9 +136,13 @@ async def join_livekit_room():
         await connect_room_as_publisher(tts_room, "june-tts")
         logger.debug("[LiveKit] connect() finished")
 
-        # Create audio source for publishing
-        logger.debug("Creating AudioSource and LocalAudioTrack")
-        audio_source = rtc.AudioSource(sample_rate=24000, num_channels=1)
+        # Create improved audio source for publishing with larger buffer
+        logger.debug("Creating AudioSource and LocalAudioTrack with enhanced configuration")
+        audio_source = rtc.AudioSource(
+            sample_rate=24000, 
+            num_channels=1,
+            queue_size_ms=2000  # Increased buffer size to prevent frame capture failures
+        )
         track = rtc.LocalAudioTrack.create_audio_track("ai-response", audio_source)
 
         options = rtc.TrackPublishOptions()
@@ -125,7 +160,7 @@ async def join_livekit_room():
         room_connected = False
 
 async def publish_audio_to_room(audio_data: bytes):
-    """Publish audio data to LiveKit room"""
+    """Improved audio publishing with better error handling and frame processing"""
     global audio_source
 
     if not room_connected or not audio_source:
@@ -133,41 +168,59 @@ async def publish_audio_to_room(audio_data: bytes):
         return False
 
     try:
-        logger.debug(f"Preparing audio frame stream, bytes={len(audio_data)}")
+        logger.debug(f"Processing audio data, size: {len(audio_data)} bytes")
+        
+        # Load and process audio
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_data)
             temp_path = f.name
+        
         try:
             audio_array, sample_rate = sf.read(temp_path)
-            logger.debug(f"Loaded audio file sr={sample_rate}, shape={getattr(audio_array,'shape',None)}, dtype={audio_array.dtype}")
-
-            if audio_array.dtype != np.float32:
-                audio_array = audio_array.astype(np.float32)
-            if len(audio_array.shape) > 1:
-                audio_array = audio_array.mean(axis=1)
-            if sample_rate != 24000:
-                from scipy import signal
-                num_samples = int(len(audio_array) * 24000 / sample_rate)
-                audio_array = signal.resample(audio_array, num_samples)
-
-            frame_samples = 480  # 20ms @24kHz
-            for i in range(0, len(audio_array), frame_samples):
-                chunk = audio_array[i:i + frame_samples]
+            logger.debug(f"Loaded audio: sr={sample_rate}, shape={audio_array.shape}, dtype={audio_array.dtype}")
+            
+            # Process audio with improved method
+            processed_audio = process_audio_for_livekit(audio_array, sample_rate, 24000)
+            
+            # Create frames with exact 20ms chunks (480 samples @ 24kHz)
+            frame_samples = 480
+            samples_sent = 0
+            
+            for i in range(0, len(processed_audio), frame_samples):
+                chunk = processed_audio[i:i + frame_samples]
+                
+                # Pad if necessary
                 if len(chunk) < frame_samples:
-                    chunk = np.pad(chunk, (0, frame_samples - len(chunk)))
+                    chunk = np.pad(chunk, (0, frame_samples - len(chunk)), mode='constant')
+                
+                # Create AudioFrame with int16 data
                 frame = rtc.AudioFrame(
                     data=chunk.tobytes(),
                     sample_rate=24000,
                     num_channels=1,
                     samples_per_channel=len(chunk)
                 )
-                await audio_source.capture_frame(frame)
-                await asyncio.sleep(len(chunk) / 24000)
-            logger.info("✅ Audio published to room successfully")
+                
+                # Use try-catch for frame capture to handle any issues
+                try:
+                    await audio_source.capture_frame(frame)
+                    samples_sent += len(chunk)
+                    
+                    # Precise timing: 20ms per frame
+                    await asyncio.sleep(0.02)  # 20ms
+                    
+                except Exception as e:
+                    logger.warning(f"Frame capture failed: {e}")
+                    # Continue with next frame rather than failing completely
+                    continue
+            
+            logger.info(f"✅ Audio published successfully: {samples_sent} samples")
             return True
+            
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
+                
     except Exception as e:
         logger.exception(f"❌ Error publishing audio: {e}")
         return False
@@ -193,7 +246,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June TTS Service",
-    version="2.2.0",
+    version="2.3.0",
     description="Text-to-speech service with LiveKit room integration",
     lifespan=lifespan
 )
@@ -210,7 +263,7 @@ app.add_middleware(
 async def root():
     return {
         "service": "june-tts",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "status": "running",
         "tts_ready": tts_instance is not None,
         "device": device,
@@ -235,7 +288,13 @@ async def synthesize_audio(request: TTSRequest):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
         logger.info(f"🎤 Synthesizing: {request.text[:80]}...")
-        kwargs = {"text": request.text, "language": request.language, "file_path": output_path, "speed": request.speed}
+        kwargs = {
+            "text": request.text, 
+            "language": request.language, 
+            "file_path": output_path, 
+            "speed": request.speed,
+            "split_sentences": True  # This can improve quality
+        }
         if request.speaker_wav:
             kwargs["speaker_wav"] = request.speaker_wav
         elif request.speaker:
@@ -259,7 +318,13 @@ async def publish_to_room(request: PublishToRoomRequest, background_tasks: Backg
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             output_path = f.name
         logger.info(f"🔊 Generating response: {request.text[:100]}...")
-        kwargs = {"text": request.text, "language": request.language, "file_path": output_path, "speed": request.speed}
+        kwargs = {
+            "text": request.text, 
+            "language": request.language, 
+            "file_path": output_path, 
+            "speed": request.speed,
+            "split_sentences": True  # This can improve quality
+        }
         if request.speaker_wav:
             kwargs["speaker_wav"] = request.speaker_wav
         elif request.speaker:
@@ -280,6 +345,31 @@ async def debug_token():
     base = os.getenv("ORCHESTRATOR_URL", getattr(config, "ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080"))
     ws = os.getenv("LIVEKIT_WS_URL", getattr(config, "LIVEKIT_WS_URL", "ws://livekit-livekit-server.june-services.svc.cluster.local:80"))
     return {"orchestrator_url": base, "livekit_ws_url": ws, "device": device}
+
+@app.get("/debug/audio-test")
+async def test_audio_generation():
+    """Generate a test tone to verify audio pipeline"""
+    if not room_connected:
+        return {"error": "Not connected to room"}
+    
+    # Generate a simple test tone
+    duration = 2.0  # seconds
+    sample_rate = 24000
+    frequency = 440.0  # A4 note
+    
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    tone = np.sin(2 * np.pi * frequency * t) * 0.3  # 30% volume
+    tone_int16 = (tone * 32767).astype(np.int16)
+    
+    # Save as WAV and publish
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, tone_int16, sample_rate)
+        with open(f.name, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+        os.unlink(f.name)
+    
+    success = await publish_audio_to_room(audio_bytes)
+    return {"test_tone_published": success, "duration": duration, "frequency": frequency}
 
 if __name__ == "__main__":
     import uvicorn
