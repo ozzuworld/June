@@ -11,7 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -136,13 +136,9 @@ async def join_livekit_room():
         await connect_room_as_publisher(tts_room, "june-tts")
         logger.debug("[LiveKit] connect() finished")
 
-        # Create improved audio source for publishing with larger buffer
-        logger.debug("Creating AudioSource and LocalAudioTrack with enhanced configuration")
-        audio_source = rtc.AudioSource(
-            sample_rate=24000, 
-            num_channels=1,
-            queue_size_ms=2000  # Increased buffer size to prevent frame capture failures
-        )
+        # Create audio source for publishing (removed unsupported queue_size_ms parameter)
+        logger.debug("Creating AudioSource and LocalAudioTrack")
+        audio_source = rtc.AudioSource(sample_rate=24000, num_channels=1)
         track = rtc.LocalAudioTrack.create_audio_track("ai-response", audio_source)
 
         options = rtc.TrackPublishOptions()
@@ -246,7 +242,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June TTS Service",
-    version="2.3.0",
+    version="2.3.1",
     description="Text-to-speech service with LiveKit room integration",
     lifespan=lifespan
 )
@@ -263,7 +259,7 @@ app.add_middleware(
 async def root():
     return {
         "service": "june-tts",
-        "version": "2.3.0",
+        "version": "2.3.1",
         "status": "running",
         "tts_ready": tts_instance is not None,
         "device": device,
