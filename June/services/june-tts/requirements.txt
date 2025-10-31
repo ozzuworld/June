@@ -14,3 +14,5 @@ pydantic==2.5.0
 transformers==4.36.2
 sentencepiece>=0.1.99,<0.2.0
 tokenizers<0.20
+# Better audio resampling for improved quality
+librosa>=0.10.0
