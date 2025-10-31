@@ -3,6 +3,7 @@
 June STT Service - LiveKit PCM → faster-whisper v1.2.0
 Real-time transcription with simplified chunking and faster-whisper built-ins
 Option 1 tuning: lower chunk thresholds and adjust loop cadence for better accumulation
++ Debug probes for chunk/frame analysis and optional gain
 """
 import asyncio
 import logging
@@ -41,6 +42,9 @@ PROCESS_SLEEP_SEC = 0.3  # was 0.2s
 # Filter out TTS services from STT processing
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt"}
 
+# Debug flags
+ENABLE_GAIN_TEST = False   # set True to test +12 dB gain
+DUMP_FIRST_N_CHUNKS = 3    # dump first N chunks to /tmp
 
 def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
     if pid not in buffers:
@@ -133,7 +137,10 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+aSYNC_DUMP_COUNT = 0
+
 async def _process_loop():
+    global aSYNC_DUMP_COUNT
     logger.info(f"🚀 Starting STT loop - batched: {config.USE_BATCHED_INFERENCE}, VAD: {config.VAD_ENABLED}")
 
     while True:
@@ -146,13 +153,36 @@ async def _process_loop():
                 if audio is None or len(audio) < int(MIN_CHUNK_SEC * SAMPLE_RATE):
                     continue
 
+                # Debug: chunk stats and sparkline
+                rms = float(np.sqrt(np.mean(audio ** 2)))
+                peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+                bins = 40
+                L = len(audio)
+                bin_size = max(1, L // bins)
+                spark_levels = '▁▂▃▄▅▆▇'
+                spark = ''.join(spark_levels[min(6, int(np.mean(np.abs(audio[i:i+bin_size])) * 50))] for i in range(0, L, bin_size))[:bins]
+                logger.info(f"🔎 Chunk[{pid}] stats: samples={L} rms={rms:.5f} peak={peak:.3f} spark={spark}")
+
+                # Optional gain boost test
+                audio_out = audio
+                if ENABLE_GAIN_TEST:
+                    audio_out = np.clip(audio * 4.0, -1.0, 1.0)  # +12 dB
+
                 if not whisper_service.is_model_ready():
                     logger.warning("⚠️ Whisper model not ready")
                     continue
 
                 import tempfile, soundfile as sf
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                    sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
+                    sf.write(tmp.name, audio_out, SAMPLE_RATE, subtype='PCM_16')
+
+                    # Dump first few chunks for offline inspection
+                    if aSYNC_DUMP_COUNT < DUMP_FIRST_N_CHUNKS:
+                        dump_path = f"/tmp/ozzu_chunk_{aSYNC_DUMP_COUNT}.wav"
+                        sf.write(dump_path, audio_out, SAMPLE_RATE, subtype='PCM_16')
+                        logger.info(f"💾 Dumped chunk to {dump_path}")
+                        aSYNC_DUMP_COUNT += 1
+
                     # Allow autodetect language to avoid mismatches
                     res = await whisper_service.transcribe(tmp.name, language=None)
 
@@ -186,6 +216,13 @@ async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
 
     pcm, sr = _frame_to_float32_mono(frame)
     pcm16k = _resample_to_16k_mono(pcm, sr)
+
+    # Debug every 200 frames: per-frame RMS
+    if _on_audio_frame.frame_counts[pid] % 200 == 0:
+        frms = len(pcm16k)
+        frame_rms = float(np.sqrt(np.mean(pcm16k ** 2))) if frms else 0.0
+        logger.info(f"🎙️ Frame[{pid}] len={frms} rms={frame_rms:.5f}")
+
     _ensure_buffer(pid).append(pcm16k)
 
 
@@ -268,7 +305,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="June STT v2.0",
     version="2.0.0-faster-whisper-v1.2.0",
-    description="Simplified STT with faster-whisper built-ins (Option 1 tuned)",
+    description="Simplified STT with faster-whisper built-ins (Option 1 tuned) + debug",
     lifespan=lifespan
 )
 
@@ -306,6 +343,10 @@ async def root():
         "chunk_sec": CHUNK_SEC,
         "min_chunk_sec": MIN_CHUNK_SEC,
         "loop_sleep_sec": PROCESS_SLEEP_SEC,
+        "debug": {
+            "enable_gain_test": ENABLE_GAIN_TEST,
+            "dump_first_n_chunks": DUMP_FIRST_N_CHUNKS,
+        }
     }
 
 if __name__ == "__main__":
