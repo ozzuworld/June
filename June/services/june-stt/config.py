@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Configuration for June STT Service with faster-whisper v1.2.0 features
+Simplified Configuration for June STT Service with faster-whisper
+Follows faster-whisper best practices and built-in capabilities
 """
 import os
 from typing import Optional
 
 class Config:
-    """STT Service Configuration with modern faster-whisper support"""
+    """Simplified STT Service Configuration - relies on faster-whisper defaults"""
     
     # Server
     PORT: int = int(os.getenv("PORT", "8080"))
@@ -23,24 +24,22 @@ class Config:
     WHISPER_CPU_THREADS: int = int(os.getenv("WHISPER_CPU_THREADS", "4"))
     WHISPER_BEAM_SIZE: int = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
     
-    # Modern faster-whisper v1.2.0 Features
+    # Batched inference (recommended for throughput)
     USE_BATCHED_INFERENCE: bool = os.getenv("STT_USE_BATCHED", "true").lower() == "true"
     BATCH_SIZE: int = int(os.getenv("STT_BATCH_SIZE", "8"))
     
-    # VAD Configuration (disabled by default - too strict)
+    # VAD Configuration - disabled by default for English voice chat
+    # Enable for long recordings or noisy environments
     VAD_ENABLED: bool = os.getenv("VAD_ENABLED", "false").lower() == "true"
-    VAD_THRESHOLD: float = float(os.getenv("VAD_THRESHOLD", "0.2"))  # Lowered from 0.5
-    VAD_MIN_SPEECH_DURATION_MS: int = int(os.getenv("VAD_MIN_SPEECH_DURATION_MS", "100"))  # Lowered from 250
-    VAD_MIN_SILENCE_DURATION_MS: int = int(os.getenv("VAD_MIN_SILENCE_DURATION_MS", "50"))   # Lowered from 100
-    VAD_SPEECH_PAD_MS: int = int(os.getenv("VAD_SPEECH_PAD_MS", "50"))  # Increased from 30
     
-    # Silence Detection (Pre-filter before Whisper) - this works perfectly
+    # Optional RMS prefilter - disabled by default (let faster-whisper handle silence)
+    RMS_PREFILTER_ENABLED: bool = os.getenv("STT_RMS_PREFILTER", "false").lower() == "true"
     SILENCE_RMS_THRESHOLD: float = float(os.getenv("SILENCE_RMS_THRESHOLD", "0.001"))
-    SILENCE_FRAMES_THRESHOLD: int = int(os.getenv("SILENCE_FRAMES_THRESHOLD", "5"))
     
-    # Transcription Quality Settings (v1.0+ support)
+    # Transcription Quality Settings
     CONDITION_ON_PREVIOUS_TEXT: bool = os.getenv("CONDITION_ON_PREVIOUS_TEXT", "false").lower() == "true"
     TEMPERATURE: float = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))
+    LANGUAGE: Optional[str] = os.getenv("WHISPER_LANGUAGE", None)  # Set to "en" for English-only
     
     # File Processing
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
@@ -63,15 +62,5 @@ class Config:
     )
     ORCHESTRATOR_API_KEY: str = os.getenv("ORCHESTRATOR_API_KEY", "")
     ORCHESTRATOR_ENABLED: bool = bool(os.getenv("ORCHESTRATOR_ENABLED", "true").lower() == "true")
-    
-    @property
-    def vad_parameters(self) -> dict:
-        """Get VAD parameters (more permissive settings)"""
-        return {
-            "threshold": self.VAD_THRESHOLD,
-            "min_speech_duration_ms": self.VAD_MIN_SPEECH_DURATION_MS,
-            "min_silence_duration_ms": self.VAD_MIN_SILENCE_DURATION_MS,
-            "speech_pad_ms": self.VAD_SPEECH_PAD_MS
-        }
 
 config = Config()
