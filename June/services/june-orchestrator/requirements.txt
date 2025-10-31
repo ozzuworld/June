@@ -6,8 +6,8 @@ uvicorn[standard]==0.24.0
 httpx==0.27.2
 pydantic==2.5.0
 
-# LiveKit integration
-livekit-api==0.9.0
+# LiveKit integration (corrected version)
+livekit-api==1.0.7
 PyJWT==2.8.0
 
 # Google AI integration
