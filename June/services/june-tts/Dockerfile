@@ -52,6 +52,12 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
+# Image metadata
+LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
+LABEL version="3.0.0"
+LABEL description="June TTS Service - XTTS v2 Compliant with Multi-Reference Voice Cloning"
+LABEL service="june-tts"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     ffmpeg \
@@ -74,27 +80,36 @@ RUN useradd -m -u 1001 ttsuser
 WORKDIR /app
 RUN chown -R ttsuser:ttsuser /app
 
-# Copy application code (include helper modules)
+# Copy application code
 COPY --chown=ttsuser:ttsuser main.py /app/
 COPY --chown=ttsuser:ttsuser config.py /app/
 COPY --chown=ttsuser:ttsuser requirements.txt /app/
 COPY --chown=ttsuser:ttsuser livekit_token.py /app/
+COPY --chown=ttsuser:ttsuser README.md /app/
 
 # Ensure module import works
 ENV PYTHONPATH=/app
 
 USER ttsuser
 
-RUN mkdir -p /app/models /app/cache
+# Create necessary directories
+RUN mkdir -p /app/models /app/cache /app/temp
 
+# Environment configuration
 ENV TTS_CACHE_PATH=/app/cache
 ENV TTS_HOME=/app/models
 ENV COQUI_TOS_AGREED=1
 ENV PORT=8000
+ENV LOG_LEVEL=INFO
+
+# Default TTS model (XTTS v2)
+ENV TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
+# Enhanced health check for v3.0.0 features
+HEALTHCHECK --interval=30s --timeout=30s --start-period=90s --retries=3 \
+    CMD curl -f http://localhost:8000/healthz | grep -q '"status":"healthy"' || exit 1
 
+# Startup command
 CMD ["python", "main.py"]
