@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from livekit import rtc
 from livekit_token import connect_room_as_publisher
 from TTS.api import TTS
@@ -77,14 +77,16 @@ class TTSRequest(BaseModel):
     )
     speed: float = Field(1.0, description="Speech speed", ge=0.5, le=2.0)
     
-    @validator('language')
+    @field_validator('language')
+    @classmethod
     def validate_language(cls, v):
         if v not in SUPPORTED_LANGUAGES:
             logger.warning(f"Unsupported language '{v}', defaulting to 'en'. Supported: {sorted(SUPPORTED_LANGUAGES)}")
             return "en"
         return v
     
-    @validator('speaker_wav')
+    @field_validator('speaker_wav')
+    @classmethod
     def normalize_speaker_wav(cls, v):
         if isinstance(v, str):
             # Handle comma-separated string
@@ -103,14 +105,16 @@ class PublishToRoomRequest(BaseModel):
     )
     speed: float = Field(1.0, description="Speech speed", ge=0.5, le=2.0)
     
-    @validator('language')
+    @field_validator('language')
+    @classmethod
     def validate_language(cls, v):
         if v not in SUPPORTED_LANGUAGES:
             logger.warning(f"Unsupported language '{v}', defaulting to 'en'. Supported: {sorted(SUPPORTED_LANGUAGES)}")
             return "en"
         return v
     
-    @validator('speaker_wav')
+    @field_validator('speaker_wav')
+    @classmethod
     def normalize_speaker_wav(cls, v):
         if isinstance(v, str):
             if ',' in v:
@@ -484,12 +488,13 @@ async def warmup_model():
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             warmup_path = f.name
         
-        # Short warmup synthesis
+        # Short warmup synthesis with a built-in speaker to avoid the error
         await asyncio.to_thread(
             tts_instance.tts_to_file,
-            text="Warmup.",
+            text="Warmup test.",
             language="en",
             file_path=warmup_path,
+            speaker="Claribel Dervla",  # Use built-in speaker for warmup
             split_sentences=True
         )
         
