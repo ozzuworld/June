@@ -11,7 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
- from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
@@ -242,7 +242,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June TTS Service",
-    version="2.3.1",
+    version="2.3.2",
     description="Text-to-speech service with LiveKit room integration",
     lifespan=lifespan
 )
@@ -259,7 +259,7 @@ app.add_middleware(
 async def root():
     return {
         "service": "june-tts",
-        "version": "2.3.1",
+        "version": "2.3.2",
         "status": "running",
         "tts_ready": tts_instance is not None,
         "device": device,
