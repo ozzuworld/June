@@ -9,6 +9,8 @@ from starlette.requests import Request
 from .routes.webhooks import router as webhooks_router
 from .routes_livekit import router as livekit_router
 from .session_manager import session_manager
+from .services.skill_service import skill_service
+from .services.voice_profile_service import voice_profile_service
 from .config import config
 
 logging.basicConfig(
@@ -51,6 +53,10 @@ async def cleanup_sessions_task():
             stats = session_manager.get_stats()
             logger.info(f"📊 Session stats: {stats}")
             
+            # Log skill usage
+            if stats.get("active_skills", 0) > 0:
+                logger.info(f"🤖 Active skills: {stats.get('skills_in_use', {})}")
+            
         except Exception as e:
             logger.error(f"❌ Session cleanup task error: {e}")
 
@@ -58,18 +64,35 @@ async def cleanup_sessions_task():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan with enhanced startup and background tasks"""
-    logger.info("=" * 60)
-    logger.info("🚀 June Orchestrator v5.0 - AI Voice Assistant")
-    logger.info("=" * 60)
-    logger.info(f"🔧 Configuration:")
-    logger.info(f"  TTS: {config.services.tts_base_url}")
-    logger.info(f"  STT: {config.services.stt_base_url}")
+    logger.info("=" * 70)
+    logger.info("🚀 June Orchestrator v6.0 - AI Voice Assistant with Skills")
+    logger.info("=" * 70)
+    
+    # Core configuration
+    logger.info(f"🔧 Core Configuration:")
+    logger.info(f"  TTS Service: {config.services.tts_base_url}")
+    logger.info(f"  STT Service: {config.services.stt_base_url}")
     logger.info(f"  LiveKit: {config.livekit.ws_url}")
-    logger.info(f"  AI Model: {config.ai.model}")
+    
+    # AI configuration
+    logger.info(f"🤖 AI Configuration:")
+    logger.info(f"  Model: {config.ai.model}")
     logger.info(f"  Voice Mode: {config.ai.voice_response_mode}")
+    logger.info(f"  Max Output Tokens: {config.ai.max_output_tokens}")
+    
+    # Session configuration
+    logger.info(f"📝 Session Configuration:")
     logger.info(f"  Max History: {config.sessions.max_history_messages} messages")
     logger.info(f"  Session Timeout: {config.sessions.session_timeout_hours} hours")
-    logger.info("=" * 60)
+    
+    # Skill system
+    skills = skill_service.list_skills()
+    logger.info(f"🎭 Skill System:")
+    logger.info(f"  Available Skills: {list(skills.keys())}")
+    logger.info(f"  Ready Skills: ['mockingbird']")
+    logger.info(f"  Voice Profiles: {len(voice_profile_service.profiles)}")
+    
+    logger.info("=" * 70)
     
     # Start background tasks
     cleanup_task = asyncio.create_task(cleanup_sessions_task())
@@ -80,13 +103,14 @@ async def lifespan(app: FastAPI):
     # Cleanup on shutdown
     cleanup_task.cancel()
     logger.info("🛑 Shutting down...")
-    logger.info(f"📊 Final stats: {session_manager.get_stats()}")
+    logger.info(f"📊 Final session stats: {session_manager.get_stats()}")
+    logger.info(f"🎭 Final voice profile stats: {voice_profile_service.get_stats()}")
 
 
 app = FastAPI(
     title="June Orchestrator",
-    version="5.0.0",
-    description="AI Voice Assistant Orchestrator with Memory and Context",
+    version="6.0.0",
+    description="AI Voice Assistant Orchestrator with Skills and Voice Cloning",
     lifespan=lifespan
 )
 
@@ -101,39 +125,51 @@ app.add_middleware(
 )
 
 # Register routes
-app.include_router(webhooks_router, tags=["Webhooks"])
+app.include_router(webhooks_router, tags=["Webhooks & Skills"])
 app.include_router(livekit_router, tags=["LiveKit"])
 
 
 @app.get("/")
 async def root():
     stats = session_manager.get_stats()
+    skills = skill_service.list_skills()
+    voice_stats = voice_profile_service.get_stats()
     
     return {
         "service": "june-orchestrator",
-        "version": "5.0.0",
-        "description": "AI Voice Assistant Orchestrator with Full Memory",
+        "version": "6.0.0",
+        "description": "AI Voice Assistant Orchestrator with Skills and Voice Cloning",
         "features": [
             "✅ Conversation Memory",
             "✅ Context Management",
             "✅ Room-to-Session Mapping",
             "✅ Voice-Optimized AI",
-            "✅ Automatic Summarization",
+            "✅ Skill-Based Architecture",
+            "✅ Voice Cloning Skills",
             "✅ Session Cleanup"
         ],
+        "skills": {
+            "available": list(skills.keys()),
+            "ready": ["mockingbird"],
+            "coming_soon": ["translator", "storyteller"]
+        },
         "endpoints": {
             "livekit": "/api/livekit/token",
             "stt_webhook": "/api/webhooks/stt",
+            "skills": "/api/skills",
+            "skills_help": "/api/skills/help",
             "session_history": "/api/sessions/{id}/history",
             "session_stats": "/api/sessions/stats",
             "health": "/healthz"
         },
         "stats": stats,
+        "voice_profiles": voice_stats,
         "config": {
             "ai_model": config.ai.model,
             "voice_mode": config.ai.voice_response_mode,
             "max_history": config.sessions.max_history_messages,
-            "livekit_url": config.livekit.ws_url
+            "livekit_url": config.livekit.ws_url,
+            "skills_enabled": True
         }
     }
 
@@ -145,12 +181,14 @@ async def healthz():
     return {
         "status": "healthy",
         "service": "june-orchestrator",
-        "version": "5.0.0",
+        "version": "6.0.0",
         "stats": stats,
         "features": {
             "memory": True,
             "context_management": True,
             "voice_optimized": config.ai.voice_response_mode,
-            "ai_configured": bool(config.services.gemini_api_key)
+            "ai_configured": bool(config.services.gemini_api_key),
+            "skills_system": True,
+            "voice_cloning": True
         }
     }
