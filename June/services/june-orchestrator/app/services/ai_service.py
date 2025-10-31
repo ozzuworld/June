@@ -231,17 +231,6 @@ async def generate_response(
                 top_p=0.95,
                 top_k=40,
                 max_output_tokens=200,  # Keep responses short for voice
-                # Safety settings for voice assistant
-                safety_settings=[
-                    genai.types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_MEDIUM_AND_ABOVE"
-                    ),
-                    genai.types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_MEDIUM_AND_ABOVE"
-                    ),
-                ]
             )
         )
         
