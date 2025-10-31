@@ -25,7 +25,7 @@ class ModernWhisperService:
     - Native silence removal in batched mode
     - Advanced VAD with tuned parameters
     - RMS pre-filtering for efficiency
-    - False positive filtering
+    - Improved false positive filtering
     """
     
     def __init__(self):
@@ -100,9 +100,9 @@ class ModernWhisperService:
             # Calculate zero-crossing rate for speech characteristics
             zero_crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / (2 * len(audio))
             
-            # Thresholds based on config
+            # More permissive thresholds
             has_energy = rms > config.SILENCE_RMS_THRESHOLD
-            has_variation = zero_crossings > 0.01
+            has_variation = zero_crossings > 0.005  # Lowered from 0.01
             
             logger.debug(f"RMS gate: RMS={rms:.6f}, ZCR={zero_crossings:.6f}, "
                         f"energy={has_energy}, variation={has_variation}")
@@ -115,21 +115,32 @@ class ModernWhisperService:
     
     def _filter_false_positives(self, text: str) -> bool:
         """
-        Filter common false positives from silent/noise audio
+        Improved false positive filtering - less aggressive
         Returns True if text should be kept, False if filtered
         """
-        if not text or len(text.strip()) <= 2:
+        if not text or len(text.strip()) <= 1:  # Only filter single characters
             return False
-            
-        # Common false positives from silent audio
-        false_positives = {
-            'you', 'a', 'i', 'the', 'to', 'and', 'of', 'is', 'it', 'that',
-            'he', 'she', 'we', 'they', 'in', 'on', 'at', 'for', 'with'
-        }
         
         clean_text = text.lower().strip()
-        if clean_text in false_positives:
-            logger.info(f"🚫 Filtered false positive: '{text}'")
+        
+        # Only filter very obvious false positives (not common words)
+        obvious_false_positives = {
+            # Audio artifacts
+            'mmm', 'hmm', 'um', 'uh', 'ah', 'oh',
+            # Very short meaningless sounds  
+            'a', 'i', 'o', 'e',
+            # Repeated characters
+            'aa', 'ii', 'oo', 'ee'
+        }
+        
+        # Don't filter common words anymore - they might be legitimate!
+        if clean_text in obvious_false_positives:
+            logger.info(f"🚫 Filtered obvious false positive: '{text}'")
+            return False
+        
+        # Filter very short transcriptions that are likely noise
+        if len(clean_text) <= 2 and clean_text not in ['ok', 'hi', 'no', 'go']:
+            logger.info(f"🚫 Filtered very short noise: '{text}'")
             return False
             
         return True
@@ -140,7 +151,7 @@ class ModernWhisperService:
         - RMS pre-filtering
         - Batched inference (4x speed) or regular transcription
         - Native VAD with tuned parameters
-        - False positive filtering
+        - Improved false positive filtering
         """
         if not self.is_model_ready():
             raise RuntimeError("Model not ready")
@@ -171,7 +182,7 @@ class ModernWhisperService:
             segment_list = list(segments)
             full_text = " ".join([segment.text.strip() for segment in segment_list]).strip()
             
-            # Filter false positives
+            # Apply improved false positive filtering
             if not self._filter_false_positives(full_text):
                 return {
                     "text": "",
@@ -184,7 +195,7 @@ class ModernWhisperService:
                 }
             
             processing_time = int((time.time() - start_time) * 1000)
-            logger.info(f"✅ Transcribed via {method} ({processing_time}ms): {full_text[:50]}...")
+            logger.info(f"✅ Transcribed via {method} ({processing_time}ms): {full_text[:100]}...")
             
             return {
                 "text": full_text,
