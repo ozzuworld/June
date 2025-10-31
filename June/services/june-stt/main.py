@@ -2,6 +2,7 @@
 """
 June STT Service - LiveKit PCM → faster-whisper v1.2.0
 Real-time transcription with simplified chunking and faster-whisper built-ins
+Option 1 tuning: lower chunk thresholds and adjust loop cadence for better accumulation
 """
 import asyncio
 import logging
@@ -29,10 +30,13 @@ room_connected: bool = False
 
 ParticipantKey = str
 buffers: dict[ParticipantKey, Deque[np.ndarray]] = {}
-# Option A: fixed-size chunking, let faster-whisper handle silence
-CHUNK_SEC = 1.0         # 1.0s chunks
-MIN_CHUNK_SEC = 0.5     # skip if we have less than 0.5s
+# Option 1: lower thresholds so we process more often
+CHUNK_SEC = 0.6         # was 1.0s
+MIN_CHUNK_SEC = 0.3     # was 0.5s
 SAMPLE_RATE = 16000
+
+# Loop cadence (slightly slower to allow buffer accumulation between passes)
+PROCESS_SLEEP_SEC = 0.3  # was 0.2s
 
 # Filter out TTS services from STT processing
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt"}
@@ -40,12 +44,11 @@ EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt"}
 
 def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
     if pid not in buffers:
-        buffers[pid] = deque(maxlen=100)  # prevent unbounded growth
+        buffers[pid] = deque(maxlen=120)  # allow a bit more backlog
     return buffers[pid]
 
 
 def _gather_seconds(pid: ParticipantKey, seconds: float) -> Optional[np.ndarray]:
-    """Gather approximately `seconds` of audio from the participant buffer."""
     buf = _ensure_buffer(pid)
     if not buf:
         return None
@@ -104,7 +107,6 @@ def _frame_to_float32_mono(frame: rtc.AudioFrame) -> Tuple[np.ndarray, int]:
     ch = frame.num_channels
     buf = memoryview(frame.data)
 
-    # Try int16 first, fallback to float32
     try:
         arr = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
     except Exception:
@@ -132,20 +134,14 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
 
 
 async def _process_loop():
-    """Main audio processing loop using fixed-size chunking (Option A)."""
     logger.info(f"🚀 Starting STT loop - batched: {config.USE_BATCHED_INFERENCE}, VAD: {config.VAD_ENABLED}")
-    loop_count = 0
 
     while True:
         try:
-            loop_count += 1
-
             for pid in list(buffers.keys()):
-                # Skip TTS services
                 if pid in EXCLUDE_PARTICIPANTS:
                     continue
 
-                # Get a fixed-size chunk
                 audio = _gather_seconds(pid, CHUNK_SEC)
                 if audio is None or len(audio) < int(MIN_CHUNK_SEC * SAMPLE_RATE):
                     continue
@@ -154,13 +150,11 @@ async def _process_loop():
                     logger.warning("⚠️ Whisper model not ready")
                     continue
 
-                logger.info(f"🎯 Processing {len(audio)} samples for {pid} via "
-                            f"{'batched' if config.USE_BATCHED_INFERENCE else 'regular'} pipeline")
-
                 import tempfile, soundfile as sf
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
                     sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
-                    res = await whisper_service.transcribe(tmp.name, language=config.LANGUAGE)
+                    # Allow autodetect language to avoid mismatches
+                    res = await whisper_service.transcribe(tmp.name, language=None)
 
                 text = res.get("text", "").strip()
                 method = res.get("method", "unknown")
@@ -176,7 +170,7 @@ async def _process_loop():
         except Exception as e:
             logger.warning(f"❌ Process loop error: {e}")
 
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(PROCESS_SLEEP_SEC)
 
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
@@ -274,7 +268,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="June STT v2.0",
     version="2.0.0-faster-whisper-v1.2.0",
-    description="Simplified STT with faster-whisper built-ins",
+    description="Simplified STT with faster-whisper built-ins (Option 1 tuned)",
     lifespan=lifespan
 )
 
@@ -310,6 +304,8 @@ async def root():
         },
         "sample_rate": SAMPLE_RATE,
         "chunk_sec": CHUNK_SEC,
+        "min_chunk_sec": MIN_CHUNK_SEC,
+        "loop_sleep_sec": PROCESS_SLEEP_SEC,
     }
 
 if __name__ == "__main__":
