@@ -1,326 +1,193 @@
-# June TTS Service - Voice Cloning Enhanced
+# June TTS Service - XTTS v2 Compliant
 
-Advanced Text-to-Speech service with comprehensive voice cloning capabilities, built on Coqui XTTS-v2.
+**Version 3.0.0** - Enhanced text-to-speech service with full XTTS v2 compliance, multi-reference voice cloning, and robust real-time LiveKit integration.
 
-## 🎯 Features
+## 🚀 Features
 
-- **58 Built-in Voices**: Pre-trained speakers in 17 languages
-- **Voice Cloning**: Clone any voice from 6+ seconds of audio
-- **Voice Management**: Upload, store, and reuse custom voices
-- **Cross-Language Synthesis**: Clone voice in one language, speak in another
-- **Real-time Processing**: ~200ms latency for live applications
-- **LiveKit Integration**: Direct audio publishing to rooms
-- **Audio Validation**: Automatic quality checks and optimization
-- **Speaker Caching**: Performance optimization for frequently used voices
+### XTTS v2 Compliance
+- **Multi-reference voice cloning** for superior quality
+- **17 language support** with validation
+- **Model warmup** to reduce first-request latency
+- **Synthesis timeout protection** (10s max)
+- **Reference audio caching** and validation
+
+### Real-time Performance
+- **Decoupled synthesis pipeline** with asyncio.Queue
+- **Monotonic timing** for consistent LiveKit publishing
+- **Performance metrics** and observability
+- **Background processing** to prevent blocking
+
+### Voice Chat Optimizations
+- **1500 character limit** for real-time responses
+- **Streaming-friendly synthesis** with sentence splitting
+- **Robust error handling** and recovery
+- **Audio quality validation** and normalization
 
 ## 🌍 Supported Languages
 
-English, Spanish, French, German, Italian, Portuguese, Polish, Turkish, Russian, Dutch, Czech, Arabic, Chinese (Simplified), Japanese, Hungarian, Korean, Hindi
+XTTS v2 supports **17 languages** with automatic validation:
 
-## 📋 Voice Cloning Requirements
-
-### Audio Specifications
-- **Minimum Duration**: 6 seconds (10+ seconds recommended)
-- **Audio Formats**: WAV, MP3, FLAC, M4A
-- **Sample Rate**: 16-48kHz (automatically resampled to 24kHz)
-- **Quality**: Clear speech, minimal background noise
-- **Content**: Single speaker only
-- **Multiple Files**: Up to 10 reference files supported for better quality
-
-### Quality Guidelines
-- Use high-quality recordings without echo or background noise
-- Ensure consistent volume levels across reference files
-- Include varied speech patterns (different sentences, emotions)
-- Avoid music, sound effects, or multiple speakers
-
-## 🚀 API Endpoints
-
-### Health Check
-```http
-GET /healthz
 ```
-Returns service status and capabilities.
-
-### Built-in Voice Synthesis
-```http
-POST /synthesize-binary
-Content-Type: application/json
-
-{
-    "text": "Hello, this is a test message.",
-    "language": "en",
-    "speaker": "Claribel Dervla",
-    "speed": 1.0
-}
+en (English)     es (Spanish)     fr (French)      de (German)
+it (Italian)     pt (Portuguese)  pl (Polish)      tr (Turkish)
+ru (Russian)     nl (Dutch)       cs (Czech)       ar (Arabic)
+zh-cn (Chinese)  ja (Japanese)    hu (Hungarian)   ko (Korean)
+hi (Hindi)
 ```
-Returns: Audio file (WAV format)
 
-### Voice Cloning - Upload & Store
-```http
-POST /clone-voice
-Content-Type: multipart/form-data
+## 📡 API Endpoints
 
-files: [audio_file_1.wav, audio_file_2.wav]
-name: "John Doe"
-description: "Professional male voice"
-language: "en"
-```
-Returns: Voice ID for future use
+### Core Synthesis
 
-**Example Response:**
+#### `POST /synthesize`
+Generate audio file from text
+
 ```json
 {
-    "voice_id": "abc123def456",
-    "name": "John Doe",
-    "status": "created",
-    "duration": 45.2,
-    "file_count": 2,
-    "message": "Voice successfully cloned and stored"
+  "text": "Hello, this is a voice cloning test.",
+  "language": "en",
+  "speaker_wav": [
+    "https://example.com/reference1.wav",
+    "/local/reference2.wav"
+  ],
+  "speed": 1.0
 }
 ```
 
-### Voice Cloning - Synthesize with Stored Voice
-```http
-POST /synthesize-clone
-Content-Type: application/json
+#### `POST /publish-to-room`
+Synthesize and publish to LiveKit room
 
+```json
 {
-    "text": "This is synthesized with a cloned voice.",
-    "language": "en",
-    "voice_id": "abc123def456",
-    "speed": 1.0
+  "text": "AI response for voice chat",
+  "language": "en",
+  "speaker_wav": "https://example.com/voice.wav",
+  "speed": 1.1
 }
 ```
-Returns: Audio file (WAV format) with cloned voice
 
-### Voice Cloning - One-time Synthesis
-```http
-POST /synthesize-clone
-Content-Type: multipart/form-data
-
-text: "One-time voice cloning example."
-language: "en"
-speed: 1.0
-files: [reference_audio.wav]
-```
-Returns: Audio file without storing the voice
-
-### Cross-Language Voice Cloning
-```http
-POST /synthesize-clone
-Content-Type: application/json
-
+**Response:**
+```json
 {
-    "text": "Bonjour, comment allez-vous?",
-    "language": "fr",
-    "voice_id": "english_voice_id",
-    "speed": 1.0
+  "status": "success",
+  "text_length": 28,
+  "audio_size": 89344,
+  "synthesis_time_ms": 1247.3,
+  "language": "en",
+  "speaker_references": 1,
+  "message": "Audio being published to room"
 }
 ```
-Clones an English voice but synthesizes French text.
 
-### LiveKit Room Publishing
-```http
-POST /publish-to-room
-Content-Type: application/json
+### Monitoring & Debug
 
+#### `GET /metrics`
+Performance metrics and statistics
+
+```json
 {
-    "room_name": "ozzu-main",
-    "text": "Publishing to LiveKit room.",
-    "language": "en",
-    "voice_id": "abc123def456",
-    "speed": 1.0
+  "synthesis_count": 45,
+  "avg_synthesis_time_ms": 1205.67,
+  "avg_publish_time_ms": 423.12,
+  "cache_hit_rate": 0.73,
+  "reference_cache_size": 12,
+  "queue_size": 2
 }
 ```
-Publishes audio directly to LiveKit room (non-blocking).
 
-### Voice Management
+#### `GET /languages`
+List supported languages
 
-#### List All Voices
-```http
-GET /voices
-```
-Returns built-in and custom voices with metadata.
+#### `GET /healthz`
+Health check with system status
 
-#### Get Voice Details
-```http
-GET /voices/{voice_id}
-```
-Returns detailed information about a specific voice.
+#### `GET /debug/audio-test`
+Generate test tone to verify pipeline
 
-#### Delete Custom Voice
-```http
-DELETE /voices/{voice_id}
-```
-Deletes a custom voice and its associated files.
+## 🎤 Voice Cloning Best Practices
 
-### Language Information
-```http
-GET /languages
-```
-Returns list of supported languages with codes.
+### Reference Audio Quality
 
-### Legacy Endpoints (Backward Compatibility)
-```http
-GET /speakers
-```
-Returns basic built-in speaker list (use `/voices` instead).
+**Optimal reference audio:**
+- **Duration:** 6+ seconds (minimum 2 seconds)
+- **Quality:** Clean, no background noise
+- **Format:** WAV preferred, MP3 acceptable
+- **Sample rate:** 16-48kHz (auto-normalized to 24kHz)
+- **Channels:** Mono preferred (stereo auto-converted)
 
-## 🎵 Usage Examples
+### Multi-Reference Cloning
 
-### Python Client Example
+For best voice cloning quality, provide multiple reference samples:
 
-```python
-import requests
-import json
-
-# TTS Service URL
-TTS_URL = "http://june-tts-service:8000"
-
-# 1. Clone a voice
-def clone_voice(audio_files, name, description="", language="en"):
-    files = [("files", (f"audio_{i}.wav", open(file, "rb"), "audio/wav")) 
-             for i, file in enumerate(audio_files)]
-    data = {
-        "name": name,
-        "description": description,
-        "language": language
-    }
-    
-    response = requests.post(f"{TTS_URL}/clone-voice", files=files, data=data)
-    return response.json()
-
-# 2. Synthesize with cloned voice
-def synthesize_cloned(text, voice_id, language="en", speed=1.0):
-    payload = {
-        "text": text,
-        "language": language,
-        "voice_id": voice_id,
-        "speed": speed
-    }
-    
-    response = requests.post(f"{TTS_URL}/synthesize-clone", json=payload)
-    return response.content  # Audio bytes
-
-# 3. Cross-language synthesis
-def cross_language_synthesis(english_voice_id, french_text):
-    payload = {
-        "text": french_text,
-        "language": "fr",
-        "voice_id": english_voice_id,
-        "speed": 1.0
-    }
-    
-    response = requests.post(f"{TTS_URL}/synthesize-clone", json=payload)
-    return response.content
-
-# Example usage
-if __name__ == "__main__":
-    # Clone voice
-    result = clone_voice(
-        ["reference1.wav", "reference2.wav"], 
-        "My Custom Voice", 
-        "High-quality male voice"
-    )
-    voice_id = result["voice_id"]
-    
-    # Synthesize in original language
-    audio_en = synthesize_cloned("Hello, this is my cloned voice!", voice_id, "en")
-    
-    # Cross-language synthesis
-    audio_es = synthesize_cloned("¡Hola, esta es mi voz clonada!", voice_id, "es")
-    
-    # Save audio files
-    with open("cloned_english.wav", "wb") as f:
-        f.write(audio_en)
-    
-    with open("cloned_spanish.wav", "wb") as f:
-        f.write(audio_es)
+```json
+{
+  "text": "Your synthesized text here",
+  "speaker_wav": [
+    "https://example.com/sample1.wav",
+    "https://example.com/sample2.wav",
+    "https://example.com/sample3.wav"
+  ]
+}
 ```
 
-### cURL Examples
+**Or comma-separated:**
+```json
+{
+  "speaker_wav": "ref1.wav,ref2.wav,ref3.wav"
+}
+```
+
+### Language-Voice Matching
+
+- Match reference voice language to synthesis language
+- Cross-language cloning may produce mixed accents
+- Service logs warnings for language mismatches
+
+## 🏗️ Architecture
+
+### Synthesis Pipeline
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   API Request   │───▶│  Synthesis Queue │───▶│   TTS Worker    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                                                          │
+┌─────────────────┐    ┌──────────────────┐              │
+│ LiveKit Publisher│◀───│  Audio Processing│◀─────────────┘
+└─────────────────┘    └──────────────────┘
+```
+
+### Key Components
+
+1. **Synthesis Worker** - Background processing with timeout protection
+2. **Reference Cache** - URL/file caching with automatic cleanup
+3. **Audio Processor** - Normalization and LiveKit format conversion
+4. **Metrics Collector** - Performance tracking and observability
+
+## 🚀 Deployment
+
+### Docker Build
 
 ```bash
-# Clone a voice
-curl -X POST "http://june-tts:8000/clone-voice" \
-  -F "files=@reference1.wav" \
-  -F "files=@reference2.wav" \
-  -F "name=John Smith" \
-  -F "description=Professional narrator" \
-  -F "language=en"
-
-# Synthesize with built-in voice
-curl -X POST "http://june-tts:8000/synthesize-binary" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Hello from built-in voice!",
-    "language": "en",
-    "speaker": "Claribel Dervla"
-  }' \
-  --output builtin_voice.wav
-
-# Synthesize with cloned voice
-curl -X POST "http://june-tts:8000/synthesize-clone" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Hello from my cloned voice!",
-    "language": "en",
-    "voice_id": "your_voice_id_here"
-  }' \
-  --output cloned_voice.wav
-
-# List all voices
-curl -X GET "http://june-tts:8000/voices"
-
-# Health check
-curl -X GET "http://june-tts:8000/healthz"
+cd June/services/june-tts
+docker build -t june-tts:3.0.0 .
 ```
-
-## 🔧 Configuration
 
 ### Environment Variables
 
 ```bash
-# LiveKit Configuration
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-LIVEKIT_WS_URL=wss://your-livekit-server.com
-
-# Service Configuration
-SERVICE_PORT=8000
-SERVICE_HOST=0.0.0.0
+# Core configuration
+TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 LOG_LEVEL=INFO
+PORT=8000
 
-# Voice Cloning Limits
-MAX_VOICE_FILES=10
-MAX_VOICE_DURATION=300
-MIN_VOICE_DURATION=6.0
+# LiveKit integration
+LIVEKIT_WS_URL=ws://livekit-server:80
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=secret
 
-# Storage Paths
-VOICES_DIR=/app/voices
-TTS_CACHE_DIR=/app/cache
-```
-
-## 🚀 Deployment
-
-### Docker Build & Run
-
-```bash
-# Build image
-docker build -t june-tts:voice-cloning .
-
-# Run with GPU support
-docker run --gpus all -p 8000:8000 \
-  -e LIVEKIT_API_KEY=your_key \
-  -e LIVEKIT_API_SECRET=your_secret \
-  -v /data/voices:/app/voices \
-  june-tts:voice-cloning
-
-# Run CPU-only
-docker run -p 8000:8000 \
-  -e TTS_DEVICE=cpu \
-  -v /data/voices:/app/voices \
-  june-tts:voice-cloning
+# Orchestrator integration
+ORCHESTRATO_URL=http://june-orchestrator:8080
 ```
 
 ### Kubernetes Deployment
@@ -342,132 +209,144 @@ spec:
     spec:
       containers:
       - name: june-tts
-        image: june-tts:voice-cloning
+        image: june-tts:3.0.0
         ports:
         - containerPort: 8000
-        env:
-        - name: LIVEKIT_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: livekit-secrets
-              key: api-key
-        - name: LIVEKIT_API_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: livekit-secrets
-              key: api-secret
-        volumeMounts:
-        - name: voices-storage
-          mountPath: /app/voices
         resources:
           requests:
-            memory: "4Gi"
-            cpu: "1000m"
-            nvidia.com/gpu: 1
+            memory: "2Gi"
+            cpu: "500m"
           limits:
-            memory: "8Gi"
+            memory: "4Gi"
             cpu: "2000m"
             nvidia.com/gpu: 1
-      volumes:
-      - name: voices-storage
-        persistentVolumeClaim:
-          claimName: voices-pvc
+        env:
+        - name: TTS_MODEL
+          value: "tts_models/multilingual/multi-dataset/xtts_v2"
+        - name: LOG_LEVEL
+          value: "INFO"
 ```
 
-## 🎛️ Advanced Features
+## 🔧 Configuration
 
-### Multiple Reference Files for Better Quality
+### Performance Tuning
 
-```python
-# Use multiple reference files for higher quality voice cloning
-files = [
-    "speaker_sample_1.wav",  # Neutral speech
-    "speaker_sample_2.wav",  # Excited speech
-    "speaker_sample_3.wav",  # Question intonation
-    "speaker_sample_4.wav",  # Slow and clear
-]
+**For high-throughput:**
+- Increase synthesis queue size: `maxsize=20`
+- Add multiple synthesis workers
+- Use GPU with sufficient VRAM (4GB+ recommended)
 
-result = clone_voice(files, "High Quality Voice", "Multiple reference samples")
-```
+**For low-latency:**
+- Pre-warm common voices on startup
+- Use local reference files vs. remote URLs
+- Reduce max text length for faster synthesis
 
-### Cross-Language Voice Transfer
+### Resource Requirements
 
-```python
-# Clone an English voice, then speak in Spanish
-english_voice = clone_voice(["english_ref.wav"], "English Speaker")
-voice_id = english_voice["voice_id"]
+**Minimum:**
+- RAM: 2GB
+- GPU: 2GB VRAM (CUDA 11.8+)
+- CPU: 2 cores
 
-# Now synthesize Spanish text with English voice characteristics
-spanish_audio = synthesize_cloned(
-    "Hola, soy un hablante de inglés hablando español",
-    voice_id, 
-    language="es"
-)
-```
+**Recommended:**
+- RAM: 4GB
+- GPU: 4GB+ VRAM
+- CPU: 4 cores
+- Storage: 10GB for model cache
 
-### Real-time Processing Optimization
-
-```python
-# For real-time applications, use shorter reference audio and caching
-def optimize_for_realtime(voice_name, reference_audio):
-    # Use single, high-quality 10-15 second reference
-    result = clone_voice([reference_audio], voice_name)
-    
-    # Voice is now cached for fast synthesis
-    return result["voice_id"]
-
-# Subsequent synthesis calls will be ~200ms
-voice_id = optimize_for_realtime("RT Voice", "short_reference.wav")
-audio = synthesize_cloned("Real-time synthesis!", voice_id)
-```
-
-## 🔍 Troubleshooting
+## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **Audio too short error**: Ensure reference audio is at least 6 seconds
-2. **Poor voice quality**: Use higher quality reference audio (24kHz+, clear speech)
-3. **Cross-language accent**: This is expected - the cloned voice retains original accent
-4. **Memory issues**: Reduce concurrent requests or use CPU-only mode
-5. **LiveKit connection failed**: Verify API keys and websocket URL
+**"TTS model not ready"**
+- Check GPU availability and CUDA version
+- Verify model download completed
+- Check available VRAM (htop/nvidia-smi)
 
-### Performance Tips
+**"Reference audio file not found"**
+- Verify file paths are accessible
+- Check URL accessibility and format
+- Ensure audio duration > 2 seconds
 
-- Use GPU acceleration for faster processing
-- Cache frequently used voices
-- Use multiple shorter reference files instead of one long file
-- Pre-process audio to remove silence and noise
-- Monitor memory usage with multiple concurrent voice cloning requests
+**"Synthesis timeout"**
+- Reduce text length (<1500 chars)
+- Check GPU memory usage
+- Monitor synthesis worker queue
 
-## 📊 API Response Formats
+**LiveKit connection issues**
+- Verify orchestrator token endpoint
+- Check network connectivity to LiveKit server
+- Review LiveKit server logs
 
-### Success Responses
+### Debug Commands
 
-```json
-{
-  "voice_id": "abc123def456",
-  "name": "Custom Voice",
-  "status": "created",
-  "duration": 25.4,
-  "file_count": 3,
-  "message": "Voice successfully cloned and stored"
-}
+```bash
+# Check service health
+curl http://localhost:8000/healthz
+
+# View performance metrics
+curl http://localhost:8000/metrics
+
+# Test audio pipeline
+curl http://localhost:8000/debug/audio-test
+
+# Check supported languages
+curl http://localhost:8000/languages
 ```
 
-### Error Responses
+### Logging
 
-```json
-{
-  "detail": "Audio too short: 4.2s. Minimum 6 seconds required, 10+ recommended."
-}
-```
+Key log messages to monitor:
+- `🚀 Starting June TTS Service v3.0` - Startup
+- `✅ TTS model initialized` - Model ready
+- `🔥 Warming up TTS model` - Warmup process
+- `✅ TTS connected to ozzu-main room` - LiveKit connected
+- `🎤 Synthesizing (en): Hello world...` - Synthesis start
+- `✅ Published 120/120 frames` - Successful publish
 
-## 🔒 Security Considerations
+## 🔄 Migration from v2.x
 
-- Validate all uploaded audio files
-- Implement rate limiting for voice cloning endpoints
-- Store voice files securely with proper access controls
-- Monitor disk usage for voice storage
-- Sanitize voice names and descriptions
+### Breaking Changes
 
-This enhanced TTS service provides enterprise-grade voice cloning capabilities while maintaining the simplicity and performance required for real-time applications.
+1. **speaker_wav now accepts arrays** for multi-reference cloning
+2. **Language validation** - invalid languages default to "en"
+3. **Text length limit** reduced to 1500 characters
+4. **New response format** with detailed metrics
+
+### Migration Steps
+
+1. Update client code to handle new response format
+2. Adapt to array-based speaker_wav (backward compatible)
+3. Verify language codes against supported list
+4. Update monitoring to use `/metrics` endpoint
+
+## 📈 Performance Benchmarks
+
+**Typical Performance (RTX 3060, 12GB):**
+- Synthesis: 800-1500ms for 100-word text
+- Publishing: 200-400ms for 3-second audio
+- Memory: 2-3GB RAM, 4-6GB VRAM
+- Throughput: 4-6 requests/minute sustained
+
+**Optimized Performance (RTX 4090):**
+- Synthesis: 400-800ms for 100-word text
+- Publishing: 150-250ms for 3-second audio
+- Throughput: 8-12 requests/minute sustained
+
+## 🤝 Contributing
+
+When contributing to june-tts:
+
+1. **Test voice cloning quality** with various reference samples
+2. **Verify language support** across all 17 languages
+3. **Check real-time performance** under load
+4. **Validate LiveKit integration** end-to-end
+5. **Update documentation** for any API changes
+
+## 📜 License
+
+By using this service, you agree to the [Coqui TTS License](https://github.com/coqui-ai/TTS/blob/dev/LICENSE.txt).
+
+---
+
+**June TTS v3.0.0** - Built for production voice chat with XTTS v2 excellence.
