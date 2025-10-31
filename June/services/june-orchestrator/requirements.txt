@@ -10,8 +10,8 @@ pydantic==2.5.0
 livekit-api==1.0.7
 PyJWT==2.8.0
 
-# Google AI integration
-google-generativeai==0.8.2
+# Google AI integration - New unified SDK
+google-genai>=0.4.0
 
 # Audio processing for voice profiles
 soundfile==0.12.1
