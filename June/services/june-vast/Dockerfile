@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
-    ca-certificates curl \
+    ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -35,6 +35,19 @@ RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
     /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
+    # Install Chatterbox from source without deps to avoid numpy pin conflicts
+    git clone https://github.com/resemble-ai/chatterbox.git /tmp/chatterbox && \
+    /venv-tts/bin/pip install --no-deps -e /tmp/chatterbox && \
+    # Install explicit compatible dependencies without forcing numpy downgrade
+    /venv-tts/bin/pip install --no-deps s3tokenizer && \
+    /venv-tts/bin/pip install \
+      librosa==0.11.0 \
+      transformers==4.46.3 \
+      diffusers==0.29.0 \
+      resemble-perth==1.0.1 \
+      conformer==0.3.2 \
+      safetensors==0.5.3 && \
+    # Install remaining app deps from requirements (excluding chatterbox-tts line)
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
