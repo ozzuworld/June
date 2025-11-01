@@ -2,8 +2,7 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Main Chatterbox TTS package
-chatterbox-tts==0.1.4
+# Removed chatterbox-tts (installed from source in Dockerfile)
 
 # Core chatterbox deps (from upstream pyproject pins)
 numpy>=1.26.0,<2.0
