@@ -1,22 +1,29 @@
-# June TTS Service Dependencies - Chatterbox TTS
+# June TTS Service Dependencies - Chatterbox TTS (Pinned)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Chatterbox TTS core
-chatterbox-tts
+# Core chatterbox deps (from upstream pyproject pins)
+numpy>=1.26.0,<2.0
+librosa==0.11.0
+s3tokenizer
+transformers==4.46.3
+diffusers==0.29.0
+resemble-perth==1.0.1
+conformer==0.3.2
+safetensors==0.5.3
+
+# Torch stack installed in Dockerfile to match CUDA (do not install here)
+# torch==2.6.0
+# torchaudio==2.6.0
+# torchvision==0.21.0
 
 # LiveKit and HTTP clients
 livekit==0.11.1
 httpx==0.27.2
 
 # Audio processing
-numpy<2.0
 scipy==1.11.3
 soundfile==0.12.1
-torchaudio
 
 # API and validation
 pydantic==2.5.0
-
-# Optional: For reference audio normalization if needed
-librosa>=0.10.0
