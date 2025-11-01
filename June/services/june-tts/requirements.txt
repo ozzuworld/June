@@ -1,25 +1,25 @@
-# June TTS Service Dependencies - Kokoro-82M Ultra-Low Latency
+# June TTS Service - Kokoro-82M Ultra-Low Latency
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Kokoro TTS dependencies
-kokoro-onnx==0.1.2
+# Kokoro TTS (use latest compatible version)
+kokoro-onnx>=0.4.9
 onnxruntime-gpu==1.16.3
 requests==2.31.0
 
-# Core audio processing (keep existing)
-numpy>=1.26.0,<2.0
+# Audio processing  
+numpy>=1.24.0,<2.0
 librosa==0.11.0
 scipy==1.11.3
 soundfile==0.12.1
 
-# LiveKit and HTTP clients (keep existing)
-livekit==0.11.1
+# LiveKit and HTTP
+livekit==0.11.1  
 httpx==0.27.2
 
-# API and validation (keep existing)
+# API validation
 pydantic==2.5.0
 
-# PyTorch (minimal for Kokoro voice packs)
-torch==2.1.0
-torchaudio==2.1.0
+# Minimal PyTorch for voice packs
+torch>=2.1.0
+torchaudio>=2.1.0
