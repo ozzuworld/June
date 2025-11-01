@@ -2,6 +2,9 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
+# Main Chatterbox TTS package
+chatterbox-tts>=1.0.0
+
 # Core chatterbox deps (from upstream pyproject pins)
 numpy>=1.26.0,<2.0
 librosa==0.11.0
