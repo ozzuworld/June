@@ -10,31 +10,22 @@ ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3.10-dev \
-    python3-pip \
-    git \
-    build-essential \
-    cmake \
-    pkg-config \
-    libsndfile1-dev \
-    portaudio19-dev \
-    ffmpeg \
-    espeak-ng \
-    curl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    python3.11 python3.11-dev python3-pip \
+    git build-essential cmake pkg-config \
+    libsndfile1-dev portaudio19-dev \
+    ffmpeg espeak-ng curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
-    ln -sf /usr/bin/python3.10 /usr/bin/python3
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install numpy and cython BEFORE requirements (critical for pkuseg)
-RUN pip install --no-cache-dir "numpy<2.0" "cython<3.0"
+# Preinstall to satisfy pkuseg build isolation
+RUN pip install --no-cache-dir "numpy>=1.26,<2.0" "cython<3.0"
 
-# Install PyTorch 2.2.2 with CUDA 11.8 support
-RUN pip install --no-cache-dir torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
+# Torch stack for CUDA 11.8
+RUN pip install --no-cache-dir torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
     --index-url https://download.pytorch.org/whl/cu118
 
 WORKDIR /app
@@ -52,27 +43,20 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
-# Image metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
 LABEL version="4.0.0"
 LABEL description="June TTS Service - Chatterbox TTS with LiveKit integration"
 LABEL service="june-tts"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 \
-    ffmpeg \
-    espeak-ng \
-    libsndfile1 \
-    libportaudio2 \
-    curl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    python3.11 ffmpeg espeak-ng libsndfile1 libportaudio2 curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
-    ln -sf /usr/bin/python3.10 /usr/bin/python3
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3
 
 # Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Create app directory and user
