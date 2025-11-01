@@ -46,6 +46,9 @@ SUPPORTED_LANGUAGES = {
     "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"
 }
 
+# Configurable default speaker - can be overridden via environment variable
+DEFAULT_SPEAKER = os.getenv("TTS_DEFAULT_SPEAKER", "Alexandra Hisakawa")
+
 # Global TTS and LiveKit instances
 tts_instance: Optional[TTS] = None
 tts_room: Optional[rtc.Room] = None
@@ -317,6 +320,9 @@ async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) ->
                 kwargs["speaker_wav"] = speaker_refs  # Pass list for multi-reference
         elif request.speaker:
             kwargs["speaker"] = request.speaker
+        else:
+            # Use configurable default speaker if none specified
+            kwargs["speaker"] = DEFAULT_SPEAKER
         
         # Run synthesis in thread to avoid blocking event loop
         await asyncio.to_thread(tts_instance.tts_to_file, **kwargs)
@@ -488,13 +494,13 @@ async def warmup_model():
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             warmup_path = f.name
         
-        # Short warmup synthesis with a built-in speaker to avoid the error
+        # Short warmup synthesis with configurable default speaker
         await asyncio.to_thread(
             tts_instance.tts_to_file,
             text="Warmup test.",
             language="en",
             file_path=warmup_path,
-            speaker="Claribel Dervla",  # Use built-in speaker for warmup
+            speaker=DEFAULT_SPEAKER,  # Use configurable default speaker for warmup
             split_sentences=True
         )
         
@@ -511,6 +517,7 @@ async def lifespan(app: FastAPI):
     global tts_instance, publish_queue
     
     logger.info(f"🚀 Starting June TTS Service v3.0 - XTTS v2 Compliant on device: {device}")
+    logger.info(f"🎤 Using default speaker: {DEFAULT_SPEAKER} (configurable via TTS_DEFAULT_SPEAKER env var)")
     
     try:
         # Initialize TTS model
@@ -580,14 +587,16 @@ async def root():
             "Real-time LiveKit publishing",
             "Reference audio caching",
             "Synthesis timeout protection",
-            "Performance metrics"
+            "Performance metrics",
+            "Configurable default speaker"
         ],
         "status": "running",
         "tts_ready": tts_instance is not None,
         "device": device,
         "livekit_connected": room_connected,
         "supported_languages": sorted(SUPPORTED_LANGUAGES),
-        "room": "ozzu-main" if room_connected else None
+        "room": "ozzu-main" if room_connected else None,
+        "default_speaker": DEFAULT_SPEAKER
     }
 
 @app.get("/healthz")
@@ -597,7 +606,8 @@ async def health():
         "tts_ready": tts_instance is not None,
         "livekit_connected": room_connected,
         "device": device,
-        "queue_size": publish_queue.qsize() if publish_queue else 0
+        "queue_size": publish_queue.qsize() if publish_queue else 0,
+        "default_speaker": DEFAULT_SPEAKER
     }
 
 @app.get("/metrics")
@@ -624,7 +634,8 @@ async def get_metrics():
             if (metrics["cache_hits"] + metrics["cache_misses"]) > 0 else 0
         ),
         "reference_cache_size": len(reference_cache),
-        "queue_size": publish_queue.qsize() if publish_queue else 0
+        "queue_size": publish_queue.qsize() if publish_queue else 0,
+        "default_speaker": DEFAULT_SPEAKER
     }
 
 @app.post("/synthesize", response_model=SynthesisResponse)
@@ -698,7 +709,8 @@ async def debug_token():
         "orchestrator_url": config.ORCHESTRATOR_URL,
         "livekit_ws_url": config.LIVEKIT_WS_URL,
         "device": device,
-        "model": os.getenv("TTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2")
+        "model": os.getenv("TTS_MODEL", "tts_models/multilingual/multi-dataset/xtts_v2"),
+        "default_speaker": DEFAULT_SPEAKER
     }
 
 @app.get("/debug/audio-test")
