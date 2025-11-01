@@ -5,6 +5,7 @@ Replaces XTTS v2 engine with Chatterbox while preserving API and LiveKit pipelin
 Adds streaming TTS support for sub-second time-to-first-audio.
 
 FIXED: SSL certificate verification issue for reference audio downloads
+FIXED: Make speaker_wav optional - use default voice when no references provided
 """
 import os
 import torch
@@ -123,24 +124,36 @@ class SynthesisResponse(BaseModel):
     first_audio_ms: float = 0.0
     message: str = ""
 
-async def download_reference_audio(url: str) -> str:
+async def download_reference_audio(url: str) -> Optional[str]:
+    """Download reference audio with graceful 404 handling"""
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
     if url_hash in reference_cache and os.path.exists(reference_cache[url_hash]):
         metrics["cache_hits"] += 1
         return reference_cache[url_hash]
     metrics["cache_misses"] += 1
     
-    # FIXED: Add SSL verification bypass for self-signed certificates
     # Check if internal URL (adjust domains as needed)
     is_internal = any(domain in url for domain in ['localhost', '127.0.0.1', '.local', 'ozzu.world'])
     verify_ssl = not is_internal
     
-    async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(r.content)
-            tmp = f.name
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(r.content)
+                tmp = f.name
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"Reference audio not found (404): {url}")
+            return None
+        else:
+            logger.error(f"HTTP error downloading reference audio {url}: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Error downloading reference audio {url}: {e}")
+        return None
+    
     try:
         audio, sr = sf.read(tmp)
         if len(audio.shape) > 1:
@@ -157,20 +170,32 @@ async def download_reference_audio(url: str) -> str:
         reference_cache[url_hash] = tmp
         return tmp
     except Exception as e:
-        os.unlink(tmp)
-        raise HTTPException(status_code=422, detail=f"Invalid reference audio: {e}")
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        logger.error(f"Error processing reference audio {url}: {e}")
+        return None
 
 async def prepare_speaker_references(speaker_wav: Optional[List[str]]) -> Optional[List[str]]:
+    """Prepare speaker references with graceful handling of missing files"""
     if not speaker_wav:
         return None
     prepared = []
     for ref in speaker_wav:
         if ref.startswith(("http://", "https://")):
-            prepared.append(await download_reference_audio(ref))
+            downloaded = await download_reference_audio(ref)
+            if downloaded:
+                prepared.append(downloaded)
+            else:
+                logger.warning(f"Skipping invalid reference audio URL: {ref}")
         else:
-            if not os.path.exists(ref):
-                raise HTTPException(status_code=422, detail=f"Reference file not found: {ref}")
-            prepared.append(ref)
+            if os.path.exists(ref):
+                prepared.append(ref)
+            else:
+                logger.warning(f"Skipping missing reference audio file: {ref}")
+    
+    if not prepared:
+        logger.info("No valid speaker references found, using default voice")
+        return None
     return prepared
 
 async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) -> bytes:
@@ -283,7 +308,8 @@ async def warmup_model():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tts_ready, publish_queue
-    logger.info(f"🚀 Starting June TTS Service v5.0 - Chatterbox + Streaming on device: {device}")
+    logger.info(f"🚀 Starting June TTS Service v5.1 - Chatterbox + Default Female Voice + Streaming")
+    logger.info(f"👩 Using default female voice for regular conversations")
     logger.info(f"⚡ Streaming TTS: {STREAMING_ENABLED}")
     try:
         await chatterbox_engine.initialize()
@@ -292,15 +318,15 @@ async def lifespan(app: FastAPI):
         publish_queue = asyncio.Queue(maxsize=10)
         asyncio.create_task(synthesis_worker())
         await join_livekit_room()
-        logger.info("🎉 June TTS Service fully initialized (Chatterbox + Streaming)")
+        logger.info("🎉 June TTS Service fully initialized (Chatterbox + Default Voice + Streaming)")
     except Exception as e:
         logger.exception(f"❌ TTS initialization failed: {e}")
     yield
 
 app = FastAPI(
-    title="June TTS Service + Streaming",
-    version="5.0.0",
-    description="Chatterbox TTS with LiveKit room integration + Streaming support for sub-second latency",
+    title="June TTS Service + Default Voice + Streaming",
+    version="5.1.0",
+    description="Chatterbox TTS with default female voice + voice cloning for mockingbird skill + streaming support",
     lifespan=lifespan,
 )
 
@@ -341,16 +367,17 @@ async def root():
     streaming_stats = get_streaming_tts_metrics() if STREAMING_ENABLED else {}
     return {
         "service": "june-tts",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "engine": "chatterbox-tts",
         "features": [
-            "Zero-shot voice cloning",
+            "Default female voice for conversations",
+            "Zero-shot voice cloning for mockingbird skill",
             "Emotion control (exaggeration)",
             "Pacing control (cfg_weight)",
             "23+ language support",
             "Real-time LiveKit publishing",
             "Reference audio caching",
-            "Synthesis timeout protection",
+            "Graceful fallback on missing references",
             "Performance metrics",
             "Streaming TTS support" if STREAMING_ENABLED else "Standard TTS",
         ],
@@ -361,6 +388,7 @@ async def root():
         "supported_languages": sorted(SUPPORTED_LANGUAGES),
         "room": "ozzu-main" if room_connected else None,
         "streaming": {"enabled": STREAMING_ENABLED, "metrics": streaming_stats},
+        "default_voice": "female (chatterbox default)",
     }
 
 @app.get("/healthz")
@@ -376,6 +404,8 @@ async def health():
             "regular_synthesis": True,
             "streaming_synthesis": STREAMING_ENABLED,
             "concurrent_processing": True,
+            "default_female_voice": True,
+            "voice_cloning_fallback": True,
         },
     }
 
@@ -489,8 +519,11 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
         raise HTTPException(status_code=503, detail="Not connected to LiveKit room")
     if not STREAMING_ENABLED:
         raise HTTPException(status_code=501, detail="Streaming TTS not enabled")
-    logger.info(f"⚡ Streaming TTS request: '{request.text[:50]}...'")
+    
     speaker_refs = await prepare_speaker_references(request.speaker_wav)
+    voice_mode = "voice cloning" if speaker_refs else "default female voice"
+    logger.info(f"⚡ Streaming TTS request ({voice_mode}): '{request.text[:50]}...'")
+    
     metrics["streaming_requests"] += 1
     result = await stream_tts_to_room(
         text=request.text,
@@ -508,6 +541,8 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
         "first_audio_ms": result.get("first_audio_ms", 0),
         "total_time_ms": result.get("total_time_ms", 0),
         "streaming_mode": True,
+        "voice_mode": voice_mode,
+        "speaker_references_used": len(speaker_refs) if speaker_refs else 0,
     }
 
 @app.get("/streaming/status")
@@ -521,6 +556,8 @@ async def streaming_status():
             "concurrent_processing": True,
             "chunked_audio_streaming": STREAMING_ENABLED,
             "first_audio_optimization": STREAMING_ENABLED,
+            "default_female_voice": True,
+            "voice_cloning_fallback": True,
         },
     }
 
