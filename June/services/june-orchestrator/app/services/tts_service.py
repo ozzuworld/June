@@ -153,7 +153,7 @@ class TTSService:
             if voice_id:
                 payload["voice_id"] = voice_id
             else:
-                payload["speaker"] = speaker or "Claribel Dervla"
+                payload["speaker"] = speaker or "Alexandra Hisakawa"
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
