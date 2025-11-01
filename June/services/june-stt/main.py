@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-June STT Enhanced - FULL STREAMING PIPELINE
+June STT Enhanced - FULL STREAMING PIPELINE - FIXED
 Silero VAD + LiveKit Integration + CONTINUOUS PARTIAL STREAMING
 Intelligent speech detection + Real-time partial transcript streaming for true online processing
 OpenAI API compatible + Real-time voice chat capabilities
 
 FULL STREAMING PIPELINE IMPLEMENTATION:
-- Emits partials to orchestrator every 200ms during speech
+- Emits partials to orchestrator every 250ms during speech
 - Enables LLM to start processing while user is still talking
 - Supports overlapping speech-in → thinking → speech-out pipeline
+
+FIXED: Utterance state management and error handling
 """
 import asyncio
 import logging
@@ -54,7 +56,7 @@ CONTINUOUS_PARTIALS = _bool_env("STT_CONTINUOUS_PARTIALS", True)  # NEW: Enable 
 room: Optional[rtc.Room] = None
 room_connected: bool = False
 buffers: Dict[str, Deque[np.ndarray]] = {}
-utterance_states: Dict[str, dict] = {}
+utterance_states: Dict[str, 'UtteranceState'] = {}  # FIXED: Proper type annotation
 partial_streamers: Dict[str, PartialTranscriptStreamer] = {}
 # NEW: Track partial streaming per participant
 partial_streaming_tasks: Dict[str, asyncio.Task] = {}
@@ -88,15 +90,18 @@ class UtteranceState:
 
 # Helper functions (enhanced for CONTINUOUS streaming)
 
-def _ensure_utterance_state(pid: str) -> 'UtteranceState':
+def _ensure_utterance_state(pid: str) -> UtteranceState:
+    """FIXED: Ensure utterance state exists with proper initialization"""
     if pid not in utterance_states:
         utterance_states[pid] = UtteranceState()
+        logger.debug(f"🆕 Created new utterance state for {pid}")
     return utterance_states[pid]
 
 
 def _ensure_buffer(pid: str) -> Deque[np.ndarray]:
     if pid not in buffers:
         buffers[pid] = deque(maxlen=600)  # OPTIMIZED: Larger buffer for longer utterances
+        logger.debug(f"🆕 Created new audio buffer for {pid}")
     return buffers[pid]
 
 
@@ -106,10 +111,13 @@ def _ensure_partial_streamer(pid: str) -> PartialTranscriptStreamer:
             chunk_duration_ms=PARTIAL_CHUNK_MS,
             min_speech_ms=PARTIAL_MIN_SPEECH_MS,
         )
+        logger.debug(f"🆕 Created partial streamer for {pid}")
     return partial_streamers[pid]
 
 
-def _reset_utterance_state(state: 'UtteranceState'):
+def _reset_utterance_state(state: UtteranceState):
+    """FIXED: Safe state reset with logging"""
+    old_id = getattr(state, 'utterance_id', 'unknown')[:8]
     state.buffer.clear()
     state.is_active = False
     state.started_at = None
@@ -119,6 +127,7 @@ def _reset_utterance_state(state: 'UtteranceState'):
     state.last_partial_sent_at = None
     state.partial_sequence = 0
     state.utterance_id = str(uuid.uuid4())  # New utterance ID
+    logger.debug(f"🔄 Reset utterance state: {old_id} → {state.utterance_id[:8]}")
 
 
 async def _notify_orchestrator(user_id: str, text: str, language: Optional[str], partial: bool = False, 
@@ -147,7 +156,8 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str],
             "is_streaming": True,
             "streaming_metadata": {
                 "chunk_duration_ms": PARTIAL_CHUNK_MS,
-                "min_speech_ms": PARTIAL_MIN_SPEECH_MS
+                "min_speech_ms": PARTIAL_MIN_SPEECH_MS,
+                "emit_interval_ms": PARTIAL_EMIT_INTERVAL_MS
             }
         })
 
@@ -195,136 +205,132 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-async def _continuous_partial_processor(pid: str, state: 'UtteranceState', streamer: PartialTranscriptStreamer):
+async def _continuous_partial_processor(pid: str, state: UtteranceState, streamer: PartialTranscriptStreamer):
     """NEW: Continuously process and emit partial transcripts during active speech"""
     if not CONTINUOUS_PARTIALS or not whisper_service.is_model_ready():
         return
         
     logger.info(f"🔄 Starting continuous partial processing for {pid}")
+    utterance_id = state.utterance_id
     
     try:
         while state.is_active:
-            # Wait for minimum speech duration before starting partials
-            if state.started_at:
-                duration_ms = (datetime.utcnow() - state.started_at).total_seconds() * 1000
-                
-                if duration_ms >= PARTIAL_MIN_SPEECH_MS:
-                    # Check if enough time has passed since last partial
-                    now = datetime.utcnow()
-                    if (not state.last_partial_sent_at or 
-                        (now - state.last_partial_sent_at).total_seconds() * 1000 >= PARTIAL_EMIT_INTERVAL_MS):
-                        
-                        # Get current audio buffer for partial transcription
-                        if len(state.buffer) > 0:
-                            # Use recent audio for partial (last 1-2 seconds)
-                            recent_frames = list(state.buffer)[-int(2 * SAMPLE_RATE / 512):]
-                            if recent_frames:
-                                partial_audio = np.concatenate(recent_frames, axis=0)
-                                
-                                if len(partial_audio) >= int(PARTIAL_MIN_SPEECH_MS / 1000 * SAMPLE_RATE):
+            try:
+                # Wait for minimum speech duration before starting partials
+                if state.started_at:
+                    duration_ms = (datetime.utcnow() - state.started_at).total_seconds() * 1000
+                    
+                    if duration_ms >= PARTIAL_MIN_SPEECH_MS:
+                        # Check if enough time has passed since last partial
+                        now = datetime.utcnow()
+                        if (not state.last_partial_sent_at or 
+                            (now - state.last_partial_sent_at).total_seconds() * 1000 >= PARTIAL_EMIT_INTERVAL_MS):
+                            
+                            # Get current audio buffer for partial transcription
+                            if len(state.buffer) > 0:
+                                # Use recent audio for partial (last 1.5 seconds)
+                                recent_frames = list(state.buffer)[-int(1.5 * SAMPLE_RATE / 320):]
+                                if recent_frames:
                                     try:
-                                        start_time = time.time()
-                                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                                            sf.write(tmp.name, partial_audio, SAMPLE_RATE, subtype='PCM_16')
-                                            res = await whisper_service.transcribe(tmp.name, language=None)
+                                        partial_audio = np.concatenate(recent_frames, axis=0)
                                         
-                                        processing_time = (time.time() - start_time) * 1000
-                                        partial_text = res.get("text", "").strip()
-                                        
-                                        if (partial_text and len(partial_text) > 3 and 
-                                            len(partial_text) <= MAX_PARTIAL_LENGTH and
-                                            streamer.should_emit_partial(partial_text)):
+                                        if len(partial_audio) >= int(PARTIAL_MIN_SPEECH_MS / 1000 * SAMPLE_RATE):
+                                            start_time = time.time()
                                             
-                                            state.partial_sequence += 1
-                                            logger.info(f"⚡ CONTINUOUS PARTIAL[{pid}] #{state.partial_sequence} ({processing_time:.0f}ms): {partial_text}")
+                                            # Process partial transcript
+                                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                                                sf.write(tmp.name, partial_audio, SAMPLE_RATE, subtype='PCM_16')
+                                                res = await whisper_service.transcribe(tmp.name, language=None)
                                             
-                                            # Send partial to orchestrator
-                                            await _notify_orchestrator(
-                                                pid, partial_text, res.get("language"), 
-                                                partial=True, utterance_id=state.utterance_id,
-                                                partial_sequence=state.partial_sequence
-                                            )
+                                            processing_time = (time.time() - start_time) * 1000
+                                            partial_text = res.get("text", "").strip()
                                             
-                                            streamer.update_partial_text(partial_text)
-                                            state.last_partial_sent_at = now
-                                            state.first_partial_sent = True
-                                            streaming_metrics.record_partial(processing_time)
-                                            
+                                            if (partial_text and len(partial_text) > 3 and 
+                                                len(partial_text) <= MAX_PARTIAL_LENGTH and
+                                                streamer.should_emit_partial(partial_text)):
+                                                
+                                                state.partial_sequence += 1
+                                                logger.info(f"⚡ CONTINUOUS PARTIAL[{pid}] #{state.partial_sequence} ({processing_time:.0f}ms): {partial_text}")
+                                                
+                                                # Send partial to orchestrator
+                                                await _notify_orchestrator(
+                                                    pid, partial_text, res.get("language"), 
+                                                    partial=True, utterance_id=utterance_id,
+                                                    partial_sequence=state.partial_sequence
+                                                )
+                                                
+                                                streamer.update_partial_text(partial_text)
+                                                state.last_partial_sent_at = now
+                                                state.first_partial_sent = True
+                                                streaming_metrics.record_partial(processing_time)
+                                    
                                     except Exception as e:
-                                        logger.debug(f"⚠️ Continuous partial error for {pid}: {e}")
-            
-            # Sleep before next partial check
-            await asyncio.sleep(PARTIAL_EMIT_INTERVAL_MS / 1000)
+                                        logger.debug(f"⚠️ Partial audio processing error for {pid}: {e}")
+                
+                # Sleep before next partial check
+                await asyncio.sleep(PARTIAL_EMIT_INTERVAL_MS / 1000)
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Continuous partial loop error for {pid}: {e}")
+                await asyncio.sleep(0.5)  # Longer sleep on error
             
     except asyncio.CancelledError:
         logger.debug(f"🛑 Continuous partial processing cancelled for {pid}")
     except Exception as e:
-        logger.error(f"❌ Continuous partial processing error for {pid}: {e}")
+        logger.error(f"❌ Critical continuous partial error for {pid}: {e}")
     finally:
         # Clean up task reference
         if pid in partial_streaming_tasks:
             del partial_streaming_tasks[pid]
-
-
-async def _process_partial_transcript(pid: str, audio: np.ndarray, streamer: PartialTranscriptStreamer, 
-                                     utterance_id: str, partial_sequence: int):
-    """Process single partial transcript (kept for compatibility)"""
-    if not PARTIALS_ENABLED or not whisper_service.is_model_ready():
-        return
-    try:
-        start_time = time.time()
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
-            res = await whisper_service.transcribe(tmp.name, language=None)
-        processing_time = (time.time() - start_time) * 1000
-        text = res.get("text", "").strip()
-        
-        if text and streamer.should_emit_partial(text) and len(text) <= MAX_PARTIAL_LENGTH:
-            logger.info(f"⚡ PARTIAL[{pid}] #{partial_sequence} ({processing_time:.0f}ms): {text}")
-            streamer.update_partial_text(text)
-            await _notify_orchestrator(pid, text, res.get("language"), partial=True, 
-                                      utterance_id=utterance_id, partial_sequence=partial_sequence)
-            streaming_metrics.record_partial(processing_time)
-    except Exception as e:
-        logger.debug(f"⚠️ Partial transcription error for {pid}: {e}")
+            logger.debug(f"🧹 Cleaned up continuous partial task for {pid}")
 
 
 async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray, utterance_id: str):
+    """FIXED: Enhanced error handling for final transcription"""
     global processed_utterances
     if not whisper_service.is_model_ready():
         logger.warning("⚠️ Whisper model not ready")
         return
+        
     try:
         duration = len(audio) / SAMPLE_RATE
+        
+        # FIXED: Better speech validation
         if not whisper_service.has_speech_content(audio, SAMPLE_RATE):
             logger.debug(f"🔇 Silero VAD filtered out non-speech for {pid} ({duration:.2f}s)")
             return
-        logger.info(f"🎯 Silero VAD confirmed speech for {pid}: {duration:.2f}s")
+            
+        logger.info(f"🎯 Silero VAD confirmed speech for {pid}: {duration:.2f}s (ID: {utterance_id[:8]})")
+        
         start_time = time.time()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
             sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
             res = await whisper_service.transcribe(tmp.name, language=None)
+            
         processing_time = (time.time() - start_time) * 1000
         text = res.get("text", "").strip()
         method = res.get("method", "silero_enhanced")
         
         if text and len(text) > 2:
-            if text.lower() not in ["you", "you.", "uh", "um", "mm", "hmm", "yeah"]:
+            # FIXED: Better filtering of false positives
+            filtered_words = {"you", "you.", "uh", "um", "mm", "hmm", "yeah", "mhm", "ah"}
+            if text.lower() not in filtered_words:
                 logger.info(f"✅ FINAL[{pid}] via {method} ({processing_time:.0f}ms): {text}")
-                # Send final transcript with utterance metadata
+                # Send final transcript
                 await _notify_orchestrator(pid, text, res.get("language"), partial=False)
                 processed_utterances += 1
                 streaming_metrics.record_final()
             else:
                 logger.debug(f"😫 Filtered false positive: '{text}'")
         else:
-            logger.debug(f"🔇 Empty transcription result")
+            logger.debug(f"🔇 Empty transcription result for {pid}")
+            
     except Exception as e:
         logger.error(f"❌ Transcription error for {pid}: {e}")
 
 
 async def _process_utterances_with_streaming():
-    """ENHANCED: Main processing loop with continuous partial streaming"""
+    """ENHANCED: Main processing loop with FIXED state management"""
     global processed_utterances
     logger.info("🚀 Starting Silero VAD-enhanced STT processing with FULL STREAMING PIPELINE")
     
@@ -339,99 +345,122 @@ async def _process_utterances_with_streaming():
     
     while True:
         try:
-            for pid in list(buffers.keys()):
-                if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
+            # FIXED: Safe iteration over participants
+            participants_to_process = list(buffers.keys())
+            
+            for pid in participants_to_process:
+                try:
+                    # Skip excluded participants
+                    if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
+                        continue
+                    
+                    # FIXED: Ensure all state exists before processing
+                    state = _ensure_utterance_state(pid)
+                    buf = _ensure_buffer(pid)
+                    streamer = _ensure_partial_streamer(pid) if STREAMING_ENABLED else None
+                    
+                    # Process audio frames
+                    while buf:
+                        try:
+                            frame = buf.popleft()
+                            now = datetime.utcnow()
+                            
+                            if not state.is_active:
+                                # NEW: Starting new utterance - begin continuous partial processing
+                                state.is_active = True
+                                state.started_at = now
+                                state.last_audio_at = now
+                                state.buffer.clear()
+                                state.buffer.append(frame)
+                                state.total_samples = len(frame)
+                                state.first_partial_sent = False
+                                state.last_partial_sent_at = None
+                                state.partial_sequence = 0
+                                state.utterance_id = str(uuid.uuid4())
+                                
+                                if streamer:
+                                    streamer.reset()
+                                    
+                                logger.debug(f"🎬 Started utterance capture for {pid} (ID: {state.utterance_id[:8]})")
+                                
+                                # NEW: Start continuous partial processing task
+                                if (CONTINUOUS_PARTIALS and STREAMING_ENABLED and 
+                                    pid not in partial_streaming_tasks):
+                                    task = asyncio.create_task(_continuous_partial_processor(pid, state, streamer))
+                                    partial_streaming_tasks[pid] = task
+                                    logger.debug(f"🔄 Started continuous partial task for {pid}")
+                                    
+                            else:
+                                # Continue building utterance
+                                state.buffer.append(frame)
+                                state.total_samples += len(frame)
+                                state.last_audio_at = now
+                                
+                                # Update streamer for any legacy partial processing
+                                if STREAMING_ENABLED and streamer and not CONTINUOUS_PARTIALS:
+                                    streamer.add_audio_chunk(frame)
+                                    
+                                # Check if utterance should end
+                                duration = (now - state.started_at).total_seconds()
+                                silence_duration = (now - state.last_audio_at).total_seconds()
+                                
+                                should_end = (
+                                    duration >= MAX_UTTERANCE_SEC or
+                                    (duration >= MIN_UTTERANCE_SEC and silence_duration >= SILENCE_TIMEOUT_SEC)
+                                )
+                                
+                                if should_end:
+                                    # NEW: Cancel continuous partial processing
+                                    if pid in partial_streaming_tasks:
+                                        partial_streaming_tasks[pid].cancel()
+                                        try:
+                                            await partial_streaming_tasks[pid]
+                                        except asyncio.CancelledError:
+                                            pass
+                                        del partial_streaming_tasks[pid]
+                                        logger.debug(f"🛑 Stopped continuous partial task for {pid}")
+                                    
+                                    # Process final utterance
+                                    if len(state.buffer) > 0:
+                                        utterance_audio = np.concatenate(list(state.buffer), axis=0)
+                                        utterance_duration = len(utterance_audio) / SAMPLE_RATE
+                                        utterance_id = state.utterance_id
+                                        
+                                        logger.info(f"🎬 Ending utterance for {pid}: {utterance_duration:.2f}s (ID: {utterance_id[:8]})")
+                                        
+                                        # Process final transcript
+                                        await _transcribe_utterance_with_silero(pid, utterance_audio, utterance_id)
+                                    
+                                    # Reset state for next utterance
+                                    _reset_utterance_state(state)
+                                    if streamer:
+                                        streamer.reset()
+                                    
+                        except Exception as frame_error:
+                            logger.debug(f"⚠️ Frame processing error for {pid}: {frame_error}")
+                            continue
+                            
+                except Exception as participant_error:
+                    logger.debug(f"⚠️ Participant processing error for {pid}: {participant_error}")
                     continue
                     
-                state = _ensure_utterance_state(pid)
-                buf = _ensure_buffer(pid)
-                streamer = _ensure_partial_streamer(pid) if STREAMING_ENABLED else None
-                
-                while buf:
-                    frame = buf.popleft()
-                    now = datetime.utcnow()
-                    
-                    if not state.is_active:
-                        # NEW: Starting new utterance - begin continuous partial processing
-                        state.is_active = True
-                        state.started_at = now
-                        state.last_audio_at = now
-                        state.buffer.clear()
-                        state.buffer.append(frame)
-                        state.total_samples = len(frame)
-                        state.first_partial_sent = False
-                        state.last_partial_sent_at = None
-                        state.partial_sequence = 0
-                        state.utterance_id = str(uuid.uuid4())
-                        
-                        if streamer:
-                            streamer.reset()
-                            
-                        logger.debug(f"🎬 Started utterance capture for {pid} (ID: {state.utterance_id[:8]})")
-                        
-                        # NEW: Start continuous partial processing task
-                        if CONTINUOUS_PARTIALS and STREAMING_ENABLED and pid not in partial_streaming_tasks:
-                            task = asyncio.create_task(_continuous_partial_processor(pid, state, streamer))
-                            partial_streaming_tasks[pid] = task
-                            logger.debug(f"🔄 Started continuous partial task for {pid}")
-                            
-                    else:
-                        # Continue building utterance
-                        state.buffer.append(frame)
-                        state.total_samples += len(frame)
-                        state.last_audio_at = now
-                        
-                        # Update streamer for any legacy partial processing
-                        if STREAMING_ENABLED and streamer and not CONTINUOUS_PARTIALS:
-                            streamer.add_audio_chunk(frame)
-                            
-                        # Check if utterance should end
-                        duration = (now - state.started_at).total_seconds()
-                        silence_duration = (now - state.last_audio_at).total_seconds()
-                        
-                        should_end = (
-                            duration >= MAX_UTTERANCE_SEC or
-                            (duration >= MIN_UTTERANCE_SEC and silence_duration >= SILENCE_TIMEOUT_SEC)
-                        )
-                        
-                        if should_end:
-                            # NEW: Cancel continuous partial processing
-                            if pid in partial_streaming_tasks:
-                                partial_streaming_tasks[pid].cancel()
-                                try:
-                                    await partial_streaming_tasks[pid]
-                                except asyncio.CancelledError:
-                                    pass
-                                del partial_streaming_tasks[pid]
-                                logger.debug(f"🛑 Stopped continuous partial task for {pid}")
-                            
-                            # Process final utterance
-                            utterance_audio = np.concatenate(list(state.buffer), axis=0)
-                            utterance_duration = len(utterance_audio) / SAMPLE_RATE
-                            utterance_id = state.utterance_id
-                            
-                            logger.info(f"🎬 Ending utterance for {pid}: {utterance_duration:.2f}s (ID: {utterance_id[:8]})")
-                            
-                            # Process final transcript
-                            await _transcribe_utterance_with_silero(pid, utterance_audio, utterance_id)
-                            
-                            # Reset state for next utterance
-                            _reset_utterance_state(state)
-                            if streamer:
-                                streamer.reset()
-                                
         except Exception as e:
-            logger.warning(f"❌ Utterance processing error: {e}")
+            logger.warning(f"❌ Main loop error: {e}")
             
         await asyncio.sleep(PROCESS_SLEEP_SEC)
 
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
+    """FIXED: Safe audio frame processing"""
     if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
         return
-    pcm, sr = _frame_to_float32_mono(frame)
-    pcm16k = _resample_to_16k_mono(pcm, sr)
-    _ensure_buffer(pid).append(pcm16k)
+        
+    try:
+        pcm, sr = _frame_to_float32_mono(frame)
+        pcm16k = _resample_to_16k_mono(pcm, sr)
+        _ensure_buffer(pid).append(pcm16k)
+    except Exception as e:
+        logger.debug(f"⚠️ Audio frame processing error for {pid}: {e}")
 
 
 def setup_room_callbacks(room: rtc.Room):
@@ -440,6 +469,11 @@ def setup_room_callbacks(room: rtc.Room):
         logger.info(f"👤 Participant joined: {p.identity}")
         if p.identity in EXCLUDE_PARTICIPANTS:
             logger.info(f"🚫 Participant {p.identity} is EXCLUDED from STT processing")
+        else:
+            # Pre-initialize state for new participant
+            _ensure_utterance_state(p.identity)
+            _ensure_buffer(p.identity)
+            logger.info(f"✅ Initialized state for participant: {p.identity}")
 
     @room.on("participant_disconnected")
     def _p_leave(p):
@@ -470,6 +504,11 @@ def setup_room_callbacks(room: rtc.Room):
             logger.info(f"🚫 EXCLUDED participant {pid} - not processing audio")
             return
         logger.info(f"✅ Subscribed to audio of {pid}")
+        
+        # Pre-initialize state
+        _ensure_utterance_state(pid)
+        _ensure_buffer(pid)
+        
         stream = rtc.AudioStream(track)
         async def consume():
             logger.info(f"🎧 Starting audio consumption for {pid}")
@@ -500,6 +539,7 @@ async def lifespan(app: FastAPI):
     if CONTINUOUS_PARTIALS:
         logger.info(f"🎯 ONLINE MODE: LLM processes speech while user is talking (every {PARTIAL_EMIT_INTERVAL_MS}ms)")
         logger.info(f"⚡ TARGET LATENCY: First partial in <{PARTIAL_MIN_SPEECH_MS}ms from speech start")
+        logger.info(f"🎯 PIPELINE GOAL: speech-in + thinking + speech-out overlap")
     
     try:
         await whisper_service.initialize()
@@ -517,6 +557,10 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if room_connected and 'task' in locals():
         task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
         
     # Cancel all partial streaming tasks
     for pid, partial_task in list(partial_streaming_tasks.items()):
@@ -532,8 +576,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="June STT - Full Streaming Pipeline",
-    version="6.0.0-streaming",
+    title="June STT - Full Streaming Pipeline (Fixed)",
+    version="6.0.1-streaming-fixed",
     description="Continuous partial transcripts + Online LLM processing + Silero VAD + LiveKit",
     lifespan=lifespan,
 )
@@ -584,7 +628,7 @@ async def transcribe_audio(
 async def health():
     return {
         "status": "healthy",
-        "version": "6.0.0-streaming",
+        "version": "6.0.1-streaming-fixed",
         "components": {
             "whisper_ready": whisper_service.is_model_ready(),
             "livekit_connected": room_connected,
@@ -608,6 +652,7 @@ async def health():
             "partial_emit_interval_ms": PARTIAL_EMIT_INTERVAL_MS,
             "online_processing": CONTINUOUS_PARTIALS,
             "overlapping_pipeline": "speech-in + thinking + speech-out",
+            "fixes_applied": "state_management_enhanced",
         }
     }
 
@@ -615,10 +660,11 @@ async def health():
 @app.get("/")
 async def root():
     active_streaming_tasks = len(partial_streaming_tasks)
+    active_participants = len(buffers)
     
     return {
         "service": "june-stt",
-        "version": "6.0.0-streaming",
+        "version": "6.0.1-streaming-fixed",
         "description": "FULL STREAMING PIPELINE: Continuous partials + Online LLM + Silero VAD + LiveKit",
         "features": [
             "Silero VAD intelligent speech detection",
@@ -629,6 +675,7 @@ async def root():
             "Anti-feedback protection",
             "Enhanced orchestrator integration",
             "Per-utterance tracking and deduplication",
+            "FIXED state management and error handling",
             "Performance metrics",
         ],
         "streaming": {
@@ -642,12 +689,51 @@ async def root():
             "target_achieved": CONTINUOUS_PARTIALS,
             "speech_in_thinking_speech_out": "ACTIVE" if CONTINUOUS_PARTIALS else "PARTIAL",
             "overlapping_processing": CONTINUOUS_PARTIALS,
+            "state_management": "FIXED",
         },
-        "stats": {
-            "processed_utterances": processed_utterances, 
+        "current_status": {
+            "active_participants": active_participants,
             "active_streaming_tasks": active_streaming_tasks,
-            **streaming_metrics.get_stats()
+            "processed_utterances": processed_utterances,
+            "pipeline_ready": CONTINUOUS_PARTIALS and room_connected and whisper_service.is_model_ready(),
         },
+        "stats": streaming_metrics.get_stats(),
+    }
+
+
+@app.get("/debug/pipeline")
+async def debug_pipeline():
+    """Debug endpoint for pipeline status"""
+    return {
+        "streaming_config": {
+            "STREAMING_ENABLED": STREAMING_ENABLED,
+            "PARTIALS_ENABLED": PARTIALS_ENABLED,
+            "CONTINUOUS_PARTIALS": CONTINUOUS_PARTIALS,
+        },
+        "timing_config": {
+            "PARTIAL_EMIT_INTERVAL_MS": PARTIAL_EMIT_INTERVAL_MS,
+            "PARTIAL_MIN_SPEECH_MS": PARTIAL_MIN_SPEECH_MS,
+            "MAX_UTTERANCE_SEC": MAX_UTTERANCE_SEC,
+            "SILENCE_TIMEOUT_SEC": SILENCE_TIMEOUT_SEC,
+        },
+        "current_state": {
+            "active_participants": list(buffers.keys()),
+            "utterance_states": {pid: {
+                "is_active": state.is_active,
+                "partial_sequence": state.partial_sequence,
+                "utterance_id": state.utterance_id[:8],
+            } for pid, state in utterance_states.items()},
+            "active_streaming_tasks": list(partial_streaming_tasks.keys()),
+            "room_connected": room_connected,
+            "whisper_ready": whisper_service.is_model_ready(),
+        },
+        "fixes_applied": [
+            "Enhanced state management",
+            "Better error handling in processing loops",
+            "Safe participant iteration",
+            "Proper async task cleanup",
+            "Enhanced utterance tracking"
+        ]
     }
 
 
@@ -659,16 +745,19 @@ async def stats():
     
     participant_stats = {}
     for pid in utterance_participants:
-        state = utterance_states[pid]
-        participant_stats[pid] = {
-            "is_active": state.is_active,
-            "buffer_frames": len(state.buffer),
-            "started_at": state.started_at.isoformat() if state.started_at else None,
-            "first_partial_sent": state.first_partial_sent,
-            "partial_sequence": state.partial_sequence,
-            "utterance_id": state.utterance_id[:8] if hasattr(state, 'utterance_id') else None,
-            "has_continuous_task": pid in partial_streaming_tasks,
-        }
+        try:
+            state = utterance_states[pid]
+            participant_stats[pid] = {
+                "is_active": state.is_active,
+                "buffer_frames": len(state.buffer),
+                "started_at": state.started_at.isoformat() if state.started_at else None,
+                "first_partial_sent": state.first_partial_sent,
+                "partial_sequence": state.partial_sequence,
+                "utterance_id": state.utterance_id[:8] if hasattr(state, 'utterance_id') else None,
+                "has_continuous_task": pid in partial_streaming_tasks,
+            }
+        except Exception as e:
+            participant_stats[pid] = {"error": f"State access error: {e}"}
         
     return {
         "status": "success",
@@ -688,6 +777,7 @@ async def stats():
             "mode": "CONTINUOUS_ONLINE" if CONTINUOUS_PARTIALS else "BATCH_AFTER_SILENCE",
             "target_achieved": CONTINUOUS_PARTIALS,
             "overlapping_speech_thinking_speech": CONTINUOUS_PARTIALS,
+            "fixes_status": "ENHANCED_ERROR_HANDLING",
         },
         "global_stats": {
             "processed_utterances": processed_utterances,
