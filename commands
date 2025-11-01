@@ -69,6 +69,8 @@ livekit://auth
 docker build -f June/services/june-vast/Dockerfile -t ozzuworld/june-vast:latest .
 docker push ozzuworld/june-vast:latest
 
-kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://172.218.65.233:33534"}]}]}}}}'
-kubectl rollout restart deployment/june-orchestrator -n june-services
+kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://172.218.65.233:42005"}]}]}}}}'
 kubectl get pods -n june-services -w
+
+
+kubectl rollout restart deployment/june-orchestrator -n june-services

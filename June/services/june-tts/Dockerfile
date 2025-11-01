@@ -1,94 +1,58 @@
-# Multi-stage build for optimal image size
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04 AS builder
+# Optimized Dockerfile for June TTS with Chatterbox optimizations
+FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Set environment variables for optimization
 ENV PYTHONUNBUFFERED=1
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=$PATH:/usr/local/cuda/bin
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
-ENV PIP_NO_CACHE_DIR=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
+ENV CUDA_VISIBLE_DEVICES=0
+ENV TORCH_COMPILE_DEBUG=0
+ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-dev python3-pip \
-    git build-essential cmake pkg-config \
-    libsndfile1-dev portaudio19-dev \
-    ffmpeg espeak-ng curl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
-    ln -sf /usr/bin/python3.11 /usr/bin/python3
-
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# Preinstall to satisfy pkuseg build isolation
-RUN pip install --no-cache-dir "numpy>=1.26,<2.0" "cython<3.0"
-
-# Torch stack for CUDA 11.8
-RUN pip install --no-cache-dir torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 \
-    --index-url https://download.pytorch.org/whl/cu118
+# Install system dependencies optimized for performance
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    ffmpeg \
+    libsndfile1 \
+    libasound2-dev \
+    portaudio19-dev \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
 
-RUN rm -rf /tmp/* /var/tmp/* /root/.cache
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
 
-# Runtime stage
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# Install optimized Python packages
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir torch==2.4.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+RUN pip install --no-cache-dir -r requirements.txt
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=$PATH:/usr/local/cuda/bin
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
-
-LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="4.0.0"
-LABEL description="June TTS Service - Chatterbox TTS with LiveKit integration"
-LABEL service="june-tts"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 ffmpeg espeak-ng libsndfile1 libportaudio2 curl \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
-    ln -sf /usr/bin/python3.11 /usr/bin/python3
-
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Create app directory and user
-RUN useradd -m -u 1001 ttsuser
-WORKDIR /app
-RUN chown -R ttsuser:ttsuser /app
+# Install performance optimization packages
+RUN pip install --no-cache-dir \
+    triton>=2.3.0 \
+    flash-attn \
+    xformers \
+    ninja
 
 # Copy application code
-COPY --chown=ttsuser:ttsuser main.py /app/
-COPY --chown=ttsuser:ttsuser config.py /app/
-COPY --chown=ttsuser:ttsuser requirements.txt /app/
-COPY --chown=ttsuser:ttsuser livekit_token.py /app/
-COPY --chown=ttsuser:ttsuser README.md /app/
-COPY --chown=ttsuser:ttsuser chatterbox_engine.py /app/
+COPY . .
 
-# Ensure module import works
-ENV PYTHONPATH=/app
+# Create directories for caching and temporary files
+RUN mkdir -p /app/cache /app/temp
+ENV TRANSFORMERS_CACHE=/app/cache
+ENV HF_HOME=/app/cache
+ENV TORCH_HOME=/app/cache
 
-USER ttsuser
-
-# Create necessary directories
-RUN mkdir -p /app/models /app/cache /app/temp
-
-# Environment configuration
-ENV TTS_CACHE_PATH=/app/cache
-ENV TTS_HOME=/app/models
-ENV PORT=8000
-ENV LOG_LEVEL=INFO
-
+# Expose port
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=30s --start-period=90s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz | grep -q '"status":"healthy"' || exit 1
+# Health check with optimization status
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8000/healthz || exit 1
 
-CMD ["python", "main.py"]
+# Run optimized service
+CMD ["python", "main_optimized.py"]
