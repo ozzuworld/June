@@ -1,54 +1,51 @@
 #!/usr/bin/env python3
 """
-June STT Service - LiveKit PCM → faster-whisper v1.2.0
-Real-time transcription with UTTERANCE-LEVEL processing
-Enhanced with anti-feedback and proper speech segmentation
+June STT Enhanced - Combining faster-whisper-server with LiveKit Integration
+OpenAI API compatible + Real-time voice chat capabilities
 """
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
+import tempfile
+import soundfile as sf
+from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Optional, Deque, Tuple, Dict
+from typing import Optional, Deque, Dict, Any
 from collections import deque
 
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
 from livekit import rtc
 from scipy import signal
+import httpx
 
 from config import config
 from whisper_service import whisper_service
 from livekit_token import connect_room_as_subscriber
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("june-stt")
+logger = logging.getLogger("june-stt-enhanced")
 
+# Global state
 room: Optional[rtc.Room] = None
 room_connected: bool = False
+buffers: Dict[str, Deque[np.ndarray]] = {}
+utterance_states: Dict[str, dict] = {}
+processed_utterances = 0
+skipped_chunks = 0
 
-ParticipantKey = str
-buffers: dict[ParticipantKey, Deque[np.ndarray]] = {}
-
-# Utterance-level processing parameters
-FRAME_DURATION_SEC = 0.02  # 20ms frames (LiveKit standard)
+# Constants from your original implementation
 SAMPLE_RATE = 16000
-
-# Utterance assembly parameters
-START_THRESHOLD_RMS = 0.012      # Begin utterance when loud enough
-CONTINUE_THRESHOLD_RMS = 0.006   # Keep capturing while above this
-END_SILENCE_SEC = 0.8           # Terminate after 800ms of silence
-MAX_UTTERANCE_SEC = 6.0         # Hard cap on utterance length
-MIN_UTTERANCE_SEC = 0.8         # Minimum utterance to transcribe
-
-# Processing cadence
-PROCESS_SLEEP_SEC = 0.1  # Check every 100ms for responsive endpointing
-
-# Anti-feedback exclusions
+START_THRESHOLD_RMS = 0.012
+CONTINUE_THRESHOLD_RMS = 0.006
+END_SILENCE_SEC = 0.8
+MAX_UTTERANCE_SEC = 6.0
+MIN_UTTERANCE_SEC = 0.8
+PROCESS_SLEEP_SEC = 0.1
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt", "tts", "stt"}
 
-# Utterance state per participant
 class UtteranceState:
     def __init__(self):
         self.buffer: Deque[np.ndarray] = deque()
@@ -57,85 +54,60 @@ class UtteranceState:
         self.last_voice_at: Optional[datetime] = None
         self.total_samples = 0
 
-utterance_states: Dict[ParticipantKey, UtteranceState] = {}
-
-def _ensure_utterance_state(pid: ParticipantKey) -> UtteranceState:
+# Helper functions (from your original implementation)
+def _ensure_utterance_state(pid: str) -> UtteranceState:
     if pid not in utterance_states:
         utterance_states[pid] = UtteranceState()
     return utterance_states[pid]
 
-def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
+def _ensure_buffer(pid: str) -> Deque[np.ndarray]:
     if pid not in buffers:
-        buffers[pid] = deque(maxlen=300)  # Larger buffer for utterance assembly
+        buffers[pid] = deque(maxlen=300)
     return buffers[pid]
 
 def _calculate_rms(audio: np.ndarray) -> float:
-    """Fast RMS calculation"""
     return float(np.sqrt(np.mean(audio ** 2))) if len(audio) > 0 else 0.0
 
 def _should_start_utterance(rms: float, state: UtteranceState) -> bool:
-    """Check if we should start capturing an utterance"""
     return not state.is_active and rms > START_THRESHOLD_RMS
 
 def _should_continue_utterance(rms: float, state: UtteranceState) -> bool:
-    """Check if we should continue capturing"""
     if not state.is_active:
         return False
-    
     now = datetime.utcnow()
-    
-    # Update last voice time if we have signal
     if rms > CONTINUE_THRESHOLD_RMS:
         state.last_voice_at = now
         return True
-    
-    # Check if we've been silent too long
     if state.last_voice_at:
         silence_duration = (now - state.last_voice_at).total_seconds()
         return silence_duration < END_SILENCE_SEC
-    
     return True
 
 def _should_end_utterance(state: UtteranceState) -> bool:
-    """Check if we should end and transcribe the utterance"""
     if not state.is_active:
         return False
-    
     now = datetime.utcnow()
-    
-    # End if too long
     if state.started_at and (now - state.started_at).total_seconds() > MAX_UTTERANCE_SEC:
         return True
-    
-    # End if silent too long
     if state.last_voice_at:
         silence_duration = (now - state.last_voice_at).total_seconds()
         if silence_duration >= END_SILENCE_SEC:
-            # Only end if we have minimum duration
             if state.started_at:
                 total_duration = (now - state.started_at).total_seconds()
                 return total_duration >= MIN_UTTERANCE_SEC
-    
     return False
 
 def _get_utterance_audio(state: UtteranceState) -> Optional[np.ndarray]:
-    """Get complete utterance audio"""
     if not state.buffer:
         return None
-    
-    # Concatenate all frames
     audio = np.concatenate(list(state.buffer), axis=0)
-    
-    # Validate minimum duration
     duration_sec = len(audio) / SAMPLE_RATE
     if duration_sec < MIN_UTTERANCE_SEC:
         logger.debug(f"🔇 Utterance too short: {duration_sec:.2f}s < {MIN_UTTERANCE_SEC}s")
         return None
-    
     return audio
 
 def _reset_utterance_state(state: UtteranceState):
-    """Reset utterance state for next capture"""
     state.buffer.clear()
     state.is_active = False
     state.started_at = None
@@ -158,7 +130,6 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
     }
 
     try:
-        import httpx
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
                 f"{config.ORCHESTRATOR_URL}/api/webhooks/stt",
@@ -173,7 +144,8 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
     except Exception as e:
         logger.warning(f"Orchestrator notify error: {e}")
 
-def _frame_to_float32_mono(frame: rtc.AudioFrame) -> Tuple[np.ndarray, int]:
+# LiveKit audio processing (from your original implementation)
+def _frame_to_float32_mono(frame: rtc.AudioFrame):
     sr = frame.sample_rate
     ch = frame.num_channels
     buf = memoryview(frame.data)
@@ -202,9 +174,42 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
     out = signal.resample_poly(pcm, up, down).astype(np.float32)
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
-# Statistics tracking
-processed_utterances = 0
-skipped_chunks = 0
+async def _transcribe_utterance(pid: str, audio: np.ndarray):
+    """Transcribe a complete utterance"""
+    global processed_utterances
+    
+    if not whisper_service.is_model_ready():
+        logger.warning("⚠️ Whisper model not ready")
+        return
+
+    try:
+        duration = len(audio) / SAMPLE_RATE
+        rms = _calculate_rms(audio)
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        
+        logger.info(f"🎯 Transcribing utterance for {pid}: {duration:.2f}s, rms={rms:.4f}, peak={peak:.3f}")
+        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
+            res = await whisper_service.transcribe(tmp.name, language=None)
+
+        text = res.get("text", "").strip()
+        method = res.get("method", "unknown")
+        processing_time = res.get("processing_time_ms", 0)
+
+        if text and len(text) > 2:
+            if text.lower() not in ["you", "you.", "uh", "um", "ah", "mm", "hm", "er"]:
+                logger.info(f"✅ UTTERANCE[{pid}] via {method} ({processing_time}ms, {duration:.2f}s): {text}")
+                await _notify_orchestrator(pid, text, res.get("language"))
+                processed_utterances += 1
+            else:
+                logger.debug(f"🚫 Filtered utterance from {pid}: '{text}' (common false positive)")
+        else:
+            reason = res.get("skipped_reason", "empty_or_short")
+            logger.debug(f"🔇 No valid text for {pid}: {reason}")
+
+    except Exception as e:
+        logger.error(f"❌ Transcription error for {pid}: {e}")
 
 async def _process_utterances():
     """Process complete utterances using VAD-based endpointing"""
@@ -212,28 +217,20 @@ async def _process_utterances():
     
     logger.info(f"🚀 Starting UTTERANCE-LEVEL STT processing")
     logger.info(f"🎯 Endpointing: start_rms≥{START_THRESHOLD_RMS}, continue_rms≥{CONTINUE_THRESHOLD_RMS}, end_silence≤{END_SILENCE_SEC}s")
-    logger.info(f"📏 Duration limits: min={MIN_UTTERANCE_SEC}s, max={MAX_UTTERANCE_SEC}s")
 
     while True:
         try:
             for pid in list(buffers.keys()):
-                # Anti-feedback: Skip excluded participants
                 if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
                     continue
 
                 state = _ensure_utterance_state(pid)
                 buf = _ensure_buffer(pid)
                 
-                # Process available frames
-                frames_processed = 0
                 while buf:
                     frame = buf.popleft()
-                    frames_processed += 1
-                    
-                    # Calculate frame RMS
                     rms = _calculate_rms(frame)
                     
-                    # Utterance state machine
                     if _should_start_utterance(rms, state):
                         logger.info(f"🎬 Starting utterance for {pid} (rms={rms:.4f})")
                         state.is_active = True
@@ -246,25 +243,18 @@ async def _process_utterances():
                     elif _should_continue_utterance(rms, state):
                         state.buffer.append(frame)
                         state.total_samples += len(frame)
-                        
-                        # Update voice time if signal present
                         if rms > CONTINUE_THRESHOLD_RMS:
                             state.last_voice_at = datetime.utcnow()
                         
                     elif _should_end_utterance(state):
-                        # Complete utterance - transcribe it
                         utterance_audio = _get_utterance_audio(state)
                         if utterance_audio is not None:
                             duration = len(utterance_audio) / SAMPLE_RATE
                             logger.info(f"🎬 Ending utterance for {pid}: {duration:.2f}s, {len(utterance_audio)} samples")
-                            
-                            # Transcribe the complete utterance
                             await _transcribe_utterance(pid, utterance_audio)
-                            processed_utterances += 1
                         else:
                             logger.debug(f"🔇 Discarded short utterance for {pid}")
                             skipped_chunks += 1
-                        
                         _reset_utterance_state(state)
                     
                     # Force end very long utterances
@@ -275,88 +265,23 @@ async def _process_utterances():
                             utterance_audio = _get_utterance_audio(state)
                             if utterance_audio is not None:
                                 await _transcribe_utterance(pid, utterance_audio)
-                                processed_utterances += 1
                             _reset_utterance_state(state)
-                
-                # Debug logging every 50 processed frames
-                if frames_processed > 0 and frames_processed % 50 == 0:
-                    status = "ACTIVE" if state.is_active else "WAITING"
-                    duration = (datetime.utcnow() - state.started_at).total_seconds() if state.started_at else 0
-                    logger.debug(f"📊 {pid}: {status}, {frames_processed} frames, {duration:.1f}s current utterance")
-            
-            # Periodic stats
-            if (processed_utterances + skipped_chunks) % 10 == 0 and processed_utterances + skipped_chunks > 0:
-                total = processed_utterances + skipped_chunks
-                logger.info(f"📈 Utterance Stats: {processed_utterances} complete, {skipped_chunks} skipped ({processed_utterances/(total or 1):.1%} success)")
 
         except Exception as e:
             logger.warning(f"❌ Utterance processing error: {e}")
 
         await asyncio.sleep(PROCESS_SLEEP_SEC)
 
-async def _transcribe_utterance(pid: str, audio: np.ndarray):
-    """Transcribe a complete utterance"""
-    if not whisper_service.is_model_ready():
-        logger.warning("⚠️ Whisper model not ready")
-        return
-
-    try:
-        duration = len(audio) / SAMPLE_RATE
-        rms = _calculate_rms(audio)
-        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
-        
-        logger.info(f"🎯 Transcribing utterance for {pid}: {duration:.2f}s, rms={rms:.4f}, peak={peak:.3f}")
-        
-        import tempfile, soundfile as sf
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
-            
-            # Transcribe with language autodetection
-            res = await whisper_service.transcribe(tmp.name, language=None)
-
-        text = res.get("text", "").strip()
-        method = res.get("method", "unknown")
-        processing_time = res.get("processing_time_ms", 0)
-
-        if text and len(text) > 2:  # Require meaningful text
-            # Filter out common false positives
-            if text.lower() not in ["you", "you.", "uh", "um", "ah", "mm", "hm", "er"]:
-                logger.info(f"✅ UTTERANCE[{pid}] via {method} ({processing_time}ms, {duration:.2f}s): {text}")
-                await _notify_orchestrator(pid, text, res.get("language"))
-            else:
-                logger.debug(f"🚫 Filtered utterance from {pid}: '{text}' (common false positive)")
-        else:
-            reason = res.get("skipped_reason", "empty_or_short")
-            logger.debug(f"🔇 No valid text for {pid}: {reason}")
-
-    except Exception as e:
-        logger.error(f"❌ Transcription error for {pid}: {e}")
-
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
-    # Anti-feedback: Enhanced participant filtering
-    if pid in EXCLUDE_PARTICIPANTS:
-        return
-        
-    if "tts" in pid.lower() or "stt" in pid.lower():
+    if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
         return
     
-    if not hasattr(_on_audio_frame, 'frame_counts'):
-        _on_audio_frame.frame_counts = {}
-    if pid not in _on_audio_frame.frame_counts:
-        _on_audio_frame.frame_counts[pid] = 0
-
-    _on_audio_frame.frame_counts[pid] += 1
-
-    # Log every 500 frames instead of 100 (reduce log spam)
-    if _on_audio_frame.frame_counts[pid] % 500 == 0:
-        logger.info(f"📊 Received {_on_audio_frame.frame_counts[pid]} audio frames from {pid}")
-
     pcm, sr = _frame_to_float32_mono(frame)
     pcm16k = _resample_to_16k_mono(pcm, sr)
-
     _ensure_buffer(pid).append(pcm16k)
 
-def join_livekit_room_sync_callbacks(room: rtc.Room):
+# LiveKit room setup (from your original implementation)
+def setup_room_callbacks(room: rtc.Room):
     @room.on("participant_connected")
     def _p_join(p):
         logger.info(f"👤 Participant joined: {p.identity}")
@@ -371,31 +296,19 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
         if p.identity in utterance_states:
             del utterance_states[p.identity]
 
-    @room.on("track_published")
-    def _track_pub(pub, participant):
-        logger.info(f"📢 Track published by {participant.identity}: {pub.kind} - {pub.name}")
-
-    @room.on("track_unpublished")
-    def _track_unpub(pub, participant):
-        logger.info(f"📢 Track unpublished by {participant.identity}: {pub.kind} - {pub.name}")
-
     @room.on("track_subscribed")
     def _track_sub(track: rtc.Track, pub, participant):
         logger.info(f"🎵 TRACK SUBSCRIBED: kind={track.kind}, participant={participant.identity}")
 
         if track.kind != rtc.TrackKind.KIND_AUDIO:
-            logger.info(f"❌ Skipping non-audio track: {track.kind}")
             return
 
         pid = participant.identity or participant.sid
-        
-        # Anti-feedback: Check exclusion at subscription time
         if pid in EXCLUDE_PARTICIPANTS:
             logger.info(f"🚫 EXCLUDED participant {pid} - not processing audio")
             return
             
         logger.info(f"✅ Subscribed to audio of {pid}")
-
         stream = rtc.AudioStream(track)
 
         async def consume():
@@ -405,25 +318,24 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
 
         asyncio.create_task(consume())
 
-    @room.on("track_unsubscribed")
-    def _track_unsub(track, pub, participant):
-        logger.info(f"🔇 Unsubscribed from track of {participant.identity}")
-
 async def join_livekit_room():
     global room, room_connected
+    
+    if not config.LIVEKIT_ENABLED:
+        logger.info("LiveKit disabled, skipping connection")
+        return
 
     logger.info("Connecting STT to LiveKit via orchestrator token")
     room = rtc.Room()
-    join_livekit_room_sync_callbacks(room)
+    setup_room_callbacks(room)
     await connect_room_as_subscriber(room, "june-stt")
     room_connected = True
     logger.info("STT connected and listening for audio frames")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"🚀 June STT v3.0-UTTERANCE - faster-whisper {'' if config.USE_BATCHED_INFERENCE else 'non-'}batched mode")
-    logger.info(f"Features: VAD={config.VAD_ENABLED}, Batch size={config.BATCH_SIZE if config.USE_BATCHED_INFERENCE else 'N/A'}")
-    logger.info(f"🎯 Utterance-level processing: Enhanced speech segmentation and anti-feedback")
+    logger.info(f"🚀 June STT Enhanced - faster-whisper + LiveKit Integration")
+    logger.info(f"Features: OpenAI API Compatible + Real-time Voice Chat")
 
     try:
         await whisper_service.initialize()
@@ -432,18 +344,22 @@ async def lifespan(app: FastAPI):
         logger.error(f"Whisper init failed: {e}")
 
     await join_livekit_room()
-    task = asyncio.create_task(_process_utterances())
-
+    
+    if room_connected:
+        task = asyncio.create_task(_process_utterances())
+    
     yield
-
-    task.cancel()
+    
+    if room_connected and 'task' in locals():
+        task.cancel()
     if room and room_connected:
         await room.disconnect()
 
+# FastAPI application
 app = FastAPI(
-    title="June STT v3.0-UTTERANCE",
-    version="3.0.0-utterance-level",
-    description="STT with utterance-level processing for complete sentence transcription",
+    title="June STT Enhanced",
+    version="4.0.0-enhanced",
+    description="OpenAI-compatible transcription + LiveKit real-time voice chat",
     lifespan=lifespan
 )
 
@@ -455,15 +371,71 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# OpenAI-compatible endpoints (like faster-whisper-server)
+@app.post("/v1/audio/transcriptions")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
+    prompt: Optional[str] = Form(None),
+    response_format: Optional[str] = Form("json"),
+    temperature: Optional[float] = Form(0.0),
+    timestamp_granularities: Optional[str] = Form(None),
+    stream: Optional[bool] = Form(False)
+):
+    """OpenAI-compatible transcription endpoint"""
+    if not whisper_service.is_model_ready():
+        raise HTTPException(status_code=503, detail="Whisper model not ready")
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp.flush()
+            
+            # Transcribe using our whisper service
+            result = await whisper_service.transcribe(tmp.name, language=language)
+            
+        # Format response to match OpenAI API
+        text = result.get("text", "")
+        
+        if response_format == "text":
+            return text
+        elif response_format == "verbose_json":
+            return {
+                "task": "transcribe",
+                "language": result.get("language", language or "en"),
+                "duration": result.get("duration", 0),
+                "text": text,
+                "segments": result.get("segments", [])
+            }
+        else:  # json
+            return {"text": text}
+            
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Health check endpoint
 @app.get("/healthz")
 async def health():
     return {
         "status": "healthy",
-        "whisper_ready": whisper_service.is_model_ready(),
-        "livekit_connected": room_connected,
-        "batched_inference": config.USE_BATCHED_INFERENCE,
-        "vad_enabled": config.VAD_ENABLED,
-        "version": "3.0.0-utterance-level",
+        "version": "4.0.0-enhanced",
+        "components": {
+            "whisper_ready": whisper_service.is_model_ready(),
+            "livekit_connected": room_connected,
+            "batched_inference": config.USE_BATCHED_INFERENCE,
+            "vad_enabled": config.VAD_ENABLED
+        },
+        "features": {
+            "openai_api_compatible": True,
+            "real_time_voice_chat": config.LIVEKIT_ENABLED,
+            "utterance_level_processing": True,
+            "anti_feedback": True,
+            "speech_endpointing": True
+        },
         "utterance_processing": {
             "start_threshold_rms": START_THRESHOLD_RMS,
             "continue_threshold_rms": CONTINUE_THRESHOLD_RMS,
@@ -477,27 +449,22 @@ async def health():
 @app.get("/")
 async def root():
     return {
-        "service": "june-stt",
-        "version": "3.0.0-utterance-level", 
-        "features": {
-            "batched_inference": config.USE_BATCHED_INFERENCE,
-            "vad_enabled": config.VAD_ENABLED,
-            "utterance_level_processing": True,
-            "anti_feedback": True,
-            "speech_endpointing": True,
+        "service": "june-stt-enhanced",
+        "version": "4.0.0-enhanced", 
+        "description": "OpenAI-compatible transcription + LiveKit real-time voice chat",
+        "endpoints": {
+            "transcriptions": "/v1/audio/transcriptions",
+            "health": "/healthz",
+            "stats": "/stats"
         },
-        "sample_rate": SAMPLE_RATE,
-        "processing": {
-            "start_threshold_rms": START_THRESHOLD_RMS,
-            "continue_threshold_rms": CONTINUE_THRESHOLD_RMS,
-            "end_silence_sec": END_SILENCE_SEC,
-            "min_utterance_sec": MIN_UTTERANCE_SEC,
-            "max_utterance_sec": MAX_UTTERANCE_SEC,
-            "process_sleep_sec": PROCESS_SLEEP_SEC
-        },
-        "anti_feedback": {
-            "excluded_participants": list(EXCLUDE_PARTICIPANTS)
-        },
+        "features": [
+            "OpenAI API compatibility",
+            "Real-time LiveKit integration", 
+            "Utterance-level processing",
+            "Multi-participant voice chat",
+            "Orchestrator integration",
+            "Dynamic model loading"
+        ],
         "stats": {
             "processed_utterances": processed_utterances,
             "skipped_chunks": skipped_chunks,
@@ -507,7 +474,7 @@ async def root():
 
 @app.get("/stats")
 async def stats():
-    """Get detailed STT statistics"""
+    """Detailed statistics"""
     active_participants = list(buffers.keys())
     utterance_participants = list(utterance_states.keys())
     
@@ -531,14 +498,7 @@ async def stats():
             "active_participants": len(active_participants),
             "utterance_participants": len(utterance_participants)
         },
-        "participants": participant_stats,
-        "thresholds": {
-            "start_threshold_rms": START_THRESHOLD_RMS,
-            "continue_threshold_rms": CONTINUE_THRESHOLD_RMS, 
-            "end_silence_sec": END_SILENCE_SEC,
-            "min_utterance_sec": MIN_UTTERANCE_SEC,
-            "max_utterance_sec": MAX_UTTERANCE_SEC
-        }
+        "participants": participant_stats
     }
 
 if __name__ == "__main__":
