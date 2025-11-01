@@ -33,12 +33,39 @@ echo "[tts] started pid=$TTS_PID on port ${TTS_PORT}"
 term() {
   echo "[entrypoint] terminating services"
   kill -TERM "$STT_PID" "$TTS_PID" 2>/dev/null || true
+  
+  # Give processes time to cleanup gracefully
+  sleep 2
+  
+  # Force kill if necessary
+  kill -KILL "$STT_PID" "$TTS_PID" 2>/dev/null || true
+  
   wait "$STT_PID" "$TTS_PID" 2>/dev/null || true
+  
+  # Additional delay to ensure port release
+  sleep 1
 }
 trap term SIGINT SIGTERM
 
-# Wait on either to exit, then exit with its status
-wait -n "$STT_PID" "$TTS_PID"
-EXIT_CODE=$?
+# Wait indefinitely while both services are running
+# Only exit if both services fail
+echo "[monitor] Monitoring both services..."
+while true; do
+    # Check if both processes are still alive
+    if ! kill -0 "$STT_PID" 2>/dev/null; then
+        echo "[error] STT process (PID: $STT_PID) has died"
+        break
+    fi
+    
+    if ! kill -0 "$TTS_PID" 2>/dev/null; then
+        echo "[error] TTS process (PID: $TTS_PID) has died"
+        break
+    fi
+    
+    # Both services are running, sleep and check again
+    sleep 5
+done
+
+echo "[monitor] One or both services have failed, initiating shutdown"
 term
-exit "$EXIT_CODE"
+exit 1
