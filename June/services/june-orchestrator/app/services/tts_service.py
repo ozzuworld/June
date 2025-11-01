@@ -19,13 +19,17 @@ class TTSService:
         self,
         text: str,
         language: str = "en",
-        speaker: str = "Alexandra Hisakawa",
+        speaker: str = None,
         speed: float = 1.0
     ) -> Optional[bytes]:
         """
         Synthesize speech using built-in speakers
         Returns raw audio bytes
         """
+        # Use configured default speaker if none provided
+        if speaker is None:
+            speaker = config.ai.default_speaker
+            
         try:
             if not text or len(text.strip()) == 0:
                 return None
@@ -149,11 +153,11 @@ class TTSService:
                 "speed": speed
             }
             
-            # Add voice selection
+            # Add voice selection - use configured default if none provided
             if voice_id:
                 payload["voice_id"] = voice_id
             else:
-                payload["speaker"] = speaker or "Alexandra Hisakawa"
+                payload["speaker"] = speaker or config.ai.default_speaker
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -258,10 +262,14 @@ tts_service = TTSService()
 async def synthesize_speech(
     text: str,
     language: str = "en",
-    speaker: str = "Alexandra Hisakawa"
+    speaker: str = None
 ) -> Optional[bytes]:
     """
     Legacy function for backward compatibility
     Use tts_service.synthesize_speech() for new implementations
     """
+    # Use configured default speaker if none provided
+    if speaker is None:
+        speaker = config.ai.default_speaker
+        
     return await tts_service.synthesize_speech(text, language, speaker)
