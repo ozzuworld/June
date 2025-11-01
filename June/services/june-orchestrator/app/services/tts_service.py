@@ -19,7 +19,7 @@ class TTSService:
         self,
         text: str,
         language: str = "en",
-        speaker: str = "Claribel Dervla",
+        speaker: str = "Alexandra Hisakawa",
         speed: float = 1.0
     ) -> Optional[bytes]:
         """
