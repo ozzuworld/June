@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June STT Enhanced - Silero VAD + LiveKit Integration
-Intelligent speech detection replacing custom RMS thresholds
+June STT Enhanced - Silero VAD + LiveKit Integration + STREAMING
+Intelligent speech detection + Partial transcript streaming for lower latency
 OpenAI API compatible + Real-time voice chat capabilities
 """
 import asyncio
@@ -24,24 +24,34 @@ import httpx
 from config import config
 from whisper_service import whisper_service
 from livekit_token import connect_room_as_subscriber
+from streaming_utils import PartialTranscriptStreamer, streaming_metrics
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("june-stt")
+
+# Feature flags for streaming
+STREAMING_ENABLED = config.get("STT_STREAMING_ENABLED", True)
+PARTIALS_ENABLED = config.get("STT_PARTIALS_ENABLED", True)
 
 # Global state
 room: Optional[rtc.Room] = None
 room_connected: bool = False
 buffers: Dict[str, Deque[np.ndarray]] = {}
 utterance_states: Dict[str, dict] = {}
+partial_streamers: Dict[str, PartialTranscriptStreamer] = {}
 processed_utterances = 0
 
 # Simplified constants (Silero VAD handles complexity)
 SAMPLE_RATE = 16000
-MAX_UTTERANCE_SEC = 8.0         # Hard cap
-MIN_UTTERANCE_SEC = 0.5         # Minimum for processing
-PROCESS_SLEEP_SEC = 0.1         # Check every 100ms
-SILENCE_TIMEOUT_SEC = 1.0       # End utterance after 1s of silence
+MAX_UTTERANCE_SEC = 8.0
+MIN_UTTERANCE_SEC = 0.5
+PROCESS_SLEEP_SEC = 0.1
+SILENCE_TIMEOUT_SEC = 1.0
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt", "tts", "stt"}
+
+# STREAMING: Partial processing parameters
+PARTIAL_CHUNK_MS = 200  # Process partials every 200ms
+PARTIAL_MIN_SPEECH_MS = 500  # Minimum speech before emitting partials
 
 class UtteranceState:
     def __init__(self):
@@ -50,8 +60,9 @@ class UtteranceState:
         self.started_at: Optional[datetime] = None
         self.last_audio_at: Optional[datetime] = None
         self.total_samples = 0
+        self.first_partial_sent = False  # STREAMING: Track first partial
 
-# Helper functions (simplified)
+# Helper functions (enhanced for streaming)
 def _ensure_utterance_state(pid: str) -> UtteranceState:
     if pid not in utterance_states:
         utterance_states[pid] = UtteranceState()
@@ -62,14 +73,25 @@ def _ensure_buffer(pid: str) -> Deque[np.ndarray]:
         buffers[pid] = deque(maxlen=400)
     return buffers[pid]
 
+def _ensure_partial_streamer(pid: str) -> PartialTranscriptStreamer:
+    """STREAMING: Ensure partial streamer exists for participant"""
+    if pid not in partial_streamers:
+        partial_streamers[pid] = PartialTranscriptStreamer(
+            chunk_duration_ms=PARTIAL_CHUNK_MS,
+            min_speech_ms=PARTIAL_MIN_SPEECH_MS
+        )
+    return partial_streamers[pid]
+
 def _reset_utterance_state(state: UtteranceState):
     state.buffer.clear()
     state.is_active = False
     state.started_at = None
     state.last_audio_at = None
     state.total_samples = 0
+    state.first_partial_sent = False
 
-async def _notify_orchestrator(user_id: str, text: str, language: Optional[str]):
+async def _notify_orchestrator(user_id: str, text: str, language: Optional[str], partial: bool = False):
+    """Enhanced orchestrator notification with partial support"""
     if not config.ORCHESTRATOR_URL:
         return
 
@@ -77,11 +99,12 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
         "transcript_id": str(uuid.uuid4()),
         "user_id": user_id,
         "participant": user_id,
-        "event": "transcript",
+        "event": "partial_transcript" if partial else "transcript",  # STREAMING: New event type
         "text": text,
         "language": language,
         "timestamp": datetime.utcnow().isoformat(),
         "room_name": "ozzu-main",
+        "partial": partial,  # STREAMING: Flag for partial transcripts
     }
 
     try:
@@ -91,15 +114,16 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
                 json=payload,
             )
             if r.status_code == 429:
-                logger.info(f"🛡️ Rate limited by orchestrator: {r.text}")
+                logger.info(f"🛱️ Rate limited by orchestrator: {r.text}")
             elif r.status_code != 200:
                 logger.warning(f"Orchestrator webhook failed: {r.status_code} {r.text}")
             else:
-                logger.info(f"📤 Sent transcript to orchestrator: '{text}'")
+                event_type = "partial" if partial else "final"
+                logger.info(f"📤 Sent {event_type} transcript to orchestrator: '{text}'")
     except Exception as e:
         logger.warning(f"Orchestrator notify error: {e}")
 
-# Audio processing
+# Audio processing (unchanged)
 def _frame_to_float32_mono(frame: rtc.AudioFrame):
     sr = frame.sample_rate
     ch = frame.num_channels
@@ -129,8 +153,37 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
     out = signal.resample_poly(pcm, up, down).astype(np.float32)
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
+async def _process_partial_transcript(pid: str, audio: np.ndarray, streamer: PartialTranscriptStreamer):
+    """STREAMING: Process partial transcript for real-time feedback"""
+    if not PARTIALS_ENABLED or not whisper_service.is_model_ready():
+        return
+        
+    try:
+        start_time = time.time()
+        
+        # Quick transcription for partial
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
+            res = await whisper_service.transcribe(tmp.name, language=None, quick=True)
+            
+        processing_time = (time.time() - start_time) * 1000
+        text = res.get("text", "").strip()
+        
+        if text and streamer.should_emit_partial(text):
+            logger.info(f"⚡ PARTIAL[{pid}] ({processing_time:.0f}ms): {text}")
+            streamer.update_partial_text(text)
+            
+            # Send partial to orchestrator
+            await _notify_orchestrator(pid, text, res.get("language"), partial=True)
+            
+            # Update metrics
+            streaming_metrics.record_partial(processing_time)
+            
+    except Exception as e:
+        logger.debug(f"⚠️ Partial transcription error for {pid}: {e}")
+
 async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray):
-    """Enhanced transcription with Silero VAD pre-filtering"""
+    """Enhanced transcription with Silero VAD + streaming support"""
     global processed_utterances
     
     if not whisper_service.is_model_ready():
@@ -140,40 +193,44 @@ async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray):
     try:
         duration = len(audio) / SAMPLE_RATE
         
-        # Silero VAD pre-filter - replaces all custom RMS logic!
+        # Silero VAD pre-filter
         if not whisper_service.has_speech_content(audio, SAMPLE_RATE):
             logger.debug(f"🔇 Silero VAD filtered out non-speech for {pid} ({duration:.2f}s)")
             return
         
         logger.info(f"🎯 Silero VAD confirmed speech for {pid}: {duration:.2f}s")
         
-        # Process with Whisper
+        # Process with Whisper (final transcription)
+        start_time = time.time()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
             sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
             res = await whisper_service.transcribe(tmp.name, language=None)
-
+        
+        processing_time = (time.time() - start_time) * 1000
         text = res.get("text", "").strip()
         method = res.get("method", "silero_enhanced")
-        processing_time = res.get("processing_time_ms", 0)
 
         if text and len(text) > 2:
             if text.lower() not in ["you", "you.", "uh", "um", "mm"]:
-                logger.info(f"✅ SPEECH[{pid}] via {method} ({processing_time}ms): {text}")
-                await _notify_orchestrator(pid, text, res.get("language"))
+                logger.info(f"✅ FINAL[{pid}] via {method} ({processing_time:.0f}ms): {text}")
+                await _notify_orchestrator(pid, text, res.get("language"), partial=False)
                 processed_utterances += 1
+                streaming_metrics.record_final()
             else:
-                logger.debug(f"🚫 Filtered false positive: '{text}'")
+                logger.debug(f"😫 Filtered false positive: '{text}'")
         else:
             logger.debug(f"🔇 Empty transcription result")
 
     except Exception as e:
         logger.error(f"❌ Transcription error for {pid}: {e}")
 
-async def _process_utterances_simplified():
-    """Simplified utterance processing - let Silero do the heavy lifting"""
+async def _process_utterances_with_streaming():
+    """Enhanced utterance processing with streaming partial support"""
     global processed_utterances
     
     logger.info(f"🚀 Starting Silero VAD-enhanced STT processing")
+    if STREAMING_ENABLED and PARTIALS_ENABLED:
+        logger.info(f"⚡ STREAMING MODE: Partial transcripts every {PARTIAL_CHUNK_MS}ms")
     logger.info(f"🎯 Intelligent speech detection replaces custom thresholds")
 
     while True:
@@ -184,6 +241,7 @@ async def _process_utterances_simplified():
 
                 state = _ensure_utterance_state(pid)
                 buf = _ensure_buffer(pid)
+                streamer = _ensure_partial_streamer(pid) if STREAMING_ENABLED else None
                 
                 while buf:
                     frame = buf.popleft()
@@ -197,6 +255,11 @@ async def _process_utterances_simplified():
                         state.buffer.clear()
                         state.buffer.append(frame)
                         state.total_samples = len(frame)
+                        state.first_partial_sent = False
+                        
+                        if streamer:
+                            streamer.reset()
+                            
                         logger.debug(f"🎬 Started utterance capture for {pid}")
                         
                     else:
@@ -204,6 +267,18 @@ async def _process_utterances_simplified():
                         state.buffer.append(frame)
                         state.total_samples += len(frame)
                         state.last_audio_at = now
+                        
+                        # STREAMING: Process partial transcripts
+                        if STREAMING_ENABLED and streamer and not state.first_partial_sent:
+                            streamer.add_audio_chunk(frame)
+                            
+                            duration = (now - state.started_at).total_seconds()
+                            if duration >= (PARTIAL_MIN_SPEECH_MS / 1000):
+                                partial_audio = streamer.get_partial_audio()
+                                if partial_audio is not None:
+                                    # Process partial in background
+                                    asyncio.create_task(_process_partial_transcript(pid, partial_audio, streamer))
+                                    state.first_partial_sent = True
                         
                         # Check for end conditions
                         duration = (now - state.started_at).total_seconds()
@@ -220,9 +295,13 @@ async def _process_utterances_simplified():
                             
                             logger.info(f"🎬 Ending utterance for {pid}: {utterance_duration:.2f}s")
                             
-                            # Silero will intelligently filter this
+                            # Final transcription (high quality)
                             await _transcribe_utterance_with_silero(pid, utterance_audio)
                             _reset_utterance_state(state)
+                            
+                            # Reset partial streamer
+                            if streamer:
+                                streamer.reset()
 
         except Exception as e:
             logger.warning(f"❌ Utterance processing error: {e}")
@@ -237,13 +316,13 @@ async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
     pcm16k = _resample_to_16k_mono(pcm, sr)
     _ensure_buffer(pid).append(pcm16k)
 
-# LiveKit room setup
+# LiveKit room setup (unchanged)
 def setup_room_callbacks(room: rtc.Room):
     @room.on("participant_connected")
     def _p_join(p):
         logger.info(f"👤 Participant joined: {p.identity}")
         if p.identity in EXCLUDE_PARTICIPANTS:
-            logger.info(f"🚫 Participant {p.identity} is EXCLUDED from STT processing")
+            logger.info(f"😫 Participant {p.identity} is EXCLUDED from STT processing")
 
     @room.on("participant_disconnected")
     def _p_leave(p):
@@ -252,6 +331,8 @@ def setup_room_callbacks(room: rtc.Room):
             del buffers[p.identity]
         if p.identity in utterance_states:
             del utterance_states[p.identity]
+        if p.identity in partial_streamers:
+            del partial_streamers[p.identity]
 
     @room.on("track_subscribed")
     def _track_sub(track: rtc.Track, pub, participant):
@@ -262,7 +343,7 @@ def setup_room_callbacks(room: rtc.Room):
 
         pid = participant.identity or participant.sid
         if pid in EXCLUDE_PARTICIPANTS:
-            logger.info(f"🚫 EXCLUDED participant {pid} - not processing audio")
+            logger.info(f"😫 EXCLUDED participant {pid} - not processing audio")
             return
             
         logger.info(f"✅ Subscribed to audio of {pid}")
@@ -291,19 +372,21 @@ async def join_livekit_room():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"🚀 June STT Enhanced - Silero VAD + LiveKit Integration")
-    logger.info(f"Features: OpenAI API Compatible + Intelligent Speech Detection")
+    logger.info(f"🚀 June STT Enhanced - Silero VAD + LiveKit Integration + STREAMING")
+    logger.info(f"Features: OpenAI API Compatible + Intelligent Speech Detection + Partial Transcripts")
+    logger.info(f"⚡ Streaming: {STREAMING_ENABLED}, Partials: {PARTIALS_ENABLED}")
 
     try:
         await whisper_service.initialize()
-        logger.info("✅ Enhanced Whisper + Silero VAD service ready")
+        logger.info("✅ Enhanced Whisper + Silero VAD + Streaming service ready")
     except Exception as e:
         logger.error(f"Enhanced service init failed: {e}")
 
     await join_livekit_room()
     
     if room_connected:
-        task = asyncio.create_task(_process_utterances_simplified())
+        # Use streaming-enhanced processing
+        task = asyncio.create_task(_process_utterances_with_streaming())
     
     yield
     
@@ -314,9 +397,9 @@ async def lifespan(app: FastAPI):
 
 # FastAPI application
 app = FastAPI(
-    title="June STT with Silero VAD",
-    version="4.1.0-silero",
-    description="Intelligent speech detection + OpenAI API + LiveKit real-time voice chat",
+    title="June STT with Silero VAD + Streaming",
+    version="5.0.0-streaming",
+    description="Intelligent speech detection + Partial transcripts + OpenAI API + LiveKit real-time voice chat",
     lifespan=lifespan
 )
 
@@ -328,7 +411,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OpenAI-compatible endpoints
+# OpenAI-compatible endpoints (unchanged)
 @app.post("/v1/audio/transcriptions")
 async def transcribe_audio(
     file: UploadFile = File(...),
@@ -371,16 +454,20 @@ async def transcribe_audio(
 async def health():
     return {
         "status": "healthy",
-        "version": "4.1.0-silero",
+        "version": "5.0.0-streaming",
         "components": {
             "whisper_ready": whisper_service.is_model_ready(),
             "livekit_connected": room_connected,
-            "silero_vad_enabled": config.SILERO_VAD_ENABLED
+            "silero_vad_enabled": config.SILERO_VAD_ENABLED,
+            "streaming_enabled": STREAMING_ENABLED,
+            "partials_enabled": PARTIALS_ENABLED
         },
         "features": {
             "openai_api_compatible": True,
             "silero_vad_intelligent_detection": True,
             "real_time_voice_chat": config.LIVEKIT_ENABLED,
+            "partial_transcripts": PARTIALS_ENABLED,
+            "streaming_architecture": STREAMING_ENABLED,
             "anti_feedback": True
         }
     }
@@ -389,22 +476,31 @@ async def health():
 async def root():
     return {
         "service": "june-stt",
-        "version": "4.1.0-silero", 
-        "description": "Silero VAD intelligent speech detection + OpenAI API + LiveKit",
+        "version": "5.0.0-streaming", 
+        "description": "Silero VAD + Streaming partial transcripts + OpenAI API + LiveKit",
         "features": [
             "Silero VAD intelligent speech detection",
+            "Streaming partial transcripts (200ms intervals)",
             "OpenAI API compatibility",
             "Real-time LiveKit integration", 
             "Anti-feedback protection",
-            "Orchestrator integration"
+            "Orchestrator integration",
+            "Performance metrics"
         ],
+        "streaming": {
+            "enabled": STREAMING_ENABLED,
+            "partial_interval_ms": PARTIAL_CHUNK_MS,
+            "min_speech_for_partials_ms": PARTIAL_MIN_SPEECH_MS
+        },
         "stats": {
-            "processed_utterances": processed_utterances
+            "processed_utterances": processed_utterances,
+            **streaming_metrics.get_stats()
         }
     }
 
 @app.get("/stats")
 async def stats():
+    """Enhanced stats with streaming metrics"""
     active_participants = list(buffers.keys())
     utterance_participants = list(utterance_states.keys())
     
@@ -415,6 +511,7 @@ async def stats():
             "is_active": state.is_active,
             "buffer_frames": len(state.buffer),
             "started_at": state.started_at.isoformat() if state.started_at else None,
+            "first_partial_sent": state.first_partial_sent
         }
     
     return {
@@ -422,6 +519,12 @@ async def stats():
         "intelligence": {
             "silero_vad_enabled": config.SILERO_VAD_ENABLED,
             "speech_detection_method": "Silero VAD (ML)" if config.SILERO_VAD_ENABLED else "Fallback"
+        },
+        "streaming": {
+            "enabled": STREAMING_ENABLED,
+            "partials_enabled": PARTIALS_ENABLED,
+            "partial_chunk_ms": PARTIAL_CHUNK_MS,
+            "metrics": streaming_metrics.get_stats()
         },
         "global_stats": {
             "processed_utterances": processed_utterances,
