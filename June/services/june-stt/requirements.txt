@@ -8,3 +8,4 @@ soundfile==0.12.1
 scipy==1.11.4
 httpx==0.25.2
 numpy>=1.24.0
+python_multipart
