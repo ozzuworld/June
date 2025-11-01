@@ -3,6 +3,8 @@
 June TTS Service - Chatterbox TTS + LiveKit Integration + STREAMING
 Replaces XTTS v2 engine with Chatterbox while preserving API and LiveKit pipeline.
 Adds streaming TTS support for sub-second time-to-first-audio.
+
+FIXED: SSL certificate verification issue for reference audio downloads
 """
 import os
 import torch
@@ -127,7 +129,13 @@ async def download_reference_audio(url: str) -> str:
         metrics["cache_hits"] += 1
         return reference_cache[url_hash]
     metrics["cache_misses"] += 1
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    
+    # FIXED: Add SSL verification bypass for self-signed certificates
+    # Check if internal URL (adjust domains as needed)
+    is_internal = any(domain in url for domain in ['localhost', '127.0.0.1', '.local', 'ozzu.world'])
+    verify_ssl = not is_internal
+    
+    async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
         r = await client.get(url)
         r.raise_for_status()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
