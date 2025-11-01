@@ -10,7 +10,7 @@ class EnhancedConfig:
     """STT Service Configuration with Silero VAD"""
     
     # Server Configuration
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("STT_PORT", "8001"))  # Fixed: Use STT_PORT with correct default
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     HOST: str = os.getenv("HOST", "0.0.0.0")
     
@@ -97,6 +97,7 @@ class EnhancedConfig:
         logger = logging.getLogger(__name__)
         
         logger.info(f"🔧 June STT Configuration:")
+        logger.info(f"   Server Port: {self.PORT}")
         logger.info(f"   Whisper Model: {self.WHISPER_MODEL} on {self.WHISPER_DEVICE}")
         logger.info(f"   Batched Inference: {self.USE_BATCHED_INFERENCE}")
         logger.info(f"   Silero VAD: {self.SILERO_VAD_ENABLED} (threshold={self.SILERO_VAD_THRESHOLD})")
