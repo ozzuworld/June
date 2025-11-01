@@ -1,11 +1,18 @@
 # June/services/june-orchestrator/app/routes/webhooks.py
 """
 Webhook handlers for event-driven architecture with skill-based AI
-STT → Orchestrator (WITH MEMORY + SKILLS) → TTS (voice cloning for skills)
+STT → Orchestrator (WITH MEMORY + SKILLS + SECURITY) → TTS (voice cloning for skills)
+
+SECURITY ENHANCEMENTS:
+- Duplicate message detection
+- Rate limiting per user  
+- AI cost tracking
+- Circuit breaker protection
 """
 import logging
 import httpx
 import tempfile
+import uuid
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -15,6 +22,8 @@ from ..services.ai_service import generate_response
 from ..session_manager import session_manager
 from ..services.skill_service import skill_service
 from ..services.voice_profile_service import voice_profile_service
+from ..security.rate_limiter import rate_limiter, duplication_detector
+from ..security.cost_tracker import call_tracker, circuit_breaker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +40,7 @@ class STTWebhookPayload(BaseModel):
     timestamp: str
     segments: Optional[List[Dict[str, Any]]] = []
     audio_data: Optional[bytes] = None  # For voice cloning skills
+    transcript_id: Optional[str] = None  # For duplicate detection
 
 
 class TTSPublishRequest(BaseModel):
@@ -48,7 +58,12 @@ async def handle_stt_webhook(
     authorization: str = Header(None)
 ):
     """
-    Enhanced STT webhook handler with skill-based AI and voice cloning
+    Enhanced STT webhook handler with SECURITY PROTECTION:
+    
+    1. Rate limiting per user
+    2. Duplicate message detection 
+    3. AI cost tracking & circuit breaker
+    4. Skill-based AI and voice cloning
     
     Flow:
     1. Normal conversation → June's hardcoded voice (Claribel Dervla)
@@ -57,6 +72,17 @@ async def handle_stt_webhook(
     """
     logger.info(f"🎤 STT Webhook: {payload.participant} in {payload.room_name}")
     logger.info(f"💬 Transcription: {payload.text}")
+
+    # SECURITY CHECK 1: Rate limiting
+    if not rate_limiter.check_request_rate_limit(payload.participant):
+        logger.warning(f"🚫 Rate limit exceeded for {payload.participant}")
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    
+    # SECURITY CHECK 2: Circuit breaker 
+    can_call, reason = circuit_breaker.should_allow_call()
+    if not can_call:
+        logger.error(f"🚨 Circuit breaker blocking request: {reason}")
+        raise HTTPException(status_code=503, detail=f"Service temporarily unavailable: {reason}")
 
     # DEBUG: Auth temporarily disabled
     if authorization:
@@ -72,6 +98,25 @@ async def handle_stt_webhook(
             user_id=payload.participant
         )
         logger.info(f"✅ Using session: {session.session_id} (messages: {len(session.conversation_history)})")
+        
+        # SECURITY CHECK 3: Duplicate message detection
+        message_id = payload.transcript_id or str(uuid.uuid4())
+        if duplication_detector.is_duplicate_message(
+            session.session_id, message_id, payload.text, 
+            payload.participant, payload.timestamp
+        ):
+            logger.warning(f"🔄 Duplicate message blocked: {message_id}")
+            return {
+                "status": "duplicate_blocked",
+                "message_id": message_id,
+                "session_id": session.session_id
+            }
+        
+        # Mark message as being processed (before AI call)
+        duplication_detector.mark_message_processed(
+            session.session_id, message_id, payload.text, 
+            payload.participant, payload.timestamp
+        )
         
         # Check for skill triggers
         skill_trigger = skill_service.detect_skill_trigger(payload.text)
@@ -89,6 +134,8 @@ async def handle_stt_webhook(
             # Normal conversation with June's consistent voice
             return await handle_normal_conversation(session, payload)
         
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (rate limits, etc.)
     except Exception as e:
         logger.error(f"❌ Webhook processing error: {e}")
         logger.exception("Full traceback:")
@@ -257,8 +304,13 @@ async def handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, A
 
 
 async def handle_normal_conversation(session, payload: STTWebhookPayload) -> Dict[str, Any]:
-    """Handle normal conversation with June's consistent voice"""
+    """Handle normal conversation with June's consistent voice + SECURITY CHECKS"""
     logger.info(f"💬 Normal conversation processing...")
+    
+    # SECURITY CHECK 4: AI-specific rate limiting (more restrictive)
+    if not rate_limiter.check_ai_rate_limit(payload.participant):
+        logger.warning(f"🚫 AI rate limit exceeded for {payload.participant}")
+        raise HTTPException(status_code=429, detail="AI rate limit exceeded")
     
     conversation_history = session.get_recent_history()
     logger.info(f"📚 Loaded conversation history: {len(conversation_history)} messages")
@@ -272,6 +324,13 @@ async def handle_normal_conversation(session, payload: STTWebhookPayload) -> Dic
         conversation_history=conversation_history
     )
     logger.info(f"✅ AI Response ({processing_time}ms): {ai_response[:100]}...")
+    
+    # SECURITY: Track AI call for cost monitoring
+    call_tracker.track_call(
+        input_text=f"{payload.text} {str(conversation_history)}",
+        output_text=ai_response,
+        processing_time_ms=processing_time
+    )
     
     # Save conversation to history
     session_manager.add_to_history(
@@ -395,6 +454,48 @@ async def trigger_tts_in_room(
         logger.exception("Full traceback:")
 
 
+# SECURITY ENDPOINTS
+
+@router.get("/api/security/stats")
+async def get_security_stats():
+    """Get security system statistics"""
+    return {
+        "status": "success",
+        "rate_limiter": rate_limiter.get_stats(),
+        "duplication_detector": duplication_detector.get_stats(),
+        "cost_tracker": call_tracker.get_stats(),
+        "circuit_breaker": circuit_breaker.get_status()
+    }
+
+
+@router.post("/api/security/circuit-breaker/open")
+async def manual_circuit_breaker_open(reason: str = "Manual override"):
+    """Manually open the circuit breaker (emergency stop)"""
+    circuit_breaker.manual_open(reason)
+    logger.error(f"🚨 Circuit breaker manually opened: {reason}")
+    
+    return {
+        "status": "success",
+        "message": f"Circuit breaker opened: {reason}",
+        "breaker_status": circuit_breaker.get_status()
+    }
+
+
+@router.post("/api/security/circuit-breaker/close")
+async def manual_circuit_breaker_close(reason: str = "Manual override"):
+    """Manually close the circuit breaker (restore service)"""
+    circuit_breaker.manual_close(reason)
+    logger.info(f"🔧 Circuit breaker manually closed: {reason}")
+    
+    return {
+        "status": "success",
+        "message": f"Circuit breaker closed: {reason}",
+        "breaker_status": circuit_breaker.get_status()
+    }
+
+
+# EXISTING ENDPOINTS (unchanged)
+
 async def handle_voice_reference_capture(
     user_id: str,
     audio_data: bytes,
@@ -481,14 +582,21 @@ async def get_skills_help():
 
 @router.get("/api/sessions/stats")
 async def get_sessions_stats():
-    """Enhanced session stats including skill usage"""
+    """Enhanced session stats including skill usage and security stats"""
     stats = session_manager.get_stats()
     voice_stats = voice_profile_service.get_stats()
+    security_stats = {
+        "rate_limiter": rate_limiter.get_stats(),
+        "duplication_detector": duplication_detector.get_stats(),
+        "cost_tracker": call_tracker.get_stats(),
+        "circuit_breaker": circuit_breaker.get_status()
+    }
     
     return {
         "status": "success", 
         "session_stats": stats,
-        "voice_profile_stats": voice_stats
+        "voice_profile_stats": voice_stats,
+        "security_stats": security_stats
     }
 
 
