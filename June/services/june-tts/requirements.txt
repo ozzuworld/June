@@ -1,26 +1,23 @@
-# June TTS Service - Kokoro (compatible versions)
+# June TTS Service - Kokoro (GPU, clean and pinned)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
-# Kokoro with compatible torch stack
+# Kokoro TTS (PyTorch KPipeline)
 kokoro>=0.9.4
 soundfile==0.12.1
-numpy>=1.24.0,<2.0
 
-# Audio processing minimal
+# Minimal numeric stack (librosa removed; not required for runtime)
+numpy>=1.24.0,<2.0
 scipy==1.11.3
 
-# LiveKit and HTTP
+# Networking / API
 livekit==0.11.1
 httpx==0.27.2
-
-# API validation
 pydantic==2.5.0
 
-# Compatible PyTorch stack (avoid torchvision conflicts)
-torch==2.1.0
-torchaudio==2.1.0
-# Do not install torchvision (causes nms operator conflict)
-
-# Transformers compatible version
+# TRANSFORMERS pinned to avoid torchvision conflicts
 transformers==4.35.0
+
+# GPU Torch stack (installed from cu121 index in Dockerfile)
+# NOTE: Do NOT add torchvision; Kokoro doesn't need it and it causes nms op conflicts
+# torch and torchaudio are installed in Dockerfile from CUDA 12.1 wheels
