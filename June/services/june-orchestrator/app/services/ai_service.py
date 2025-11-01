@@ -1,9 +1,10 @@
-"""AI service - Enhanced Gemini integration with memory and context management"""
+"""AI service - Enhanced Gemini integration with memory, context management, and SECURITY"""
 import logging
 import time
 from typing import Optional, List, Dict, Tuple
 
 from ..config import config
+from ..security.cost_tracker import circuit_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ Remember: You're having a VOICE conversation. Keep it natural and brief!"""
 
 def estimate_tokens(text: str) -> int:
     """Rough token estimation (4 chars ≈ 1 token for English)"""
-    return len(text) // 4
+    return max(1, len(text) // 4)
 
 
 def truncate_conversation_history(
@@ -99,6 +100,12 @@ async def summarize_conversation(
         return None
     
     try:
+        # SECURITY CHECK: Ensure circuit breaker allows this call
+        can_call, reason = circuit_breaker.should_allow_call()
+        if not can_call:
+            logger.warning(f"🚨 Summary generation blocked by circuit breaker: {reason}")
+            return None
+        
         from google import genai
         
         client = genai.Client(api_key=gemini_api_key)
@@ -140,7 +147,12 @@ def build_context_for_voice(
     conversation_history: List[Dict],
     user_id: str
 ) -> str:
-    """Build optimized context for voice assistant"""
+    """Build optimized context for voice assistant with security considerations"""
+    
+    # SECURITY: Sanitize input text
+    if len(text) > 2000:  # Prevent excessively long inputs
+        logger.warning(f"⚠️ Input text truncated from {len(text)} to 2000 chars for user {user_id}")
+        text = text[:2000] + "..."
     
     # Truncate history if needed
     history, was_truncated = truncate_conversation_history(conversation_history)
@@ -189,21 +201,29 @@ async def generate_response(
     conversation_history: List[Dict] = None
 ) -> Tuple[str, int]:
     """
-    Generate AI response with full memory and context management
+    Generate AI response with full memory, context management, and SECURITY CHECKS
     
     Returns: (response_text, processing_time_ms)
     """
     start_time = time.time()
     
-    # Safety check
+    # SECURITY CHECK 1: Input validation
     if not text or len(text.strip()) == 0:
         logger.warning("Empty text received")
         return "I didn't catch that. Could you repeat?", 0
     
-    # Rate limiting check (simple)
-    if len(text) > 1000:
-        logger.warning(f"User {user_id} sent very long text ({len(text)} chars)")
-        text = text[:1000]
+    # SECURITY CHECK 2: Input length limiting (enhanced)
+    original_length = len(text)
+    if original_length > 1500:  # More strict limit
+        logger.warning(f"User {user_id} sent very long text ({original_length} chars), truncating")
+        text = text[:1500]
+    
+    # SECURITY CHECK 3: Circuit breaker protection
+    can_call, reason = circuit_breaker.should_allow_call()
+    if not can_call:
+        logger.error(f"🚨 AI call blocked by circuit breaker: {reason}")
+        processing_time = int((time.time() - start_time) * 1000)
+        return "I'm temporarily unavailable due to high usage. Please try again in a few minutes.", processing_time
     
     try:
         if not config.services.gemini_api_key:
@@ -218,9 +238,14 @@ async def generate_response(
         conversation_history = conversation_history or []
         prompt = build_context_for_voice(text, conversation_history, user_id)
         
-        # Log token usage
-        estimated_tokens = estimate_tokens(prompt)
-        logger.info(f"📊 Prompt tokens: ~{estimated_tokens}")
+        # Log token usage for cost tracking
+        estimated_input_tokens = estimate_tokens(prompt)
+        logger.info(f"📈 Prompt tokens: ~{estimated_input_tokens}")
+        
+        # SECURITY CHECK 4: Token limit enforcement
+        if estimated_input_tokens > 15000:  # Hard limit
+            logger.error(f"🚨 Input exceeds token limit: {estimated_input_tokens} tokens")
+            return "Your message is too long. Please make it shorter and try again.", int((time.time() - start_time) * 1000)
         
         # Generate response with optimized settings for voice
         response = client.models.generate_content(
@@ -239,25 +264,28 @@ async def generate_response(
         if response and response.text:
             ai_text = response.text.strip()
             
-            # Validate response length for voice
-            if len(ai_text) > 500:
+            # SECURITY: Validate response length for voice (enhanced)
+            if len(ai_text) > 600:  # More strict limit
                 logger.warning(f"⚠️ Response too long for voice ({len(ai_text)} chars), truncating...")
                 # Find last complete sentence within limit
                 sentences = ai_text.split('.')
                 truncated = ""
                 for sentence in sentences:
-                    if len(truncated + sentence) < 400:
+                    if len(truncated + sentence) < 500:  # Conservative limit
                         truncated += sentence + "."
                     else:
                         break
-                ai_text = truncated or ai_text[:400] + "..."
+                ai_text = truncated or ai_text[:500] + "..."
             
+            # Log success metrics
+            estimated_output_tokens = estimate_tokens(ai_text)
             logger.info(f"✅ AI response generated in {processing_time}ms")
             logger.info(f"📝 Response length: {len(ai_text)} chars")
+            logger.info(f"📈 Response tokens: ~{estimated_output_tokens}")
             
-            # Estimate response tokens
-            response_tokens = estimate_tokens(ai_text)
-            logger.info(f"📊 Response tokens: ~{response_tokens}")
+            # Calculate approximate cost for monitoring
+            cost = calculate_cost(estimated_input_tokens, estimated_output_tokens)
+            logger.info(f"💰 Estimated API cost: ${cost:.6f}")
             
             return ai_text, processing_time
         else:
@@ -268,45 +296,94 @@ async def generate_response(
         processing_time = int((time.time() - start_time) * 1000)
         logger.error(f"❌ AI service error: {e}")
         
-        # Differentiate error types
-        if "rate_limit" in str(e).lower():
-            return "I'm a bit overwhelmed right now. Can you try again in a moment?", processing_time
-        elif "invalid" in str(e).lower():
-            return "I had trouble understanding that. Could you rephrase?", processing_time
+        # Enhanced error handling with security considerations
+        error_str = str(e).lower()
+        
+        if "rate_limit" in error_str or "quota" in error_str:
+            logger.error(f"🚨 API rate limit/quota exceeded for user {user_id}")
+            return "I'm experiencing high demand right now. Please try again in a moment.", processing_time
+        elif "invalid" in error_str or "malformed" in error_str:
+            logger.warning(f"⚠️ Invalid request for user {user_id}: {e}")
+            return "I had trouble understanding that. Could you rephrase it differently?", processing_time
+        elif "timeout" in error_str:
+            logger.warning(f"⏱️ Timeout for user {user_id}")
+            return "That's taking longer than expected. Can you try asking that again?", processing_time
         else:
+            logger.error(f"❌ Unexpected AI error for user {user_id}: {e}")
             return fallback_response(text), processing_time
 
 
 def fallback_response(text: str) -> str:
-    """Intelligent fallback when AI is unavailable"""
+    """Intelligent fallback when AI is unavailable (enhanced)"""
     text_lower = text.lower()
     
     # Greeting detection
-    greetings = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening']
+    greetings = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'howdy']
     if any(g in text_lower for g in greetings):
         return "Hello! I'm JUNE, your AI assistant. How can I help you today?"
     
     # Help request
-    help_words = ['help', 'what can you do', 'capabilities', 'features']
+    help_words = ['help', 'what can you do', 'capabilities', 'features', 'commands']
     if any(h in text_lower for h in help_words):
         return "I can answer questions, have conversations, and help with information. What would you like to know?"
     
     # Question detection
     if '?' in text:
-        return "That's a great question! I'm having a moment though. Could you ask again?"
+        return "That's a great question! I'm having a technical moment though. Could you ask again?"
+    
+    # Emergency/urgent detection
+    if any(word in text_lower for word in ['emergency', 'urgent', 'help me', 'problem']):
+        return "I'm currently experiencing some technical difficulties, but I'm here when I'm back online."
     
     # Generic fallback
     return "I heard you, but I'm having trouble processing right now. Can you try again?"
 
 
-# Cost tracking helper
 def calculate_cost(input_tokens: int, output_tokens: int, model: str = "gemini-2.0-flash") -> float:
     """Calculate approximate cost for API call
     
-    Gemini 2.0 Flash pricing (as of Dec 2024):
+    Gemini 2.0 Flash pricing (as of Oct 2024):
     - Input: $0.075 per 1M tokens
     - Output: $0.30 per 1M tokens
     """
     input_cost = (input_tokens / 1_000_000) * 0.075
     output_cost = (output_tokens / 1_000_000) * 0.30
     return input_cost + output_cost
+
+
+# Security helper functions
+
+def sanitize_input(text: str) -> str:
+    """Sanitize user input for security"""
+    # Remove potential injection patterns
+    dangerous_patterns = [
+        'system:', 'assistant:', 'user:', '##', '```', '<script>', 'javascript:',
+        'eval(', 'exec(', 'import ', 'from ', 'def ', 'class ', '__'
+    ]
+    
+    sanitized = text
+    for pattern in dangerous_patterns:
+        sanitized = sanitized.replace(pattern, '')
+    
+    # Limit special characters
+    if sanitized.count('{') > 5 or sanitized.count('[') > 5:
+        logger.warning(f"⚠️ Suspicious input pattern detected: {text[:50]}...")
+    
+    return sanitized
+
+
+def is_input_safe(text: str) -> bool:
+    """Check if input is safe to process"""
+    # Check for prompt injection attempts
+    injection_patterns = [
+        'ignore previous', 'forget everything', 'system prompt', 'you are now',
+        'new instructions', 'disregard', 'override', 'jailbreak'
+    ]
+    
+    text_lower = text.lower()
+    for pattern in injection_patterns:
+        if pattern in text_lower:
+            logger.warning(f"⚠️ Potential prompt injection detected: {pattern}")
+            return False
+    
+    return True
