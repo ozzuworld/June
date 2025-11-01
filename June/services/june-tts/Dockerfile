@@ -30,8 +30,8 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install compatible NumPy FIRST (critical for PyTorch compatibility)
-RUN pip install --no-cache-dir "numpy<2.0"
+# Install numpy and cython BEFORE requirements (critical for pkuseg)
+RUN pip install --no-cache-dir "numpy<2.0" "cython<3.0"
 
 # Install PyTorch 2.2.2 with CUDA 11.8 support
 RUN pip install --no-cache-dir torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
