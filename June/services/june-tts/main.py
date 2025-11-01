@@ -7,6 +7,7 @@ Adds streaming TTS support for sub-second time-to-first-audio.
 FIXED: SSL certificate verification issue for reference audio downloads
 FIXED: Make speaker_wav optional - use default voice when no references provided
 ADDED: Comprehensive debugging and audio quality optimization
+OPTIMIZED: Default to "smooth" config for better audio quality
 """
 import os
 import torch
@@ -73,13 +74,13 @@ AUDIO_CONFIGS = {
         "priming_silence_ms": 0,
     },
     "smooth": {
-        "exaggeration": 0.4,
-        "cfg_weight": 0.6,
-        "padding_ms": 100,
+        "exaggeration": 0.4,     # More natural voice
+        "cfg_weight": 0.6,       # Better pacing
+        "padding_ms": 100,       # Prevent choppy edges
         "sample_rate": 24000,
-        "chunk_size": 75,
+        "chunk_size": 75,        # Larger chunks for smoothness
         "frame_size": 480,
-        "priming_silence_ms": 100,
+        "priming_silence_ms": 100, # Prime LiveKit buffer
     },
     "low_latency": {
         "exaggeration": 0.5,
@@ -101,8 +102,8 @@ AUDIO_CONFIGS = {
     }
 }
 
-# Current active config (can be changed via API)
-ACTIVE_CONFIG = "baseline"
+# OPTIMIZED: Use smooth config as default for better audio quality
+ACTIVE_CONFIG = "smooth"
 
 # Global state
 tts_ready = False
@@ -127,10 +128,10 @@ class TTSRequest(BaseModel):
     speaker: Optional[str] = Field(None, description="(Ignored) retained for compatibility")
     speaker_wav: Optional[Union[str, List[str]]] = Field(None, description="Reference audio file(s) for voice cloning")
     speed: float = Field(1.0, description="Speech speed (compat only)", ge=0.5, le=2.0)
-    exaggeration: float = Field(0.6, description="Emotion intensity 0.0-2.0", ge=0.0, le=2.0)
-    cfg_weight: float = Field(0.8, description="Pacing control 0.1-1.0", ge=0.1, le=1.0)
+    exaggeration: float = Field(0.4, description="Emotion intensity 0.0-2.0", ge=0.0, le=2.0)  # Optimized default
+    cfg_weight: float = Field(0.6, description="Pacing control 0.1-1.0", ge=0.1, le=1.0)      # Optimized default
     streaming: bool = Field(False, description="Enable streaming synthesis for lower latency")
-    config_preset: str = Field("baseline", description="Audio quality preset: baseline, smooth, low_latency, high_quality")
+    config_preset: str = Field("smooth", description="Audio quality preset: baseline, smooth, low_latency, high_quality")
 
     @field_validator('language')
     @classmethod  
@@ -153,8 +154,8 @@ class TTSRequest(BaseModel):
     @classmethod
     def validate_config_preset(cls, v):
         if v not in AUDIO_CONFIGS:
-            logger.warning(f"Unknown config preset '{v}', using 'baseline'")
-            return "baseline"
+            logger.warning(f"Unknown config preset '{v}', using 'smooth'")
+            return "smooth"
         return v
 
 class PublishToRoomRequest(TTSRequest):
@@ -293,11 +294,11 @@ async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) ->
     if not tts_ready:
         raise HTTPException(status_code=503, detail="TTS model not ready")
 
-    # Use config preset if available
-    config_preset = getattr(request, 'config_preset', 'baseline')
-    audio_config = AUDIO_CONFIGS.get(config_preset, AUDIO_CONFIGS['baseline'])
+    # Use config preset if available, default to smooth
+    config_preset = getattr(request, 'config_preset', 'smooth')
+    audio_config = AUDIO_CONFIGS.get(config_preset, AUDIO_CONFIGS['smooth'])
     
-    # Override with request parameters
+    # Use optimized parameters from smooth config
     synthesis_params = {
         'exaggeration': getattr(request, 'exaggeration', audio_config['exaggeration']),
         'cfg_weight': getattr(request, 'cfg_weight', audio_config['cfg_weight']),
@@ -331,7 +332,7 @@ async def join_livekit_room():
         logger.info("🔊 TTS connecting to LiveKit room via orchestrator token")
         await connect_room_as_publisher(tts_room, "june-tts")
         
-        # Use current active config for audio source
+        # Use smooth config for audio source
         config_preset = AUDIO_CONFIGS[ACTIVE_CONFIG]
         sample_rate = config_preset['sample_rate']
         
@@ -345,14 +346,14 @@ async def join_livekit_room():
         if STREAMING_ENABLED:
             initialize_streaming_tts(audio_source)
         
-        logger.info(f"✅ TTS connected to ozzu-main room (sample_rate: {sample_rate}Hz)")
+        logger.info(f"✅ TTS connected to ozzu-main room (sample_rate: {sample_rate}Hz, config: {ACTIVE_CONFIG})")
         if STREAMING_ENABLED:
-            logger.info("⚡ Streaming TTS ready for concurrent processing")
+            logger.info("⚡ Streaming TTS ready for concurrent processing with optimized audio settings")
     except Exception as e:
         logger.exception(f"❌ Failed to connect to LiveKit: {e}")
         room_connected = False
 
-async def publish_audio_to_room_debug(audio_data: bytes, config_preset: str = "baseline") -> Dict[str, Any]:
+async def publish_audio_to_room_debug(audio_data: bytes, config_preset: str = "smooth") -> Dict[str, Any]:
     """Enhanced audio publisher with debugging and quality optimization"""
     global audio_source
     if not room_connected or not audio_source:
@@ -521,15 +522,21 @@ async def warmup_model():
     if not tts_ready:
         return
     try:
+        # Use smooth config for warmup
+        smooth_config = AUDIO_CONFIGS['smooth']
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             path = f.name
         await chatterbox_engine.synthesize_to_file(
-            text="Warmup test.", file_path=path, language="en", speaker_wav=None, 
-            exaggeration=0.4, cfg_weight=0.6  # Use optimized defaults
+            text="Warmup test with optimized settings.", 
+            file_path=path, 
+            language="en", 
+            speaker_wav=None, 
+            exaggeration=smooth_config['exaggeration'], 
+            cfg_weight=smooth_config['cfg_weight']
         )
         if os.path.exists(path):
             os.unlink(path)
-        logger.info("✅ TTS model warmed up")
+        logger.info("✅ TTS model warmed up with smooth config")
     except Exception as e:
         logger.warning(f"⚠️ Model warmup failed: {e}")
 
@@ -541,7 +548,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"⚡ Streaming TTS: {STREAMING_ENABLED}")
     logger.info(f"🔧 Audio debugging: {DEBUG_AUDIO}")
     logger.info(f"🎛️ Available configs: {list(AUDIO_CONFIGS.keys())}")
-    logger.info(f"📊 Active config: {ACTIVE_CONFIG} - {AUDIO_CONFIGS[ACTIVE_CONFIG]}")
+    logger.info(f"📊 ACTIVE CONFIG: {ACTIVE_CONFIG} (OPTIMIZED)")
+    logger.info(f"🎵 Smooth settings: exaggeration={AUDIO_CONFIGS[ACTIVE_CONFIG]['exaggeration']}, cfg_weight={AUDIO_CONFIGS[ACTIVE_CONFIG]['cfg_weight']}, padding={AUDIO_CONFIGS[ACTIVE_CONFIG]['padding_ms']}ms")
     try:
         await chatterbox_engine.initialize()
         tts_ready = True
@@ -549,7 +557,7 @@ async def lifespan(app: FastAPI):
         publish_queue = asyncio.Queue(maxsize=10)
         asyncio.create_task(synthesis_worker())
         await join_livekit_room()
-        logger.info("🎉 June TTS Service fully initialized (Enhanced Quality + Debugging)")
+        logger.info("🎉 June TTS Service fully initialized with SMOOTH audio optimization")
     except Exception as e:
         logger.exception(f"❌ TTS initialization failed: {e}")
     yield
@@ -557,7 +565,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="June TTS Service + Audio Quality Optimization",
     version="5.2.0",
-    description="Chatterbox TTS with audio quality debugging and optimization presets",
+    description="Chatterbox TTS with smooth audio quality settings and comprehensive debugging",
     lifespan=lifespan,
 )
 
@@ -603,7 +611,7 @@ async def root():
         "features": [
             "Default female voice for conversations",
             "Zero-shot voice cloning for mockingbird skill",
-            "Audio quality optimization presets",
+            "SMOOTH audio quality optimization (ACTIVE)",
             "Comprehensive audio debugging",
             "Silence padding and priming",
             "Frame timing optimization",
@@ -624,8 +632,10 @@ async def root():
         "streaming": {"enabled": STREAMING_ENABLED, "metrics": streaming_stats},
         "default_voice": "female (chatterbox default)",
         "active_config": ACTIVE_CONFIG,
+        "active_settings": AUDIO_CONFIGS[ACTIVE_CONFIG],
         "available_configs": list(AUDIO_CONFIGS.keys()),
         "debug_mode": DEBUG_AUDIO,
+        "optimization": "SMOOTH QUALITY ACTIVE",
     }
 
 @app.get("/healthz")
@@ -644,6 +654,7 @@ async def health():
             "default_female_voice": True,
             "voice_cloning_fallback": True,
             "audio_debugging": DEBUG_AUDIO,
+            "smooth_optimization": True,
         },
     }
 
@@ -665,8 +676,9 @@ async def get_audio_debug_stats():
         },
         "recommendations": {
             "quality_score": 10 - min(5, metrics["audio_quality_issues"]) - min(3, metrics["clipping_detected"]),
-            "suggested_config": "smooth" if metrics["audio_quality_issues"] > 2 else ACTIVE_CONFIG,
-        }
+            "suggested_config": "high_quality" if metrics["audio_quality_issues"] > 2 else ACTIVE_CONFIG,
+        },
+        "optimization_status": "SMOOTH CONFIG ACTIVE"
     }
 
 @app.post("/debug/set-config")
@@ -756,7 +768,8 @@ async def get_metrics():
             "audio_quality_issues": metrics["audio_quality_issues"],
             "frame_timing_issues": metrics["frame_timing_issues"],
             "clipping_detected": metrics["clipping_detected"],
-        }
+        },
+        "active_optimization": ACTIVE_CONFIG
     }
     if STREAMING_ENABLED:
         base_metrics["streaming_tts"] = get_streaming_tts_metrics()
@@ -796,6 +809,7 @@ async def synthesize_audio(request: TTSRequest):
                 "Content-Disposition": "attachment; filename=speech.wav",
                 "X-Synthesis-Time-Ms": str(round(synth_time, 2)),
                 "X-Method": "regular",
+                "X-Config": ACTIVE_CONFIG,
             },
         )
 
@@ -835,7 +849,7 @@ async def publish_to_room(request: PublishToRoomRequest, background_tasks: Backg
         await publish_queue.put((request, fut))
         audio_bytes, synth_ms = await fut
         
-        # Use debug publisher for better metrics
+        # Use debug publisher with smooth config
         config_preset = getattr(request, 'config_preset', ACTIVE_CONFIG)
         background_tasks.add_task(publish_audio_to_room_debug, audio_bytes, config_preset)
         
@@ -848,7 +862,7 @@ async def publish_to_room(request: PublishToRoomRequest, background_tasks: Backg
             "speaker_references": len(request.speaker_wav) if request.speaker_wav else 0,
             "streaming_enabled": False,
             "config_used": config_preset,
-            "message": "Audio being published to room with quality optimization",
+            "message": "Audio being published to room with SMOOTH optimization",
         }
 
 @app.post("/stream-to-room")
@@ -862,9 +876,13 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
     
     speaker_refs = await prepare_speaker_references(request.speaker_wav)
     voice_mode = "voice cloning" if speaker_refs else "default female voice"
-    config_preset = getattr(request, 'config_preset', 'smooth')
+    config_preset = getattr(request, 'config_preset', ACTIVE_CONFIG)
     
     logger.info(f"⚡ Streaming TTS request ({voice_mode}, config: {config_preset}): '{request.text[:50]}...'")
+    
+    # Apply smooth config optimizations
+    if config_preset == 'smooth' or ACTIVE_CONFIG == 'smooth':
+        logger.info(f"🎵 Using SMOOTH optimization: natural voice (exag={request.exaggeration}), better pacing (cfg={request.cfg_weight})")
     
     metrics["streaming_requests"] += 1
     result = await stream_tts_to_room(
@@ -886,6 +904,7 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
         "voice_mode": voice_mode,
         "speaker_references_used": len(speaker_refs) if speaker_refs else 0,
         "config_used": config_preset,
+        "optimization": "SMOOTH ACTIVE",
     }
 
 @app.get("/streaming/status")
@@ -896,6 +915,7 @@ async def streaming_status():
         "sample_rate": AUDIO_CONFIGS[ACTIVE_CONFIG]['sample_rate'],
         "frame_size": AUDIO_CONFIGS[ACTIVE_CONFIG]['frame_size'],
         "active_config": ACTIVE_CONFIG,
+        "optimization_active": True,
         "metrics": get_streaming_tts_metrics() if STREAMING_ENABLED else {},
         "capabilities": {
             "concurrent_processing": True,
@@ -904,6 +924,7 @@ async def streaming_status():
             "default_female_voice": True,
             "voice_cloning_fallback": True,
             "quality_debugging": DEBUG_AUDIO,
+            "smooth_optimization": ACTIVE_CONFIG == "smooth",
         },
     }
 
