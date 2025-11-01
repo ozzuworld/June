@@ -11,6 +11,8 @@ from .routes_livekit import router as livekit_router
 from .session_manager import session_manager
 from .services.skill_service import skill_service
 from .services.voice_profile_service import voice_profile_service
+from .security.rate_limiter import rate_limiter, duplication_detector
+from .security.cost_tracker import call_tracker, circuit_breaker
 from .config import config
 
 logging.basicConfig(
@@ -51,7 +53,7 @@ async def cleanup_sessions_task():
             
             # Log stats
             stats = session_manager.get_stats()
-            logger.info(f"📊 Session stats: {stats}")
+            logger.info(f"📈 Session stats: {stats}")
             
             # Log skill usage
             if stats.get("active_skills", 0) > 0:
@@ -61,11 +63,57 @@ async def cleanup_sessions_task():
             logger.error(f"❌ Session cleanup task error: {e}")
 
 
+# SECURITY: Background task for security monitoring
+async def security_monitoring_task():
+    """Background task to monitor security metrics and costs"""
+    while True:
+        try:
+            await asyncio.sleep(300)  # Every 5 minutes
+            
+            # Get security stats
+            cost_stats = call_tracker.get_stats()
+            rate_stats = rate_limiter.get_stats()
+            circuit_status = circuit_breaker.get_status()
+            
+            # Log cost warnings
+            if cost_stats['daily_cost'] > 25.0:  # $25 warning threshold
+                logger.warning(
+                    f"💰 HIGH COST WARNING: ${cost_stats['daily_cost']:.2f} spent today "
+                    f"({cost_stats['utilization']['cost_percent']:.1f}% of limit)"
+                )
+            
+            # Log rate limiting activity
+            if rate_stats['blocked_users'] > 0:
+                logger.warning(
+                    f"🚫 RATE LIMITING ACTIVE: {rate_stats['blocked_users']} users blocked"
+                )
+            
+            # Log circuit breaker status
+            if circuit_status['is_open']:
+                logger.error(
+                    f"🚨 CIRCUIT BREAKER OPEN: Service degraded "
+                    f"(failures: {circuit_status['failure_count']})"
+                )
+            
+            # Periodic security summary (every hour)
+            if asyncio.get_event_loop().time() % 3600 < 300:  # Rough hourly check
+                logger.info(
+                    f"🔒 Security Summary: "
+                    f"${cost_stats['daily_cost']:.2f} spent, "
+                    f"{cost_stats['daily_calls']} AI calls, "
+                    f"{rate_stats['total_users_tracked']} users tracked, "
+                    f"Circuit: {'OPEN' if circuit_status['is_open'] else 'CLOSED'}"
+                )
+            
+        except Exception as e:
+            logger.error(f"❌ Security monitoring error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan with enhanced startup and background tasks"""
     logger.info("=" * 70)
-    logger.info("🚀 June Orchestrator v6.0 - AI Voice Assistant with Skills")
+    logger.info("🚀 June Orchestrator v7.0 - AI Voice Assistant with SECURITY")
     logger.info("=" * 70)
     
     # Core configuration
@@ -85,6 +133,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Max History: {config.sessions.max_history_messages} messages")
     logger.info(f"  Session Timeout: {config.sessions.session_timeout_hours} hours")
     
+    # SECURITY configuration
+    logger.info(f"🔒 Security Configuration:")
+    logger.info(f"  Rate Limiting: {rate_limiter.ai_calls_per_minute}/min, {rate_limiter.ai_calls_per_hour}/hour")
+    logger.info(f"  Daily Cost Limit: ${call_tracker.max_daily_cost}")
+    logger.info(f"  Daily Call Limit: {call_tracker.max_daily_calls}")
+    logger.info(f"  Circuit Breaker: {'Enabled' if not circuit_breaker.is_open else 'OPEN'}")
+    
     # Skill system
     skills = skill_service.list_skills()
     logger.info(f"🎭 Skill System:")
@@ -96,21 +151,24 @@ async def lifespan(app: FastAPI):
     
     # Start background tasks
     cleanup_task = asyncio.create_task(cleanup_sessions_task())
-    logger.info("✅ Background tasks started")
+    security_task = asyncio.create_task(security_monitoring_task())
+    logger.info("✅ Background tasks started (cleanup + security monitoring)")
     
     yield
     
     # Cleanup on shutdown
     cleanup_task.cancel()
+    security_task.cancel()
     logger.info("🛑 Shutting down...")
-    logger.info(f"📊 Final session stats: {session_manager.get_stats()}")
+    logger.info(f"📈 Final session stats: {session_manager.get_stats()}")
     logger.info(f"🎭 Final voice profile stats: {voice_profile_service.get_stats()}")
+    logger.info(f"💰 Final cost stats: {call_tracker.get_stats()}")
 
 
 app = FastAPI(
     title="June Orchestrator",
-    version="6.0.0",
-    description="AI Voice Assistant Orchestrator with Skills and Voice Cloning",
+    version="7.0.0-SECURE",
+    description="AI Voice Assistant Orchestrator with Skills, Voice Cloning, and Security Protection",
     lifespan=lifespan
 )
 
@@ -125,7 +183,7 @@ app.add_middleware(
 )
 
 # Register routes
-app.include_router(webhooks_router, tags=["Webhooks & Skills"])
+app.include_router(webhooks_router, tags=["Webhooks & Skills & Security"])
 app.include_router(livekit_router, tags=["LiveKit"])
 
 
@@ -134,11 +192,17 @@ async def root():
     stats = session_manager.get_stats()
     skills = skill_service.list_skills()
     voice_stats = voice_profile_service.get_stats()
+    security_stats = {
+        "rate_limiter": rate_limiter.get_stats(),
+        "duplication_detector": duplication_detector.get_stats(),
+        "cost_tracker": call_tracker.get_stats(),
+        "circuit_breaker": circuit_breaker.get_status()
+    }
     
     return {
         "service": "june-orchestrator",
-        "version": "6.0.0",
-        "description": "AI Voice Assistant Orchestrator with Skills and Voice Cloning",
+        "version": "7.0.0-SECURE",
+        "description": "AI Voice Assistant Orchestrator with Skills, Voice Cloning, and Security Protection",
         "features": [
             "✅ Conversation Memory",
             "✅ Context Management",
@@ -146,7 +210,11 @@ async def root():
             "✅ Voice-Optimized AI",
             "✅ Skill-Based Architecture",
             "✅ Voice Cloning Skills",
-            "✅ Session Cleanup"
+            "✅ Session Cleanup",
+            "🔒 SECURITY: Rate Limiting",
+            "🔒 SECURITY: Duplicate Detection",
+            "🔒 SECURITY: Cost Tracking",
+            "🔒 SECURITY: Circuit Breaker"
         ],
         "skills": {
             "available": list(skills.keys()),
@@ -160,16 +228,26 @@ async def root():
             "skills_help": "/api/skills/help",
             "session_history": "/api/sessions/{id}/history",
             "session_stats": "/api/sessions/stats",
+            "security_stats": "/api/security/stats",
+            "circuit_breaker_open": "/api/security/circuit-breaker/open",
+            "circuit_breaker_close": "/api/security/circuit-breaker/close",
             "health": "/healthz"
         },
         "stats": stats,
         "voice_profiles": voice_stats,
+        "security": security_stats,
         "config": {
             "ai_model": config.ai.model,
             "voice_mode": config.ai.voice_response_mode,
             "max_history": config.sessions.max_history_messages,
             "livekit_url": config.livekit.ws_url,
-            "skills_enabled": True
+            "skills_enabled": True,
+            "security_enabled": True,
+            "daily_cost_limit": call_tracker.max_daily_cost,
+            "ai_rate_limits": {
+                "per_minute": rate_limiter.ai_calls_per_minute,
+                "per_hour": rate_limiter.ai_calls_per_hour
+            }
         }
     }
 
@@ -177,18 +255,50 @@ async def root():
 @app.get("/healthz")
 async def healthz():
     stats = session_manager.get_stats()
+    cost_stats = call_tracker.get_stats()
+    circuit_status = circuit_breaker.get_status()
+    
+    # Determine health status
+    is_healthy = True
+    health_issues = []
+    
+    if circuit_status["is_open"]:
+        is_healthy = False
+        health_issues.append("Circuit breaker is open")
+    
+    if cost_stats["utilization"]["cost_percent"] > 90:
+        is_healthy = False
+        health_issues.append(f"High cost utilization: {cost_stats['utilization']['cost_percent']:.1f}%")
+    
+    if cost_stats["remaining_calls"] < 50:
+        is_healthy = False
+        health_issues.append(f"Low remaining API calls: {cost_stats['remaining_calls']}")
     
     return {
-        "status": "healthy",
+        "status": "healthy" if is_healthy else "degraded",
         "service": "june-orchestrator",
-        "version": "6.0.0",
+        "version": "7.0.0-SECURE",
+        "issues": health_issues,
         "stats": stats,
+        "security": {
+            "circuit_breaker_open": circuit_status["is_open"],
+            "daily_cost": cost_stats["daily_cost"],
+            "remaining_budget": cost_stats["remaining_cost"],
+            "cost_utilization_percent": cost_stats["utilization"]["cost_percent"],
+            "daily_calls": cost_stats["daily_calls"],
+            "remaining_calls": cost_stats["remaining_calls"]
+        },
         "features": {
             "memory": True,
             "context_management": True,
             "voice_optimized": config.ai.voice_response_mode,
             "ai_configured": bool(config.services.gemini_api_key),
             "skills_system": True,
-            "voice_cloning": True
+            "voice_cloning": True,
+            "security_protection": True,
+            "rate_limiting": True,
+            "duplicate_detection": True,
+            "cost_tracking": True,
+            "circuit_breaker": True
         }
     }
