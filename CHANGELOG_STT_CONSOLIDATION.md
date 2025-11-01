@@ -1,0 +1,5 @@
+- Consolidate enhanced STT implementation into canonical filenames
+- Keep only: config.py, Dockerfile, main.py, requirements.txt, whisper_service.py, README.md
+- Remove *_enhanced and Dockerfile.new duplicates
+- Add helper script June/services/june-stt/consolidate_enhanced.sh for local execution
+- No functional changes beyond file renames; logic matches enhanced versions committed earlier
