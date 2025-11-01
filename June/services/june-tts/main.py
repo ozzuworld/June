@@ -6,6 +6,7 @@ Adds streaming TTS support for sub-second time-to-first-audio.
 
 FIXED: SSL certificate verification issue for reference audio downloads
 FIXED: Make speaker_wav optional - use default voice when no references provided
+ADDED: Comprehensive debugging and audio quality optimization
 """
 import os
 import torch
@@ -17,7 +18,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from typing import Optional, List, Union, Dict, Any
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
@@ -37,6 +38,7 @@ def _bool_env(name: str, default: bool) -> bool:
 
 from config import config as _cfg
 STREAMING_ENABLED = getattr(_cfg, "TTS_STREAMING_ENABLED", _bool_env("TTS_STREAMING_ENABLED", True))
+DEBUG_AUDIO = _bool_env("DEBUG_AUDIO", True)  # Enable detailed audio debugging
 
 from config import config
 from chatterbox_engine import chatterbox_engine
@@ -59,6 +61,49 @@ SUPPORTED_LANGUAGES = {
     "da", "el", "fi", "he", "ms", "no", "sv", "sw"
 }
 
+# Audio Quality Optimization Configs
+AUDIO_CONFIGS = {
+    "baseline": {
+        "exaggeration": 0.6,
+        "cfg_weight": 0.8,
+        "padding_ms": 0,
+        "sample_rate": 24000,
+        "chunk_size": 50,
+        "frame_size": 480,
+        "priming_silence_ms": 0,
+    },
+    "smooth": {
+        "exaggeration": 0.4,
+        "cfg_weight": 0.6,
+        "padding_ms": 100,
+        "sample_rate": 24000,
+        "chunk_size": 75,
+        "frame_size": 480,
+        "priming_silence_ms": 100,
+    },
+    "low_latency": {
+        "exaggeration": 0.5,
+        "cfg_weight": 0.7,
+        "padding_ms": 50,
+        "sample_rate": 24000,
+        "chunk_size": 25,
+        "frame_size": 480,
+        "priming_silence_ms": 50,
+    },
+    "high_quality": {
+        "exaggeration": 0.3,
+        "cfg_weight": 0.5,
+        "padding_ms": 150,
+        "sample_rate": 48000,
+        "chunk_size": 100,
+        "frame_size": 960,  # 20ms at 48kHz
+        "priming_silence_ms": 150,
+    }
+}
+
+# Current active config (can be changed via API)
+ACTIVE_CONFIG = "baseline"
+
 # Global state
 tts_ready = False
 tts_room: Optional[rtc.Room] = None
@@ -72,7 +117,8 @@ reference_cache: Dict[str, str] = {}
 # Enhanced metrics tracking
 metrics = {
     "synthesis_count": 0, "publish_count": 0, "total_synthesis_time": 0.0, "total_publish_time": 0.0,
-    "cache_hits": 0, "cache_misses": 0, "streaming_requests": 0, "regular_requests": 0
+    "cache_hits": 0, "cache_misses": 0, "streaming_requests": 0, "regular_requests": 0,
+    "audio_quality_issues": 0, "frame_timing_issues": 0, "clipping_detected": 0
 }
 
 class TTSRequest(BaseModel):
@@ -84,6 +130,7 @@ class TTSRequest(BaseModel):
     exaggeration: float = Field(0.6, description="Emotion intensity 0.0-2.0", ge=0.0, le=2.0)
     cfg_weight: float = Field(0.8, description="Pacing control 0.1-1.0", ge=0.1, le=1.0)
     streaming: bool = Field(False, description="Enable streaming synthesis for lower latency")
+    config_preset: str = Field("baseline", description="Audio quality preset: baseline, smooth, low_latency, high_quality")
 
     @field_validator('language')
     @classmethod  
@@ -101,6 +148,14 @@ class TTSRequest(BaseModel):
                 return [s.strip() for s in v.split(',') if s.strip()]
             return [v]
         return v
+    
+    @field_validator('config_preset')
+    @classmethod
+    def validate_config_preset(cls, v):
+        if v not in AUDIO_CONFIGS:
+            logger.warning(f"Unknown config preset '{v}', using 'baseline'")
+            return "baseline"
+        return v
 
 class PublishToRoomRequest(TTSRequest):
     pass
@@ -109,8 +164,9 @@ class StreamingTTSRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize and stream", max_length=1500)
     language: str = Field("en", description="Language code")
     speaker_wav: Optional[List[str]] = Field(None, description="Reference audio files")
-    exaggeration: float = Field(0.6, ge=0.0, le=2.0)
-    cfg_weight: float = Field(0.8, ge=0.1, le=1.0)
+    exaggeration: float = Field(0.4, ge=0.0, le=2.0)  # Optimized default
+    cfg_weight: float = Field(0.6, ge=0.1, le=1.0)    # Optimized default
+    config_preset: str = Field("smooth", description="Audio quality preset")
 
 class SynthesisResponse(BaseModel):
     status: str
@@ -123,6 +179,41 @@ class SynthesisResponse(BaseModel):
     streaming_used: bool = False
     first_audio_ms: float = 0.0
     message: str = ""
+
+def measure_audio_quality(audio_data: np.ndarray) -> Dict[str, Any]:
+    """Measure audio quality metrics"""
+    max_val = np.max(np.abs(audio_data))
+    clipping = max_val >= 32760  # Near int16 limit
+    
+    # Check for silence gaps
+    silence_threshold = 100
+    silence_mask = np.abs(audio_data) < silence_threshold
+    silence_runs = np.diff(np.concatenate([[False], silence_mask, [False]]))
+    silence_start = np.where(silence_runs)[0][::2] 
+    silence_end = np.where(silence_runs)[0][1::2]
+    if len(silence_start) > 0 and len(silence_end) > 0:
+        silence_gaps = silence_end - silence_start
+        long_silences = silence_gaps > 480  # > 20ms at 24kHz
+    else:
+        long_silences = np.array([])
+    
+    return {
+        "clipping": clipping,
+        "max_amplitude": int(max_val),
+        "long_silence_count": len(long_silences),
+        "avg_amplitude": int(np.mean(np.abs(audio_data))),
+        "duration_ms": len(audio_data) * 1000 / 24000,
+        "quality_score": 10 - (5 if clipping else 0) - min(5, len(long_silences))
+    }
+
+def add_silence_padding(audio_frames: np.ndarray, padding_ms: int = 100, sample_rate: int = 24000) -> np.ndarray:
+    """Add silence padding to prevent choppy start/end"""
+    if padding_ms <= 0:
+        return audio_frames
+    
+    padding_samples = int(sample_rate * padding_ms / 1000)
+    silence = np.zeros(padding_samples, dtype=audio_frames.dtype)
+    return np.concatenate([silence, audio_frames, silence])
 
 async def download_reference_audio(url: str) -> Optional[str]:
     """Download reference audio with graceful 404 handling"""
@@ -202,6 +293,19 @@ async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) ->
     if not tts_ready:
         raise HTTPException(status_code=503, detail="TTS model not ready")
 
+    # Use config preset if available
+    config_preset = getattr(request, 'config_preset', 'baseline')
+    audio_config = AUDIO_CONFIGS.get(config_preset, AUDIO_CONFIGS['baseline'])
+    
+    # Override with request parameters
+    synthesis_params = {
+        'exaggeration': getattr(request, 'exaggeration', audio_config['exaggeration']),
+        'cfg_weight': getattr(request, 'cfg_weight', audio_config['cfg_weight']),
+    }
+    
+    if DEBUG_AUDIO:
+        logger.info(f"🎛️ Using config '{config_preset}': {synthesis_params}")
+
     speaker_refs = await prepare_speaker_references(request.speaker_wav)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         out_path = f.name
@@ -212,8 +316,7 @@ async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) ->
             language=request.language,
             speaker_wav=speaker_refs,
             speed=request.speed,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
+            **synthesis_params,
         )
         with open(out_path, "rb") as f:
             return f.read()
@@ -227,68 +330,192 @@ async def join_livekit_room():
         tts_room = rtc.Room()
         logger.info("🔊 TTS connecting to LiveKit room via orchestrator token")
         await connect_room_as_publisher(tts_room, "june-tts")
-        audio_source = rtc.AudioSource(sample_rate=24000, num_channels=1)
+        
+        # Use current active config for audio source
+        config_preset = AUDIO_CONFIGS[ACTIVE_CONFIG]
+        sample_rate = config_preset['sample_rate']
+        
+        audio_source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1)
         track = rtc.LocalAudioTrack.create_audio_track("ai-response", audio_source)
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await tts_room.local_participant.publish_track(track, options)
         room_connected = True
+        
         if STREAMING_ENABLED:
             initialize_streaming_tts(audio_source)
-        logger.info("✅ TTS connected to ozzu-main room")
+        
+        logger.info(f"✅ TTS connected to ozzu-main room (sample_rate: {sample_rate}Hz)")
         if STREAMING_ENABLED:
             logger.info("⚡ Streaming TTS ready for concurrent processing")
     except Exception as e:
         logger.exception(f"❌ Failed to connect to LiveKit: {e}")
         room_connected = False
 
-async def publish_audio_to_room(audio_data: bytes) -> Dict[str, Any]:
+async def publish_audio_to_room_debug(audio_data: bytes, config_preset: str = "baseline") -> Dict[str, Any]:
+    """Enhanced audio publisher with debugging and quality optimization"""
     global audio_source
     if not room_connected or not audio_source:
         return {"success": False, "error": "Not connected to room"}
-    start = time.time()
+    
+    start_time = time.time()
+    audio_config = AUDIO_CONFIGS[config_preset]
+    sample_rate = audio_config['sample_rate']
+    frame_size = audio_config['frame_size']
+    padding_ms = audio_config['padding_ms']
+    priming_silence_ms = audio_config['priming_silence_ms']
+    
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_data)
         tmp = f.name
+    
     try:
+        # Load and process audio
         audio, sr = sf.read(tmp)
+        
+        if DEBUG_AUDIO:
+            logger.info(f"🎵 Raw audio: {len(audio)} samples @ {sr}Hz")
+        
+        # Ensure proper format
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
         if len(audio.shape) > 1:
             audio = audio.mean(axis=1)
-        if sr != 24000:
+            if DEBUG_AUDIO:
+                logger.info("🔄 Converted stereo to mono")
+        
+        # Resample if needed
+        if sr != sample_rate:
+            if DEBUG_AUDIO:
+                logger.info(f"🔄 Resampling {sr}Hz → {sample_rate}Hz")
             try:
                 import librosa
-                audio = librosa.resample(audio, orig_sr=sr, target_sr=24000)
+                audio = librosa.resample(audio, orig_sr=sr, target_sr=sample_rate)
             except Exception:
                 from scipy import signal
-                num = int(len(audio) * 24000 / sr)
+                num = int(len(audio) * sample_rate / sr)
                 audio = signal.resample(audio, num)
+        
+        # Convert to int16
         audio = (audio * 32767).astype(np.int16)
-        frame_samples = 480
+        
+        # Add padding if configured
+        if padding_ms > 0:
+            audio = add_silence_padding(audio, padding_ms, sample_rate)
+            if DEBUG_AUDIO:
+                logger.info(f"🔇 Added {padding_ms}ms padding")
+        
+        # Measure quality
+        quality_stats = measure_audio_quality(audio)
+        if DEBUG_AUDIO:
+            logger.info(f"📊 Audio quality: {quality_stats}")
+        
+        if quality_stats['clipping']:
+            metrics["clipping_detected"] += 1
+            logger.warning(f"⚠️ Audio clipping detected! Max: {quality_stats['max_amplitude']}")
+        
+        # Add priming silence
+        if priming_silence_ms > 0:
+            priming_samples = int(sample_rate * priming_silence_ms / 1000)
+            priming_silence = np.zeros(priming_samples, dtype=np.int16)
+            
+            if DEBUG_AUDIO:
+                logger.info(f"🎵 Sending {priming_silence_ms}ms priming silence")
+            
+            # Send priming frames
+            for i in range(0, len(priming_silence), frame_size):
+                chunk = priming_silence[i:i+frame_size]
+                if len(chunk) < frame_size:
+                    chunk = np.pad(chunk, (0, frame_size - len(chunk)))
+                
+                frame = rtc.AudioFrame(
+                    data=chunk.tobytes(), 
+                    sample_rate=sample_rate, 
+                    num_channels=1, 
+                    samples_per_channel=len(chunk)
+                )
+                await audio_source.capture_frame(frame)
+                await asyncio.sleep(0.02)  # 20ms timing
+        
+        # Send main audio frames with precise timing
         frames_sent = 0
-        total_frames = len(audio) // frame_samples
+        total_frames = len(audio) // frame_size
         t0 = time.time()
-        for i in range(0, len(audio), frame_samples):
-            chunk = audio[i:i+frame_samples]
-            if len(chunk) < frame_samples:
-                chunk = np.pad(chunk, (0, frame_samples - len(chunk)))
+        timing_issues = 0
+        
+        if DEBUG_AUDIO:
+            logger.info(f"🎵 Publishing {total_frames} frames ({frame_size} samples each)")
+        
+        for i in range(0, len(audio), frame_size):
+            frame_start = time.time()
+            
+            chunk = audio[i:i+frame_size]
+            if len(chunk) < frame_size:
+                chunk = np.pad(chunk, (0, frame_size - len(chunk)))
+            
             frame = rtc.AudioFrame(
-                data=chunk.tobytes(), sample_rate=24000, num_channels=1, samples_per_channel=len(chunk)
+                data=chunk.tobytes(), 
+                sample_rate=sample_rate, 
+                num_channels=1, 
+                samples_per_channel=len(chunk)
             )
+            
             await audio_source.capture_frame(frame)
             frames_sent += 1
-            expected = t0 + frames_sent * 0.02
-            sleep = expected - time.time()
-            if sleep > 0:
-                await asyncio.sleep(sleep)
-        pub_ms = (time.time() - start) * 1000
+            
+            # Precise timing control
+            expected_time = t0 + frames_sent * 0.02
+            current_time = time.time()
+            sleep_time = expected_time - current_time
+            
+            frame_processing_ms = (current_time - frame_start) * 1000
+            
+            if frame_processing_ms > 25:  # Should be < 20ms
+                timing_issues += 1
+                if DEBUG_AUDIO:
+                    logger.warning(f"⚠️ Slow frame {frames_sent}: {frame_processing_ms:.1f}ms")
+            
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+            elif sleep_time < -0.005:  # More than 5ms behind
+                timing_issues += 1
+                if DEBUG_AUDIO:
+                    logger.warning(f"⚠️ Timing drift frame {frames_sent}: {sleep_time*1000:.1f}ms behind")
+        
+        publish_time_ms = (time.time() - start_time) * 1000
+        
+        # Update metrics
         metrics["publish_count"] += 1
-        metrics["total_publish_time"] += pub_ms
-        return {"success": True, "frames_sent": frames_sent, "total_frames": total_frames, "publish_time_ms": pub_ms}
+        metrics["total_publish_time"] += publish_time_ms
+        if timing_issues > 0:
+            metrics["frame_timing_issues"] += timing_issues
+        if quality_stats['long_silence_count'] > 0:
+            metrics["audio_quality_issues"] += 1
+        
+        result = {
+            "success": True, 
+            "frames_sent": frames_sent, 
+            "total_frames": total_frames, 
+            "publish_time_ms": publish_time_ms,
+            "config_used": config_preset,
+            "quality_stats": quality_stats,
+            "timing_issues": timing_issues,
+            "sample_rate": sample_rate,
+            "frame_size": frame_size
+        }
+        
+        if DEBUG_AUDIO:
+            logger.info(f"📊 Publish complete: {result}")
+        
+        return result
+        
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+# Keep the original for compatibility
+async def publish_audio_to_room(audio_data: bytes) -> Dict[str, Any]:
+    return await publish_audio_to_room_debug(audio_data, ACTIVE_CONFIG)
 
 async def warmup_model():
     if not tts_ready:
@@ -297,7 +524,8 @@ async def warmup_model():
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             path = f.name
         await chatterbox_engine.synthesize_to_file(
-            text="Warmup test.", file_path=path, language="en", speaker_wav=None, exaggeration=0.5, cfg_weight=0.8
+            text="Warmup test.", file_path=path, language="en", speaker_wav=None, 
+            exaggeration=0.4, cfg_weight=0.6  # Use optimized defaults
         )
         if os.path.exists(path):
             os.unlink(path)
@@ -308,9 +536,12 @@ async def warmup_model():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tts_ready, publish_queue
-    logger.info(f"🚀 Starting June TTS Service v5.1 - Chatterbox + Default Female Voice + Streaming")
+    logger.info(f"🚀 Starting June TTS Service v5.2 - Enhanced Audio Quality + Debugging")
     logger.info(f"👩 Using default female voice for regular conversations")
     logger.info(f"⚡ Streaming TTS: {STREAMING_ENABLED}")
+    logger.info(f"🔧 Audio debugging: {DEBUG_AUDIO}")
+    logger.info(f"🎛️ Available configs: {list(AUDIO_CONFIGS.keys())}")
+    logger.info(f"📊 Active config: {ACTIVE_CONFIG} - {AUDIO_CONFIGS[ACTIVE_CONFIG]}")
     try:
         await chatterbox_engine.initialize()
         tts_ready = True
@@ -318,15 +549,15 @@ async def lifespan(app: FastAPI):
         publish_queue = asyncio.Queue(maxsize=10)
         asyncio.create_task(synthesis_worker())
         await join_livekit_room()
-        logger.info("🎉 June TTS Service fully initialized (Chatterbox + Default Voice + Streaming)")
+        logger.info("🎉 June TTS Service fully initialized (Enhanced Quality + Debugging)")
     except Exception as e:
         logger.exception(f"❌ TTS initialization failed: {e}")
     yield
 
 app = FastAPI(
-    title="June TTS Service + Default Voice + Streaming",
-    version="5.1.0",
-    description="Chatterbox TTS with default female voice + voice cloning for mockingbird skill + streaming support",
+    title="June TTS Service + Audio Quality Optimization",
+    version="5.2.0",
+    description="Chatterbox TTS with audio quality debugging and optimization presets",
     lifespan=lifespan,
 )
 
@@ -367,13 +598,16 @@ async def root():
     streaming_stats = get_streaming_tts_metrics() if STREAMING_ENABLED else {}
     return {
         "service": "june-tts",
-        "version": "5.1.0",
+        "version": "5.2.0",
         "engine": "chatterbox-tts",
         "features": [
             "Default female voice for conversations",
             "Zero-shot voice cloning for mockingbird skill",
-            "Emotion control (exaggeration)",
-            "Pacing control (cfg_weight)",
+            "Audio quality optimization presets",
+            "Comprehensive audio debugging",
+            "Silence padding and priming",
+            "Frame timing optimization",
+            "Real-time quality metrics",
             "23+ language support",
             "Real-time LiveKit publishing",
             "Reference audio caching",
@@ -389,6 +623,9 @@ async def root():
         "room": "ozzu-main" if room_connected else None,
         "streaming": {"enabled": STREAMING_ENABLED, "metrics": streaming_stats},
         "default_voice": "female (chatterbox default)",
+        "active_config": ACTIVE_CONFIG,
+        "available_configs": list(AUDIO_CONFIGS.keys()),
+        "debug_mode": DEBUG_AUDIO,
     }
 
 @app.get("/healthz")
@@ -406,8 +643,101 @@ async def health():
             "concurrent_processing": True,
             "default_female_voice": True,
             "voice_cloning_fallback": True,
+            "audio_debugging": DEBUG_AUDIO,
         },
     }
+
+@app.get("/debug/audio-stats")
+async def get_audio_debug_stats():
+    """Get detailed audio quality debugging statistics"""
+    return {
+        "active_config": ACTIVE_CONFIG,
+        "config_details": AUDIO_CONFIGS[ACTIVE_CONFIG],
+        "quality_metrics": {
+            "synthesis_count": metrics["synthesis_count"],
+            "audio_quality_issues": metrics["audio_quality_issues"],
+            "frame_timing_issues": metrics["frame_timing_issues"],
+            "clipping_detected": metrics["clipping_detected"],
+        },
+        "performance_metrics": {
+            "avg_synthesis_ms": metrics["total_synthesis_time"] / max(1, metrics["synthesis_count"]),
+            "avg_publish_ms": metrics["total_publish_time"] / max(1, metrics["publish_count"]),
+        },
+        "recommendations": {
+            "quality_score": 10 - min(5, metrics["audio_quality_issues"]) - min(3, metrics["clipping_detected"]),
+            "suggested_config": "smooth" if metrics["audio_quality_issues"] > 2 else ACTIVE_CONFIG,
+        }
+    }
+
+@app.post("/debug/set-config")
+async def set_audio_config(preset: str = Query(..., description="Config preset to use")):
+    """Change active audio configuration for testing"""
+    global ACTIVE_CONFIG
+    if preset not in AUDIO_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid preset. Available: {list(AUDIO_CONFIGS.keys())}")
+    
+    old_config = ACTIVE_CONFIG
+    ACTIVE_CONFIG = preset
+    
+    logger.info(f"🎛️ Audio config changed: {old_config} → {preset}")
+    logger.info(f"📊 New settings: {AUDIO_CONFIGS[preset]}")
+    
+    return {
+        "status": "config_updated",
+        "old_config": old_config,
+        "new_config": preset,
+        "settings": AUDIO_CONFIGS[preset],
+        "note": "Changes apply to new synthesis requests"
+    }
+
+@app.get("/debug/test-synthesis")
+async def test_synthesis_quality(config: str = Query("smooth", description="Config to test")):
+    """Test synthesis with different quality settings"""
+    if config not in AUDIO_CONFIGS:
+        raise HTTPException(status_code=400, detail=f"Invalid config. Available: {list(AUDIO_CONFIGS.keys())}")
+    
+    test_text = "Testing audio quality with natural speech patterns and varied intonation."
+    
+    # Test synthesis
+    request = StreamingTTSRequest(
+        text=test_text,
+        language="en",
+        config_preset=config,
+        **{k: v for k, v in AUDIO_CONFIGS[config].items() 
+           if k in ['exaggeration', 'cfg_weight']}
+    )
+    
+    start_time = time.time()
+    
+    try:
+        speaker_refs = await prepare_speaker_references(request.speaker_wav)
+        result = await stream_tts_to_room(
+            text=request.text,
+            language=request.language,
+            speaker_wav=speaker_refs,
+            exaggeration=request.exaggeration,
+            cfg_weight=request.cfg_weight,
+            chatterbox_engine=chatterbox_engine,
+        )
+        
+        total_time = (time.time() - start_time) * 1000
+        
+        return {
+            "status": "test_complete",
+            "config_tested": config,
+            "settings_used": AUDIO_CONFIGS[config],
+            "synthesis_result": result,
+            "total_test_time_ms": round(total_time, 2),
+            "text_used": test_text,
+        }
+        
+    except Exception as e:
+        return {
+            "status": "test_failed",
+            "config_tested": config,
+            "error": str(e),
+            "total_test_time_ms": (time.time() - start_time) * 1000
+        }
 
 @app.get("/metrics")
 async def get_metrics():
@@ -422,6 +752,11 @@ async def get_metrics():
         "cache_misses": metrics["cache_misses"],
         "regular_requests": metrics["regular_requests"],
         "streaming_requests": metrics["streaming_requests"],
+        "quality_metrics": {
+            "audio_quality_issues": metrics["audio_quality_issues"],
+            "frame_timing_issues": metrics["frame_timing_issues"],
+            "clipping_detected": metrics["clipping_detected"],
+        }
     }
     if STREAMING_ENABLED:
         base_metrics["streaming_tts"] = get_streaming_tts_metrics()
@@ -499,7 +834,11 @@ async def publish_to_room(request: PublishToRoomRequest, background_tasks: Backg
         fut = asyncio.Future()
         await publish_queue.put((request, fut))
         audio_bytes, synth_ms = await fut
-        background_tasks.add_task(publish_audio_to_room, audio_bytes)
+        
+        # Use debug publisher for better metrics
+        config_preset = getattr(request, 'config_preset', ACTIVE_CONFIG)
+        background_tasks.add_task(publish_audio_to_room_debug, audio_bytes, config_preset)
+        
         return {
             "status": "success",
             "text_length": len(request.text),
@@ -508,7 +847,8 @@ async def publish_to_room(request: PublishToRoomRequest, background_tasks: Backg
             "language": request.language,
             "speaker_references": len(request.speaker_wav) if request.speaker_wav else 0,
             "streaming_enabled": False,
-            "message": "Audio being published to room",
+            "config_used": config_preset,
+            "message": "Audio being published to room with quality optimization",
         }
 
 @app.post("/stream-to-room")
@@ -522,7 +862,9 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
     
     speaker_refs = await prepare_speaker_references(request.speaker_wav)
     voice_mode = "voice cloning" if speaker_refs else "default female voice"
-    logger.info(f"⚡ Streaming TTS request ({voice_mode}): '{request.text[:50]}...'")
+    config_preset = getattr(request, 'config_preset', 'smooth')
+    
+    logger.info(f"⚡ Streaming TTS request ({voice_mode}, config: {config_preset}): '{request.text[:50]}...'")
     
     metrics["streaming_requests"] += 1
     result = await stream_tts_to_room(
@@ -543,14 +885,17 @@ async def stream_to_room_endpoint(request: StreamingTTSRequest):
         "streaming_mode": True,
         "voice_mode": voice_mode,
         "speaker_references_used": len(speaker_refs) if speaker_refs else 0,
+        "config_used": config_preset,
     }
 
 @app.get("/streaming/status")
 async def streaming_status():
     return {
         "streaming_enabled": STREAMING_ENABLED,
-        "chunk_size_ms": 200,
-        "sample_rate": 24000,
+        "chunk_size_ms": AUDIO_CONFIGS[ACTIVE_CONFIG]['chunk_size'] * 4,  # Rough estimate
+        "sample_rate": AUDIO_CONFIGS[ACTIVE_CONFIG]['sample_rate'],
+        "frame_size": AUDIO_CONFIGS[ACTIVE_CONFIG]['frame_size'],
+        "active_config": ACTIVE_CONFIG,
         "metrics": get_streaming_tts_metrics() if STREAMING_ENABLED else {},
         "capabilities": {
             "concurrent_processing": True,
@@ -558,6 +903,7 @@ async def streaming_status():
             "first_audio_optimization": STREAMING_ENABLED,
             "default_female_voice": True,
             "voice_cloning_fallback": True,
+            "quality_debugging": DEBUG_AUDIO,
         },
     }
 
