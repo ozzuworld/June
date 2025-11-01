@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Chatterbox TTS + LiveKit Integration with Basic Optimizations
+June TTS Service - Chatterbox TTS + LiveKit Integration + STREAMING
 Replaces XTTS v2 engine with Chatterbox while preserving API and LiveKit pipeline.
+Adds streaming TTS support for sub-second time-to-first-audio.
 """
 import os
 import torch
@@ -25,6 +26,10 @@ import httpx
 
 from config import config
 from chatterbox_engine import chatterbox_engine
+from streaming_tts import initialize_streaming_tts, stream_tts_to_room, get_streaming_tts_metrics
+
+# Feature flags for streaming
+STREAMING_ENABLED = config.get("TTS_STREAMING_ENABLED", True)
 
 # Enable detailed debug logs for LiveKit and our app
 os.environ.setdefault("RUST_LOG", "livekit=debug,livekit_api=debug,livekit_ffi=debug,livekit_rtc=debug")
@@ -53,9 +58,11 @@ room_connected = False
 publish_queue: asyncio.Queue = None
 reference_cache: Dict[str, str] = {}
 
-# Metrics tracking
-metrics = {"synthesis_count": 0, "publish_count": 0, "total_synthesis_time": 0.0, "total_publish_time": 0.0,
-           "cache_hits": 0, "cache_misses": 0}
+# Enhanced metrics tracking
+metrics = {
+    "synthesis_count": 0, "publish_count": 0, "total_synthesis_time": 0.0, "total_publish_time": 0.0,
+    "cache_hits": 0, "cache_misses": 0, "streaming_requests": 0, "regular_requests": 0
+}
 
 class TTSRequest(BaseModel):
     text: str = Field(..., description="Text to synthesize", max_length=1500)
@@ -65,6 +72,7 @@ class TTSRequest(BaseModel):
     speed: float = Field(1.0, description="Speech speed (compat only)", ge=0.5, le=2.0)
     exaggeration: float = Field(0.6, description="Emotion intensity 0.0-2.0", ge=0.0, le=2.0)
     cfg_weight: float = Field(0.8, description="Pacing control 0.1-1.0", ge=0.1, le=1.0)
+    streaming: bool = Field(False, description="Enable streaming synthesis for lower latency")  # NEW
 
     @field_validator('language')
     @classmethod  
@@ -86,6 +94,14 @@ class TTSRequest(BaseModel):
 class PublishToRoomRequest(TTSRequest):
     pass
 
+class StreamingTTSRequest(BaseModel):
+    """NEW: Dedicated streaming TTS request"""
+    text: str = Field(..., description="Text to synthesize and stream", max_length=1500)
+    language: str = Field("en", description="Language code")
+    speaker_wav: Optional[List[str]] = Field(None, description="Reference audio files")
+    exaggeration: float = Field(0.6, ge=0.0, le=2.0)
+    cfg_weight: float = Field(0.8, ge=0.1, le=1.0)
+
 class SynthesisResponse(BaseModel):
     status: str
     text_length: int
@@ -94,9 +110,12 @@ class SynthesisResponse(BaseModel):
     language: str
     speaker_references: int = 0
     cache_hit: bool = False
+    streaming_used: bool = False  # NEW
+    first_audio_ms: float = 0.0   # NEW
     message: str = ""
 
 async def download_reference_audio(url: str) -> str:
+    """Download and cache reference audio with optimization"""
     url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
     if url_hash in reference_cache and os.path.exists(reference_cache[url_hash]):
         metrics["cache_hits"] += 1
@@ -128,6 +147,7 @@ async def download_reference_audio(url: str) -> str:
         raise HTTPException(status_code=422, detail=f"Invalid reference audio: {e}")
 
 async def prepare_speaker_references(speaker_wav: Optional[List[str]]) -> Optional[List[str]]:
+    """Prepare speaker references with caching"""
     if not speaker_wav:
         return None
     prepared = []
@@ -141,6 +161,7 @@ async def prepare_speaker_references(speaker_wav: Optional[List[str]]) -> Option
     return prepared
 
 async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) -> bytes:
+    """Regular synthesis (unchanged)"""
     if not tts_ready:
         raise HTTPException(status_code=503, detail="TTS model not ready")
 
@@ -164,6 +185,7 @@ async def perform_synthesis(request: Union[TTSRequest, PublishToRoomRequest]) ->
             os.unlink(out_path)
 
 async def join_livekit_room():
+    """Connect to LiveKit room and initialize streaming"""
     global tts_room, audio_source, room_connected
     try:
         tts_room = rtc.Room()
@@ -175,12 +197,20 @@ async def join_livekit_room():
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await tts_room.local_participant.publish_track(track, options)
         room_connected = True
+        
+        # Initialize streaming TTS
+        if STREAMING_ENABLED:
+            initialize_streaming_tts(audio_source)
+        
         logger.info("✅ TTS connected to ozzu-main room")
+        if STREAMING_ENABLED:
+            logger.info("⚡ Streaming TTS ready for concurrent processing")
     except Exception as e:
         logger.exception(f"❌ Failed to connect to LiveKit: {e}")
         room_connected = False
 
 async def publish_audio_to_room(audio_data: bytes) -> Dict[str, Any]:
+    """Regular audio publishing (unchanged)"""
     global audio_source
     if not room_connected or not audio_source:
         return {"success": False, "error": "Not connected to room"}
@@ -231,6 +261,7 @@ async def publish_audio_to_room(audio_data: bytes) -> Dict[str, Any]:
             os.unlink(tmp)
 
 async def warmup_model():
+    """Warmup model (unchanged)"""
     if not tts_ready:
         return
     try:
@@ -247,8 +278,10 @@ async def warmup_model():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Enhanced startup with streaming support"""
     global tts_ready, publish_queue
-    logger.info(f"🚀 Starting June TTS Service v4.1 - Chatterbox on device: {device}")
+    logger.info(f"🚀 Starting June TTS Service v5.0 - Chatterbox + Streaming on device: {device}")
+    logger.info(f"⚡ Streaming TTS: {STREAMING_ENABLED}")
     try:
         await chatterbox_engine.initialize()
         tts_ready = True
@@ -256,15 +289,15 @@ async def lifespan(app: FastAPI):
         publish_queue = asyncio.Queue(maxsize=10)
         asyncio.create_task(synthesis_worker())
         await join_livekit_room()
-        logger.info("🎉 June TTS Service fully initialized (Chatterbox)")
+        logger.info("🎉 June TTS Service fully initialized (Chatterbox + Streaming)")
     except Exception as e:
         logger.exception(f"❌ TTS initialization failed: {e}")
     yield
 
 app = FastAPI(
-    title="June TTS Service",
-    version="4.1.0",
-    description="Chatterbox TTS with LiveKit room integration",
+    title="June TTS Service + Streaming",
+    version="5.0.0",
+    description="Chatterbox TTS with LiveKit room integration + Streaming support for sub-second latency",
     lifespan=lifespan,
 )
 
@@ -277,6 +310,7 @@ app.add_middleware(
 )
 
 async def synthesis_worker():
+    """Background synthesis worker (unchanged)"""
     while True:
         try:
             task = await publish_queue.get()
@@ -285,10 +319,11 @@ async def synthesis_worker():
             request, fut = task
             try:
                 start = time.time()
-                audio = await asyncio.wait_for(perform_synthesis(request), timeout=30.0)  # Increased timeout
+                audio = await asyncio.wait_for(perform_synthesis(request), timeout=30.0)
                 synth_ms = (time.time() - start) * 1000
                 metrics["synthesis_count"] += 1
                 metrics["total_synthesis_time"] += synth_ms
+                metrics["regular_requests"] += 1
                 if not fut.cancelled():
                     fut.set_result((audio, synth_ms))
             except Exception as e:
@@ -301,9 +336,12 @@ async def synthesis_worker():
 
 @app.get("/")
 async def root():
+    """Enhanced root endpoint with streaming info"""
+    streaming_stats = get_streaming_tts_metrics() if STREAMING_ENABLED else {}
+    
     return {
         "service": "june-tts",
-        "version": "4.1.0",
+        "version": "5.0.0",
         "engine": "chatterbox-tts",
         "features": [
             "Zero-shot voice cloning",
@@ -314,6 +352,7 @@ async def root():
             "Reference audio caching",
             "Synthesis timeout protection",
             "Performance metrics",
+            "Streaming TTS support" if STREAMING_ENABLED else "Standard TTS"
         ],
         "status": "running",
         "tts_ready": tts_ready,
@@ -321,58 +360,207 @@ async def root():
         "livekit_connected": room_connected,
         "supported_languages": sorted(SUPPORTED_LANGUAGES),
         "room": "ozzu-main" if room_connected else None,
+        "streaming": {
+            "enabled": STREAMING_ENABLED,
+            "metrics": streaming_stats
+        }
     }
 
 @app.get("/healthz")
 async def health():
+    """Enhanced health check with streaming status"""
     return {
         "status": "healthy" if tts_ready else "initializing",
         "tts_ready": tts_ready,
         "livekit_connected": room_connected,
         "device": device,
         "queue_size": publish_queue.qsize() if publish_queue else 0,
+        "streaming_enabled": STREAMING_ENABLED,
+        "features": {
+            "regular_synthesis": True,
+            "streaming_synthesis": STREAMING_ENABLED,
+            "concurrent_processing": True
+        }
     }
 
 @app.get("/metrics")
 async def get_metrics():
+    """Enhanced metrics with streaming data"""
     avg_synth = metrics["total_synthesis_time"] / metrics["synthesis_count"] if metrics["synthesis_count"] else 0
     avg_pub = metrics["total_publish_time"] / metrics["publish_count"] if metrics["publish_count"] else 0
-    return {
+    
+    base_metrics = {
         "synthesis_count": metrics["synthesis_count"],
         "publish_count": metrics["publish_count"],
         "avg_synthesis_time_ms": round(avg_synth, 2),
         "avg_publish_time_ms": round(avg_pub, 2),
         "cache_hits": metrics["cache_hits"],
         "cache_misses": metrics["cache_misses"],
+        "regular_requests": metrics["regular_requests"],
+        "streaming_requests": metrics["streaming_requests"]
     }
+    
+    # Add streaming metrics if enabled
+    if STREAMING_ENABLED:
+        streaming_stats = get_streaming_tts_metrics()
+        base_metrics["streaming_tts"] = streaming_stats
+        
+    return base_metrics
+
+# EXISTING ENDPOINTS (unchanged)
 
 @app.post("/synthesize")
 async def synthesize_audio(request: TTSRequest):
+    """Regular synthesis endpoint with optional streaming"""
     if not tts_ready:
         raise HTTPException(status_code=503, detail="TTS model not ready")
+    
     start = time.time()
-    audio_bytes = await perform_synthesis(request)
-    return Response(content=audio_bytes, media_type="audio/wav",
-                    headers={"Content-Disposition": "attachment; filename=speech.wav"})
+    
+    # Use streaming if requested and enabled
+    if request.streaming and STREAMING_ENABLED:
+        metrics["streaming_requests"] += 1
+        speaker_refs = await prepare_speaker_references(request.speaker_wav)
+        
+        # Stream TTS (returns when first chunk is ready)
+        result = await stream_tts_to_room(
+            text=request.text,
+            language=request.language,
+            speaker_wav=speaker_refs,
+            exaggeration=request.exaggeration,
+            cfg_weight=request.cfg_weight,
+            chatterbox_engine=chatterbox_engine
+        )
+        
+        # Return response indicating streaming mode
+        return {
+            "status": "streaming",
+            "method": result.get("method", "streaming"),
+            "first_audio_ms": result.get("first_audio_ms", 0),
+            "chunks_generated": result.get("chunks_sent", 0),
+            "message": "Audio streamed to room"
+        }
+    else:
+        # Regular synthesis
+        metrics["regular_requests"] += 1
+        audio_bytes = await perform_synthesis(request)
+        synth_time = (time.time() - start) * 1000
+        
+        return Response(
+            content=audio_bytes, 
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "attachment; filename=speech.wav",
+                "X-Synthesis-Time-Ms": str(round(synth_time, 2)),
+                "X-Method": "regular"
+            }
+        )
 
 @app.post("/publish-to-room")
 async def publish_to_room(request: PublishToRoomRequest, background_tasks: BackgroundTasks):
+    """Enhanced room publishing with streaming option"""
     if not tts_ready:
         raise HTTPException(status_code=503, detail="TTS model not ready")
     if not room_connected:
         raise HTTPException(status_code=503, detail="Not connected to LiveKit room")
-    fut = asyncio.Future()
-    await publish_queue.put((request, fut))
-    audio_bytes, synth_ms = await fut
-    background_tasks.add_task(publish_audio_to_room, audio_bytes)
+    
+    start_time = time.time()
+    
+    # Use streaming if requested and enabled
+    if request.streaming and STREAMING_ENABLED:
+        metrics["streaming_requests"] += 1
+        speaker_refs = await prepare_speaker_references(request.speaker_wav)
+        
+        # Stream directly to room (non-blocking)
+        result = await stream_tts_to_room(
+            text=request.text,
+            language=request.language,
+            speaker_wav=speaker_refs,
+            exaggeration=request.exaggeration,
+            cfg_weight=request.cfg_weight,
+            chatterbox_engine=chatterbox_engine
+        )
+        
+        return {
+            "status": "streaming_success",
+            "text_length": len(request.text),
+            "method": result.get("method", "streaming"),
+            "first_audio_ms": result.get("first_audio_ms", 0),
+            "total_time_ms": result.get("total_time_ms", 0),
+            "chunks_sent": result.get("chunks_sent", 0),
+            "language": request.language,
+            "speaker_references": len(request.speaker_wav) if request.speaker_wav else 0,
+            "streaming_enabled": True,
+            "message": "Audio streamed to room in chunks"
+        }
+    else:
+        # Regular processing (unchanged)
+        metrics["regular_requests"] += 1
+        fut = asyncio.Future()
+        await publish_queue.put((request, fut))
+        audio_bytes, synth_ms = await fut
+        background_tasks.add_task(publish_audio_to_room, audio_bytes)
+        
+        return {
+            "status": "success",
+            "text_length": len(request.text),
+            "audio_size": len(audio_bytes),
+            "synthesis_time_ms": round(synth_ms, 2),
+            "language": request.language,
+            "speaker_references": len(request.speaker_wav) if request.speaker_wav else 0,
+            "streaming_enabled": False,
+            "message": "Audio being published to room",
+        }
+
+# NEW STREAMING ENDPOINTS
+
+@app.post("/stream-to-room")
+async def stream_to_room_endpoint(request: StreamingTTSRequest):
+    """NEW: Dedicated streaming TTS endpoint"""
+    if not tts_ready:
+        raise HTTPException(status_code=503, detail="TTS model not ready")
+    if not room_connected:
+        raise HTTPException(status_code=503, detail="Not connected to LiveKit room")
+    if not STREAMING_ENABLED:
+        raise HTTPException(status_code=501, detail="Streaming TTS not enabled")
+        
+    logger.info(f"⚡ Streaming TTS request: '{request.text[:50]}...'")
+    
+    speaker_refs = await prepare_speaker_references(request.speaker_wav)
+    metrics["streaming_requests"] += 1
+    
+    result = await stream_tts_to_room(
+        text=request.text,
+        language=request.language,
+        speaker_wav=speaker_refs,
+        exaggeration=request.exaggeration,
+        cfg_weight=request.cfg_weight,
+        chatterbox_engine=chatterbox_engine
+    )
+    
     return {
-        "status": "success",
+        "status": "streaming_complete",
         "text_length": len(request.text),
-        "audio_size": len(audio_bytes),
-        "synthesis_time_ms": round(synth_ms, 2),
-        "language": request.language,
-        "speaker_references": len(request.speaker_wav) if request.speaker_wav else 0,
-        "message": "Audio being published to room",
+        "method": result.get("method", "streaming"),
+        "chunks_sent": result.get("chunks_sent", 0),
+        "first_audio_ms": result.get("first_audio_ms", 0),
+        "total_time_ms": result.get("total_time_ms", 0),
+        "streaming_mode": True
+    }
+
+@app.get("/streaming/status")
+async def streaming_status():
+    """NEW: Get streaming capabilities and metrics"""
+    return {
+        "streaming_enabled": STREAMING_ENABLED,
+        "chunk_size_ms": 200,
+        "sample_rate": 24000,
+        "metrics": get_streaming_tts_metrics() if STREAMING_ENABLED else {},
+        "capabilities": {
+            "concurrent_processing": True,
+            "chunked_audio_streaming": STREAMING_ENABLED,
+            "first_audio_optimization": STREAMING_ENABLED
+        }
     }
 
 if __name__ == "__main__":
