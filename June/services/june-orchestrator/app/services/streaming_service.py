@@ -2,6 +2,8 @@
 """
 Streaming AI Service - Concurrent processing for voice AI
 Implements streaming LLM + sentence segmentation + concurrent TTS triggering
+
+FIXED: Correct Gemini 2.0 Flash streaming API implementation
 """
 import logging
 import time
@@ -224,24 +226,21 @@ class StreamingAIService:
                 yield "I'm experiencing technical difficulties. Please try again."
             
     async def _stream_gemini(self, prompt: str) -> AsyncIterator[str]:
-        """Stream tokens from Gemini API"""
+        """Stream tokens from Gemini API - FIXED IMPLEMENTATION"""
         try:
             from google import genai
             
             client = genai.Client(api_key=config.services.gemini_api_key)
             
-            # Use streaming generation
-            stream = client.models.generate_content(
+            # FIXED: Use the correct streaming API method
+            for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
                     temperature=0.7,
                     max_output_tokens=200,
-                ),
-                stream=True  # Enable streaming
-            )
-            
-            async for chunk in stream:
+                )
+            ):
                 if chunk.text:
                     yield chunk.text
                     
@@ -251,7 +250,7 @@ class StreamingAIService:
             from .ai_service import generate_response
             try:
                 response, _ = await generate_response(
-                    prompt.split("User:")[-1].strip(),
+                    prompt.split("User:")[-1].strip() if "User:" in prompt else prompt,
                     "streaming-fallback", "streaming-session", []
                 )
                 yield response
