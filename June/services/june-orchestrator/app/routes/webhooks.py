@@ -8,13 +8,18 @@ SECURITY ENHANCEMENTS:
 - Rate limiting per user  
 - AI cost tracking
 - Circuit breaker protection
+
+CHATTERBOX TTS INTEGRATION:
+- Voice registry for speaker resolution
+- Emotion and pacing controls
+- Enhanced voice cloning support
 """
 import logging
 import httpx
 import tempfile
 import uuid
 from fastapi import APIRouter, HTTPException, Header
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 from ..config import config
@@ -24,6 +29,7 @@ from ..services.skill_service import skill_service
 from ..services.voice_profile_service import voice_profile_service
 from ..security.rate_limiter import rate_limiter, duplication_detector
 from ..security.cost_tracker import call_tracker, circuit_breaker
+from ..voice_registry import resolve_voice_reference, validate_voice_reference
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,12 +50,113 @@ class STTWebhookPayload(BaseModel):
 
 
 class TTSPublishRequest(BaseModel):
-    """Request to publish TTS audio to room (aligned with june-tts v3.0.0)"""
+    """Enhanced TTS request with Chatterbox controls"""
     text: str
     language: str = "en"
-    speaker: Optional[str] = None  # Built-in speaker (June's normal voice)
-    speaker_wav: Optional[List[str]] = None  # Reference files for voice cloning
-    speed: float = 1.0
+    speaker: Optional[str] = None  # Speaker name (resolved via registry)
+    speaker_wav: Optional[str] = None  # Direct reference audio URL
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    
+    # New Chatterbox controls
+    exaggeration: float = Field(0.6, ge=0.0, le=2.0, description="Emotion intensity")
+    cfg_weight: float = Field(0.8, ge=0.1, le=1.0, description="Pacing control")
+
+
+def clamp(value: float, min_val: float, max_val: float) -> float:
+    """Clamp value between min and max"""
+    return max(min_val, min(max_val, value))
+
+
+async def trigger_tts_in_room(
+    room_name: str,
+    text: str,
+    language: str = "en",
+    use_voice_cloning: bool = False,
+    user_id: Optional[str] = None,
+    speaker: Optional[str] = None,
+    speaker_wav: Optional[str] = None,
+    exaggeration: float = 0.6,
+    cfg_weight: float = 0.8
+):
+    """
+    Enhanced TTS trigger with Chatterbox TTS integration
+    
+    Args:
+        room_name: LiveKit room name
+        text: Text to synthesize
+        language: Target language
+        use_voice_cloning: Whether to use voice cloning (skills only)
+        user_id: User ID for voice cloning (when use_voice_cloning=True)
+        speaker: Speaker name (resolved via registry)
+        speaker_wav: Direct reference audio URL
+        exaggeration: Emotion intensity (0.0-2.0)
+        cfg_weight: Pacing control (0.1-1.0)
+    """
+    try:
+        tts_url = f"{config.services.tts_base_url}/publish-to-room"
+        
+        # Resolve voice reference
+        if use_voice_cloning and user_id:
+            # Voice cloning mode (for skills like mockingbird)
+            logger.info(f"🎭 Triggering voice cloning TTS for room: {room_name} (user: {user_id})")
+            
+            # Get user's reference audio files
+            reference_files = voice_profile_service.get_user_references(user_id)
+            
+            if not reference_files:
+                logger.warning(f"⚠️ No voice references found for {user_id}, falling back to normal voice")
+                use_voice_cloning = False
+                resolved_reference = resolve_voice_reference(speaker, speaker_wav)
+            else:
+                logger.info(f"📁 Using {len(reference_files)} reference files for voice cloning")
+                resolved_reference = reference_files[0]  # Use first reference
+        else:
+            # Normal voice resolution
+            resolved_reference = resolve_voice_reference(speaker, speaker_wav)
+        
+        # Validate reference
+        if not validate_voice_reference(resolved_reference):
+            logger.error(f"❌ Invalid voice reference: {resolved_reference}")
+            raise HTTPException(status_code=400, detail="Invalid voice reference")
+        
+        # Clamp parameters
+        exaggeration = clamp(exaggeration, 0.0, 2.0)
+        cfg_weight = clamp(cfg_weight, 0.1, 1.0)
+        
+        # Build payload for Chatterbox TTS
+        payload_data = {
+            "text": text,
+            "language": language,
+            "speaker_wav": [resolved_reference],  # Chatterbox expects list
+            "speed": 1.0,
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight
+        }
+        
+        logger.info(f"🔊 TTS Request: text='{text[:50]}...', voice='{resolved_reference}', exag={exaggeration}, cfg={cfg_weight}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(tts_url, json=payload_data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                synthesis_time = result.get('synthesis_time_ms', 0)
+                audio_size = result.get('audio_size', 0)
+                
+                logger.info(f"✅ TTS triggered successfully: {synthesis_time:.1f}ms, {audio_size} bytes")
+                
+                if use_voice_cloning:
+                    logger.info(f"🎭 Voice cloning demonstration completed")
+                    
+            else:
+                logger.error(f"❌ TTS trigger failed: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                
+    except httpx.TimeoutException:
+        logger.error(f"❌ TTS request timed out for room {room_name}")
+    except Exception as e:
+        logger.error(f"❌ Failed to trigger TTS: {e}")
+        logger.exception("Full traceback:")
 
 
 @router.post("/api/webhooks/stt")
@@ -58,15 +165,16 @@ async def handle_stt_webhook(
     authorization: str = Header(None)
 ):
     """
-    Enhanced STT webhook handler with SECURITY PROTECTION:
+    Enhanced STT webhook handler with SECURITY PROTECTION and Chatterbox TTS:
     
     1. Rate limiting per user
     2. Duplicate message detection 
     3. AI cost tracking & circuit breaker
     4. Skill-based AI and voice cloning
+    5. Enhanced voice controls (emotion, pacing)
     
     Flow:
-    1. Normal conversation → June's configurable voice (config.ai.default_speaker)
+    1. Normal conversation → June's configurable voice
     2. Skill activation → Skill-specific behavior
     3. Voice cloning skills → Use user's voice as demonstration
     """
@@ -148,7 +256,7 @@ async def handle_skill_activation(
     skill_def,
     payload: STTWebhookPayload
 ) -> Dict[str, Any]:
-    """Handle skill activation"""
+    """Handle skill activation with enhanced voice controls"""
     logger.info(f"🤖 Activating skill: {skill_name} for user {payload.participant}")
     
     # Activate skill in session
@@ -181,12 +289,15 @@ async def handle_skill_activation(
         }
     )
     
-    # Trigger TTS with June's normal voice for skill activation
+    # Trigger TTS with June's normal voice for skill activation (slightly more expressive)
     await trigger_tts_in_room(
         room_name=payload.room_name,
         text=ai_response,
         language=payload.language or "en",
-        use_voice_cloning=False  # Always use June's voice for skill activation
+        use_voice_cloning=False,
+        speaker=config.ai.default_speaker,
+        exaggeration=0.7,  # Slightly more expressive for skill activation
+        cfg_weight=0.8
     )
     
     return {
@@ -200,7 +311,7 @@ async def handle_skill_activation(
 
 
 async def handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, Any]:
-    """Handle input for active skill"""
+    """Handle input for active skill with voice cloning support"""
     skill_name = session.skill_session.active_skill
     logger.info(f"🎭 Processing {skill_name} skill input: {payload.text[:50]}...")
     
@@ -217,7 +328,10 @@ async def handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, A
             room_name=payload.room_name,
             text=ai_response,
             language=payload.language or "en",
-            use_voice_cloning=False
+            use_voice_cloning=False,
+            speaker=config.ai.default_speaker,
+            exaggeration=0.5,  # Neutral tone for deactivation
+            cfg_weight=0.8
         )
         
         return {
@@ -281,15 +395,19 @@ async def handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, A
         }
     )
     
-    # Determine if we should use voice cloning
+    # Determine voice settings for skill response
     use_cloning = updated_context.get("use_voice_cloning", False)
+    skill_exaggeration = 0.8 if skill_name == "mockingbird" else 0.6  # More dramatic for mockingbird
     
     await trigger_tts_in_room(
         room_name=payload.room_name,
         text=ai_response,
         language=payload.language or "en",
         use_voice_cloning=use_cloning,
-        user_id=payload.participant if use_cloning else None
+        user_id=payload.participant if use_cloning else None,
+        speaker=config.ai.default_speaker if not use_cloning else None,
+        exaggeration=skill_exaggeration,
+        cfg_weight=0.8
     )
     
     return {
@@ -359,12 +477,15 @@ async def handle_normal_conversation(session, payload: STTWebhookPayload) -> Dic
     )
     logger.info(f"💾 Saved conversation exchange to session (total: {len(session.conversation_history)} messages)")
     
-    # Trigger TTS with June's consistent voice
+    # Trigger TTS with June's consistent voice (neutral settings)
     await trigger_tts_in_room(
         room_name=payload.room_name,
         text=ai_response,
         language=payload.language or "en",
-        use_voice_cloning=False  # Always use June's voice for normal conversation
+        use_voice_cloning=False,
+        speaker=config.ai.default_speaker,
+        exaggeration=0.6,  # Balanced expressiveness
+        cfg_weight=0.8     # Natural pacing
     )
     
     return {
@@ -378,80 +499,32 @@ async def handle_normal_conversation(session, payload: STTWebhookPayload) -> Dic
     }
 
 
-async def trigger_tts_in_room(
-    room_name: str,
-    text: str,
-    language: str = "en",
-    use_voice_cloning: bool = False,
-    user_id: Optional[str] = None
-):
-    """
-    Enhanced TTS trigger compatible with june-tts v3.0.0
+# EXISTING ENDPOINTS (enhanced with Chatterbox support)
+
+@router.post("/api/tts/publish")
+async def publish_tts_to_room(request: TTSPublishRequest):
+    """Direct TTS publishing endpoint with Chatterbox controls"""
+    logger.info(f"🔊 Publishing TTS to room: {request.text[:50]}...")
     
-    Args:
-        room_name: LiveKit room name
-        text: Text to synthesize
-        language: Target language
-        use_voice_cloning: Whether to use voice cloning (skills only)
-        user_id: User ID for voice cloning (when use_voice_cloning=True)
-    """
-    try:
-        tts_url = f"{config.services.tts_base_url}/publish-to-room"
-        
-        if use_voice_cloning and user_id:
-            # Voice cloning mode (for skills like mockingbird)
-            logger.info(f"🎭 Triggering voice cloning TTS for room: {room_name} (user: {user_id})")
-            
-            # Get user's reference audio files
-            reference_files = voice_profile_service.get_user_references(user_id)
-            
-            if not reference_files:
-                logger.warning(f"⚠️ No voice references found for {user_id}, falling back to normal voice")
-                use_voice_cloning = False
-            else:
-                logger.info(f"📁 Using {len(reference_files)} reference files for voice cloning")
-                
-                payload_data = {
-                    "text": text,
-                    "language": language,
-                    "speaker_wav": reference_files,  # june-tts v3.0.0 format!
-                    "speed": 1.0
-                }
-        
-        if not use_voice_cloning:
-            # Normal June voice (consistent personality) - now configurable!
-            logger.info(f"🔊 Triggering normal TTS for room: {room_name}")
-            payload_data = {
-                "text": text,
-                "language": language,
-                "speaker": config.ai.default_speaker,  # Now uses configured default!
-                "speed": 1.0
-            }
-        
-        logger.info(f"📝 Text length: {len(text)} chars")
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(tts_url, json=payload_data)
-            
-            if response.status_code == 200:
-                result = response.json()
-                synthesis_time = result.get('synthesis_time_ms', 0)
-                audio_size = result.get('audio_size', 0)
-                
-                logger.info(f"✅ TTS triggered successfully: {synthesis_time:.1f}ms, {audio_size} bytes")
-                
-                if use_voice_cloning:
-                    logger.info(f"🎭 Voice cloning demonstration completed")
-                    
-            else:
-                logger.error(f"❌ TTS trigger failed: {response.status_code}")
-                logger.error(f"Response: {response.text}")
-                
-    except httpx.TimeoutException:
-        logger.error(f"❌ TTS request timed out for room {room_name}")
-    except Exception as e:
-        logger.error(f"❌ Failed to trigger TTS: {e}")
-        logger.exception("Full traceback:")
+    await trigger_tts_in_room(
+        room_name="manual",  # Manual trigger
+        text=request.text,
+        language=request.language,
+        use_voice_cloning=bool(request.speaker_wav),
+        user_id="manual" if request.speaker_wav else None,
+        speaker=request.speaker,
+        speaker_wav=request.speaker_wav,
+        exaggeration=request.exaggeration,
+        cfg_weight=request.cfg_weight
+    )
+    
+    return {
+        "status": "success",
+        "text_length": len(request.text),
+        "voice_cloning": bool(request.speaker_wav),
+        "exaggeration": request.exaggeration,
+        "cfg_weight": request.cfg_weight
+    }
 
 
 # SECURITY ENDPOINTS
@@ -494,57 +567,7 @@ async def manual_circuit_breaker_close(reason: str = "Manual override"):
     }
 
 
-# EXISTING ENDPOINTS (unchanged)
-
-async def handle_voice_reference_capture(
-    user_id: str,
-    audio_data: bytes,
-    text: str,
-    language: str = "en"
-):
-    """
-    Capture and store voice reference for mockingbird skill
-    
-    This would be called when we have actual audio data from LiveKit.
-    For now, this is a placeholder for the full implementation.
-    """
-    try:
-        logger.info(f"🎵 Capturing voice reference for {user_id}: '{text}'")
-        
-        # Create voice profile from audio
-        profile = await voice_profile_service.create_profile_from_audio(
-            user_id=user_id,
-            audio_data=audio_data,
-            language=language
-        )
-        
-        logger.info(f"✅ Voice reference captured: {profile.total_duration_seconds:.1f}s")
-        return profile
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to capture voice reference: {e}")
-        return None
-
-
-@router.post("/api/tts/publish")
-async def publish_tts_to_room(request: TTSPublishRequest):
-    """Direct TTS publishing endpoint"""
-    logger.info(f"🔊 Publishing TTS to room: {request.text[:50]}...")
-    
-    await trigger_tts_in_room(
-        room_name="manual",  # Manual trigger
-        text=request.text,
-        language=request.language,
-        use_voice_cloning=bool(request.speaker_wav),
-        user_id="manual" if request.speaker_wav else None
-    )
-    
-    return {
-        "status": "success",
-        "text_length": len(request.text),
-        "voice_cloning": bool(request.speaker_wav)
-    }
-
+# SKILL AND SESSION ENDPOINTS (unchanged)
 
 @router.get("/api/skills")
 async def get_available_skills():
