@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Chatterbox TTS Engine Wrapper - Simple Optimized Version
-Drop-in replacement for XTTS-v2 engine for June with basic optimizations
+Chatterbox TTS Engine Wrapper - Segfault Fix
+Drop-in replacement for XTTS-v2 engine for June with torch.compile disabled
+FIXED: Disabled torch.compile optimizations to prevent segmentation faults causing audio breakup
 """
 import asyncio
 import logging
@@ -38,39 +39,35 @@ class ChatterboxEngine:
             ChatterboxMultilingualTTS.from_pretrained, device=self.device
         )
         
-        # Apply basic optimizations
+        # Apply basic optimizations (torch.compile disabled)
         await self._apply_optimizations()
         
         logger.info("✅ Chatterbox TTS models loaded")
     
     async def _apply_optimizations(self):
-        """Apply torch.compile optimizations if available"""
+        """Apply optimizations - torch.compile DISABLED to prevent segfaults"""
+        # CRITICAL FIX: Disable torch.compile to prevent segmentation faults
+        # that were causing TTS process crashes and audio breakup
+        logger.info("⚠️ Skipping torch.compile optimizations to prevent segmentation faults")
+        logger.info("ℹ️ This fixes the audio breakup issue caused by TTS process crashes")
+        self.optimized = False
+        
+        # Original torch.compile code disabled:
+        # The segfaults were occurring in torch.compile(self.model.t3, mode="reduce-overhead")
+        # This was causing the TTS service to crash mid-synthesis, leading to broken audio
+        
+        # Alternative lightweight optimizations
         if self.device == "cuda":
             try:
-                logger.info("⚡ Applying torch.compile optimizations...")
-                
-                # Check PyTorch version and apply optimizations
-                if hasattr(torch, 'compile'):
-                    try:
-                        # Compile critical components for speed
-                        if hasattr(self.model, 't3'):
-                            self.model.t3 = torch.compile(self.model.t3, mode="reduce-overhead")
-                        if hasattr(self.multilingual_model, 't3'):
-                            self.multilingual_model.t3 = torch.compile(self.multilingual_model.t3, mode="reduce-overhead")
-                        
-                        self.optimized = True
-                        logger.info("✅ torch.compile optimizations applied")
-                    except Exception as e:
-                        logger.warning(f"⚠️ torch.compile failed: {e}")
-                        self.optimized = False
-                else:
-                    logger.warning("⚠️ torch.compile not available")
-                    
+                # Enable basic CUDA optimizations that are more stable
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                logger.info("✅ Applied stable CUDA optimizations (no torch.compile)")
             except Exception as e:
-                logger.warning(f"⚠️ Optimization failed: {e}")
-                self.optimized = False
-        else:
-            logger.info("ℹ️ Skipping optimizations (CPU device)")
+                logger.warning(f"⚠️ CUDA optimization failed: {e}")
+        
+        logger.info("🔧 Chatterbox engine ready with stable configuration")
 
     def is_ready(self) -> bool:
         return self.model is not None and self.multilingual_model is not None
