@@ -54,8 +54,8 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Image metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="3.0.0"
-LABEL description="June TTS Service - XTTS v2 Compliant with Multi-Reference Voice Cloning"
+LABEL version="4.0.0"
+LABEL description="June TTS Service - Chatterbox TTS with LiveKit integration"
 LABEL service="june-tts"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -86,6 +86,7 @@ COPY --chown=ttsuser:ttsuser config.py /app/
 COPY --chown=ttsuser:ttsuser requirements.txt /app/
 COPY --chown=ttsuser:ttsuser livekit_token.py /app/
 COPY --chown=ttsuser:ttsuser README.md /app/
+COPY --chown=ttsuser:ttsuser chatterbox_engine.py /app/
 
 # Ensure module import works
 ENV PYTHONPATH=/app
@@ -98,18 +99,12 @@ RUN mkdir -p /app/models /app/cache /app/temp
 # Environment configuration
 ENV TTS_CACHE_PATH=/app/cache
 ENV TTS_HOME=/app/models
-ENV COQUI_TOS_AGREED=1
 ENV PORT=8000
 ENV LOG_LEVEL=INFO
 
-# Default TTS model (XTTS v2)
-ENV TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
-
 EXPOSE 8000
 
-# Enhanced health check for v3.0.0 features
 HEALTHCHECK --interval=30s --timeout=30s --start-period=90s --retries=3 \
     CMD curl -f http://localhost:8000/healthz | grep -q '"status":"healthy"' || exit 1
 
-# Startup command
 CMD ["python", "main.py"]
