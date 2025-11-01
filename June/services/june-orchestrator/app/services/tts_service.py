@@ -258,7 +258,7 @@ tts_service = TTSService()
 async def synthesize_speech(
     text: str,
     language: str = "en",
-    speaker: str = "Claribel Dervla"
+    speaker: str = "Alexandra Hisakawa"
 ) -> Optional[bytes]:
     """
     Legacy function for backward compatibility
