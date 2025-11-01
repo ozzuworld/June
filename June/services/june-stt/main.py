@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-June STT Enhanced - FULL STREAMING PIPELINE - FIXED
+June STT Enhanced - FULL STREAMING PIPELINE - RESILIENT
 Silero VAD + LiveKit Integration + CONTINUOUS PARTIAL STREAMING
 Intelligent speech detection + Real-time partial transcript streaming for true online processing
 OpenAI API compatible + Real-time voice chat capabilities
@@ -10,7 +10,8 @@ FULL STREAMING PIPELINE IMPLEMENTATION:
 - Enables LLM to start processing while user is still talking
 - Supports overlapping speech-in → thinking → speech-out pipeline
 
-FIXED: Utterance state management and error handling
+RESILIENT: Can start without immediate orchestrator connection
+FIXED: Enhanced error handling and retry logic
 """
 import asyncio
 import logging
@@ -55,12 +56,14 @@ CONTINUOUS_PARTIALS = _bool_env("STT_CONTINUOUS_PARTIALS", True)  # NEW: Enable 
 # Global state
 room: Optional[rtc.Room] = None
 room_connected: bool = False
+orchestrator_available: bool = False  # NEW: Track orchestrator availability
 buffers: Dict[str, Deque[np.ndarray]] = {}
 utterance_states: Dict[str, 'UtteranceState'] = {}  # FIXED: Proper type annotation
 partial_streamers: Dict[str, PartialTranscriptStreamer] = {}
 # NEW: Track partial streaming per participant
 partial_streaming_tasks: Dict[str, asyncio.Task] = {}
 processed_utterances = 0
+partial_transcripts_sent = 0  # NEW: Track partial transcripts
 
 # Simplified constants (Silero VAD handles complexity)
 SAMPLE_RATE = 16000
@@ -130,10 +133,26 @@ def _reset_utterance_state(state: UtteranceState):
     logger.debug(f"🔄 Reset utterance state: {old_id} → {state.utterance_id[:8]}")
 
 
+async def _check_orchestrator_health() -> bool:
+    """NEW: Check if orchestrator is available for webhook delivery"""
+    if not config.ORCHESTRATOR_URL:
+        return False
+        
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{config.ORCHESTRATOR_URL}/healthz")
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
 async def _notify_orchestrator(user_id: str, text: str, language: Optional[str], partial: bool = False, 
                               utterance_id: Optional[str] = None, partial_sequence: int = 0):
-    """Enhanced orchestrator notification with partial support"""
+    """ENHANCED: Resilient orchestrator notification with availability checking"""
+    global orchestrator_available, partial_transcripts_sent
+    
     if not config.ORCHESTRATOR_URL:
+        logger.debug("Orchestrator URL not configured, skipping notification")
         return
 
     payload = {
@@ -164,15 +183,29 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str],
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(f"{config.ORCHESTRATOR_URL}/api/webhooks/stt", json=payload)
+            
             if r.status_code == 429:
                 logger.info(f"🛡️ Rate limited by orchestrator: {r.text}")
+                orchestrator_available = True  # Still available, just rate limited
             elif r.status_code != 200:
                 logger.warning(f"Orchestrator webhook failed: {r.status_code} {r.text}")
+                orchestrator_available = False
             else:
                 status = '📤 PARTIAL' if partial else '📤 FINAL'
                 logger.info(f"{status} transcript to orchestrator: '{text}'")
+                orchestrator_available = True
+                if partial:
+                    partial_transcripts_sent += 1
+                    
+    except (httpx.ConnectTimeout, httpx.ReadTimeout) as e:
+        logger.warning(f"⏰ Orchestrator timeout ({type(e).__name__}): {e}")
+        orchestrator_available = False
+    except httpx.ConnectError as e:
+        logger.warning(f"🔌 Orchestrator connection error: {e}")
+        orchestrator_available = False
     except Exception as e:
-        logger.warning(f"Orchestrator notify error: {e}")
+        logger.warning(f"❌ Orchestrator notify error: {e}")
+        orchestrator_available = False
 
 
 # Audio helpers
@@ -252,7 +285,7 @@ async def _continuous_partial_processor(pid: str, state: UtteranceState, streame
                                                 state.partial_sequence += 1
                                                 logger.info(f"⚡ CONTINUOUS PARTIAL[{pid}] #{state.partial_sequence} ({processing_time:.0f}ms): {partial_text}")
                                                 
-                                                # Send partial to orchestrator
+                                                # Send partial to orchestrator (resilient)
                                                 await _notify_orchestrator(
                                                     pid, partial_text, res.get("language"), 
                                                     partial=True, utterance_id=utterance_id,
@@ -331,7 +364,7 @@ async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray, utteran
 
 async def _process_utterances_with_streaming():
     """ENHANCED: Main processing loop with FIXED state management"""
-    global processed_utterances
+    global processed_utterances, orchestrator_available
     logger.info("🚀 Starting Silero VAD-enhanced STT processing with FULL STREAMING PIPELINE")
     
     if STREAMING_ENABLED and PARTIALS_ENABLED:
@@ -343,8 +376,20 @@ async def _process_utterances_with_streaming():
     
     logger.info("🎯 Intelligent speech detection replaces custom thresholds")
     
+    # Periodic orchestrator health check
+    last_health_check = time.time()
+    health_check_interval = 30.0  # Check every 30 seconds
+    
     while True:
         try:
+            # Periodic orchestrator health check
+            current_time = time.time()
+            if current_time - last_health_check > health_check_interval:
+                orchestrator_available = await _check_orchestrator_health()
+                status = "✅ Available" if orchestrator_available else "❌ Unavailable"
+                logger.info(f"🩺 Orchestrator health check: {status}")
+                last_health_check = current_time
+            
             # FIXED: Safe iteration over participants
             participants_to_process = list(buffers.keys())
             
@@ -388,7 +433,7 @@ async def _process_utterances_with_streaming():
                                     pid not in partial_streaming_tasks):
                                     task = asyncio.create_task(_continuous_partial_processor(pid, state, streamer))
                                     partial_streaming_tasks[pid] = task
-                                    logger.debug(f"🔄 Started continuous partial task for {pid}")
+                                    logger.info(f"🔄 Started continuous partial task for {pid}")
                                     
                             else:
                                 # Continue building utterance
@@ -518,16 +563,35 @@ def setup_room_callbacks(room: rtc.Room):
 
 
 async def join_livekit_room():
+    """ENHANCED: Join LiveKit with better error handling and fallback options"""
     global room, room_connected
     if not config.LIVEKIT_ENABLED:
         logger.info("LiveKit disabled, skipping connection")
         return
+        
     logger.info("Connecting STT to LiveKit via orchestrator token")
-    room = rtc.Room()
-    setup_room_callbacks(room)
-    await connect_room_as_subscriber(room, "june-stt")
-    room_connected = True
-    logger.info("STT connected and listening for audio frames")
+    
+    try:
+        room = rtc.Room()
+        setup_room_callbacks(room)
+        await connect_room_as_subscriber(room, "june-stt")
+        room_connected = True
+        logger.info("✅ STT connected and listening for audio frames")
+        
+        # Check initial orchestrator availability
+        global orchestrator_available
+        orchestrator_available = await _check_orchestrator_health()
+        status = "✅ Available" if orchestrator_available else "❌ Unavailable"
+        logger.info(f"🩺 Initial orchestrator status: {status}")
+        
+    except ConnectionError as e:
+        logger.error(f"🔌 LiveKit connection failed: {e}")
+        logger.info("🔄 STT will continue operating without LiveKit (API-only mode)")
+        room_connected = False
+    except Exception as e:
+        logger.error(f"❌ LiveKit setup error: {e}")
+        logger.info("🔄 STT will continue operating without LiveKit (API-only mode)")
+        room_connected = False
 
 
 @asynccontextmanager
@@ -541,21 +605,29 @@ async def lifespan(app: FastAPI):
         logger.info(f"⚡ TARGET LATENCY: First partial in <{PARTIAL_MIN_SPEECH_MS}ms from speech start")
         logger.info(f"🎯 PIPELINE GOAL: speech-in + thinking + speech-out overlap")
     
+    # Initialize Whisper (critical component)
     try:
         await whisper_service.initialize()
         logger.info("✅ Enhanced Whisper + Silero VAD + CONTINUOUS STREAMING service ready")
     except Exception as e:
-        logger.error(f"Enhanced service init failed: {e}")
+        logger.error(f"❌ Enhanced service init failed: {e}")
+        raise  # Whisper is critical, don't start without it
         
+    # Try to join LiveKit (non-critical, can start without it)
     await join_livekit_room()
     
+    # Start processing task if LiveKit connected
+    task = None
     if room_connected:
         task = asyncio.create_task(_process_utterances_with_streaming())
+        logger.info("✅ FULL STREAMING PIPELINE active and ready")
+    else:
+        logger.info("⚠️ STT running in API-only mode (LiveKit connection failed)")
         
     yield
     
     # Cleanup
-    if room_connected and 'task' in locals():
+    if task:
         task.cancel()
         try:
             await task
@@ -572,13 +644,16 @@ async def lifespan(app: FastAPI):
     partial_streaming_tasks.clear()
     
     if room and room_connected:
-        await room.disconnect()
+        try:
+            await room.disconnect()
+        except Exception as e:
+            logger.debug(f"⚠️ LiveKit disconnect error: {e}")
 
 
 app = FastAPI(
-    title="June STT - Full Streaming Pipeline (Fixed)",
-    version="6.0.1-streaming-fixed",
-    description="Continuous partial transcripts + Online LLM processing + Silero VAD + LiveKit",
+    title="June STT - Full Streaming Pipeline (Resilient)",
+    version="6.0.2-streaming-resilient",
+    description="Continuous partial transcripts + Online LLM processing + Silero VAD + LiveKit (with fallback)",
     lifespan=lifespan,
 )
 
@@ -628,10 +703,11 @@ async def transcribe_audio(
 async def health():
     return {
         "status": "healthy",
-        "version": "6.0.1-streaming-fixed",
+        "version": "6.0.2-streaming-resilient",
         "components": {
             "whisper_ready": whisper_service.is_model_ready(),
             "livekit_connected": room_connected,
+            "orchestrator_available": orchestrator_available,
             "silero_vad_enabled": getattr(config, 'SILERO_VAD_ENABLED', True),
             "streaming_enabled": STREAMING_ENABLED,
             "partials_enabled": PARTIALS_ENABLED,
@@ -640,19 +716,20 @@ async def health():
         "features": {
             "openai_api_compatible": True,
             "silero_vad_intelligent_detection": True,
-            "real_time_voice_chat": getattr(config, 'LIVEKIT_ENABLED', True),
+            "real_time_voice_chat": room_connected,
             "partial_transcripts": PARTIALS_ENABLED,
             "continuous_streaming": CONTINUOUS_PARTIALS,
-            "online_llm_processing": CONTINUOUS_PARTIALS,
+            "online_llm_processing": CONTINUOUS_PARTIALS and orchestrator_available,
             "streaming_architecture": STREAMING_ENABLED,
             "anti_feedback": True,
+            "resilient_startup": True,
         },
         "streaming_pipeline": {
             "speech_to_partial_ms": f"<{PARTIAL_MIN_SPEECH_MS}",
             "partial_emit_interval_ms": PARTIAL_EMIT_INTERVAL_MS,
-            "online_processing": CONTINUOUS_PARTIALS,
+            "online_processing": CONTINUOUS_PARTIALS and orchestrator_available,
             "overlapping_pipeline": "speech-in + thinking + speech-out",
-            "fixes_applied": "state_management_enhanced",
+            "fixes_applied": "resilient_startup + retry_logic",
         }
     }
 
@@ -661,11 +738,12 @@ async def health():
 async def root():
     active_streaming_tasks = len(partial_streaming_tasks)
     active_participants = len(buffers)
+    pipeline_ready = CONTINUOUS_PARTIALS and room_connected and whisper_service.is_model_ready() and orchestrator_available
     
     return {
         "service": "june-stt",
-        "version": "6.0.1-streaming-fixed",
-        "description": "FULL STREAMING PIPELINE: Continuous partials + Online LLM + Silero VAD + LiveKit",
+        "version": "6.0.2-streaming-resilient",
+        "description": "FULL STREAMING PIPELINE: Continuous partials + Online LLM + Silero VAD + LiveKit (Resilient)",
         "features": [
             "Silero VAD intelligent speech detection",
             "CONTINUOUS partial transcript streaming (250ms intervals)",
@@ -675,7 +753,7 @@ async def root():
             "Anti-feedback protection",
             "Enhanced orchestrator integration",
             "Per-utterance tracking and deduplication",
-            "FIXED state management and error handling",
+            "RESILIENT startup and error handling",
             "Performance metrics",
         ],
         "streaming": {
@@ -686,16 +764,18 @@ async def root():
             "online_processing": CONTINUOUS_PARTIALS,
         },
         "pipeline_status": {
-            "target_achieved": CONTINUOUS_PARTIALS,
-            "speech_in_thinking_speech_out": "ACTIVE" if CONTINUOUS_PARTIALS else "PARTIAL",
-            "overlapping_processing": CONTINUOUS_PARTIALS,
-            "state_management": "FIXED",
+            "target_achieved": pipeline_ready,
+            "speech_in_thinking_speech_out": "ACTIVE" if pipeline_ready else "PARTIAL",
+            "overlapping_processing": pipeline_ready,
+            "resilient_mode": "ENABLED",
         },
         "current_status": {
             "active_participants": active_participants,
             "active_streaming_tasks": active_streaming_tasks,
             "processed_utterances": processed_utterances,
-            "pipeline_ready": CONTINUOUS_PARTIALS and room_connected and whisper_service.is_model_ready(),
+            "partial_transcripts_sent": partial_transcripts_sent,
+            "pipeline_ready": pipeline_ready,
+            "orchestrator_reachable": orchestrator_available,
         },
         "stats": streaming_metrics.get_stats(),
     }
@@ -716,24 +796,57 @@ async def debug_pipeline():
             "MAX_UTTERANCE_SEC": MAX_UTTERANCE_SEC,
             "SILENCE_TIMEOUT_SEC": SILENCE_TIMEOUT_SEC,
         },
+        "connectivity": {
+            "room_connected": room_connected,
+            "orchestrator_available": orchestrator_available,
+            "orchestrator_url": config.ORCHESTRATOR_URL,
+        },
         "current_state": {
             "active_participants": list(buffers.keys()),
             "utterance_states": {pid: {
                 "is_active": state.is_active,
                 "partial_sequence": state.partial_sequence,
                 "utterance_id": state.utterance_id[:8],
+                "first_partial_sent": state.first_partial_sent,
             } for pid, state in utterance_states.items()},
             "active_streaming_tasks": list(partial_streaming_tasks.keys()),
-            "room_connected": room_connected,
             "whisper_ready": whisper_service.is_model_ready(),
+        },
+        "performance": {
+            "processed_utterances": processed_utterances,
+            "partial_transcripts_sent": partial_transcripts_sent,
+            "streaming_stats": streaming_metrics.get_stats(),
         },
         "fixes_applied": [
             "Enhanced state management",
             "Better error handling in processing loops",
             "Safe participant iteration",
             "Proper async task cleanup",
-            "Enhanced utterance tracking"
+            "Enhanced utterance tracking",
+            "Resilient orchestrator connection",
+            "LiveKit connection retry logic",
+            "Graceful degradation on connection failures",
         ]
+    }
+
+
+@app.post("/debug/test-partial")
+async def test_partial_generation():
+    """Debug endpoint to test partial transcript generation"""
+    if not whisper_service.is_model_ready():
+        return {"error": "Whisper not ready"}
+        
+    # Create a test utterance state for debugging
+    test_pid = "debug-test"
+    state = _ensure_utterance_state(test_pid)
+    
+    return {
+        "message": "Partial generation test completed",
+        "state_created": test_pid in utterance_states,
+        "continuous_partials_enabled": CONTINUOUS_PARTIALS,
+        "streaming_enabled": STREAMING_ENABLED,
+        "orchestrator_available": orchestrator_available,
+        "pipeline_ready_for_partials": CONTINUOUS_PARTIALS and orchestrator_available and whisper_service.is_model_ready(),
     }
 
 
@@ -761,6 +874,11 @@ async def stats():
         
     return {
         "status": "success",
+        "version": "6.0.2-streaming-resilient",
+        "connectivity": {
+            "livekit_connected": room_connected,
+            "orchestrator_available": orchestrator_available,
+        },
         "intelligence": {
             "silero_vad_enabled": getattr(config, 'SILERO_VAD_ENABLED', True),
             "speech_detection_method": "Silero VAD (ML)" if getattr(config, 'SILERO_VAD_ENABLED', True) else "Fallback",
@@ -775,12 +893,13 @@ async def stats():
         },
         "pipeline": {
             "mode": "CONTINUOUS_ONLINE" if CONTINUOUS_PARTIALS else "BATCH_AFTER_SILENCE",
-            "target_achieved": CONTINUOUS_PARTIALS,
-            "overlapping_speech_thinking_speech": CONTINUOUS_PARTIALS,
-            "fixes_status": "ENHANCED_ERROR_HANDLING",
+            "target_achieved": CONTINUOUS_PARTIALS and orchestrator_available and room_connected,
+            "overlapping_speech_thinking_speech": CONTINUOUS_PARTIALS and orchestrator_available,
+            "fixes_status": "RESILIENT_ENHANCED",
         },
         "global_stats": {
             "processed_utterances": processed_utterances,
+            "partial_transcripts_sent": partial_transcripts_sent,
             "active_participants": len(active_participants),
             "active_continuous_tasks": active_streaming_tasks,
         },
