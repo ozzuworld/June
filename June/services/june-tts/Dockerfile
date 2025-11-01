@@ -1,58 +1,45 @@
-# Optimized Dockerfile for June TTS with Chatterbox optimizations
-FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
+# Kokoro TTS Ultra-Low Latency Container
+FROM python:3.10-slim
 
-# Set environment variables for optimization
-ENV PYTHONUNBUFFERED=1
-ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
-ENV CUDA_VISIBLE_DEVICES=0
-ENV TORCH_COMPILE_DEBUG=0
-ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-
-# Install system dependencies optimized for performance
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     wget \
     curl \
     ffmpeg \
     libsndfile1 \
-    libasound2-dev \
-    portaudio19-dev \
+    libsndfile1-dev \
     build-essential \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
+# Create virtual environment
+RUN python -m venv /venv-tts
+ENV PATH="/venv-tts/bin:$PATH"
 
-# Install optimized Python packages
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir torch==2.4.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy and install requirements
+COPY requirements.txt /tmp/tts-requirements.txt
 
-# Install performance optimization packages
-RUN pip install --no-cache-dir \
-    triton>=2.3.0 \
-    flash-attn \
-    xformers \
-    ninja
+# Install Kokoro TTS dependencies
+RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-tts/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    /venv-tts/bin/pip install -r /tmp/tts-requirements.txt
 
 # Copy application code
 COPY . .
 
-# Create directories for caching and temporary files
-RUN mkdir -p /app/cache /app/temp
-ENV TRANSFORMERS_CACHE=/app/cache
-ENV HF_HOME=/app/cache
-ENV TORCH_HOME=/app/cache
+# Environment variables
+ENV PYTHONPATH=/app
+ENV CUDA_VISIBLE_DEVICES=0
+ENV TTS_STREAMING_ENABLED=true
 
 # Expose port
 EXPOSE 8000
 
-# Health check with optimization status
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:8000/healthz || exit 1
 
-# Run optimized service
-CMD ["python", "main_optimized.py"]
+# Run Kokoro TTS service
+CMD ["python", "main.py"]
