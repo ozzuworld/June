@@ -4,6 +4,7 @@ June STT Service - LiveKit PCM → faster-whisper v1.2.0
 Real-time transcription with simplified chunking and faster-whisper built-ins
 Option 1 tuning: lower chunk thresholds and adjust loop cadence for better accumulation
 + Debug probes for chunk/frame analysis and optional gain
++ ANTI-FEEDBACK: Enhanced silence detection and TTS exclusion
 """
 import asyncio
 import logging
@@ -39,17 +40,99 @@ SAMPLE_RATE = 16000
 # Loop cadence (slightly slower to allow buffer accumulation between passes)
 PROCESS_SLEEP_SEC = 0.3  # was 0.2s
 
-# Filter out TTS services from STT processing
-EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt"}
+# ANTI-FEEDBACK: Enhanced exclusion of TTS services and silence thresholds
+EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt", "tts", "stt"}
+MIN_AUDIO_RMS = 0.002          # Minimum RMS for valid speech (increased from implicit 0)
+MIN_AUDIO_PEAK = 0.01          # Minimum peak amplitude for valid speech
+MIN_AUDIO_VARIATION = 0.001    # Minimum standard deviation (prevents flat audio)
+MAX_SHORT_WORDS = 3            # Skip transcriptions of very short words
+REPEAT_SUPPRESSION = True      # Suppress repeated transcriptions
 
 # Debug flags
 ENABLE_GAIN_TEST = False   # set True to test +12 dB gain
 DUMP_FIRST_N_CHUNKS = 3    # dump first N chunks to /tmp
 
+# Anti-repeat tracking
+last_transcriptions = {}  # pid -> (text, timestamp)
+REPEAT_WINDOW_SEC = 2.0   # Suppress repeats within 2 seconds
+
 def _ensure_buffer(pid: ParticipantKey) -> Deque[np.ndarray]:
     if pid not in buffers:
         buffers[pid] = deque(maxlen=120)  # allow a bit more backlog
     return buffers[pid]
+
+
+def _is_valid_audio(audio: np.ndarray, pid: str) -> tuple[bool, str]:
+    """ANTI-FEEDBACK: Validate audio has sufficient signal for transcription"""
+    if len(audio) == 0:
+        return False, "empty"
+    
+    # Calculate audio metrics
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    peak = float(np.max(np.abs(audio)))
+    variation = float(np.std(audio))
+    
+    # Check minimum signal levels
+    if rms < MIN_AUDIO_RMS:
+        return False, f"low_rms({rms:.6f}<{MIN_AUDIO_RMS})"
+    
+    if peak < MIN_AUDIO_PEAK:
+        return False, f"low_peak({peak:.6f}<{MIN_AUDIO_PEAK})"
+    
+    # Check for actual variation (not just noise or flat signal)
+    if variation < MIN_AUDIO_VARIATION:
+        return False, f"low_variation({variation:.6f}<{MIN_AUDIO_VARIATION})"
+    
+    # Check for digital silence patterns (all zeros or near-zeros)
+    zero_ratio = np.sum(np.abs(audio) < 0.0001) / len(audio)
+    if zero_ratio > 0.95:  # More than 95% zeros
+        return False, f"mostly_zeros({zero_ratio:.2%})"
+    
+    return True, "valid"
+
+
+def _is_repeat_transcription(pid: str, text: str) -> bool:
+    """ANTI-FEEDBACK: Check if this is a recent repeat transcription"""
+    if not REPEAT_SUPPRESSION:
+        return False
+    
+    now = datetime.utcnow()
+    
+    if pid in last_transcriptions:
+        last_text, last_time = last_transcriptions[pid]
+        time_diff = (now - last_time).total_seconds()
+        
+        # Same text within repeat window
+        if last_text == text and time_diff < REPEAT_WINDOW_SEC:
+            return True
+    
+    # Update tracking
+    last_transcriptions[pid] = (text, now)
+    return False
+
+
+def _is_valid_transcription(text: str) -> tuple[bool, str]:
+    """ANTI-FEEDBACK: Validate transcription quality"""
+    if not text or len(text.strip()) == 0:
+        return False, "empty"
+    
+    # Skip very short words that are likely noise
+    if len(text.strip()) <= MAX_SHORT_WORDS:
+        # Allow common valid short words
+        valid_short = {"hi", "no", "yes", "ok", "bye", "hey", "oh", "ah", "um"}
+        if text.strip().lower() not in valid_short:
+            return False, f"too_short({len(text.strip())}<=3)"
+    
+    # Check for suspicious repeated characters
+    if len(set(text.lower())) < 2 and len(text) > 2:  # Like "aaa" or "uuu"
+        return False, "repeated_chars"
+    
+    # Check for gibberish patterns (very common false positives)
+    gibberish_patterns = ["you.", "you", "uh", "um", "ah", "er", "mm", "hm"]
+    if text.strip().lower() in gibberish_patterns:
+        return False, f"likely_gibberish({text})"
+    
+    return True, "valid"
 
 
 def _gather_seconds(pid: ParticipantKey, seconds: float) -> Optional[np.ndarray]:
@@ -72,6 +155,12 @@ def _gather_seconds(pid: ParticipantKey, seconds: float) -> Optional[np.ndarray]
     audio = np.concatenate(chunks, axis=0)
     if len(audio) > target:
         audio = audio[:target]
+
+    # ANTI-FEEDBACK: Validate audio before returning
+    is_valid, reason = _is_valid_audio(audio, pid)
+    if not is_valid:
+        logger.debug(f"🔇 Skipping invalid audio for {pid}: {reason}")
+        return None
 
     return audio
 
@@ -98,7 +187,9 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str])
                 f"{config.ORCHESTRATOR_URL}/api/webhooks/stt",
                 json=payload,
             )
-            if r.status_code != 200:
+            if r.status_code == 429:
+                logger.info(f"🛡️ Rate limited by orchestrator (expected protection): {r.text}")
+            elif r.status_code != 200:
                 logger.warning(f"Orchestrator webhook failed: {r.status_code} {r.text}")
             else:
                 logger.info(f"📤 Sent transcript to orchestrator: '{text}'")
@@ -141,27 +232,46 @@ aSYNC_DUMP_COUNT = 0
 
 async def _process_loop():
     global aSYNC_DUMP_COUNT
-    logger.info(f"🚀 Starting STT loop - batched: {config.USE_BATCHED_INFERENCE}, VAD: {config.VAD_ENABLED}")
+    logger.info(f"🚀 Starting ANTI-FEEDBACK STT loop - batched: {config.USE_BATCHED_INFERENCE}, VAD: {config.VAD_ENABLED}")
+    logger.info(f"🛡️ Audio validation: RMS≥{MIN_AUDIO_RMS}, Peak≥{MIN_AUDIO_PEAK}, Var≥{MIN_AUDIO_VARIATION}")
+    logger.info(f"🚫 Excluded participants: {EXCLUDE_PARTICIPANTS}")
+    
+    processed_count = 0
+    skipped_count = 0
 
     while True:
         try:
             for pid in list(buffers.keys()):
+                # ANTI-FEEDBACK: Enhanced participant exclusion
                 if pid in EXCLUDE_PARTICIPANTS:
+                    logger.debug(f"🚫 Skipping excluded participant: {pid}")
+                    continue
+                    
+                # Additional safety check for TTS-like participants
+                if "tts" in pid.lower() or "stt" in pid.lower():
+                    logger.warning(f"🚫 Skipping TTS/STT-like participant: {pid}")
                     continue
 
                 audio = _gather_seconds(pid, CHUNK_SEC)
-                if audio is None or len(audio) < int(MIN_CHUNK_SEC * SAMPLE_RATE):
+                if audio is None:
+                    skipped_count += 1
+                    continue
+                    
+                if len(audio) < int(MIN_CHUNK_SEC * SAMPLE_RATE):
+                    logger.debug(f"🔇 Chunk too short for {pid}: {len(audio)} samples")
+                    skipped_count += 1
                     continue
 
                 # Debug: chunk stats and sparkline
                 rms = float(np.sqrt(np.mean(audio ** 2)))
                 peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+                variation = float(np.std(audio))
                 bins = 40
                 L = len(audio)
                 bin_size = max(1, L // bins)
                 spark_levels = '▁▂▃▄▅▆▇'
                 spark = ''.join(spark_levels[min(6, int(np.mean(np.abs(audio[i:i+bin_size])) * 50))] for i in range(0, L, bin_size))[:bins]
-                logger.info(f"🔎 Chunk[{pid}] stats: samples={L} rms={rms:.5f} peak={peak:.3f} spark={spark}")
+                logger.info(f"🔎 Chunk[{pid}] stats: samples={L} rms={rms:.5f} peak={peak:.3f} var={variation:.5f} spark={spark}")
 
                 # Optional gain boost test
                 audio_out = audio
@@ -190,12 +300,32 @@ async def _process_loop():
                 method = res.get("method", "unknown")
                 processing_time = res.get("processing_time_ms", 0)
 
+                # ANTI-FEEDBACK: Validate transcription
                 if text:
+                    is_valid, reason = _is_valid_transcription(text)
+                    if not is_valid:
+                        logger.debug(f"🚫 Skipping invalid transcription from {pid}: {reason}")
+                        skipped_count += 1
+                        continue
+                    
+                    # Check for repeats
+                    if _is_repeat_transcription(pid, text):
+                        logger.debug(f"🔄 Suppressing repeat transcription from {pid}: '{text}'")
+                        skipped_count += 1
+                        continue
+                    
+                    processed_count += 1
                     logger.info(f"✅ ASR[{pid}] via {method} ({processing_time}ms): {text}")
                     await _notify_orchestrator(pid, text, res.get("language"))
                 else:
                     reason = res.get("skipped_reason", "empty")
                     logger.debug(f"🔇 No text for {pid}: {reason}")
+                    skipped_count += 1
+                    
+            # Periodic stats
+            if (processed_count + skipped_count) % 50 == 0 and processed_count + skipped_count > 0:
+                total = processed_count + skipped_count
+                logger.info(f"📈 STT Stats: {processed_count} processed, {skipped_count} skipped ({processed_count/total:.1%} success rate)")
 
         except Exception as e:
             logger.warning(f"❌ Process loop error: {e}")
@@ -204,6 +334,14 @@ async def _process_loop():
 
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
+    # ANTI-FEEDBACK: Enhanced participant filtering at frame level
+    if pid in EXCLUDE_PARTICIPANTS:
+        return
+        
+    if "tts" in pid.lower() or "stt" in pid.lower():
+        logger.debug(f"🚫 Dropping frame from TTS/STT-like participant: {pid}")
+        return
+    
     if not hasattr(_on_audio_frame, 'frame_counts'):
         _on_audio_frame.frame_counts = {}
     if pid not in _on_audio_frame.frame_counts:
@@ -230,12 +368,17 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
     @room.on("participant_connected")
     def _p_join(p):
         logger.info(f"👤 Participant joined: {p.identity}")
+        # ANTI-FEEDBACK: Log exclusion status
+        if p.identity in EXCLUDE_PARTICIPANTS:
+            logger.info(f"🚫 Participant {p.identity} is EXCLUDED from STT processing")
 
     @room.on("participant_disconnected")
     def _p_leave(p):
         logger.info(f"👋 Participant left: {p.identity}")
         if p.identity in buffers:
             del buffers[p.identity]
+        if p.identity in last_transcriptions:
+            del last_transcriptions[p.identity]
 
     @room.on("track_published")
     def _track_pub(pub, participant):
@@ -254,6 +397,12 @@ def join_livekit_room_sync_callbacks(room: rtc.Room):
             return
 
         pid = participant.identity or participant.sid
+        
+        # ANTI-FEEDBACK: Check exclusion at subscription time
+        if pid in EXCLUDE_PARTICIPANTS:
+            logger.info(f"🚫 EXCLUDED participant {pid} - not processing audio")
+            return
+            
         logger.info(f"✅ Subscribed to audio of {pid}")
 
         stream = rtc.AudioStream(track)
@@ -283,8 +432,9 @@ async def join_livekit_room():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"🚀 June STT v2.0 - faster-whisper {'' if config.USE_BATCHED_INFERENCE else 'non-'}batched mode")
+    logger.info(f"🚀 June STT v2.1-ANTI-FEEDBACK - faster-whisper {'' if config.USE_BATCHED_INFERENCE else 'non-'}batched mode")
     logger.info(f"Features: VAD={config.VAD_ENABLED}, Batch size={config.BATCH_SIZE if config.USE_BATCHED_INFERENCE else 'N/A'}")
+    logger.info(f"🛡️ Anti-feedback features: Enhanced silence detection, TTS exclusion, repeat suppression")
 
     try:
         await whisper_service.initialize()
@@ -303,9 +453,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="June STT v2.0",
-    version="2.0.0-faster-whisper-v1.2.0",
-    description="Simplified STT with faster-whisper built-ins (Option 1 tuned) + debug",
+    title="June STT v2.1-ANTI-FEEDBACK",
+    version="2.1.0-anti-feedback",
+    description="STT with enhanced anti-feedback protection, silence detection, and TTS exclusion",
     lifespan=lifespan
 )
 
@@ -325,24 +475,42 @@ async def health():
         "livekit_connected": room_connected,
         "batched_inference": config.USE_BATCHED_INFERENCE,
         "vad_enabled": config.VAD_ENABLED,
-        "version": "2.0.0-faster-whisper-v1.2.0",
+        "version": "2.1.0-anti-feedback",
+        "anti_feedback_features": {
+            "enhanced_silence_detection": True,
+            "tts_exclusion": True,
+            "repeat_suppression": REPEAT_SUPPRESSION,
+            "excluded_participants": list(EXCLUDE_PARTICIPANTS),
+            "min_audio_rms": MIN_AUDIO_RMS,
+            "min_audio_peak": MIN_AUDIO_PEAK,
+            "repeat_window_sec": REPEAT_WINDOW_SEC
+        }
     }
 
 @app.get("/")
 async def root():
     return {
         "service": "june-stt",
-        "version": "2.0.0-faster-whisper-v1.2.0",
+        "version": "2.1.0-anti-feedback",
         "features": {
             "batched_inference": config.USE_BATCHED_INFERENCE,
             "vad_enabled": config.VAD_ENABLED,
-            "silence_detection": "built-in (faster-whisper)",
-            "custom_filters": "minimal",
+            "silence_detection": "enhanced (anti-feedback)",
+            "tts_exclusion": "enhanced",
+            "repeat_suppression": REPEAT_SUPPRESSION,
         },
         "sample_rate": SAMPLE_RATE,
         "chunk_sec": CHUNK_SEC,
         "min_chunk_sec": MIN_CHUNK_SEC,
         "loop_sleep_sec": PROCESS_SLEEP_SEC,
+        "anti_feedback": {
+            "excluded_participants": list(EXCLUDE_PARTICIPANTS),
+            "min_audio_rms": MIN_AUDIO_RMS,
+            "min_audio_peak": MIN_AUDIO_PEAK,
+            "min_audio_variation": MIN_AUDIO_VARIATION,
+            "max_short_words": MAX_SHORT_WORDS,
+            "repeat_window_sec": REPEAT_WINDOW_SEC
+        },
         "debug": {
             "enable_gain_test": ENABLE_GAIN_TEST,
             "dump_first_n_chunks": DUMP_FIRST_N_CHUNKS,
