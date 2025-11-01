@@ -1,7 +1,10 @@
 """Configuration with enhanced AI and session settings"""
 import os
+import logging
 from typing import List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class ServiceConfig(BaseModel):
@@ -35,6 +38,35 @@ class AIConfig(BaseModel):
     max_input_length: int = 1000  # Character limit for user input
     enable_summarization: bool = True  # Auto-summarize long conversations
     voice_response_mode: bool = True  # Optimize for voice (brief responses)
+    default_speaker: str = "Alexandra Hisakawa"  # Default XTTS V2 speaker for June's voice
+    
+    @field_validator('default_speaker')
+    @classmethod
+    def validate_speaker(cls, v):
+        # List of valid XTTS V2 speakers for validation
+        valid_speakers = {
+            "Alexandra Hisakawa", "Claribel Dervla", "Daisy Studious", "Gracie Wise", 
+            "Tammie Ema", "Alison Dietlinde", "Ana Florence", "Annmarie Nele", 
+            "Asya Anara", "Brenda Stern", "Gitta Nikolina", "Henriette Usha",
+            "Sofia Hellen", "Tammy Grit", "Tanja Adelina", "Vjollca Johnnie",
+            "Nova Hogarth", "Maja Ruoho", "Uta Obando", "Lidiya Szekeres",
+            "Chandra MacFarland", "Szofi Granger", "Camilla Holmström", 
+            "Lilya Stainthorpe", "Zofija Kendrick", "Narelle Moon", "Barbora MacLean",
+            "Alma María", "Rosemary Okafor", "Andrew Chipper", "Badr Odhiambo",
+            "Dionisio Schuyler", "Royston Min", "Viktor Eka", "Abrahan Mack",
+            "Adde Michal", "Baldur Sanjin", "Craig Gutsy", "Damien Black",
+            "Gilberto Mathias", "Ilkin Urbano", "Kazuhiko Atallah", "Ludvig Milivoj",
+            "Suad Qasim", "Torcull Diarmuid", "Viktor Menelaos", "Zacharie Aimilios",
+            "Ige Behringer", "Filip Traverse", "Damjan Chapman", "Wulf Carlevaro",
+            "Aaron Dreschner", "Kumar Dahl", "Eugenio Mataracı", "Ferran Simen",
+            "Xavier Hayasaka", "Luis Moray", "Marcos Rudaski"
+        }
+        
+        if v not in valid_speakers:
+            logger.warning(f"Invalid speaker '{v}', falling back to 'Alexandra Hisakawa'")
+            return "Alexandra Hisakawa"
+        
+        return v
 
 
 class RateLimitConfig(BaseModel):
@@ -117,7 +149,8 @@ class AppConfig:
             max_output_tokens=int(os.getenv("AI_MAX_OUTPUT_TOKENS", "200")),
             max_input_length=int(os.getenv("AI_MAX_INPUT_LENGTH", "1000")),
             enable_summarization=os.getenv("AI_ENABLE_SUMMARIZATION", "true").lower() == "true",
-            voice_response_mode=os.getenv("AI_VOICE_MODE", "true").lower() == "true"
+            voice_response_mode=os.getenv("AI_VOICE_MODE", "true").lower() == "true",
+            default_speaker=os.getenv("AI_DEFAULT_SPEAKER", "Alexandra Hisakawa")
         )
     
     def _load_rate_limit_config(self) -> RateLimitConfig:
