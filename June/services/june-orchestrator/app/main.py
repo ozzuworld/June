@@ -7,6 +7,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from .routes.webhooks import router as webhooks_router
+from .routes.voices import router as voices_router
 from .routes_livekit import router as livekit_router
 from .session_manager import session_manager
 from .services.skill_service import skill_service
@@ -14,6 +15,7 @@ from .services.voice_profile_service import voice_profile_service
 from .security.rate_limiter import rate_limiter, duplication_detector
 from .security.cost_tracker import call_tracker, circuit_breaker
 from .config import config
+from .voice_registry import get_available_voices, resolve_voice_reference
 
 logging.basicConfig(
     level=getattr(logging, config.log_level),
@@ -53,7 +55,7 @@ async def cleanup_sessions_task():
             
             # Log stats
             stats = session_manager.get_stats()
-            logger.info(f"📈 Session stats: {stats}")
+            logger.info(f"📊 Session stats: {stats}")
             
             # Log skill usage
             if stats.get("active_skills", 0) > 0:
@@ -113,7 +115,7 @@ async def security_monitoring_task():
 async def lifespan(app: FastAPI):
     """Application lifespan with enhanced startup and background tasks"""
     logger.info("=" * 70)
-    logger.info("🚀 June Orchestrator v7.0 - AI Voice Assistant with SECURITY")
+    logger.info("🚀 June Orchestrator v7.1 - AI Voice Assistant with Chatterbox TTS")
     logger.info("=" * 70)
     
     # Core configuration
@@ -127,6 +129,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Model: {config.ai.model}")
     logger.info(f"  Voice Mode: {config.ai.voice_response_mode}")
     logger.info(f"  Max Output Tokens: {config.ai.max_output_tokens}")
+    
+    # Voice configuration
+    voices = get_available_voices()
+    default_voice_ref = resolve_voice_reference(None, None)
+    logger.info(f"🎭 Voice Configuration:")
+    logger.info(f"  Available Voices: {len(voices)}")
+    logger.info(f"  Voice Registry: {list(voices.keys())[:3]}...")
+    logger.info(f"  Default Voice: {default_voice_ref}")
     
     # Session configuration
     logger.info(f"📝 Session Configuration:")
@@ -160,15 +170,15 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     security_task.cancel()
     logger.info("🛑 Shutting down...")
-    logger.info(f"📈 Final session stats: {session_manager.get_stats()}")
+    logger.info(f"📊 Final session stats: {session_manager.get_stats()}")
     logger.info(f"🎭 Final voice profile stats: {voice_profile_service.get_stats()}")
     logger.info(f"💰 Final cost stats: {call_tracker.get_stats()}")
 
 
 app = FastAPI(
     title="June Orchestrator",
-    version="7.0.0-SECURE",
-    description="AI Voice Assistant Orchestrator with Skills, Voice Cloning, and Security Protection",
+    version="7.1.0-CHATTERBOX",
+    description="AI Voice Assistant Orchestrator with Skills, Voice Cloning, Security Protection, and Chatterbox TTS",
     lifespan=lifespan
 )
 
@@ -184,6 +194,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(webhooks_router, tags=["Webhooks & Skills & Security"])
+app.include_router(voices_router, tags=["Voice Management"])
 app.include_router(livekit_router, tags=["LiveKit"])
 
 
@@ -192,6 +203,7 @@ async def root():
     stats = session_manager.get_stats()
     skills = skill_service.list_skills()
     voice_stats = voice_profile_service.get_stats()
+    voices = get_available_voices()
     security_stats = {
         "rate_limiter": rate_limiter.get_stats(),
         "duplication_detector": duplication_detector.get_stats(),
@@ -201,8 +213,8 @@ async def root():
     
     return {
         "service": "june-orchestrator",
-        "version": "7.0.0-SECURE",
-        "description": "AI Voice Assistant Orchestrator with Skills, Voice Cloning, and Security Protection",
+        "version": "7.1.0-CHATTERBOX",
+        "description": "AI Voice Assistant Orchestrator with Skills, Voice Cloning, Security Protection, and Chatterbox TTS",
         "features": [
             "✅ Conversation Memory",
             "✅ Context Management",
@@ -214,7 +226,9 @@ async def root():
             "🔒 SECURITY: Rate Limiting",
             "🔒 SECURITY: Duplicate Detection",
             "🔒 SECURITY: Cost Tracking",
-            "🔒 SECURITY: Circuit Breaker"
+            "🔒 SECURITY: Circuit Breaker",
+            "🎭 NEW: Chatterbox TTS Integration",
+            "🎭 NEW: Voice Registry & Emotion Controls"
         ],
         "skills": {
             "available": list(skills.keys()),
@@ -231,10 +245,19 @@ async def root():
             "security_stats": "/api/security/stats",
             "circuit_breaker_open": "/api/security/circuit-breaker/open",
             "circuit_breaker_close": "/api/security/circuit-breaker/close",
+            "voices": "/api/voices",
+            "voice_warmup": "/api/voices/warmup",
+            "voice_resolve": "/api/voices/resolve",
+            "tts_publish": "/api/tts/publish",
             "health": "/healthz"
         },
         "stats": stats,
         "voice_profiles": voice_stats,
+        "voice_registry": {
+            "available_voices": list(voices.keys()),
+            "total_voices": len(voices),
+            "default_voice": resolve_voice_reference(None, None)
+        },
         "security": security_stats,
         "config": {
             "ai_model": config.ai.model,
@@ -247,6 +270,12 @@ async def root():
             "ai_rate_limits": {
                 "per_minute": rate_limiter.ai_calls_per_minute,
                 "per_hour": rate_limiter.ai_calls_per_hour
+            },
+            "tts_engine": "chatterbox-tts",
+            "voice_controls": {
+                "emotion_control": True,
+                "pacing_control": True,
+                "voice_cloning": True
             }
         }
     }
@@ -257,6 +286,7 @@ async def healthz():
     stats = session_manager.get_stats()
     cost_stats = call_tracker.get_stats()
     circuit_status = circuit_breaker.get_status()
+    voices = get_available_voices()
     
     # Determine health status
     is_healthy = True
@@ -277,9 +307,13 @@ async def healthz():
     return {
         "status": "healthy" if is_healthy else "degraded",
         "service": "june-orchestrator",
-        "version": "7.0.0-SECURE",
+        "version": "7.1.0-CHATTERBOX",
         "issues": health_issues,
         "stats": stats,
+        "voice_registry": {
+            "available_voices": len(voices),
+            "default_voice": resolve_voice_reference(None, None)
+        },
         "security": {
             "circuit_breaker_open": circuit_status["is_open"],
             "daily_cost": cost_stats["daily_cost"],
@@ -299,6 +333,8 @@ async def healthz():
             "rate_limiting": True,
             "duplicate_detection": True,
             "cost_tracking": True,
-            "circuit_breaker": True
+            "circuit_breaker": True,
+            "chatterbox_tts": True,
+            "emotion_controls": True
         }
     }
