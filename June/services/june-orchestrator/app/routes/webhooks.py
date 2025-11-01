@@ -66,7 +66,7 @@ async def handle_stt_webhook(
     4. Skill-based AI and voice cloning
     
     Flow:
-    1. Normal conversation → June's hardcoded voice (Claribel Dervla)
+    1. Normal conversation → June's configurable voice (config.ai.default_speaker)
     2. Skill activation → Skill-specific behavior
     3. Voice cloning skills → Use user's voice as demonstration
     """
@@ -419,12 +419,12 @@ async def trigger_tts_in_room(
                 }
         
         if not use_voice_cloning:
-            # Normal June voice (consistent personality)
+            # Normal June voice (consistent personality) - now configurable!
             logger.info(f"🔊 Triggering normal TTS for room: {room_name}")
             payload_data = {
                 "text": text,
                 "language": language,
-                "speaker": "Claribel Dervla",  # June's consistent voice
+                "speaker": config.ai.default_speaker,  # Now uses configured default!
                 "speed": 1.0
             }
         
