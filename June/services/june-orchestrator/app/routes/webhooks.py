@@ -19,6 +19,7 @@ CHATTERBOX TTS INTEGRATION:
 - Voice registry for speaker resolution
 - Emotion and pacing controls
 - Enhanced voice cloning support
+- Default voice for regular conversations, cloning only for mockingbird skill
 """
 import os
 import logging
@@ -91,21 +92,30 @@ async def _trigger_streaming_tts(room_name: str, text: str, language: str = "en"
                                  exaggeration: float = 0.6, cfg_weight: float = 0.8) -> Dict[str, Any]:
     try:
         tts_url = f"{config.services.tts_base_url}/stream-to-room"
-        # Resolve voice
-        if use_voice_cloning and user_id:
-            refs = voice_profile_service.get_user_references(user_id)
-            resolved = refs[0] if refs else resolve_voice_reference(speaker, speaker_wav)
-        else:
-            resolved = resolve_voice_reference(speaker, speaker_wav)
-        if not validate_voice_reference(resolved):
-            return {"success": False, "error": "Invalid voice reference"}
+        
+        # Build payload - only include speaker_wav if voice cloning is requested
         payload = {
             "text": text,
             "language": language,
-            "speaker_wav": [resolved] if resolved else None,
             "exaggeration": _clamp(exaggeration, 0.0, 2.0),
             "cfg_weight": _clamp(cfg_weight, 0.1, 1.0)
         }
+        
+        # Only add speaker_wav for voice cloning (mockingbird skill)
+        if use_voice_cloning:
+            if user_id:
+                refs = voice_profile_service.get_user_references(user_id)
+                if refs:
+                    payload["speaker_wav"] = refs
+                else:
+                    logger.warning(f"Voice cloning requested but no references found for user {user_id}")
+            elif speaker_wav:
+                resolved = resolve_voice_reference(speaker, speaker_wav)
+                if resolved and validate_voice_reference(resolved):
+                    payload["speaker_wav"] = [resolved]
+                else:
+                    logger.warning(f"Voice cloning requested but invalid reference: {resolved}")
+        
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(tts_url, json=payload)
         if r.status_code == 200:
@@ -128,22 +138,32 @@ async def _trigger_tts(room_name: str, text: str, language: str = "en",
     # Non-streaming path
     try:
         tts_url = f"{config.services.tts_base_url}/publish-to-room"
-        if use_voice_cloning and user_id:
-            refs = voice_profile_service.get_user_references(user_id)
-            resolved = refs[0] if refs else resolve_voice_reference(speaker, speaker_wav)
-        else:
-            resolved = resolve_voice_reference(speaker, speaker_wav)
-        if not validate_voice_reference(resolved):
-            raise HTTPException(status_code=400, detail="Invalid voice reference")
+        
+        # Build payload - only include speaker_wav if voice cloning is requested
         payload = {
             "text": text,
             "language": language,
-            "speaker_wav": [resolved] if resolved else None,
             "speed": 1.0,
             "exaggeration": _clamp(exaggeration, 0.0, 2.0),
             "cfg_weight": _clamp(cfg_weight, 0.1, 1.0),
             "streaming": False
         }
+        
+        # Only add speaker_wav for voice cloning (mockingbird skill)
+        if use_voice_cloning:
+            if user_id:
+                refs = voice_profile_service.get_user_references(user_id)
+                if refs:
+                    payload["speaker_wav"] = refs
+                else:
+                    logger.warning(f"Voice cloning requested but no references found for user {user_id}")
+            elif speaker_wav:
+                resolved = resolve_voice_reference(speaker, speaker_wav)
+                if resolved and validate_voice_reference(resolved):
+                    payload["speaker_wav"] = [resolved]
+                else:
+                    logger.warning(f"Voice cloning requested but invalid reference: {resolved}")
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(tts_url, json=payload)
         if r.status_code != 200:
@@ -219,16 +239,16 @@ async def _handle_conversation(session, payload: STTWebhookPayload) -> Dict[str,
         session_manager.update_session_metrics(session.session_id,
                                                tokens_used=len(payload.text)//4 + len(ai_text)//4,
                                                response_time_ms=proc_ms)
-        await _trigger_tts(payload.room_name, ai_text, payload.language or "en",
-                           speaker=getattr(config.ai, 'default_speaker', None), streaming=False)
+        # Regular conversation - no voice cloning
+        await _trigger_tts(payload.room_name, ai_text, payload.language or "en", streaming=False)
         return {"status": "success", "session_id": session.session_id, "ai_response": ai_text,
                 "processing_time_ms": proc_ms}
 
 async def _handle_streaming_conversation(session, payload: STTWebhookPayload, history: List[Dict]) -> Dict[str, Any]:
     start = time.time()
     async def tts_cb(sentence: str):
-        await _trigger_tts(payload.room_name, sentence, payload.language or "en",
-                           speaker=getattr(config.ai, 'default_speaker', None), streaming=True)
+        # Regular conversation - no voice cloning
+        await _trigger_tts(payload.room_name, sentence, payload.language or "en", streaming=True)
     parts = []
     first_token_ms = None
     async for token in streaming_ai_service.generate_streaming_response(
@@ -253,8 +273,8 @@ async def _handle_streaming_conversation(session, payload: STTWebhookPayload, hi
                                            tokens_used=len(payload.text)//4 + len(ai_text)//4,
                                            response_time_ms=total_ms)
     if not CONCURRENT_TTS_ENABLED and ai_text:
-        await _trigger_tts(payload.room_name, ai_text, payload.language or "en",
-                           speaker=getattr(config.ai, 'default_speaker', None), streaming=True)
+        # Regular conversation - no voice cloning
+        await _trigger_tts(payload.room_name, ai_text, payload.language or "en", streaming=True)
     return {"status": "streaming_success", "session_id": session.session_id, "ai_response": ai_text,
             "processing_time_ms": round(total_ms, 2), "first_token_ms": round(first_token_ms or 0, 2),
             "concurrent_tts_used": CONCURRENT_TTS_ENABLED, "streaming_mode": True}
@@ -269,8 +289,12 @@ async def _handle_skill_activation(session, skill_name: str, skill_def, payload:
                                              "language": payload.language, "timestamp": payload.timestamp})
     session_manager.add_to_history(session.session_id, "assistant", ai_response,
                                    metadata={"skill_activation": skill_name, "processing_time_ms": 50})
+    # Regular skill activation - no voice cloning unless it's mockingbird
+    use_cloning = skill_name == "mockingbird"
     await _trigger_tts(payload.room_name, ai_response, payload.language or "en",
-                       speaker=getattr(config.ai, 'default_speaker', None), streaming=False)
+                       use_voice_cloning=use_cloning,
+                       user_id=payload.participant if use_cloning else None,
+                       streaming=False)
     return {"status": "skill_activated", "skill_name": skill_name, "session_id": session.session_id,
             "ai_response": ai_response, "processing_time_ms": 50,
             "skill_state": session.skill_session.to_dict()}
@@ -280,9 +304,10 @@ async def _handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, 
     if skill_service.should_exit_skill(payload.text, session.skill_session):
         session.skill_session.deactivate_skill()
         ai_response = "Skill deactivated. I'm back to normal conversation mode."
-        await _trigger_tts(payload.room_name, ai_response, payload.language or "en",
-                           speaker=getattr(config.ai, 'default_speaker', None), streaming=False)
+        # Skill deactivation - no voice cloning
+        await _trigger_tts(payload.room_name, ai_response, payload.language or "en", streaming=False)
         return {"status": "skill_deactivated", "ai_response": ai_response, "session_id": session.session_id}
+    
     ai_response, ctx = skill_service.create_skill_response(name, payload.text, session.skill_session.context)
     session.skill_session.context.update(ctx)
     session.skill_session.increment_turn()
@@ -292,11 +317,12 @@ async def _handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, 
     session_manager.add_to_history(session.session_id, "assistant", ai_response,
                                    metadata={"skill_response": name, "skill_turn": session.skill_session.turn_count,
                                              "processing_time_ms": 100})
-    use_cloning = ctx.get("use_voice_cloning", False)
+    
+    # Only use voice cloning for mockingbird skill
+    use_cloning = (name == "mockingbird")
     await _trigger_tts(payload.room_name, ai_response, payload.language or "en",
                        use_voice_cloning=use_cloning,
                        user_id=payload.participant if use_cloning else None,
-                       speaker=getattr(config.ai, 'default_speaker', None) if not use_cloning else None,
                        streaming=False)
     return {"status": "skill_processed", "skill_name": name, "session_id": session.session_id,
             "ai_response": ai_response, "processing_time_ms": 100,
