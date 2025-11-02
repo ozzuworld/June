@@ -5,11 +5,11 @@ but uses the new clean architecture underneath. This allows existing
 code to work without changes during Phase 1.
 """
 import logging
+import asyncio
 from typing import Dict, Optional, List, Any
 from datetime import datetime
 
 from .models.domain import Session, SessionStats
-from .core.dependencies import get_session_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,24 +22,41 @@ class SessionManagerV2:
     """
     
     def __init__(self):
-        # Use dependency injection to get the clean service
+        # Lazy load to avoid circular imports at startup
         self._session_service = None
         logger.info("✅ SessionManager initialized (Phase 1 clean architecture)")
     
     def _get_service(self):
         """Lazy load the session service"""
         if self._session_service is None:
+            from .core.dependencies import get_session_service
             self._session_service = get_session_service()
         return self._session_service
     
-    async def create_session(self, user_id: str, room_name: Optional[str] = None) -> 'SessionWrapper':
-        """Create new session - backward compatible"""
-        session = await self._get_service()._create_session(user_id, room_name)
+    def create_session(self, user_id: str, room_name: Optional[str] = None) -> 'SessionWrapper':
+        """Create new session - backward compatible (sync wrapper)"""
+        # Convert async call to sync for backward compatibility
+        loop = None
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        session = loop.run_until_complete(self._get_service()._create_session(user_id, room_name))
         return SessionWrapper(session)
     
-    async def get_or_create_session_for_room(self, room_name: str, user_id: str) -> 'SessionWrapper':
-        """Get existing session for room or create new one - KEY METHOD FOR WEBHOOKS"""
-        session = await self._get_service().get_or_create_for_room(room_name, user_id)
+    def get_or_create_session_for_room(self, room_name: str, user_id: str) -> 'SessionWrapper':
+        """Get existing session for room or create new one - KEY METHOD FOR WEBHOOKS (sync wrapper)"""
+        # Convert async call to sync for backward compatibility
+        loop = None
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        session = loop.run_until_complete(self._get_service().get_or_create_for_room(room_name, user_id))
         return SessionWrapper(session)
     
     def get_session(self, session_id: str) -> Optional['SessionWrapper']:
@@ -100,9 +117,17 @@ class SessionManagerV2:
             "skills_in_use": stats.skills_in_use
         }
     
-    async def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
-        """Generate access token for a guest user"""
-        return await self._get_service().generate_guest_token(session_id, guest_name)
+    def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
+        """Generate access token for a guest user (sync wrapper)"""
+        # Convert async call to sync for backward compatibility
+        loop = None
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(self._get_service().generate_guest_token(session_id, guest_name))
 
 
 class SessionWrapper:
@@ -201,7 +226,7 @@ class SessionWrapper:
             from .services.livekit_service import livekit_service
             livekit_url = livekit_service.get_connection_info().get("livekit_url", "")
         except ImportError:
-            # Fallback if the old service doesn't exist
+            # Fallback to new client
             from .core.dependencies import get_livekit_client
             livekit_client = get_livekit_client()
             livekit_url = livekit_client.get_connection_info().get("livekit_url", "")
