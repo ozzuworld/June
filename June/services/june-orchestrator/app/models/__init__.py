@@ -12,13 +12,25 @@ from .domain import (
 # Request/Response models
 from .requests import (
     STTWebhookPayload,
-    TTSPublishRequest
+    TTSPublishRequest,
+    SessionCreateRequest,
+    MessageAddRequest
 )
 
 from .responses import (
     WebhookResponse,
     SessionResponse,
     StreamingStatus
+)
+
+# Legacy models from original models.py (for backward compatibility)
+from .legacy import (
+    SessionCreate,
+    LiveKitWebhook,
+    GuestTokenRequest,
+    GuestTokenResponse,
+    AIRequest,
+    AIResponse
 )
 
 __all__ = [
@@ -31,8 +43,17 @@ __all__ = [
     # Request models
     "STTWebhookPayload",
     "TTSPublishRequest",
+    "SessionCreateRequest",
+    "MessageAddRequest",
     # Response models
     "WebhookResponse",
     "SessionResponse",
-    "StreamingStatus"
+    "StreamingStatus",
+    # Legacy models (backward compatibility)
+    "SessionCreate",
+    "LiveKitWebhook",
+    "GuestTokenRequest",
+    "GuestTokenResponse",
+    "AIRequest",
+    "AIResponse"
 ]
