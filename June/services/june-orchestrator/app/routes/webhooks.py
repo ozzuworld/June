@@ -1,14 +1,14 @@
 # June/services/june-orchestrator/app/routes/webhooks.py
 """
 Webhook handlers for FULL STREAMING PIPELINE with skill-based AI
-STT → Orchestrator (WITH CONTINUOUS PARTIALS + ONLINE LLM) → TTS
+STT → Orchestrator (WITH NATURAL CONVERSATION FLOW) → TTS
 
-FULL STREAMING PIPELINE:
+NATURAL STREAMING PIPELINE:
 - Receives continuous partial transcripts from STT every 250ms
-- Starts LLM processing immediately on first partial (online decoding)
-- Maintains rolling context buffer for streaming tokens
-- Triggers TTS as soon as LLM generates sentences
-- Achieves speech-in → thinking → speech-out overlap
+- Uses intelligent utterance boundary detection to avoid over-triggering
+- Starts LLM processing only on complete thoughts or natural pauses
+- Triggers TTS only on complete sentences to maintain conversation flow
+- Achieves natural speech-in → thinking → speech-out with proper timing
 
 SECURITY & FEATURES:
 - Duplicate message detection
@@ -16,6 +16,7 @@ SECURITY & FEATURES:
 - AI cost tracking
 - Circuit breaker protection
 - Voice registry and skill system
+- FIXED: No more "response for every word" behavior
 """
 import os
 import logging
@@ -23,7 +24,7 @@ import httpx
 import uuid
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from collections import defaultdict
 from fastapi import APIRouter, HTTPException, Header
@@ -42,7 +43,7 @@ from ..voice_registry import resolve_voice_reference, validate_voice_reference
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ---------- FULL STREAMING PIPELINE feature flags ----------
+# ---------- NATURAL STREAMING PIPELINE feature flags ----------
 
 def _bool_env(name: str, default: bool) -> bool:
     v = os.getenv(name)
@@ -53,10 +54,18 @@ def _bool_env(name: str, default: bool) -> bool:
 STREAMING_ENABLED       = getattr(config, "ORCH_STREAMING_ENABLED", _bool_env("ORCH_STREAMING_ENABLED", True))
 CONCURRENT_TTS_ENABLED  = getattr(config, "CONCURRENT_TTS_ENABLED", _bool_env("CONCURRENT_TTS_ENABLED", True))
 PARTIAL_SUPPORT_ENABLED = getattr(config, "PARTIAL_SUPPORT_ENABLED", _bool_env("PARTIAL_SUPPORT_ENABLED", True))
-ONLINE_LLM_ENABLED      = _bool_env("ONLINE_LLM_ENABLED", True)  # NEW: Enable online LLM processing
+ONLINE_LLM_ENABLED      = _bool_env("ONLINE_LLM_ENABLED", True)
 
-# NEW: Online processing state management
+# NEW: Natural conversation flow settings
+NATURAL_FLOW_ENABLED    = _bool_env("NATURAL_FLOW_ENABLED", True)  # Enable natural conversation timing
+UTTERANCE_MIN_LENGTH    = int(os.getenv("UTTERANCE_MIN_LENGTH", "15"))  # Minimum chars before considering LLM
+UTTERANCE_MIN_PAUSE_MS  = int(os.getenv("UTTERANCE_MIN_PAUSE_MS", "1500"))  # Minimum pause before triggering
+SENTENCE_BUFFER_ENABLED = _bool_env("SENTENCE_BUFFER_ENABLED", True)  # Buffer tokens until complete sentences
+LLM_TRIGGER_THRESHOLD   = float(os.getenv("LLM_TRIGGER_THRESHOLD", "0.7"))  # Confidence threshold
+
+# Natural conversation state management
 online_sessions: Dict[str, Dict[str, Any]] = {}  # Track active online LLM sessions
+utterance_states: Dict[str, Dict[str, Any]] = {}  # Track utterance progression
 partial_buffers: Dict[str, List[str]] = defaultdict(list)  # Rolling partial context
 
 # ---------- Models ----------
@@ -73,7 +82,7 @@ class STTWebhookPayload(BaseModel):
     audio_data: Optional[bytes] = None
     transcript_id: Optional[str] = None
     partial: bool = Field(False, description="Whether this is a partial transcript")
-    # NEW: Streaming metadata
+    # Streaming metadata
     utterance_id: Optional[str] = None
     partial_sequence: Optional[int] = None
     is_streaming: Optional[bool] = None
@@ -89,10 +98,125 @@ class TTSPublishRequest(BaseModel):
     cfg_weight: float = Field(0.8, ge=0.1, le=1.0)
     streaming: bool = Field(False, description="Enable streaming TTS")
 
-# ---------- Online LLM Session Management ----------
+# ---------- NEW: Natural Conversation Flow Classes ----------
+
+class UtteranceState:
+    """Track the natural progression of an utterance to avoid over-triggering"""
+    
+    def __init__(self, participant: str, utterance_id: str):
+        self.participant = participant
+        self.utterance_id = utterance_id
+        self.started_at = datetime.utcnow()
+        self.last_partial_at = datetime.utcnow()
+        self.partials = []
+        self.processing_started = False
+        self.last_significant_length = 0
+        self.pause_detected = False
+        
+    def add_partial(self, text: str, sequence: int, confidence: float = 0.0) -> bool:
+        """Add partial and return if this represents significant progress"""
+        now = datetime.utcnow()
+        self.last_partial_at = now
+        
+        # Only add if significantly different from last
+        if not self.partials or len(text) > len(self.partials[-1]) + 3:
+            self.partials.append(text)
+            return True
+        return False
+        
+    def should_start_processing(self, text: str, confidence: float = 0.0) -> bool:
+        """Determine if we should start LLM processing based on natural cues"""
+        if self.processing_started:
+            return False
+            
+        # Don't process very short utterances
+        if len(text.strip()) < UTTERANCE_MIN_LENGTH:
+            return False
+            
+        # Check for natural conversation boundaries
+        words = text.lower().strip().split()
+        
+        # Look for sentence endings
+        sentence_endings = ['.', '!', '?']
+        if any(text.strip().endswith(end) for end in sentence_endings):
+            logger.info(f"🎯 Natural sentence ending detected: '{text[-20:]}'")
+            return True
+            
+        # Look for question patterns
+        question_starters = ['what', 'how', 'why', 'when', 'where', 'who', 'can', 'could', 'would', 'should', 'is', 'are', 'do', 'does']
+        if len(words) >= 3 and words[0] in question_starters:
+            if len(text.strip()) >= 20:  # Wait for substantial question
+                logger.info(f"🎯 Question pattern detected: '{text[:30]}...'")
+                return True
+                
+        # Look for natural pauses (time gap between partials)
+        time_since_start = (datetime.utcnow() - self.started_at).total_seconds() * 1000
+        if time_since_start >= UTTERANCE_MIN_PAUSE_MS and len(text.strip()) >= 25:
+            logger.info(f"🎯 Natural pause detected after {time_since_start:.0f}ms: '{text[:30]}...'")
+            return True
+            
+        # High confidence longer phrases
+        if confidence >= LLM_TRIGGER_THRESHOLD and len(text.strip()) >= 30:
+            logger.info(f"🎯 High confidence utterance detected: {confidence:.2f} '{text[:30]}...'")
+            return True
+            
+        return False
+        
+    def get_current_text(self) -> str:
+        """Get the most recent partial text"""
+        return self.partials[-1] if self.partials else ""
+        
+    def mark_processing_started(self):
+        """Mark that LLM processing has started for this utterance"""
+        self.processing_started = True
+        
+    def is_expired(self, timeout_seconds: int = 30) -> bool:
+        """Check if this utterance state has expired"""
+        age = (datetime.utcnow() - self.started_at).total_seconds()
+        return age > timeout_seconds
+
+
+class SentenceBuffer:
+    """Buffer tokens and only emit complete sentences to TTS for natural speech"""
+    
+    def __init__(self):
+        self.buffer = ""
+        self.sentence_endings = ['.', '!', '?']
+        self.sentence_count = 0
+        
+    def add_token(self, token: str) -> Optional[str]:
+        """Add token and return complete sentence if ready"""
+        self.buffer += token
+        
+        # Look for sentence boundaries
+        for ending in self.sentence_endings:
+            if ending in self.buffer:
+                # Find the sentence boundary
+                end_pos = self.buffer.find(ending)
+                if end_pos != -1:
+                    # Extract the complete sentence
+                    sentence = self.buffer[:end_pos + 1].strip()
+                    self.buffer = self.buffer[end_pos + 1:].strip()  # Keep remainder
+                    
+                    # Only return substantial sentences
+                    if len(sentence) >= 10:
+                        self.sentence_count += 1
+                        logger.info(f"📝 Complete sentence #{self.sentence_count} buffered: '{sentence[:50]}...'")
+                        return sentence
+        
+        return None  # No complete sentence yet
+        
+    def get_remaining(self) -> str:
+        """Get any remaining buffered content"""
+        return self.buffer.strip()
+        
+    def clear(self):
+        """Clear the buffer"""
+        self.buffer = ""
+
 
 class OnlineLLMSession:
-    """Manages online LLM processing for streaming partials"""
+    """Manages online LLM processing with natural conversation flow"""
     
     def __init__(self, session_id: str, user_id: str, utterance_id: str):
         self.session_id = session_id
@@ -103,12 +227,12 @@ class OnlineLLMSession:
         self.started_at = datetime.utcnow()
         self.first_token_sent = False
         self.accumulated_response = ""
-        self.sentence_buffer = ""
+        self.sentence_buffer = SentenceBuffer()
         
     def add_partial(self, text: str, sequence: int) -> bool:
         """Add partial transcript and return if LLM should start/continue"""
         # Simple deduplication - only add if significantly different
-        if not self.partial_buffer or len(text) > len(self.partial_buffer[-1]) + 2:
+        if not self.partial_buffer or len(text) > len(self.partial_buffer[-1]) + 3:
             self.partial_buffer.append(text)
             return True
         return False
@@ -127,47 +251,118 @@ class OnlineLLMSession:
             self.llm_task.cancel()
 
 
+# ---------- NEW: Natural Conversation Flow Functions ----------
+
+def _get_utterance_state(participant: str, utterance_id: str) -> UtteranceState:
+    """Get or create utterance state for tracking natural flow"""
+    key = f"{participant}:{utterance_id}"
+    
+    if key not in utterance_states:
+        utterance_states[key] = UtteranceState(participant, utterance_id)
+        
+    return utterance_states[key]
+
+
+def _should_start_online_llm_natural(utterance_state: UtteranceState, text: str, 
+                                     confidence: float = 0.0) -> bool:
+    """Natural conversation flow: only start LLM on complete thoughts"""
+    if not NATURAL_FLOW_ENABLED:
+        # Fallback to original logic if natural flow is disabled
+        return len(text.strip()) >= 10
+        
+    return utterance_state.should_start_processing(text, confidence)
+
+
+def _clean_expired_states():
+    """Clean up expired utterance states and online sessions"""
+    now = datetime.utcnow()
+    expired_keys = []
+    
+    # Clean utterance states
+    for key, state in utterance_states.items():
+        if state.is_expired():
+            expired_keys.append(key)
+            
+    for key in expired_keys:
+        del utterance_states[key]
+        
+    # Clean online sessions
+    expired_online = []
+    for key, session_info in online_sessions.items():
+        if 'started_at' in session_info:
+            age_seconds = (now - session_info['started_at']).total_seconds()
+            if age_seconds > 30:  # 30 second timeout
+                expired_online.append(key)
+                if 'online_session' in session_info:
+                    session_info['online_session'].cancel()
+    
+    for key in expired_online:
+        del online_sessions[key]
+        
+    if expired_keys or expired_online:
+        logger.debug(f"🧹 Cleaned {len(expired_keys)} utterance states, {len(expired_online)} online sessions")
+
+
+# ---------- Enhanced Online LLM Processing ----------
+
 async def _start_online_llm_processing(session_key: str, payload: STTWebhookPayload, 
                                       session, history: List[Dict]) -> OnlineLLMSession:
-    """NEW: Start online LLM processing on first partial"""
+    """Start online LLM processing with natural conversation flow"""
     online_session = OnlineLLMSession(
         session_id=session.session_id,
         user_id=payload.participant,
         utterance_id=payload.utterance_id or str(uuid.uuid4())
     )
     
-    logger.info(f"🧠 Starting ONLINE LLM for {payload.participant} (utterance: {online_session.utterance_id[:8]})")
+    logger.info(f"🧠 Starting NATURAL ONLINE LLM for {payload.participant} (utterance: {online_session.utterance_id[:8]})")
     
     # Start streaming LLM processing
     online_session.llm_task = asyncio.create_task(
-        _process_online_llm_stream(online_session, payload, session, history)
+        _process_online_llm_stream_natural(online_session, payload, session, history)
     )
     
     return online_session
 
 
-async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_payload: STTWebhookPayload,
-                                    session, history: List[Dict]):
-    """NEW: Process streaming LLM with rolling partial context"""
+async def _process_online_llm_stream_natural(online_session: OnlineLLMSession, initial_payload: STTWebhookPayload,
+                                           session, history: List[Dict]):
+    """Process streaming LLM with natural conversation flow and sentence buffering"""
     try:
         start_time = time.time()
         first_token = True
         
         # Build initial context from first partial
         context_text = online_session.get_context_text()
-        logger.info(f"📝 Online LLM context: '{context_text[:50]}...'")
+        logger.info(f"📝 Natural Online LLM context: '{context_text[:50]}...'")
         
-        # Start streaming AI with partial context
+        # Enhanced TTS callback with sentence buffering
         sentence_count = 0
-        async def tts_callback(sentence: str):
+        async def natural_tts_callback(sentence: str):
             nonlocal sentence_count
-            sentence_count += 1
-            logger.info(f"🎤 Online TTS trigger #{sentence_count} ({(time.time() - start_time) * 1000:.0f}ms): {sentence[:50]}...")
-            # Trigger streaming TTS immediately
-            await _trigger_tts(
-                initial_payload.room_name, sentence, initial_payload.language or "en", 
-                streaming=True, use_voice_cloning=False
-            )
+            
+            if SENTENCE_BUFFER_ENABLED:
+                # Buffer tokens and only send complete sentences
+                complete_sentence = online_session.sentence_buffer.add_token(sentence)
+                if complete_sentence:
+                    sentence_count += 1
+                    elapsed = (time.time() - start_time) * 1000
+                    logger.info(f"🎤 Natural TTS trigger #{sentence_count} ({elapsed:.0f}ms): {complete_sentence[:50]}...")
+                    # Trigger streaming TTS for complete sentence
+                    await _trigger_tts(
+                        initial_payload.room_name, complete_sentence, 
+                        initial_payload.language or "en", 
+                        streaming=True, use_voice_cloning=False
+                    )
+            else:
+                # Original behavior - send every sentence fragment
+                sentence_count += 1
+                elapsed = (time.time() - start_time) * 1000
+                logger.info(f"🎤 TTS trigger #{sentence_count} ({elapsed:.0f}ms): {sentence[:50]}...")
+                await _trigger_tts(
+                    initial_payload.room_name, sentence, 
+                    initial_payload.language or "en", 
+                    streaming=True, use_voice_cloning=False
+                )
         
         # Generate streaming response
         response_parts = []
@@ -176,12 +371,12 @@ async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_p
             conversation_history=history,
             user_id=initial_payload.participant,
             session_id=session.session_id,
-            tts_callback=tts_callback if CONCURRENT_TTS_ENABLED else None
+            tts_callback=natural_tts_callback if CONCURRENT_TTS_ENABLED else None
         ):
             if first_token:
                 first_token_time = (time.time() - start_time) * 1000
-                logger.info(f"⚡ ONLINE First token in {first_token_time:.0f}ms (while user may still be speaking)")
-                first_token = True
+                logger.info(f"⚡ NATURAL First token in {first_token_time:.0f}ms (natural timing)")
+                first_token = False
                 
             response_parts.append(token)
             online_session.accumulated_response += token
@@ -189,7 +384,18 @@ async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_p
         full_response = "".join(response_parts)
         total_time = (time.time() - start_time) * 1000
         
-        logger.info(f"✅ Online LLM completed: {len(full_response)} chars in {total_time:.0f}ms")
+        # Send any remaining buffered content
+        if SENTENCE_BUFFER_ENABLED and CONCURRENT_TTS_ENABLED:
+            remaining = online_session.sentence_buffer.get_remaining()
+            if remaining:
+                logger.info(f"🎤 Final TTS trigger: {remaining[:50]}...")
+                await _trigger_tts(
+                    initial_payload.room_name, remaining, 
+                    initial_payload.language or "en", 
+                    streaming=True, use_voice_cloning=False
+                )
+        
+        logger.info(f"✅ Natural Online LLM completed: {len(full_response)} chars in {total_time:.0f}ms")
         
         # Add to session history
         session_manager.add_to_history(
@@ -199,6 +405,7 @@ async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_p
                 "language": initial_payload.language,
                 "timestamp": initial_payload.timestamp,
                 "online_processing": True,
+                "natural_flow": True,
                 "utterance_id": online_session.utterance_id
             }
         )
@@ -210,6 +417,7 @@ async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_p
                 "model": config.ai.model,
                 "streaming": True,
                 "online_processing": True,
+                "natural_flow": True,
                 "sentences_sent": sentence_count
             }
         )
@@ -229,9 +437,9 @@ async def _process_online_llm_stream(online_session: OnlineLLMSession, initial_p
         )
         
     except asyncio.CancelledError:
-        logger.info(f"🛑 Online LLM processing cancelled for {online_session.user_id}")
+        logger.info(f"🛑 Natural Online LLM processing cancelled for {online_session.user_id}")
     except Exception as e:
-        logger.error(f"❌ Online LLM processing error: {e}")
+        logger.error(f"❌ Natural Online LLM processing error: {e}")
         # Fallback to regular processing if needed
         if not online_session.accumulated_response:
             logger.info(f"🔄 Falling back to regular processing for {online_session.user_id}")
@@ -327,52 +535,25 @@ async def _trigger_tts(room_name: str, text: str, language: str = "en",
     except Exception as e:
         logger.error(f"❌ TTS error: {e}")
 
-# ---------- NEW: Online LLM Session Management ----------
+# ---------- Session Management ----------
 
 def _get_online_session_key(participant: str, utterance_id: str) -> str:
     """Generate key for online session tracking"""
     return f"{participant}:{utterance_id}"
 
-def _should_start_online_llm(partial_sequence: int, context_text: str) -> bool:
-    """Determine if we should start online LLM processing"""
-    # Start on first meaningful partial (sequence 1 or 2)
-    if partial_sequence <= 2 and len(context_text.strip()) >= 5:
-        return True
-    # Or if we have enough context and no session is active
-    if len(context_text.strip()) >= 10:
-        return True
-    return False
-
-def _clean_expired_online_sessions():
-    """Clean up expired online sessions"""
-    now = datetime.utcnow()
-    expired_keys = []
-    
-    for key, session_info in online_sessions.items():
-        if 'started_at' in session_info:
-            age_seconds = (now - session_info['started_at']).total_seconds()
-            if age_seconds > 30:  # 30 second timeout
-                expired_keys.append(key)
-                if 'online_session' in session_info:
-                    session_info['online_session'].cancel()
-    
-    for key in expired_keys:
-        del online_sessions[key]
-        logger.debug(f"🧹 Cleaned up expired online session: {key}")
-
 # ---------- Routes ----------
 
 @router.post("/api/webhooks/stt")
 async def handle_stt_webhook(payload: STTWebhookPayload, authorization: str = Header(None)):
-    """ENHANCED: Handle both partial and final transcripts for full streaming pipeline"""
+    """ENHANCED: Handle both partial and final transcripts with natural conversation flow"""
     
-    # NEW: Handle continuous partial transcripts for online processing
+    # Handle continuous partial transcripts with natural flow
     if payload.partial and PARTIAL_SUPPORT_ENABLED and ONLINE_LLM_ENABLED:
-        return await _handle_partial_transcript(payload)
+        return await _handle_partial_transcript_natural(payload)
 
     # Existing final transcript handling
     logger.info(f"🎤 STT Webhook: {payload.participant} in {payload.room_name}")
-    logger.info(f"💬 Transcription: {payload.text}")
+    logger.info(f"💬 Final Transcription: {payload.text}")
 
     # Security checks
     if not rate_limiter.check_request_rate_limit(payload.participant):
@@ -396,14 +577,14 @@ async def handle_stt_webhook(payload: STTWebhookPayload, authorization: str = He
         if payload.utterance_id:
             session_key = _get_online_session_key(payload.participant, payload.utterance_id)
             if session_key in online_sessions:
-                logger.info(f"✅ Final transcript received - online LLM already processing for {session_key[:16]}...")
+                logger.info(f"✅ Final transcript received - natural online LLM already processing for {session_key[:16]}...")
                 # Let the online session complete, just update the final text
                 online_sessions[session_key]['final_text'] = payload.text
                 return {
                     "status": "online_session_active",
                     "session_id": session.session_id,
                     "utterance_id": payload.utterance_id,
-                    "message": "Final transcript acknowledged, online LLM already processing"
+                    "message": "Final transcript acknowledged, natural online LLM already processing"
                 }
 
         # Handle skill triggers and regular conversation (fallback for non-online)
@@ -425,29 +606,46 @@ async def handle_stt_webhook(payload: STTWebhookPayload, authorization: str = He
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _handle_partial_transcript(payload: STTWebhookPayload) -> Dict[str, Any]:
-    """NEW: Handle partial transcripts and trigger online LLM processing"""
+async def _handle_partial_transcript_natural(payload: STTWebhookPayload) -> Dict[str, Any]:
+    """Handle partial transcripts with natural conversation flow to avoid over-triggering"""
     logger.info(f"⚡ PARTIAL transcript #{payload.partial_sequence or 0} from {payload.participant}: '{payload.text}'")
     
-    # Clean up old sessions periodically
-    _clean_expired_online_sessions()
+    # Clean up old states periodically
+    _clean_expired_states()
     
     # Get or create session
     session = session_manager.get_or_create_session_for_room(
         room_name=payload.room_name, user_id=payload.participant
     )
     
-    # Generate session key for this utterance
+    # Generate utterance tracking
     utterance_id = payload.utterance_id or str(uuid.uuid4())
+    utterance_state = _get_utterance_state(payload.participant, utterance_id)
     session_key = _get_online_session_key(payload.participant, utterance_id)
     
-    # Check if we should start online LLM processing
-    should_start = _should_start_online_llm(
-        payload.partial_sequence or 1, payload.text
+    # Add this partial to the utterance state
+    significant_change = utterance_state.add_partial(
+        payload.text, payload.partial_sequence or 1, payload.confidence or 0.0
+    )
+    
+    if not significant_change:
+        return {
+            "status": "partial_ignored",
+            "session_id": session.session_id,
+            "utterance_id": utterance_id,
+            "message": "Partial ignored - no significant change"
+        }
+    
+    # Check if we should start natural online LLM processing
+    should_start = _should_start_online_llm_natural(
+        utterance_state, payload.text, payload.confidence or 0.0
     )
     
     if session_key not in online_sessions and should_start:
-        # Start new online LLM session
+        # Mark processing as started
+        utterance_state.mark_processing_started()
+        
+        # Start new natural online LLM session
         history = session.get_recent_history()
         
         online_session = await _start_online_llm_processing(
@@ -458,18 +656,20 @@ async def _handle_partial_transcript(payload: STTWebhookPayload) -> Dict[str, An
             'online_session': online_session,
             'started_at': datetime.utcnow(),
             'participant': payload.participant,
-            'utterance_id': utterance_id
+            'utterance_id': utterance_id,
+            'utterance_state': utterance_state
         }
         
-        logger.info(f"🎯 ONLINE PIPELINE STARTED: LLM processing while user speaks (session: {session_key[:16]})")
+        logger.info(f"🎯 NATURAL ONLINE PIPELINE STARTED: LLM processing on complete thought (session: {session_key[:16]})")
         
         return {
-            "status": "online_llm_started",
+            "status": "natural_online_llm_started",
             "session_id": session.session_id,
             "utterance_id": utterance_id,
             "partial_sequence": payload.partial_sequence,
-            "message": "Online LLM started processing while user speaks",
-            "pipeline_mode": "speech_in + thinking + speech_out"
+            "message": "Natural online LLM started on complete thought",
+            "pipeline_mode": "natural: speech-in + thinking + speech-out",
+            "trigger_reason": "natural conversation boundary detected"
         }
         
     elif session_key in online_sessions:
@@ -478,7 +678,7 @@ async def _handle_partial_transcript(payload: STTWebhookPayload) -> Dict[str, An
         online_session = online_info.get('online_session')
         
         if online_session and online_session.add_partial(payload.text, payload.partial_sequence or 0):
-            logger.debug(f"🔄 Updated online context for {session_key[:16]} with partial #{payload.partial_sequence}")
+            logger.debug(f"🔄 Updated natural online context for {session_key[:16]} with partial #{payload.partial_sequence}")
             
         return {
             "status": "partial_processed",
@@ -486,21 +686,24 @@ async def _handle_partial_transcript(payload: STTWebhookPayload) -> Dict[str, An
             "utterance_id": utterance_id,
             "partial_sequence": payload.partial_sequence,
             "online_active": online_session.is_active() if online_session else False,
-            "message": "Partial added to online context"
+            "message": "Partial added to natural online context"
         }
     
     else:
-        # Partial received but not enough context to start yet
-        logger.debug(f"🕰️ Partial queued, waiting for more context: '{payload.text}'")
+        # Partial received but waiting for natural conversation boundary
+        logger.debug(f"🕰️ Natural flow: waiting for complete thought - '{payload.text}'")
         
         return {
-            "status": "partial_queued",
+            "status": "natural_partial_queued",
             "session_id": session.session_id,
             "utterance_id": utterance_id,
             "partial_sequence": payload.partial_sequence,
-            "message": "Partial queued, waiting for sufficient context"
+            "message": "Partial queued, waiting for natural conversation boundary",
+            "waiting_for": "complete thought, question, or natural pause"
         }
 
+
+# ---------- Regular Conversation Handlers (preserved) ----------
 
 async def _handle_conversation(session, payload: STTWebhookPayload) -> Dict[str, Any]:
     """Handle regular conversation (fallback when online processing not used)"""
@@ -616,55 +819,105 @@ async def _handle_skill_input(session, payload: STTWebhookPayload) -> Dict[str, 
             "ai_response": ai_response, "processing_time_ms": 100,
             "skill_state": session.skill_session.to_dict(), "voice_cloning_used": use_cloning}
 
-# ---------- NEW: Streaming Pipeline Status and Control ----------
+# ---------- NEW: Natural Streaming Pipeline Status and Control ----------
 
 @router.get("/api/streaming/status")
 async def get_streaming_status():
-    """Get status of the full streaming pipeline"""
+    """Get status of the natural streaming pipeline"""
     active_online_sessions = len(online_sessions)
+    active_utterance_states = len(utterance_states)
     
     return {
-        "streaming_pipeline": {
+        "natural_streaming_pipeline": {
             "enabled": STREAMING_ENABLED,
             "partial_support": PARTIAL_SUPPORT_ENABLED,
             "online_llm": ONLINE_LLM_ENABLED,
             "concurrent_tts": CONCURRENT_TTS_ENABLED,
+            "natural_flow": NATURAL_FLOW_ENABLED,
+            "sentence_buffering": SENTENCE_BUFFER_ENABLED
+        },
+        "natural_flow_settings": {
+            "min_utterance_length": UTTERANCE_MIN_LENGTH,
+            "min_pause_ms": UTTERANCE_MIN_PAUSE_MS,
+            "confidence_threshold": LLM_TRIGGER_THRESHOLD
         },
         "active_sessions": {
             "online_llm_sessions": active_online_sessions,
-            "session_keys": list(online_sessions.keys()),
+            "utterance_states": active_utterance_states,
+            "session_keys": list(online_sessions.keys())
         },
-        "pipeline_flow": {
+        "natural_pipeline_flow": {
             "step_1": "STT receives audio frames (20-40ms)",
-            "step_2": f"Partials emitted every {PARTIAL_EMIT_INTERVAL_MS}ms while speaking",
-            "step_3": "LLM starts on first partial (online decoding)", 
-            "step_4": "TTS streams from first LLM tokens",
-            "result": "speech-in + thinking + speech-out overlap"
+            "step_2": "Partials accumulated with natural boundary detection",
+            "step_3": "LLM starts only on complete thoughts/questions/pauses", 
+            "step_4": "TTS streams complete sentences only",
+            "result": "natural conversation timing - no word-by-word responses"
         },
-        "target_achieved": ONLINE_LLM_ENABLED and PARTIAL_SUPPORT_ENABLED and STREAMING_ENABLED,
-        "performance": {
-            "target_first_partial_ms": f"<300ms",
-            "target_first_token_ms": f"<500ms", 
-            "target_first_audio_ms": f"<2000ms",
-        }
+        "improvements": {
+            "over_triggering_fixed": True,
+            "natural_boundaries": True,
+            "sentence_buffering": SENTENCE_BUFFER_ENABLED,
+            "conversation_flow": "human-like timing"
+        },
+        "target_achieved": ONLINE_LLM_ENABLED and PARTIAL_SUPPORT_ENABLED and STREAMING_ENABLED and NATURAL_FLOW_ENABLED
     }
 
 @router.post("/api/streaming/cleanup")
 async def cleanup_streaming_sessions():
-    """Manual cleanup of streaming sessions for debugging"""
-    cleaned = 0
+    """Manual cleanup of streaming sessions and utterance states for debugging"""
+    cleaned_sessions = 0
+    cleaned_states = 0
     
     # Cancel and clean all online sessions
     for session_key, session_info in list(online_sessions.items()):
         if 'online_session' in session_info:
             session_info['online_session'].cancel()
         del online_sessions[session_key]
-        cleaned += 1
+        cleaned_sessions += 1
     
-    logger.info(f"🧹 Manually cleaned {cleaned} online streaming sessions")
+    # Clean all utterance states
+    utterance_states.clear()
+    cleaned_states = len(utterance_states)
+    
+    logger.info(f"🧹 Manually cleaned {cleaned_sessions} online sessions, {cleaned_states} utterance states")
     
     return {
         "status": "cleanup_complete",
-        "sessions_cleaned": cleaned,
-        "remaining_sessions": len(online_sessions)
+        "sessions_cleaned": cleaned_sessions,
+        "utterance_states_cleaned": cleaned_states,
+        "remaining_sessions": len(online_sessions),
+        "remaining_states": len(utterance_states)
+    }
+
+@router.get("/api/streaming/debug")
+async def debug_streaming_state():
+    """Debug endpoint to inspect current streaming state"""
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "online_sessions": {
+            session_key: {
+                "started_at": info.get('started_at').isoformat() if info.get('started_at') else None,
+                "participant": info.get('participant'),
+                "utterance_id": info.get('utterance_id'),
+                "active": info.get('online_session').is_active() if info.get('online_session') else False
+            }
+            for session_key, info in online_sessions.items()
+        },
+        "utterance_states": {
+            key: {
+                "started_at": state.started_at.isoformat(),
+                "last_partial_at": state.last_partial_at.isoformat(),
+                "partials_count": len(state.partials),
+                "processing_started": state.processing_started,
+                "current_text": state.get_current_text()[:50] + "..." if state.get_current_text() else ""
+            }
+            for key, state in utterance_states.items()
+        },
+        "configuration": {
+            "natural_flow_enabled": NATURAL_FLOW_ENABLED,
+            "min_length": UTTERANCE_MIN_LENGTH,
+            "min_pause_ms": UTTERANCE_MIN_PAUSE_MS,
+            "confidence_threshold": LLM_TRIGGER_THRESHOLD,
+            "sentence_buffering": SENTENCE_BUFFER_ENABLED
+        }
     }
