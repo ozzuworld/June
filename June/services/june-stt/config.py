@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Configuration for June STT Service with Silero VAD
-Intelligent speech detection configuration
+June STT Service Configuration
 """
 import os
 from typing import Optional
 
 class EnhancedConfig:
-    """STT Service Configuration with Silero VAD"""
-    
     # Server Configuration
-    PORT: int = int(os.getenv("STT_PORT", "8001"))  # Fixed: Use STT_PORT with correct default
+    PORT: int = int(os.getenv("STT_PORT", "8001"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     HOST: str = os.getenv("HOST", "0.0.0.0")
     
@@ -33,7 +30,7 @@ class EnhancedConfig:
     DYNAMIC_MODEL_LOADING: bool = os.getenv("DYNAMIC_MODEL_LOADING", "true").lower() == "true"
     MODEL_UNLOAD_TIMEOUT: int = int(os.getenv("MODEL_UNLOAD_TIMEOUT", "300"))
     
-    # SILERO VAD Configuration (INTELLIGENT SPEECH DETECTION)
+    # Silero VAD Configuration
     SILERO_VAD_ENABLED: bool = os.getenv("SILERO_VAD_ENABLED", "true").lower() == "true"
     SILERO_VAD_THRESHOLD: float = float(os.getenv("SILERO_VAD_THRESHOLD", "0.5"))
     SILERO_MIN_SPEECH_MS: int = int(os.getenv("SILERO_MIN_SPEECH_MS", "100"))
@@ -54,7 +51,7 @@ class EnhancedConfig:
     LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "secret")
     LIVEKIT_ROOM_NAME: str = os.getenv("LIVEKIT_ROOM_NAME", "ozzu-main")
     
-    # Simplified Utterance Processing (Silero handles complexity)
+    # Utterance Processing
     UTTERANCE_PROCESSING: bool = os.getenv("UTTERANCE_PROCESSING", "true").lower() == "true"
     MIN_UTTERANCE_SEC: float = float(os.getenv("MIN_UTTERANCE_SEC", "0.5"))
     MAX_UTTERANCE_SEC: float = float(os.getenv("MAX_UTTERANCE_SEC", "8.0"))
@@ -74,7 +71,6 @@ class EnhancedConfig:
     ORCHESTRATOR_ENABLED: bool = os.getenv("ORCHESTRATOR_ENABLED", "true").lower() == "true"
     
     def validate_configuration(self):
-        """Validate configuration settings"""
         errors = []
         
         if self.LIVEKIT_ENABLED and not self.LIVEKIT_API_KEY:
@@ -83,7 +79,6 @@ class EnhancedConfig:
         if self.MIN_UTTERANCE_SEC >= self.MAX_UTTERANCE_SEC:
             errors.append("MIN_UTTERANCE_SEC must be less than MAX_UTTERANCE_SEC")
             
-        # Silero VAD validation
         if self.SILERO_VAD_ENABLED:
             if not (0.1 <= self.SILERO_VAD_THRESHOLD <= 0.9):
                 errors.append("SILERO_VAD_THRESHOLD must be between 0.1 and 0.9")
@@ -92,17 +87,15 @@ class EnhancedConfig:
             raise ValueError(f"Configuration errors: {'; '.join(errors)}")
     
     def log_configuration(self):
-        """Log configuration"""
         import logging
         logger = logging.getLogger(__name__)
         
-        logger.info(f"🔧 June STT Configuration:")
-        logger.info(f"   Server Port: {self.PORT}")
-        logger.info(f"   Whisper Model: {self.WHISPER_MODEL} on {self.WHISPER_DEVICE}")
-        logger.info(f"   Batched Inference: {self.USE_BATCHED_INFERENCE}")
-        logger.info(f"   Silero VAD: {self.SILERO_VAD_ENABLED} (threshold={self.SILERO_VAD_THRESHOLD})")
-        logger.info(f"   LiveKit Enabled: {self.LIVEKIT_ENABLED}")
+        logger.info(f"June STT Configuration:")
+        logger.info(f"  Port: {self.PORT}")
+        logger.info(f"  Whisper: {self.WHISPER_MODEL} on {self.WHISPER_DEVICE}")
+        logger.info(f"  Batched: {self.USE_BATCHED_INFERENCE}")
+        logger.info(f"  Silero VAD: {self.SILERO_VAD_ENABLED}")
+        logger.info(f"  LiveKit: {self.LIVEKIT_ENABLED}")
 
-# Global configuration instance
 config = EnhancedConfig()
 config.validate_configuration()
