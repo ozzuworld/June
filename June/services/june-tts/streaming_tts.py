@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import soundfile as sf
 from livekit import rtc
+import torch
 
 logger = logging.getLogger("streaming-tts")
 
@@ -73,11 +74,20 @@ class StreamingTTSEngine:
                     else:
                         logger.info(f"🎵 First audio: {first_audio_time:.0f}ms")
                 
-                # Stream to LiveKit
-                if audio_chunk.dtype != np.int16:
-                    audio_chunk = (audio_chunk * 32767).astype(np.int16)
-                    
-                await self._publish_raw_audio_chunk(audio_chunk)
+                # Ensure numpy int16 for LiveKit frames
+                if isinstance(audio_chunk, torch.Tensor):
+                    audio_np = audio_chunk.detach().cpu().numpy()
+                else:
+                    audio_np = audio_chunk
+                
+                if audio_np.ndim > 1:
+                    audio_np = audio_np.mean(axis=1)
+                
+                audio_np = np.clip(audio_np, -1.0, 1.0)
+                if audio_np.dtype != np.int16:
+                    audio_np = (audio_np * 32767).astype(np.int16)
+                
+                await self._publish_raw_audio_chunk(audio_np)
                 chunks_sent += 1
             
             total_time = (time.time() - start_time) * 1000
