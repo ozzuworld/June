@@ -9,6 +9,7 @@ NATURAL STREAMING PIPELINE:
 - Starts LLM processing only on complete thoughts or natural pauses
 - Triggers TTS only on complete sentences to maintain conversation flow
 - Achieves natural speech-in → thinking → speech-out with proper timing
+- APPLIES NATURAL FLOW TO BOTH PARTIAL AND FINAL TRANSCRIPTS
 
 SECURITY & FEATURES:
 - Duplicate message detection
@@ -17,6 +18,7 @@ SECURITY & FEATURES:
 - Circuit breaker protection
 - Voice registry and skill system
 - FIXED: No more "response for every word" behavior
+- FIXED: No more multiple responses to separate final transcripts
 """
 import os
 import logging
@@ -58,15 +60,18 @@ ONLINE_LLM_ENABLED      = _bool_env("ONLINE_LLM_ENABLED", True)
 
 # NEW: Natural conversation flow settings
 NATURAL_FLOW_ENABLED    = _bool_env("NATURAL_FLOW_ENABLED", True)  # Enable natural conversation timing
+NATURAL_FLOW_FOR_FINALS = _bool_env("NATURAL_FLOW_FOR_FINALS", True)  # Apply natural flow to final transcripts too
 UTTERANCE_MIN_LENGTH    = int(os.getenv("UTTERANCE_MIN_LENGTH", "15"))  # Minimum chars before considering LLM
 UTTERANCE_MIN_PAUSE_MS  = int(os.getenv("UTTERANCE_MIN_PAUSE_MS", "1500"))  # Minimum pause before triggering
 SENTENCE_BUFFER_ENABLED = _bool_env("SENTENCE_BUFFER_ENABLED", True)  # Buffer tokens until complete sentences
 LLM_TRIGGER_THRESHOLD   = float(os.getenv("LLM_TRIGGER_THRESHOLD", "0.7"))  # Confidence threshold
+FINAL_TRANSCRIPT_COOLDOWN_MS = int(os.getenv("FINAL_TRANSCRIPT_COOLDOWN_MS", "2000"))  # Cooldown between final transcripts
 
 # Natural conversation state management
 online_sessions: Dict[str, Dict[str, Any]] = {}  # Track active online LLM sessions
 utterance_states: Dict[str, Dict[str, Any]] = {}  # Track utterance progression
 partial_buffers: Dict[str, List[str]] = defaultdict(list)  # Rolling partial context
+final_transcript_tracker: Dict[str, Dict[str, Any]] = {}  # Track final transcript timing per participant
 
 # ---------- Models ----------
 
@@ -176,6 +181,73 @@ class UtteranceState:
         return age > timeout_seconds
 
 
+class FinalTranscriptTracker:
+    """Track timing of final transcripts to prevent rapid-fire responses"""
+    
+    def __init__(self, participant: str):
+        self.participant = participant
+        self.last_final_transcript = None
+        self.last_processing_time = None
+        self.transcript_count = 0
+        
+    def should_process_final_transcript(self, text: str, confidence: float = 0.0) -> tuple[bool, str]:
+        """Determine if this final transcript should be processed based on natural timing"""
+        now = datetime.utcnow()
+        
+        # Always process the first final transcript
+        if self.last_final_transcript is None:
+            self.last_final_transcript = now
+            self.transcript_count = 1
+            return True, "first transcript"
+            
+        # Check cooldown period
+        time_since_last = (now - self.last_final_transcript).total_seconds() * 1000
+        if time_since_last < FINAL_TRANSCRIPT_COOLDOWN_MS:
+            logger.info(f"🕰️ Final transcript cooldown active: {time_since_last:.0f}ms < {FINAL_TRANSCRIPT_COOLDOWN_MS}ms")
+            return False, f"cooldown active ({time_since_last:.0f}ms)"
+            
+        # Apply natural conversation logic to final transcripts too
+        words = text.lower().strip().split()
+        
+        # Don't process very short final transcripts
+        if len(text.strip()) < UTTERANCE_MIN_LENGTH:
+            logger.info(f"🚫 Final transcript too short: '{text}' ({len(text.strip())} chars)")
+            return False, f"too short ({len(text.strip())} chars)"
+            
+        # Look for sentence endings - these should be processed
+        sentence_endings = ['.', '!', '?']
+        if any(text.strip().endswith(end) for end in sentence_endings):
+            logger.info(f"🎯 Final transcript with natural ending: '{text[-20:]}'")
+            self.last_final_transcript = now
+            self.transcript_count += 1
+            return True, "natural sentence ending"
+            
+        # Look for question patterns
+        question_starters = ['what', 'how', 'why', 'when', 'where', 'who', 'can', 'could', 'would', 'should', 'is', 'are', 'do', 'does']
+        if len(words) >= 3 and words[0] in question_starters and len(text.strip()) >= 20:
+            logger.info(f"🎯 Final transcript question pattern: '{text[:30]}...'")
+            self.last_final_transcript = now
+            self.transcript_count += 1
+            return True, "question pattern"
+            
+        # High confidence substantial content
+        if confidence >= LLM_TRIGGER_THRESHOLD and len(text.strip()) >= 30:
+            logger.info(f"🎯 Final transcript high confidence: {confidence:.2f} '{text[:30]}...'")
+            self.last_final_transcript = now
+            self.transcript_count += 1
+            return True, "high confidence"
+            
+        # Default: don't process fragmented final transcripts
+        logger.info(f"🚫 Final transcript filtered: '{text}' (fragmented/incomplete)")
+        return False, "fragmented or incomplete"
+        
+    def reset(self):
+        """Reset the tracker"""
+        self.last_final_transcript = None
+        self.last_processing_time = None
+        self.transcript_count = 0
+
+
 class SentenceBuffer:
     """Buffer tokens and only emit complete sentences to TTS for natural speech"""
     
@@ -263,6 +335,14 @@ def _get_utterance_state(participant: str, utterance_id: str) -> UtteranceState:
     return utterance_states[key]
 
 
+def _get_final_transcript_tracker(participant: str) -> FinalTranscriptTracker:
+    """Get or create final transcript tracker for participant"""
+    if participant not in final_transcript_tracker:
+        final_transcript_tracker[participant] = FinalTranscriptTracker(participant)
+        
+    return final_transcript_tracker[participant]
+
+
 def _should_start_online_llm_natural(utterance_state: UtteranceState, text: str, 
                                      confidence: float = 0.0) -> bool:
     """Natural conversation flow: only start LLM on complete thoughts"""
@@ -271,6 +351,16 @@ def _should_start_online_llm_natural(utterance_state: UtteranceState, text: str,
         return len(text.strip()) >= 10
         
     return utterance_state.should_start_processing(text, confidence)
+
+
+def _should_process_final_transcript_natural(participant: str, text: str, 
+                                            confidence: float = 0.0) -> tuple[bool, str]:
+    """Natural flow for final transcripts: prevent rapid-fire responses"""
+    if not NATURAL_FLOW_FOR_FINALS:
+        return True, "natural flow disabled for finals"
+        
+    tracker = _get_final_transcript_tracker(participant)
+    return tracker.should_process_final_transcript(text, confidence)
 
 
 def _clean_expired_states():
@@ -299,8 +389,19 @@ def _clean_expired_states():
     for key in expired_online:
         del online_sessions[key]
         
-    if expired_keys or expired_online:
-        logger.debug(f"🧹 Cleaned {len(expired_keys)} utterance states, {len(expired_online)} online sessions")
+    # Clean final transcript trackers (reset after 5 minutes of inactivity)
+    expired_trackers = []
+    for participant, tracker in final_transcript_tracker.items():
+        if tracker.last_final_transcript:
+            age_minutes = (now - tracker.last_final_transcript).total_seconds() / 60
+            if age_minutes > 5:
+                expired_trackers.append(participant)
+                
+    for participant in expired_trackers:
+        del final_transcript_tracker[participant]
+        
+    if expired_keys or expired_online or expired_trackers:
+        logger.debug(f"🧹 Cleaned {len(expired_keys)} utterance states, {len(expired_online)} online sessions, {len(expired_trackers)} trackers")
 
 
 # ---------- Enhanced Online LLM Processing ----------
@@ -551,9 +652,26 @@ async def handle_stt_webhook(payload: STTWebhookPayload, authorization: str = He
     if payload.partial and PARTIAL_SUPPORT_ENABLED and ONLINE_LLM_ENABLED:
         return await _handle_partial_transcript_natural(payload)
 
-    # Existing final transcript handling
+    # NEW: Apply natural flow to final transcripts too
     logger.info(f"🎤 STT Webhook: {payload.participant} in {payload.room_name}")
     logger.info(f"💬 Final Transcription: {payload.text}")
+    
+    # NEW: Check if this final transcript should be processed based on natural timing
+    should_process, reason = _should_process_final_transcript_natural(
+        payload.participant, payload.text, payload.confidence or 0.0
+    )
+    
+    if not should_process:
+        logger.info(f"🚫 Final transcript filtered: {reason}")
+        return {
+            "status": "final_transcript_filtered",
+            "reason": reason,
+            "participant": payload.participant,
+            "text": payload.text,
+            "message": f"Final transcript not processed: {reason}"
+        }
+    
+    logger.info(f"✅ Final transcript approved for processing: {reason}")
 
     # Security checks
     if not rate_limiter.check_request_rate_limit(payload.participant):
@@ -595,8 +713,8 @@ async def handle_stt_webhook(payload: STTWebhookPayload, authorization: str = He
         elif session.skill_session.is_active():
             return await _handle_skill_input(session, payload)
         else:
-            # Fallback to regular conversation if online processing wasn't started
-            logger.info(f"🔄 Processing final transcript via regular pipeline (no online session)")
+            # Process approved final transcript via regular conversation
+            logger.info(f"🔄 Processing approved final transcript via conversation pipeline")
             return await _handle_conversation(session, payload)
 
     except HTTPException:
@@ -826,6 +944,7 @@ async def get_streaming_status():
     """Get status of the natural streaming pipeline"""
     active_online_sessions = len(online_sessions)
     active_utterance_states = len(utterance_states)
+    active_final_trackers = len(final_transcript_tracker)
     
     return {
         "natural_streaming_pipeline": {
@@ -834,32 +953,38 @@ async def get_streaming_status():
             "online_llm": ONLINE_LLM_ENABLED,
             "concurrent_tts": CONCURRENT_TTS_ENABLED,
             "natural_flow": NATURAL_FLOW_ENABLED,
+            "natural_flow_for_finals": NATURAL_FLOW_FOR_FINALS,
             "sentence_buffering": SENTENCE_BUFFER_ENABLED
         },
         "natural_flow_settings": {
             "min_utterance_length": UTTERANCE_MIN_LENGTH,
             "min_pause_ms": UTTERANCE_MIN_PAUSE_MS,
-            "confidence_threshold": LLM_TRIGGER_THRESHOLD
+            "confidence_threshold": LLM_TRIGGER_THRESHOLD,
+            "final_transcript_cooldown_ms": FINAL_TRANSCRIPT_COOLDOWN_MS
         },
         "active_sessions": {
             "online_llm_sessions": active_online_sessions,
             "utterance_states": active_utterance_states,
+            "final_transcript_trackers": active_final_trackers,
             "session_keys": list(online_sessions.keys())
         },
         "natural_pipeline_flow": {
             "step_1": "STT receives audio frames (20-40ms)",
             "step_2": "Partials accumulated with natural boundary detection",
-            "step_3": "LLM starts only on complete thoughts/questions/pauses", 
-            "step_4": "TTS streams complete sentences only",
+            "step_3": "Finals filtered by natural conversation timing", 
+            "step_4": "LLM starts only on complete thoughts/questions/pauses", 
+            "step_5": "TTS streams complete sentences only",
             "result": "natural conversation timing - no word-by-word responses"
         },
         "improvements": {
             "over_triggering_fixed": True,
+            "final_transcript_filtering": NATURAL_FLOW_FOR_FINALS,
             "natural_boundaries": True,
             "sentence_buffering": SENTENCE_BUFFER_ENABLED,
-            "conversation_flow": "human-like timing"
+            "conversation_flow": "human-like timing",
+            "cooldown_protection": True
         },
-        "target_achieved": ONLINE_LLM_ENABLED and PARTIAL_SUPPORT_ENABLED and STREAMING_ENABLED and NATURAL_FLOW_ENABLED
+        "target_achieved": ONLINE_LLM_ENABLED and PARTIAL_SUPPORT_ENABLED and STREAMING_ENABLED and NATURAL_FLOW_ENABLED and NATURAL_FLOW_FOR_FINALS
     }
 
 @router.post("/api/streaming/cleanup")
@@ -867,6 +992,7 @@ async def cleanup_streaming_sessions():
     """Manual cleanup of streaming sessions and utterance states for debugging"""
     cleaned_sessions = 0
     cleaned_states = 0
+    cleaned_trackers = 0
     
     # Cancel and clean all online sessions
     for session_key, session_info in list(online_sessions.items()):
@@ -879,14 +1005,20 @@ async def cleanup_streaming_sessions():
     utterance_states.clear()
     cleaned_states = len(utterance_states)
     
-    logger.info(f"🧹 Manually cleaned {cleaned_sessions} online sessions, {cleaned_states} utterance states")
+    # Clean final transcript trackers
+    final_transcript_tracker.clear()
+    cleaned_trackers = len(final_transcript_tracker)
+    
+    logger.info(f"🧹 Manually cleaned {cleaned_sessions} online sessions, {cleaned_states} utterance states, {cleaned_trackers} final trackers")
     
     return {
         "status": "cleanup_complete",
         "sessions_cleaned": cleaned_sessions,
         "utterance_states_cleaned": cleaned_states,
+        "final_trackers_cleaned": cleaned_trackers,
         "remaining_sessions": len(online_sessions),
-        "remaining_states": len(utterance_states)
+        "remaining_states": len(utterance_states),
+        "remaining_trackers": len(final_transcript_tracker)
     }
 
 @router.get("/api/streaming/debug")
@@ -913,11 +1045,20 @@ async def debug_streaming_state():
             }
             for key, state in utterance_states.items()
         },
+        "final_transcript_trackers": {
+            participant: {
+                "last_transcript_at": tracker.last_final_transcript.isoformat() if tracker.last_final_transcript else None,
+                "transcript_count": tracker.transcript_count
+            }
+            for participant, tracker in final_transcript_tracker.items()
+        },
         "configuration": {
             "natural_flow_enabled": NATURAL_FLOW_ENABLED,
+            "natural_flow_for_finals": NATURAL_FLOW_FOR_FINALS,
             "min_length": UTTERANCE_MIN_LENGTH,
             "min_pause_ms": UTTERANCE_MIN_PAUSE_MS,
             "confidence_threshold": LLM_TRIGGER_THRESHOLD,
-            "sentence_buffering": SENTENCE_BUFFER_ENABLED
+            "sentence_buffering": SENTENCE_BUFFER_ENABLED,
+            "final_cooldown_ms": FINAL_TRANSCRIPT_COOLDOWN_MS
         }
     }
