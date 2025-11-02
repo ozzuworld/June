@@ -1,244 +1,65 @@
-"""Session management - Enhanced with memory, room mapping, and skill state"""
-import uuid
-import logging
-from typing import Dict, Optional, List
-from datetime import datetime, timedelta
-from collections import defaultdict
+"""Phase 1: Backward-compatible session manager using clean architecture
 
-from .services.livekit_service import livekit_service
+This file maintains the same interface as the original session_manager
+but uses the new clean architecture underneath. This allows existing
+code to work without changes during Phase 1.
+"""
+import logging
+from typing import Dict, Optional, List, Any
+from datetime import datetime
+
+from .models.domain import Session, SessionStats
+from .core.dependencies import get_session_service
 
 logger = logging.getLogger(__name__)
 
 
-class SkillSession:
-    """Skill state management for individual sessions"""
-    def __init__(self):
-        self.active_skill: Optional[str] = None
-        self.context: Dict[str, Any] = {}
-        self.turn_count: int = 0
-        self.activated_at: Optional[datetime] = None
-        self.waiting_for_input: bool = False
+class SessionManagerV2:
+    """Backward-compatible wrapper around clean SessionService
     
-    def activate_skill(self, skill_name: str):
-        """Activate a skill"""
-        self.active_skill = skill_name
-        self.context = {}
-        self.turn_count = 0
-        self.activated_at = datetime.utcnow()
-        self.waiting_for_input = True
-    
-    def deactivate_skill(self):
-        """Deactivate current skill"""
-        self.active_skill = None
-        self.context = {}
-        self.turn_count = 0
-        self.activated_at = None
-        self.waiting_for_input = False
-    
-    def increment_turn(self):
-        """Increment skill turn counter"""
-        self.turn_count += 1
-    
-    def is_active(self) -> bool:
-        """Check if a skill is currently active"""
-        return self.active_skill is not None
-    
-    def to_dict(self):
-        """Convert to dictionary for serialization"""
-        return {
-            "active_skill": self.active_skill,
-            "context": self.context,
-            "turn_count": self.turn_count,
-            "activated_at": self.activated_at.isoformat() if self.activated_at else None,
-            "waiting_for_input": self.waiting_for_input
-        }
-
-
-class Session:
-    """Business session with full conversation memory and skill state"""
-    def __init__(self, user_id: str, room_name: Optional[str] = None):
-        self.session_id = str(uuid.uuid4())
-        self.user_id = user_id
-        self.room_name = room_name or f"room-{user_id}-{uuid.uuid4().hex[:8]}"
-        self.created_at = datetime.utcnow()
-        self.last_activity = datetime.utcnow()
-        self.status = "active"
-        self.conversation_history: List[Dict] = []
-        self.access_token = None
-        
-        # Enhanced metrics
-        self.message_count = 0
-        self.total_tokens_used = 0
-        self.avg_response_time_ms = 0
-        
-        # Context management
-        self.context_summary = None  # For long conversations
-        self.max_history_messages = 20  # Keep recent 20 messages
-        
-        # Skill state
-        self.skill_session = SkillSession()
-    
-    def update_activity(self):
-        """Update last activity timestamp"""
-        self.last_activity = datetime.utcnow()
-    
-    def add_message(self, role: str, content: str, metadata: Optional[Dict] = None):
-        """Add message to conversation history with metadata"""
-        self.conversation_history.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metadata": metadata or {}
-        })
-        self.message_count += 1
-        self.update_activity()
-    
-    def get_recent_history(self, max_messages: Optional[int] = None) -> List[Dict]:
-        """Get recent conversation history"""
-        max_msg = max_messages or self.max_history_messages
-        
-        # Always include context summary if it exists
-        history = []
-        if self.context_summary:
-            history.append({
-                "role": "system",
-                "content": self.context_summary
-            })
-        
-        # Add recent messages
-        recent = self.conversation_history[-max_msg:]
-        history.extend(recent)
-        
-        return history
-    
-    def should_summarize(self) -> bool:
-        """Check if conversation should be summarized"""
-        return len(self.conversation_history) > self.max_history_messages
-    
-    def is_expired(self, timeout_hours: int = 24) -> bool:
-        """Check if session has expired"""
-        expiry_time = self.last_activity + timedelta(hours=timeout_hours)
-        return datetime.utcnow() > expiry_time
-    
-    def to_dict(self):
-        return {
-            "session_id": self.session_id,
-            "user_id": self.user_id,
-            "room_name": self.room_name,
-            "access_token": self.access_token,
-            "created_at": self.created_at.isoformat(),
-            "last_activity": self.last_activity.isoformat(),
-            "status": self.status,
-            "message_count": self.message_count,
-            "total_tokens": self.total_tokens_used,
-            "livekit_url": livekit_service.get_connection_info()["livekit_url"],
-            "skill_state": self.skill_session.to_dict()
-        }
-
-
-class SessionManager:
-    """Enhanced session manager with room mapping, memory, and skill support"""
+    This class maintains the same interface as the original session_manager
+    but uses the new clean architecture underneath.
+    """
     
     def __init__(self):
-        self.sessions: Dict[str, Session] = {}
-        self.room_to_session: Dict[str, str] = {}  # room_name -> session_id
-        self.user_sessions: Dict[str, List[str]] = defaultdict(list)  # user_id -> [session_ids]
-        
-        # Metrics
-        self.total_sessions_created = 0
-        self.total_messages_processed = 0
-        
-        logger.info("✅ Session Manager initialized with memory and skill support")
+        # Use dependency injection to get the clean service
+        self._session_service = None
+        logger.info("✅ SessionManager initialized (Phase 1 clean architecture)")
     
-    def create_session(self, user_id: str, room_name: Optional[str] = None) -> Session:
-        """Create new session with LiveKit access token"""
-        try:
-            session = Session(user_id, room_name)
-            
-            # Generate LiveKit token
-            session.access_token = livekit_service.generate_access_token(
-                room_name=session.room_name,
-                participant_name=user_id,
-                permissions={
-                    "can_publish": True,
-                    "can_subscribe": True,
-                    "can_publish_data": True,
-                    "hidden": False,
-                    "recorder": False
-                }
-            )
-            
-            # Store session
-            self.sessions[session.session_id] = session
-            self.room_to_session[session.room_name] = session.session_id
-            self.user_sessions[user_id].append(session.session_id)
-            
-            self.total_sessions_created += 1
-            
-            logger.info(f"✅ Created session: {session.session_id} for user: {user_id}")
-            logger.info(f"📝 Room '{session.room_name}' mapped to session")
-            return session
-            
-        except Exception as e:
-            logger.error(f"Failed to create session for user {user_id}: {e}")
-            raise
+    def _get_service(self):
+        """Lazy load the session service"""
+        if self._session_service is None:
+            self._session_service = get_session_service()
+        return self._session_service
     
-    def get_or_create_session_for_room(self, room_name: str, user_id: str) -> Session:
-        """Get existing session for room or create new one
-        
-        THIS IS THE KEY METHOD FOR WEBHOOKS!
-        """
-        # Check if room already has a session
-        session_id = self.room_to_session.get(room_name)
-        
-        if session_id and session_id in self.sessions:
-            session = self.sessions[session_id]
-            session.update_activity()
-            logger.info(f"🔄 Reusing session {session_id} for room {room_name}")
-            return session
-        
-        # Create new session for this room
-        logger.info(f"🆕 Creating new session for room {room_name}")
-        return self.create_session(user_id, room_name)
+    async def create_session(self, user_id: str, room_name: Optional[str] = None) -> 'SessionWrapper':
+        """Create new session - backward compatible"""
+        session = await self._get_service()._create_session(user_id, room_name)
+        return SessionWrapper(session)
     
-    def get_session(self, session_id: str) -> Optional[Session]:
+    async def get_or_create_session_for_room(self, room_name: str, user_id: str) -> 'SessionWrapper':
+        """Get existing session for room or create new one - KEY METHOD FOR WEBHOOKS"""
+        session = await self._get_service().get_or_create_for_room(room_name, user_id)
+        return SessionWrapper(session)
+    
+    def get_session(self, session_id: str) -> Optional['SessionWrapper']:
         """Get session by ID"""
-        return self.sessions.get(session_id)
+        session = self._get_service().get_session(session_id)
+        return SessionWrapper(session) if session else None
     
-    def get_session_by_room(self, room_name: str) -> Optional[Session]:
+    def get_session_by_room(self, room_name: str) -> Optional['SessionWrapper']:
         """Get session by room name"""
-        session_id = self.room_to_session.get(room_name)
-        if session_id:
-            return self.sessions.get(session_id)
-        return None
+        session = self._get_service().get_session_by_room(room_name)
+        return SessionWrapper(session) if session else None
     
-    def get_user_sessions(self, user_id: str) -> List[Session]:
+    def get_user_sessions(self, user_id: str) -> List['SessionWrapper']:
         """Get all sessions for a user"""
-        session_ids = self.user_sessions.get(user_id, [])
-        return [self.sessions[sid] for sid in session_ids if sid in self.sessions]
+        sessions = self._get_service().get_user_sessions(user_id)
+        return [SessionWrapper(session) for session in sessions]
     
     def delete_session(self, session_id: str) -> bool:
         """Delete session and cleanup mappings"""
-        session = self.get_session(session_id)
-        if not session:
-            return False
-        
-        try:
-            # Remove from all mappings
-            if session.room_name in self.room_to_session:
-                del self.room_to_session[session.room_name]
-            
-            if session.user_id in self.user_sessions:
-                self.user_sessions[session.user_id].remove(session_id)
-            
-            del self.sessions[session_id]
-            
-            logger.info(f"🗑️ Deleted session: {session_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to delete session {session_id}: {e}")
-            return False
+        return self._get_service().delete_session(session_id)
     
     def add_to_history(
         self, 
@@ -248,14 +69,7 @@ class SessionManager:
         metadata: Optional[Dict] = None
     ):
         """Add message to conversation history with metadata"""
-        session = self.get_session(session_id)
-        if session:
-            session.add_message(role, content, metadata)
-            self.total_messages_processed += 1
-            
-            # Check if we should summarize
-            if session.should_summarize():
-                logger.info(f"⚠️ Session {session_id} has {len(session.conversation_history)} messages - consider summarizing")
+        self._get_service().add_message(session_id, role, content, metadata)
     
     def update_session_metrics(
         self, 
@@ -264,375 +78,158 @@ class SessionManager:
         response_time_ms: int = 0
     ):
         """Update session metrics"""
-        session = self.get_session(session_id)
-        if session:
-            session.total_tokens_used += tokens_used
-            
-            # Update average response time
-            if response_time_ms > 0:
-                if session.avg_response_time_ms == 0:
-                    session.avg_response_time_ms = response_time_ms
-                else:
-                    # Running average
-                    session.avg_response_time_ms = int(
-                        (session.avg_response_time_ms + response_time_ms) / 2
-                    )
+        self._get_service().update_session_metrics(session_id, tokens_used, response_time_ms)
     
-    def cleanup_expired_sessions(self, timeout_hours: int = 24):
+    def cleanup_expired_sessions(self, timeout_hours: int = 24) -> int:
         """Remove expired sessions"""
-        expired = []
-        for session_id, session in self.sessions.items():
-            if session.is_expired(timeout_hours):
-                expired.append(session_id)
-        
-        for session_id in expired:
-            self.delete_session(session_id)
-        
-        if expired:
-            logger.info(f"🧹 Cleaned up {len(expired)} expired sessions")
-        
-        return len(expired)
+        return self._get_service().cleanup_expired_sessions(timeout_hours)
     
-    def get_stats(self) -> Dict:
-        """Get session manager statistics"""
-        active_sessions = len(self.sessions)
-        active_rooms = len(self.room_to_session)
+    def get_stats(self) -> Dict[str, Any]:
+        """Get session manager statistics - backward compatible format"""
+        stats = self._get_service().get_stats()
         
-        total_messages = sum(s.message_count for s in self.sessions.values())
-        total_tokens = sum(s.total_tokens_used for s in self.sessions.values())
-        
-        # Skill statistics
-        active_skills = sum(1 for s in self.sessions.values() if s.skill_session.is_active())
-        skill_distribution = defaultdict(int)
-        for session in self.sessions.values():
-            if session.skill_session.active_skill:
-                skill_distribution[session.skill_session.active_skill] += 1
-        
+        # Convert to original dict format for backward compatibility
         return {
-            "active_sessions": active_sessions,
-            "active_rooms": active_rooms,
-            "total_sessions_created": self.total_sessions_created,
-            "total_messages": total_messages,
-            "total_tokens": total_tokens,
-            "avg_messages_per_session": total_messages / active_sessions if active_sessions > 0 else 0,
-            "active_skills": active_skills,
-            "skills_in_use": dict(skill_distribution)
+            "active_sessions": stats.active_sessions,
+            "active_rooms": stats.active_rooms,
+            "total_sessions_created": stats.total_sessions_created,
+            "total_messages": stats.total_messages,
+            "total_tokens": stats.total_tokens,
+            "avg_messages_per_session": stats.avg_messages_per_session,
+            "active_skills": stats.active_skills,
+            "skills_in_use": stats.skills_in_use
         }
     
-    def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
+    async def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
         """Generate access token for a guest user"""
-        session = self.get_session(session_id)
-        if not session or not session.room_name:
-            return None
-        
-        try:
-            return livekit_service.generate_access_token(
-                room_name=session.room_name,
-                participant_name=guest_name,
-                permissions={
-                    "can_publish": True,
-                    "can_subscribe": True,
-                    "can_publish_data": False,
-                    "hidden": False,
-                    "recorder": False
-                }
-            )
-        except Exception as e:
-            logger.error(f"Failed to generate guest token for {guest_name} in session {session_id}: {e}")
-            return None
+        return await self._get_service().generate_guest_token(session_id, guest_name)
 
 
-# Import fix for SkillSession
-from typing import Any
-
-
-class Session:
-    """Business session with full conversation memory and skill state"""
-    def __init__(self, user_id: str, room_name: Optional[str] = None):
-        self.session_id = str(uuid.uuid4())
-        self.user_id = user_id
-        self.room_name = room_name or f"room-{user_id}-{uuid.uuid4().hex[:8]}"
-        self.created_at = datetime.utcnow()
-        self.last_activity = datetime.utcnow()
-        self.status = "active"
-        self.conversation_history: List[Dict] = []
-        self.access_token = None
-        
-        # Enhanced metrics
-        self.message_count = 0
-        self.total_tokens_used = 0
-        self.avg_response_time_ms = 0
-        
-        # Context management
-        self.context_summary = None  # For long conversations
-        self.max_history_messages = 20  # Keep recent 20 messages
-        
-        # Skill state management
-        self.skill_session = SkillSession()
+class SessionWrapper:
+    """Wrapper around clean Session model for backward compatibility
     
+    This provides the same interface as the old Session class
+    but uses the new clean domain model underneath.
+    """
+    
+    def __init__(self, session: Session):
+        self._session = session
+    
+    # Expose properties for backward compatibility
+    @property
+    def session_id(self) -> str:
+        return self._session.id
+    
+    @property
+    def user_id(self) -> str:
+        return self._session.user_id
+    
+    @property
+    def room_name(self) -> str:
+        return self._session.room_name
+    
+    @property
+    def access_token(self) -> Optional[str]:
+        return self._session.access_token
+    
+    @access_token.setter
+    def access_token(self, value: str):
+        self._session.access_token = value
+    
+    @property
+    def created_at(self) -> datetime:
+        return self._session.created_at
+    
+    @property
+    def last_activity(self) -> datetime:
+        return self._session.last_activity
+    
+    @property
+    def status(self) -> str:
+        return self._session.status
+    
+    @property
+    def conversation_history(self) -> List[Dict]:
+        """Return conversation history in old format for backward compatibility"""
+        return [
+            {
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.timestamp.isoformat(),
+                "metadata": msg.metadata
+            }
+            for msg in self._session.messages
+        ]
+    
+    @property
+    def message_count(self) -> int:
+        return self._session.message_count
+    
+    @property
+    def total_tokens_used(self) -> int:
+        return self._session.total_tokens_used
+    
+    @property
+    def skill_session(self):
+        return self._session.skill_session
+    
+    # Methods for backward compatibility
     def update_activity(self):
         """Update last activity timestamp"""
-        self.last_activity = datetime.utcnow()
+        self._session.update_activity()
     
     def add_message(self, role: str, content: str, metadata: Optional[Dict] = None):
         """Add message to conversation history with metadata"""
-        self.conversation_history.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metadata": metadata or {}
-        })
-        self.message_count += 1
-        self.update_activity()
+        self._session.add_message(role, content, metadata)
     
     def get_recent_history(self, max_messages: Optional[int] = None) -> List[Dict]:
         """Get recent conversation history"""
-        max_msg = max_messages or self.max_history_messages
-        
-        # Always include context summary if it exists
-        history = []
-        if self.context_summary:
-            history.append({
-                "role": "system",
-                "content": self.context_summary
-            })
-        
-        # Add recent messages
-        recent = self.conversation_history[-max_msg:]
-        history.extend(recent)
-        
-        return history
+        return self._session.get_recent_history(max_messages)
     
     def should_summarize(self) -> bool:
         """Check if conversation should be summarized"""
-        return len(self.conversation_history) > self.max_history_messages
+        return self._session.should_summarize()
     
     def is_expired(self, timeout_hours: int = 24) -> bool:
         """Check if session has expired"""
-        expiry_time = self.last_activity + timedelta(hours=timeout_hours)
-        return datetime.utcnow() > expiry_time
+        return self._session.is_expired(timeout_hours)
     
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for backward compatibility"""
+        # Import here to avoid circular imports
+        try:
+            from .services.livekit_service import livekit_service
+            livekit_url = livekit_service.get_connection_info().get("livekit_url", "")
+        except ImportError:
+            # Fallback if the old service doesn't exist
+            from .core.dependencies import get_livekit_client
+            livekit_client = get_livekit_client()
+            livekit_url = livekit_client.get_connection_info().get("livekit_url", "")
+        
         return {
-            "session_id": self.session_id,
-            "user_id": self.user_id,
-            "room_name": self.room_name,
-            "access_token": self.access_token,
-            "created_at": self.created_at.isoformat(),
-            "last_activity": self.last_activity.isoformat(),
-            "status": self.status,
-            "message_count": self.message_count,
-            "total_tokens": self.total_tokens_used,
-            "livekit_url": livekit_service.get_connection_info()["livekit_url"],
-            "skill_state": self.skill_session.to_dict()
+            "session_id": self._session.id,
+            "user_id": self._session.user_id,
+            "room_name": self._session.room_name,
+            "access_token": self._session.access_token,
+            "created_at": self._session.created_at.isoformat(),
+            "last_activity": self._session.last_activity.isoformat(),
+            "status": self._session.status,
+            "message_count": self._session.message_count,
+            "total_tokens": self._session.total_tokens_used,
+            "livekit_url": livekit_url,
+            "skill_state": {
+                "active_skill": self._session.skill_session.active_skill,
+                "context": self._session.skill_session.context,
+                "turn_count": self._session.skill_session.turn_count,
+                "activated_at": self._session.skill_session.activated_at.isoformat() if self._session.skill_session.activated_at else None,
+                "waiting_for_input": self._session.skill_session.waiting_for_input
+            }
         }
 
 
-class SessionManager:
-    """Enhanced session manager with room mapping, memory, and skill support"""
-    
-    def __init__(self):
-        self.sessions: Dict[str, Session] = {}
-        self.room_to_session: Dict[str, str] = {}  # room_name -> session_id
-        self.user_sessions: Dict[str, List[str]] = defaultdict(list)  # user_id -> [session_ids]
-        
-        # Metrics
-        self.total_sessions_created = 0
-        self.total_messages_processed = 0
-        
-        logger.info("✅ Session Manager initialized with memory and skill support")
-    
-    def create_session(self, user_id: str, room_name: Optional[str] = None) -> Session:
-        """Create new session with LiveKit access token"""
-        try:
-            session = Session(user_id, room_name)
-            
-            # Generate LiveKit token
-            session.access_token = livekit_service.generate_access_token(
-                room_name=session.room_name,
-                participant_name=user_id,
-                permissions={
-                    "can_publish": True,
-                    "can_subscribe": True,
-                    "can_publish_data": True,
-                    "hidden": False,
-                    "recorder": False
-                }
-            )
-            
-            # Store session
-            self.sessions[session.session_id] = session
-            self.room_to_session[session.room_name] = session.session_id
-            self.user_sessions[user_id].append(session.session_id)
-            
-            self.total_sessions_created += 1
-            
-            logger.info(f"✅ Created session: {session.session_id} for user: {user_id}")
-            logger.info(f"📝 Room '{session.room_name}' mapped to session")
-            return session
-            
-        except Exception as e:
-            logger.error(f"Failed to create session for user {user_id}: {e}")
-            raise
-    
-    def get_or_create_session_for_room(self, room_name: str, user_id: str) -> Session:
-        """Get existing session for room or create new one
-        
-        THIS IS THE KEY METHOD FOR WEBHOOKS!
-        """
-        # Check if room already has a session
-        session_id = self.room_to_session.get(room_name)
-        
-        if session_id and session_id in self.sessions:
-            session = self.sessions[session_id]
-            session.update_activity()
-            logger.info(f"🔄 Reusing session {session_id} for room {room_name}")
-            return session
-        
-        # Create new session for this room
-        logger.info(f"🆕 Creating new session for room {room_name}")
-        return self.create_session(user_id, room_name)
-    
-    def get_session(self, session_id: str) -> Optional[Session]:
-        """Get session by ID"""
-        return self.sessions.get(session_id)
-    
-    def get_session_by_room(self, room_name: str) -> Optional[Session]:
-        """Get session by room name"""
-        session_id = self.room_to_session.get(room_name)
-        if session_id:
-            return self.sessions.get(session_id)
-        return None
-    
-    def get_user_sessions(self, user_id: str) -> List[Session]:
-        """Get all sessions for a user"""
-        session_ids = self.user_sessions.get(user_id, [])
-        return [self.sessions[sid] for sid in session_ids if sid in self.sessions]
-    
-    def delete_session(self, session_id: str) -> bool:
-        """Delete session and cleanup mappings"""
-        session = self.get_session(session_id)
-        if not session:
-            return False
-        
-        try:
-            # Remove from all mappings
-            if session.room_name in self.room_to_session:
-                del self.room_to_session[session.room_name]
-            
-            if session.user_id in self.user_sessions:
-                self.user_sessions[session.user_id].remove(session_id)
-            
-            del self.sessions[session_id]
-            
-            logger.info(f"🗑️ Deleted session: {session_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to delete session {session_id}: {e}")
-            return False
-    
-    def add_to_history(
-        self, 
-        session_id: str, 
-        role: str, 
-        content: str,
-        metadata: Optional[Dict] = None
-    ):
-        """Add message to conversation history with metadata"""
-        session = self.get_session(session_id)
-        if session:
-            session.add_message(role, content, metadata)
-            self.total_messages_processed += 1
-            
-            # Check if we should summarize
-            if session.should_summarize():
-                logger.info(f"⚠️ Session {session_id} has {len(session.conversation_history)} messages - consider summarizing")
-    
-    def update_session_metrics(
-        self, 
-        session_id: str, 
-        tokens_used: int = 0, 
-        response_time_ms: int = 0
-    ):
-        """Update session metrics"""
-        session = self.get_session(session_id)
-        if session:
-            session.total_tokens_used += tokens_used
-            
-            # Update average response time
-            if response_time_ms > 0:
-                if session.avg_response_time_ms == 0:
-                    session.avg_response_time_ms = response_time_ms
-                else:
-                    # Running average
-                    session.avg_response_time_ms = int(
-                        (session.avg_response_time_ms + response_time_ms) / 2
-                    )
-    
-    def cleanup_expired_sessions(self, timeout_hours: int = 24):
-        """Remove expired sessions"""
-        expired = []
-        for session_id, session in self.sessions.items():
-            if session.is_expired(timeout_hours):
-                expired.append(session_id)
-        
-        for session_id in expired:
-            self.delete_session(session_id)
-        
-        if expired:
-            logger.info(f"🧹 Cleaned up {len(expired)} expired sessions")
-        
-        return len(expired)
-    
-    def get_stats(self) -> Dict:
-        """Get session manager statistics including skill usage"""
-        active_sessions = len(self.sessions)
-        active_rooms = len(self.room_to_session)
-        
-        total_messages = sum(s.message_count for s in self.sessions.values())
-        total_tokens = sum(s.total_tokens_used for s in self.sessions.values())
-        
-        # Skill statistics
-        active_skills = sum(1 for s in self.sessions.values() if s.skill_session.is_active())
-        skill_distribution = defaultdict(int)
-        for session in self.sessions.values():
-            if session.skill_session.active_skill:
-                skill_distribution[session.skill_session.active_skill] += 1
-        
-        return {
-            "active_sessions": active_sessions,
-            "active_rooms": active_rooms,
-            "total_sessions_created": self.total_sessions_created,
-            "total_messages": total_messages,
-            "total_tokens": total_tokens,
-            "avg_messages_per_session": total_messages / active_sessions if active_sessions > 0 else 0,
-            "active_skills": active_skills,
-            "skills_in_use": dict(skill_distribution)
-        }
-    
-    def generate_guest_token(self, session_id: str, guest_name: str) -> Optional[str]:
-        """Generate access token for a guest user"""
-        session = self.get_session(session_id)
-        if not session or not session.room_name:
-            return None
-        
-        try:
-            return livekit_service.generate_access_token(
-                room_name=session.room_name,
-                participant_name=guest_name,
-                permissions={
-                    "can_publish": True,
-                    "can_subscribe": True,
-                    "can_publish_data": False,
-                    "hidden": False,
-                    "recorder": False
-                }
-            )
-        except Exception as e:
-            logger.error(f"Failed to generate guest token for {guest_name} in session {session_id}: {e}")
-            return None
+# Create backward-compatible global instance
+session_manager = SessionManagerV2()
 
-
-# Global instance
-session_manager = SessionManager()
+logger.info("✅ Phase 1: Backward-compatible session manager initialized")
+logger.info("✨ Using clean architecture with dependency injection")
+logger.info("🔄 Original session_manager interface preserved for compatibility")
