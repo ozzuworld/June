@@ -1,4 +1,5 @@
 # SOTA OPTIMIZATION: Audio processing constants tuned for competitive latency
+import os
 SAMPLE_RATE = 16000
 
 # SOTA: Read timeout values from environment with sensible defaults
