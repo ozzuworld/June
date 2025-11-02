@@ -1,6 +1,5 @@
 """
 Whisper Service with Silero VAD Integration
-Intelligent speech detection replacing custom RMS thresholds
 """
 import os
 import time
@@ -18,9 +17,7 @@ from config import config
 logger = logging.getLogger(__name__)
 
 class EnhancedWhisperService:
-    """
-    Whisper service with Silero VAD for intelligent speech detection
-    """
+    """Whisper service with Silero VAD for intelligent speech detection"""
     
     def __init__(self):
         self.model = None
@@ -43,8 +40,7 @@ class EnhancedWhisperService:
         try:
             os.makedirs(config.WHISPER_CACHE_DIR, exist_ok=True)
             
-            logger.info(f"🎯 Loading Whisper {config.WHISPER_MODEL} on {config.WHISPER_DEVICE}")
-            logger.info(f"📦 Features: Batched={config.USE_BATCHED_INFERENCE}, Silero VAD={config.SILERO_VAD_ENABLED}")
+            logger.info(f"Loading Whisper {config.WHISPER_MODEL} on {config.WHISPER_DEVICE}")
             
             # Initialize Whisper model
             loop = asyncio.get_event_loop()
@@ -52,9 +48,8 @@ class EnhancedWhisperService:
             
             # Initialize batched pipeline if enabled
             if config.USE_BATCHED_INFERENCE:
-                logger.info("⚡ Initializing BatchedInferencePipeline...")
+                logger.info("Initializing BatchedInferencePipeline")
                 self.batched_pipeline = BatchedInferencePipeline(model=self.model)
-                logger.info("✅ Batched inference ready")
             
             # Initialize Silero VAD
             if config.SILERO_VAD_ENABLED:
@@ -62,17 +57,17 @@ class EnhancedWhisperService:
             
             self.is_ready.set()
             self.last_used = time.time()
-            logger.info("🚀 Whisper + Silero VAD service ready")
+            logger.info("Whisper + Silero VAD service ready")
             
         except Exception as e:
-            logger.error(f"❌ Model initialization failed: {e}")
+            logger.error(f"Model initialization failed: {e}")
             self.load_error = str(e)
             raise
     
     async def _initialize_silero_vad(self):
         """Initialize Silero VAD model"""
         try:
-            logger.info("🎯 Loading Silero VAD for intelligent speech detection...")
+            logger.info("Loading Silero VAD")
             
             loop = asyncio.get_event_loop()
             vad_model, utils = await loop.run_in_executor(
@@ -89,14 +84,13 @@ class EnhancedWhisperService:
             self.vad_model = vad_model
             self.get_speech_timestamps = utils[0]
             self.vad_model.eval()
-            
             torch.set_num_threads(2)
             
-            logger.info("✅ Silero VAD ready - intelligent speech detection enabled")
+            logger.info("Silero VAD ready")
             
         except Exception as e:
-            logger.error(f"❌ Silero VAD initialization failed: {e}")
-            logger.info("⚠️ Continuing without Silero VAD")
+            logger.error(f"Silero VAD initialization failed: {e}")
+            logger.info("Continuing without Silero VAD")
             config.SILERO_VAD_ENABLED = False
     
     def _create_whisper_model(self) -> WhisperModel:
@@ -108,7 +102,7 @@ class EnhancedWhisperService:
         elif config.WHISPER_DEVICE == "cuda" and torch.cuda.is_available():
             compute_type = "float16" if torch.cuda.get_device_capability()[0] >= 7 else "float32"
             
-        logger.info(f"🔧 Creating Whisper model: {config.WHISPER_MODEL} ({compute_type} on {config.WHISPER_DEVICE})")
+        logger.info(f"Creating Whisper model: {config.WHISPER_MODEL} ({compute_type} on {config.WHISPER_DEVICE})")
         
         return WhisperModel(
             config.WHISPER_MODEL,
@@ -125,10 +119,7 @@ class EnhancedWhisperService:
         return self.is_ready.is_set() and self.model is not None and not self.load_error
     
     def has_speech_content(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
-        """
-        SILERO VAD - Intelligent speech detection
-        Replaces custom RMS-based logic with ML-powered detection
-        """
+        """Silero VAD - Intelligent speech detection"""
         if not config.SILERO_VAD_ENABLED or self.vad_model is None:
             # Simple fallback
             rms = np.sqrt(np.mean(audio ** 2)) if len(audio) > 0 else 0.0
@@ -164,15 +155,10 @@ class EnhancedWhisperService:
             min_required_speech = config.MIN_UTTERANCE_SEC * 0.6
             has_speech = total_speech_duration >= min_required_speech
             
-            if has_speech:
-                logger.debug(f"🎯 Silero VAD: Speech detected ({total_speech_duration:.2f}s)")
-            else:
-                logger.debug(f"🔇 Silero VAD: Insufficient speech ({total_speech_duration:.2f}s)")
-                
             return has_speech
             
         except Exception as e:
-            logger.warning(f"⚠️ Silero VAD error: {e}, using fallback")
+            logger.warning(f"Silero VAD error: {e}, using fallback")
             rms = np.sqrt(np.mean(audio ** 2)) if len(audio) > 0 else 0.0
             return rms > 0.001
     
@@ -234,7 +220,7 @@ class EnhancedWhisperService:
                 
         except Exception as e:
             processing_time = int((time.time() - start_time) * 1000)
-            logger.error(f"❌ Transcription failed after {processing_time}ms: {e}")
+            logger.error(f"Transcription failed after {processing_time}ms: {e}")
             raise
     
     async def _transcribe_batched(self, audio_path: str, language: Optional[str] = None):
@@ -272,5 +258,4 @@ class EnhancedWhisperService:
             "silero_vad_ready": self.vad_model is not None
         }
 
-# Global service instance
 whisper_service = EnhancedWhisperService()
