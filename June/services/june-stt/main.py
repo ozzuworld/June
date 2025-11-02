@@ -385,9 +385,8 @@ async def _transcribe_utterance_with_silero_sota(pid: str, audio: np.ndarray, ut
     try:
         duration = len(audio) / SAMPLE_RATE
         
-        # SOTA: Enhanced speech validation with aggressive VAD tuning
-        speech_threshold = 0.3 if AGGRESSIVE_VAD_TUNING else 0.5  # More sensitive
-        if not whisper_service.has_speech_content(audio, SAMPLE_RATE, threshold=speech_threshold):
+        # SOTA: Enhanced speech validation - remove unsupported kwarg
+        if not whisper_service.has_speech_content(audio, SAMPLE_RATE):
             logger.debug(f"🔇 SOTA VAD filtered out non-speech for {pid} ({duration:.2f}s)")
             return
             
@@ -403,7 +402,6 @@ async def _transcribe_utterance_with_silero_sota(pid: str, audio: np.ndarray, ut
         method = res.get("method", "sota_enhanced")
         
         if text and len(text) > 1:  # SOTA: More permissive (was > 2)
-            # SOTA: Enhanced filtering with context awareness
             filtered_words = {"you", "you.", "uh", "um", "mm", "hmm", "yeah", "mhm", "ah", "oh"}
             if text.lower() not in filtered_words:
                 logger.info(f"✅ SOTA FINAL[{pid}] via {method} ({processing_time:.0f}ms): {text}")
@@ -433,13 +431,11 @@ async def _process_utterances_with_streaming_sota():
     
     logger.info("🎯 SOTA: AI-grade speech detection with aggressive tuning")
     
-    # SOTA: More frequent health checks for better connectivity awareness
     last_health_check = time.time()
-    health_check_interval = 20.0  # SOTA: Check every 20s (was 30s)
+    health_check_interval = 20.0
     
     while True:
         try:
-            # SOTA: Faster health monitoring
             current_time = time.time()
             if current_time - last_health_check > health_check_interval:
                 orchestrator_available = await _check_orchestrator_health()
@@ -464,7 +460,6 @@ async def _process_utterances_with_streaming_sota():
                             now = datetime.utcnow()
                             
                             if not state.is_active:
-                                # SOTA: Start ultra-responsive utterance processing
                                 state.is_active = True
                                 state.started_at = now
                                 state.last_audio_at = now
@@ -483,7 +478,6 @@ async def _process_utterances_with_streaming_sota():
                                     
                                 logger.debug(f"🚀 SOTA: Started ultra-fast utterance capture for {pid} (ID: {state.utterance_id[:8]})")
                                 
-                                # SOTA: Start ultra-responsive partial processing
                                 if (CONTINUOUS_PARTIALS and STREAMING_ENABLED and 
                                     pid not in partial_streaming_tasks):
                                     task = asyncio.create_task(_continuous_partial_processor_sota(pid, state, streamer))
@@ -498,17 +492,15 @@ async def _process_utterances_with_streaming_sota():
                                 if STREAMING_ENABLED and streamer and not CONTINUOUS_PARTIALS:
                                     streamer.add_audio_chunk(frame)
                                     
-                                # SOTA: Faster utterance end detection
                                 duration = (now - state.started_at).total_seconds()
                                 silence_duration = (now - state.last_audio_at).total_seconds()
                                 
                                 should_end = (
-                                    duration >= MAX_UTTERANCE_SEC or  # 8s max (was 12s)
-                                    (duration >= MIN_UTTERANCE_SEC and silence_duration >= SILENCE_TIMEOUT_SEC)  # 0.8s silence (was 1.2s)
+                                    duration >= MAX_UTTERANCE_SEC or
+                                    (duration >= MIN_UTTERANCE_SEC and silence_duration >= SILENCE_TIMEOUT_SEC)
                                 )
                                 
                                 if should_end:
-                                    # SOTA: Fast cleanup of partial processing
                                     if pid in partial_streaming_tasks:
                                         partial_streaming_tasks[pid].cancel()
                                         try:
@@ -518,13 +510,11 @@ async def _process_utterances_with_streaming_sota():
                                         del partial_streaming_tasks[pid]
                                         logger.debug(f"🛑 SOTA: Stopped ultra-fast partial task for {pid}")
                                     
-                                    # SOTA: Process final utterance
                                     if len(state.buffer) > 0:
                                         utterance_audio = np.concatenate(list(state.buffer), axis=0)
                                         utterance_duration = len(utterance_audio) / SAMPLE_RATE
                                         utterance_id = state.utterance_id
                                         
-                                        # SOTA: Log performance achievements
                                         perf_note = ""
                                         if state.ultra_fast_triggered:
                                             perf_note = " (ULTRA-FAST ACHIEVED)"
@@ -548,7 +538,7 @@ async def _process_utterances_with_streaming_sota():
         except Exception as e:
             logger.warning(f"❌ SOTA main loop error: {e}")
             
-        await asyncio.sleep(PROCESS_SLEEP_SEC)  # 0.03s ultra-fast processing
+        await asyncio.sleep(PROCESS_SLEEP_SEC)
 
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
