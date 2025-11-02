@@ -11,7 +11,7 @@ import soundfile as sf
 import os
 import time
 from datetime import datetime
-from contextlib import asynccontextmanager
+from contextual import asynccontextmanager
 from typing import Optional, Deque, Dict
 from collections import deque
 
@@ -46,17 +46,19 @@ partial_streaming_tasks: Dict[str, asyncio.Task] = {}
 processed_utterances = 0
 partial_transcripts_sent = 0
 
-# Constants
+# Configurable constants from environment variables
 SAMPLE_RATE = 16000
-MAX_UTTERANCE_SEC = 8.0
-MIN_UTTERANCE_SEC = 0.3
+MAX_UTTERANCE_SEC = float(os.getenv("MAX_UTTERANCE_SEC", "15.0"))    # Configurable (was 8.0)
+MIN_UTTERANCE_SEC = float(os.getenv("MIN_UTTERANCE_SEC", "1.0"))     # Configurable (was 0.3)
+SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "2.5")) # Configurable (was 0.8)
 PROCESS_SLEEP_SEC = 0.03
-SILENCE_TIMEOUT_SEC = 0.8
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt", "tts", "stt"}
 PARTIAL_CHUNK_MS = 150
 PARTIAL_MIN_SPEECH_MS = 200
 PARTIAL_EMIT_INTERVAL_MS = 200
 MAX_PARTIAL_LENGTH = 120
+
+logger.info(f"⚡ Configurable timing: MAX={MAX_UTTERANCE_SEC}s, MIN={MIN_UTTERANCE_SEC}s, SILENCE={SILENCE_TIMEOUT_SEC}s")
 
 class UtteranceState:
     def __init__(self):
@@ -481,8 +483,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June STT",
-    version="7.1.0-clean",
-    description="Real-time Speech-to-Text with LiveKit and Silero VAD",
+    version="7.1.0-configurable",
+    description="Real-time Speech-to-Text with configurable timing parameters",
     lifespan=lifespan,
 )
 
@@ -530,7 +532,7 @@ async def transcribe_audio(
 async def health():
     return {
         "status": "healthy",
-        "version": "7.1.0-clean",
+        "version": "7.1.0-configurable",
         "components": {
             "whisper_ready": whisper_service.is_model_ready(),
             "livekit_connected": room_connected,
@@ -538,6 +540,11 @@ async def health():
             "streaming_enabled": STREAMING_ENABLED,
             "partials_enabled": PARTIALS_ENABLED,
             "continuous_partials": CONTINUOUS_PARTIALS,
+        },
+        "timing_config": {
+            "max_utterance_sec": MAX_UTTERANCE_SEC,
+            "min_utterance_sec": MIN_UTTERANCE_SEC,
+            "silence_timeout_sec": SILENCE_TIMEOUT_SEC,
         }
     }
 
@@ -545,8 +552,13 @@ async def health():
 async def root():
     return {
         "service": "june-stt",
-        "version": "7.1.0-clean",
-        "description": "Real-time Speech-to-Text with Silero VAD and LiveKit",
+        "version": "7.1.0-configurable",
+        "description": "Real-time Speech-to-Text with configurable timing parameters",
+        "config": {
+            "max_utterance_sec": MAX_UTTERANCE_SEC,
+            "min_utterance_sec": MIN_UTTERANCE_SEC,
+            "silence_timeout_sec": SILENCE_TIMEOUT_SEC,
+        },
         "status": {
             "active_participants": len(buffers),
             "processed_utterances": processed_utterances,
@@ -560,7 +572,7 @@ async def root():
 async def stats():
     return {
         "status": "success",
-        "version": "7.1.0-clean",
+        "version": "7.1.0-configurable",
         "connectivity": {
             "livekit_connected": room_connected,
             "orchestrator_available": orchestrator_available,
@@ -570,6 +582,11 @@ async def stats():
             "partials_enabled": PARTIALS_ENABLED,
             "continuous_partials": CONTINUOUS_PARTIALS,
             "metrics": streaming_metrics.get_stats(),
+        },
+        "timing_config": {
+            "max_utterance_sec": MAX_UTTERANCE_SEC,
+            "min_utterance_sec": MIN_UTTERANCE_SEC,
+            "silence_timeout_sec": SILENCE_TIMEOUT_SEC,
         },
         "global_stats": {
             "processed_utterances": processed_utterances,
