@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
 Streaming utilities for partial STT transcription
-Enables real-time partial transcript emission for lower latency
 """
 import logging
-import asyncio
 import time
-from typing import Optional, AsyncIterator, Dict, Any
+from typing import Optional, Dict, Any
 from collections import deque
 import numpy as np
 
 logger = logging.getLogger("streaming-stt")
-
 
 class PartialTranscriptStreamer:
     """Manages streaming partial transcripts for real-time voice processing"""
@@ -33,8 +30,6 @@ class PartialTranscriptStreamer:
         """Add audio chunk and return if ready for partial processing"""
         self.partial_buffer.extend(audio)
         self.total_samples += len(audio)
-        
-        # Check if we have enough for partial transcription
         return len(self.partial_buffer) >= self.chunk_samples
         
     def get_partial_audio(self) -> Optional[np.ndarray]:
@@ -42,12 +37,10 @@ class PartialTranscriptStreamer:
         if len(self.partial_buffer) < self.chunk_samples:
             return None
             
-        # Extract chunk for processing
         chunk = np.array(list(self.partial_buffer)[:self.chunk_samples])
         
-        # Keep overlap for context (50% overlap)
+        # Keep 50% overlap for context
         overlap_samples = self.chunk_samples // 2
-        # Remove processed samples but keep overlap
         for _ in range(self.chunk_samples - overlap_samples):
             if self.partial_buffer:
                 self.partial_buffer.popleft()
@@ -55,18 +48,17 @@ class PartialTranscriptStreamer:
         return chunk
         
     def should_emit_partial(self, new_text: str) -> bool:
-        """Check if partial should be emitted (avoid duplicate/similar partials)"""
+        """Check if partial should be emitted"""
         if not new_text or len(new_text) < 3:
             return False
             
-        # Don't emit if very similar to last partial
         if new_text == self.last_partial_text:
             return False
             
         # Don't emit if just adding single words to previous partial
         if self.last_partial_text and new_text.startswith(self.last_partial_text):
             added_text = new_text[len(self.last_partial_text):].strip()
-            if len(added_text.split()) == 1:  # Only one word added
+            if len(added_text.split()) == 1:
                 return False
                 
         return True
@@ -82,13 +74,12 @@ class PartialTranscriptStreamer:
         self.speech_detected = False
         self.total_samples = 0
 
-
 class SentenceSegmenter:
     """Segments streaming text into complete sentences for TTS"""
     
     def __init__(self):
         self.buffer = ""
-        self.sentence_endings = {'.', '!', '?', '。', '！', '？'}  # Multi-language
+        self.sentence_endings = {'.', '!', '?', '。', '！', '？'}
         self.min_sentence_length = 10
         
     def add_text(self, text: str) -> list[str]:
@@ -105,15 +96,13 @@ class SentenceSegmenter:
                     self.buffer = self.buffer[i+1:]
                     break
                     
-        # Handle buffer overflow (send partial if too long)
+        # Handle buffer overflow
         if len(self.buffer) > 200:
-            # Find last space to break cleanly
             last_space = self.buffer.rfind(' ', 100, 180)
             if last_space > 0:
                 sentences.append(self.buffer[:last_space].strip())
                 self.buffer = self.buffer[last_space:].strip()
             else:
-                # Force break at 150 chars
                 sentences.append(self.buffer[:150].strip())
                 self.buffer = self.buffer[150:].strip()
                 
@@ -131,9 +120,9 @@ class SentenceSegmenter:
         """Reset segmenter state"""
         self.buffer = ""
 
-
-# Performance metrics for streaming
 class StreamingMetrics:
+    """Performance metrics for streaming"""
+    
     def __init__(self):
         self.partial_count = 0
         self.final_count = 0
@@ -173,6 +162,4 @@ class StreamingMetrics:
             "streaming_efficiency": round(self.partial_count / max(1, self.final_count), 2)
         }
 
-
-# Global streaming components
 streaming_metrics = StreamingMetrics()
