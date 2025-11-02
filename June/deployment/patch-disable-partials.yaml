@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+spec:
+  template:
+    spec:
+      containers:
+      - name: june-orchestrator
+        env:
+        - name: DISABLE_PARTIAL_LLM_TRIGGERS
+          value: "true"
+        - name: FINAL_CANCELS_PARTIAL
+          value: "true"
+        - name: BLOCK_FINAL_IF_PARTIAL_ACTIVE
+          value: "true"
