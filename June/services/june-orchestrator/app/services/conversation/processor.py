@@ -137,6 +137,29 @@ class ConversationProcessor:
         else:
             return await self._handle_final_transcript(payload, session)
     
+    def _cleanup_expired_states(self):
+        """Clean up expired states periodically"""
+        # Clean utterance states
+        utterance_cleaned = self.utterance_manager.cleanup_expired()
+        
+        # Clean final transcript trackers
+        tracker_cleaned = self.final_tracker.cleanup_expired()
+        
+        # Clean online sessions
+        now = datetime.utcnow()
+        expired_online = []
+        for key, session in self.online_sessions.items():
+            age_seconds = (now - session.started_at).total_seconds()
+            if age_seconds > 30:  # 30 second timeout
+                expired_online.append(key)
+                session.cancel()
+        
+        for key in expired_online:
+            del self.online_sessions[key]
+        
+        if utterance_cleaned or tracker_cleaned or expired_online:
+            logger.debug(f"🧹 Cleaned {utterance_cleaned} utterances, {tracker_cleaned} trackers, {len(expired_online)} online sessions")
+    
     async def _handle_partial_transcript(self, payload: STTWebhookPayload, session: Session) -> WebhookResponse:
         """Handle partial transcripts with natural conversation flow"""
         logger.info(f"⚡ PARTIAL transcript #{payload.partial_sequence or 0} from {payload.participant}: '{payload.text}'")
@@ -409,4 +432,204 @@ class ConversationProcessor:
         except Exception as e:
             logger.error(f"❌ Natural Online LLM processing error: {e}")
     
-    # ... rest of file unchanged ...
+    async def _handle_skill_activation(self, session: Session, skill_name: str, skill_def, payload: STTWebhookPayload) -> WebhookResponse:
+        """Handle skill activation"""
+        session.skill_session.activate_skill(skill_name)
+        ai_response = skill_def.activation_response
+        
+        # Add to history
+        self.session_service.add_message(
+            session.id, "user", payload.text,
+            {"skill_trigger": skill_name, "confidence": payload.confidence,
+             "language": payload.language, "timestamp": payload.timestamp}
+        )
+        self.session_service.add_message(
+            session.id, "assistant", ai_response,
+            {"skill_activation": skill_name, "processing_time_ms": 50}
+        )
+        
+        # TTS with voice cloning for mockingbird
+        use_cloning = skill_name == "mockingbird"
+        await self.tts_orchestrator.trigger_tts(
+            payload.room_name, ai_response, payload.language or "en",
+            use_voice_cloning=use_cloning,
+            user_id=payload.participant if use_cloning else None,
+            streaming=False
+        )
+        
+        return WebhookResponse(
+            status="skill_activated",
+            skill_name=skill_name,
+            session_id=session.id,
+            ai_response=ai_response,
+            processing_time_ms=50,
+            skill_state=session.skill_session.__dict__
+        )
+    
+    async def _handle_skill_input(self, session: Session, payload: STTWebhookPayload) -> WebhookResponse:
+        """Handle skill input processing"""
+        name = session.skill_session.active_skill
+        
+        if self.skill_service.should_exit_skill(payload.text, session.skill_session):
+            session.skill_session.deactivate_skill()
+            ai_response = "Skill deactivated. I'm back to normal conversation mode."
+            await self.tts_orchestrator.trigger_tts(
+                payload.room_name, ai_response, payload.language or "en", streaming=False
+            )
+            return WebhookResponse(
+                status="skill_deactivated", 
+                ai_response=ai_response, 
+                session_id=session.id
+            )
+        
+        ai_response, ctx = self.skill_service.create_skill_response(
+            name, payload.text, session.skill_session.context
+        )
+        session.skill_session.context.update(ctx)
+        session.skill_session.increment_turn()
+        
+        # Add to history
+        self.session_service.add_message(
+            session.id, "user", payload.text,
+            {"skill_input": name, "skill_turn": session.skill_session.turn_count,
+             "confidence": payload.confidence, "language": payload.language}
+        )
+        self.session_service.add_message(
+            session.id, "assistant", ai_response,
+            {"skill_response": name, "skill_turn": session.skill_session.turn_count,
+             "processing_time_ms": 100}
+        )
+        
+        # Only use voice cloning for mockingbird skill
+        use_cloning = (name == "mockingbird")
+        await self.tts_orchestrator.trigger_tts(
+            payload.room_name, ai_response, payload.language or "en",
+            use_voice_cloning=use_cloning,
+            user_id=payload.participant if use_cloning else None,
+            streaming=False
+        )
+        
+        return WebhookResponse(
+            status="skill_processed",
+            skill_name=name,
+            session_id=session.id,
+            ai_response=ai_response,
+            processing_time_ms=100,
+            skill_state=session.skill_session.__dict__,
+            voice_cloning_used=use_cloning
+        )
+    
+    async def _handle_conversation(self, session: Session, payload: STTWebhookPayload) -> WebhookResponse:
+        """Handle regular conversation (fallback when online processing not used)"""
+        # AI rate limiting
+        self.security_guard.ensure_ai_rate_limit(payload.participant)
+        
+        history = session.get_recent_history()
+        if STREAMING_ENABLED:
+            return await self._handle_streaming_conversation(session, payload, history)
+        else:
+            ai_text, proc_ms = await self.ai_service.generate_response(
+                text=payload.text, user_id=payload.participant, session_id=session.id,
+                conversation_history=history
+            )
+            
+            # Track costs
+            self.cost_tracker.track_call(
+                input_text=f"{payload.text} {str(history)}", 
+                output_text=ai_text,
+                processing_time_ms=proc_ms
+            )
+            
+            # Add to history
+            self.session_service.add_message(
+                session.id, "user", payload.text,
+                {"confidence": payload.confidence, "language": payload.language,
+                 "timestamp": payload.timestamp}
+            )
+            self.session_service.add_message(
+                session.id, "assistant", ai_text,
+                {"processing_time_ms": proc_ms, "model": self.config.ai.model}
+            )
+            
+            # Update metrics
+            self.session_service.update_session_metrics(
+                session.id, tokens_used=len(payload.text)//4 + len(ai_text)//4, 
+                response_time_ms=proc_ms
+            )
+            
+            # Regular conversation - no voice cloning
+            await self.tts_orchestrator.trigger_tts(
+                payload.room_name, ai_text, payload.language or "en", streaming=False
+            )
+            
+            return WebhookResponse(
+                status="success", 
+                session_id=session.id, 
+                ai_response=ai_text,
+                processing_time_ms=proc_ms
+            )
+    
+    async def _handle_streaming_conversation(self, session: Session, payload: STTWebhookPayload, history: List[Dict]) -> WebhookResponse:
+        """Handle streaming conversation (used as fallback when online processing not available)"""
+        start = time.time()
+        
+        async def tts_cb(sentence: str):
+            # Regular conversation - no voice cloning
+            await self.tts_orchestrator.trigger_tts(
+                payload.room_name, sentence, payload.language or "en", streaming=True
+            )
+        
+        parts = []
+        first_token_ms = None
+        async for token in self.streaming_ai_service.generate_streaming_response(
+            text=payload.text, conversation_history=history, user_id=payload.participant,
+            session_id=session.id, tts_callback=tts_cb if CONCURRENT_TTS_ENABLED else None
+        ):
+            if first_token_ms is None:
+                first_token_ms = (time.time() - start) * 1000
+                logger.info(f"⚡ First AI token in {first_token_ms:.0f}ms")
+            parts.append(token)
+            
+        ai_text = "".join(parts)
+        total_ms = (time.time() - start) * 1000
+        
+        # Track costs
+        self.cost_tracker.track_call(
+            input_text=f"{payload.text} {str(history)}", 
+            output_text=ai_text,
+            processing_time_ms=total_ms
+        )
+        
+        # Add to history
+        self.session_service.add_message(
+            session.id, "user", payload.text,
+            {"confidence": payload.confidence, "language": payload.language,
+             "timestamp": payload.timestamp}
+        )
+        self.session_service.add_message(
+            session.id, "assistant", ai_text,
+            {"processing_time_ms": total_ms, "model": self.config.ai.model,
+             "streaming": True}
+        )
+        
+        # Update metrics
+        self.session_service.update_session_metrics(
+            session.id, tokens_used=len(payload.text)//4 + len(ai_text)//4, 
+            response_time_ms=total_ms
+        )
+        
+        if not CONCURRENT_TTS_ENABLED and ai_text:
+            # Regular conversation - no voice cloning
+            await self.tts_orchestrator.trigger_tts(
+                payload.room_name, ai_text, payload.language or "en", streaming=True
+            )
+        
+        return WebhookResponse(
+            status="streaming_success", 
+            session_id=session.id, 
+            ai_response=ai_text,
+            processing_time_ms=round(total_ms, 2), 
+            first_token_ms=round(first_token_ms or 0, 2),
+            concurrent_tts_used=CONCURRENT_TTS_ENABLED, 
+            streaming_mode=True
+        )
