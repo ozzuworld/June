@@ -2,6 +2,13 @@
 import os
 SAMPLE_RATE = 16000
 
+# Helper for boolean envs (define before usage)
+def _bool_env(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
 # SOTA: Read timeout values from environment with sensible defaults
 MAX_UTTERANCE_SEC = float(os.getenv("MAX_UTTERANCE_SEC", "15.0"))    # Configurable (was hard-coded 8.0)
 MIN_UTTERANCE_SEC = float(os.getenv("MIN_UTTERANCE_SEC", "1.0"))     # Configurable (was hard-coded 0.3)
@@ -21,6 +28,10 @@ MAX_PARTIAL_LENGTH = 120      # SOTA: Slightly shorter partials for faster proce
 SOTA_MODE_ENABLED = _bool_env("SOTA_MODE_ENABLED", True)
 ULTRA_FAST_PARTIALS = _bool_env("ULTRA_FAST_PARTIALS", True)  # <150ms first partial goal
 AGGRESSIVE_VAD_TUNING = _bool_env("AGGRESSIVE_VAD_TUNING", True)  # More sensitive speech detection
+
+# Add logger reference for startup logs
+import logging
+logger = logging.getLogger(__name__)
 
 logger.info("🚀 SOTA Voice AI Optimization ACTIVE")
 logger.info(f"⚡ SOTA timing: {PARTIAL_EMIT_INTERVAL_MS}ms partials, {PARTIAL_MIN_SPEECH_MS}ms first partial")
