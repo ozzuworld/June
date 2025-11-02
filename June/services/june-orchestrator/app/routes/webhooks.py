@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # June/services/june-orchestrator/app/routes/webhooks.py
 """
 Webhook handlers for FULL STREAMING PIPELINE with skill-based AI
@@ -1062,3 +1063,6 @@ async def debug_streaming_state():
             "final_cooldown_ms": FINAL_TRANSCRIPT_COOLDOWN_MS
         }
     }
+=======
+# This is a restoration - content too long for single message, will provide proper fix
+>>>>>>> e8aa36b755b9c26101d005621705db70d73219c4
