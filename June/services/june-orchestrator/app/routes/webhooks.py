@@ -1,6 +1,6 @@
 """Phase 2: Enhanced webhook routes with SOTA real-time conversation engine
 
-Fixed STT payload normalization and routing to real-time engine.
+Cleanup: remove legacy processor fallback; route all finals/eligible partials through SOTA engine.
 """
 import logging
 from typing import Optional, Dict, Any
@@ -10,11 +10,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from ..models.requests import STTWebhookPayload
 from ..models.responses import WebhookResponse
 from ..core.dependencies import (
-    conversation_processor_dependency,
+    conversation_processor_dependency,  # kept for non-RT endpoints that import it
     get_redis_client,
     session_service_dependency
 )
-from ..services.conversation.processor import ConversationProcessor
 from ..services.real_time_conversation_engine import RealTimeConversationEngine
 from ..services.streaming_service import streaming_ai_service
 from ..services.tts_service import tts_service
@@ -22,11 +21,9 @@ from ..services.tts_service import tts_service
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Global real-time engine instance
 _rt_engine: Optional[RealTimeConversationEngine] = None
 
 def get_rt_engine() -> RealTimeConversationEngine:
-    """Get real-time conversation engine singleton"""
     global _rt_engine
     if _rt_engine is None:
         _rt_engine = RealTimeConversationEngine(
@@ -39,7 +36,6 @@ def get_rt_engine() -> RealTimeConversationEngine:
 
 
 def extract_text_and_flags(payload: STTWebhookPayload) -> Dict[str, Any]:
-    """Normalize STT payload fields to standard format"""
     text = (
         getattr(payload, 'text', '') or
         getattr(payload, 'transcript', '') or
@@ -48,84 +44,51 @@ def extract_text_and_flags(payload: STTWebhookPayload) -> Dict[str, Any]:
         getattr(payload, 'message', '') or
         ''
     ).strip()
-    
     is_partial = (
         getattr(payload, 'partial', False) or
         getattr(payload, 'is_partial', False) or
-        payload.event in ['partial', 'interim'] or
-        not getattr(payload, 'is_final', True)
+        payload.event in ['partial', 'interim']
     )
-    
     meaningful = len(text) >= 2 and text not in ['', '.', '?', '!']
-    
-    return {
-        'text': text,
-        'is_partial': is_partial,
-        'meaningful': meaningful,
-        'confidence': getattr(payload, 'confidence', 0.8)
-    }
+    return {'text': text, 'is_partial': is_partial, 'meaningful': meaningful}
 
 
 @router.post("/api/webhooks/stt", response_model=WebhookResponse)
 async def handle_stt_webhook(
     payload: STTWebhookPayload,
-    processor: ConversationProcessor = Depends(conversation_processor_dependency),
     sessions = Depends(session_service_dependency)
 ) -> WebhookResponse:
-    """STT webhook handler with SOTA real-time conversation processing"""
     logger.info(f"🎙️ STT webhook: {payload.participant} -> {payload.room_name}")
-    
     try:
         extracted = extract_text_and_flags(payload)
         text = extracted['text']
         is_partial = extracted['is_partial']
         meaningful = extracted['meaningful']
-        
         if not meaningful:
-            logger.debug(f"Skipping empty/meaningless STT: '{text}'")
             return WebhookResponse(status="skipped", message="Empty or meaningless input", success=True)
-        
-        if not is_partial or (len(text.split()) >= 3):
-            rt_engine = get_rt_engine()
-            result = await rt_engine.handle_user_input(
-                session_id=payload.participant,
-                room_name=payload.room_name,
-                text=text,
-                audio_data=getattr(payload, 'audio_data', None),
-                is_partial=is_partial
-            )
-            if "error" not in result:
-                status = "partial_processed" if is_partial else "response_generated"
-                return WebhookResponse(
-                    status=status,
-                    message=f"SOTA processed in {result.get('first_phrase_time_ms', 0):.0f}ms",
-                    success=True,
-                    processing_time=result.get('total_time_ms', 0),
-                    metadata={
-                        "phrases_sent": result.get('phrases_sent', 0),
-                        "complexity": result.get('complexity', 'unknown'),
-                        "sota_target_met": result.get('target_met', False),
-                        "engine": "real_time_sota"
-                    }
-                )
-            logger.warning(f"RT engine error, falling back to legacy: {result.get('error')}")
-        
-        legacy_response = await processor.handle_stt_webhook(payload)
-        if hasattr(legacy_response, 'metadata') and legacy_response.metadata:
-            legacy_response.metadata['engine'] = 'legacy_fallback'
-        return legacy_response
-        
-    except HTTPException:
-        raise
+        rt_engine = get_rt_engine()
+        result = await rt_engine.handle_user_input(
+            session_id=payload.participant,
+            room_name=payload.room_name,
+            text=text,
+            audio_data=getattr(payload, 'audio_data', None),
+            is_partial=is_partial
+        )
+        status = "partial_processed" if is_partial else "response_generated"
+        return WebhookResponse(
+            status=status,
+            message=f"Processed in {result.get('first_phrase_time_ms', 0):.0f}ms" if 'first_phrase_time_ms' in result else "Processed",
+            success='error' not in result,
+            processing_time=result.get('total_time_ms', 0),
+            metadata={
+                "engine": "real_time_sota",
+                "phrases_sent": result.get('phrases_sent', 0),
+                "first_phrase_ms": result.get('first_phrase_time_ms', 0)
+            }
+        )
     except Exception as e:
         logger.exception(f"❌ STT webhook processing failed: {e}")
-        try:
-            legacy_response = await processor.handle_stt_webhook(payload)
-            logger.warning(f"⚠️ Emergency fallback to legacy processor successful")
-            return legacy_response
-        except Exception as fallback_error:
-            logger.error(f"❌ Emergency fallback also failed: {fallback_error}")
-            raise HTTPException(status_code=500, detail="STT processing completely failed")
+        raise HTTPException(status_code=500, detail="STT processing failed")
 
 
 @router.post("/api/webhooks/voice_onset")
@@ -178,8 +141,7 @@ async def debug_streaming_state():
             "sota_engine_active": True,
             "active_conversations": {sid: rt_engine.get_conversation_stats(sid) for sid in list(rt_engine.active_conversations.keys())},
             "streaming_metrics": streaming_ai_service.get_metrics(),
-            "payload_normalization": "active",
-            "legacy_fallback": "available"
+            "payload_normalization": "active"
         }
     except Exception as e:
         logger.error(f"❌ Debug error: {e}")
