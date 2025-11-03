@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
 """
 Streaming AI Service - SOTA Ultra-Fast Implementation
-Optimized for 2-token emergency first phrases and 60ms sensitivity
+Simplified after legacy cleanup - always-on streaming with 2-token emergency phrases
 """
 import logging
 import time
 import asyncio
-import os
 from typing import Optional, AsyncIterator, Dict, Any, List, Callable
 from dataclasses import dataclass
 
 from ..config import config
 from ..security.cost_tracker import circuit_breaker
-from .tts_service import tts_service
 
 logger = logging.getLogger("streaming-ai")
 
-# SOTA tuning - ultra-aggressive for naturalness
-PHRASE_MIN_TOKENS = int(os.getenv("PHRASE_MIN_TOKENS", "4"))
-TOKEN_GAP_MS = int(os.getenv("TOKEN_GAP_MS", "60"))
-MAX_CHUNK_CHARS = int(os.getenv("MAX_CHUNK_CHARS", "100"))           # Smaller
-FIRST_PHRASE_URGENCY_TOKENS = int(os.getenv("FIRST_PHRASE_TOKENS", "2"))  # Emergency: 2 tokens
-STREAMING_ENABLED = os.getenv("AI_STREAMING_ENABLED", "true").lower() == "true"
-CONCURRENT_TTS_ENABLED = os.getenv("CONCURRENT_TTS_ENABLED", "true").lower() == "true"
+# SOTA configuration - hardcoded for optimal performance
+PHRASE_MIN_TOKENS = 4
+TOKEN_GAP_MS = 60
+MAX_CHUNK_CHARS = 100
+FIRST_PHRASE_URGENCY_TOKENS = 2  # Emergency: "Hello there" or "I think"
 
 @dataclass
 class StreamingMetrics:
@@ -57,7 +53,8 @@ class StreamingMetrics:
             "ultra_fast_triggers": self.ultra_fast_triggers,
             "concurrent_tts_triggers": self.concurrent_tts_count,
             "streaming_requests": self.streaming_requests,
-            "naturalness_score": 0
+            "naturalness_score": 0,
+            "mode": "SOTA_OPTIMIZED"
         }
         
         if self.first_token_times:
@@ -85,7 +82,7 @@ class UltraFastPhraseBuffer:
         self.semantic_breaks = ["but", "and", "or", "so", "then", "however", "because", "while"]
     
     def add_token(self, token: str) -> Optional[str]:
-        """Ultra-aggressive token flushing"""
+        """Ultra-aggressive token flushing for natural conversation"""
         now = time.time()
         gap_ms = (now - self.last_token_time) * 1000
         self.last_token_time = now
@@ -93,34 +90,29 @@ class UltraFastPhraseBuffer:
         self.buffer += token
         self.token_count += 1
         
-        # EMERGENCY: Get first phrase out ASAP (2 tokens minimum)
+        # EMERGENCY: Get first phrase out ASAP
         if not self.first_phrase_sent and self.token_count >= FIRST_PHRASE_URGENCY_TOKENS:
             words = self.buffer.split()
-            if len(words) >= 2:  # "Hello there" or "I think"
+            if len(words) >= 2:
                 phrase = self._flush_buffer()
                 self.first_phrase_sent = True
-                logger.debug(f"⚡ EMERGENCY first phrase ({self.token_count} tokens): '{phrase[:20]}...'")
                 return phrase
         
-        # PUNCTUATION: Always flush
+        # Natural phrase boundaries
         if any(p in token for p in self.punctuation):
             return self._flush_buffer()
         
-        # SEMANTIC BREAKS: Natural conversation flow
         buffer_lower = self.buffer.lower()
         for break_word in self.semantic_breaks:
             if f" {break_word} " in buffer_lower and self.token_count >= 3:
                 return self._flush_buffer()
         
-        # TOKEN COUNT: Standard phrase completion
         if self.token_count >= PHRASE_MIN_TOKENS:
             return self._flush_buffer()
         
-        # TOKEN GAP: Natural pause
         if gap_ms > TOKEN_GAP_MS and self.token_count >= 2:
             return self._flush_buffer()
         
-        # LENGTH OVERFLOW: Prevent huge chunks
         if len(self.buffer) >= MAX_CHUNK_CHARS:
             return self._flush_buffer()
         
@@ -161,14 +153,7 @@ class StreamingAIService:
         tts_callback: Optional[Callable[[str], Any]] = None,
         room_name: Optional[str] = None
     ) -> AsyncIterator[str]:
-        """Ultra-fast streaming with 2-token emergency phrases"""
-        
-        if not STREAMING_ENABLED:
-            from .ai_service import generate_response
-            response, _ = await generate_response(text, user_id, session_id, conversation_history)
-            yield response
-            return
-        
+        """SOTA streaming - always enabled, ultra-fast phrase delivery"""
         start_time = time.time()
         first_token_recorded = False
         first_phrase_recorded = False
@@ -196,7 +181,8 @@ class StreamingAIService:
                     
                     yield token
                     
-                    if CONCURRENT_TTS_ENABLED and tts_callback:
+                    # Always do concurrent TTS for phrase-level delivery
+                    if tts_callback:
                         phrase = phrase_buffer.add_token(token)
                         if phrase:
                             if not first_phrase_recorded:
@@ -210,7 +196,7 @@ class StreamingAIService:
                 
                 # Final phrase
                 remaining = phrase_buffer.flush_remaining()
-                if remaining and CONCURRENT_TTS_ENABLED and tts_callback:
+                if remaining and tts_callback:
                     logger.info(f"🎤 SOTA Final phrase: '{remaining[:30]}...'")
                     asyncio.create_task(self._safe_tts_publish(tts_callback, remaining, session_id))
                 
@@ -221,58 +207,51 @@ class StreamingAIService:
                 logger.info(f"✅ SOTA Streaming complete: {total_time:.0f}ms total, {total_phrases} phrases")
                 
             else:
-                logger.warning("⚠️ No Gemini API, fallback")
-                from .ai_service import generate_response
-                response, _ = await generate_response(text, user_id, session_id, conversation_history)
-                yield response
+                logger.error("❌ No Gemini API key configured")
+                yield "Configuration error: No AI service available."
                 
         except asyncio.CancelledError:
             logger.info(f"🛑 Streaming cancelled: {session_id}")
             raise
         except Exception as e:
-            logger.error(f"❌ SOTA error: {e}")
+            logger.error(f"❌ SOTA streaming error: {e}")
+            # Simplified fallback
             try:
                 from .ai_service import generate_response
                 response, _ = await generate_response(text, user_id, session_id, conversation_history)
                 yield response
-            except Exception as ee:
-                logger.error(f"❌ Fallback failed: {ee}")
+            except Exception:
                 yield "I'm experiencing technical difficulties. Please try again."
     
     async def _stream_gemini_ultra_fast(self, prompt: str) -> AsyncIterator[str]:
         """Gemini optimized for minimal first token latency"""
         try:
             from google import genai
-            
             client = genai.Client(api_key=config.services.gemini_api_key)
-            
             for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash-exp',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
                     temperature=0.6,
-                    max_output_tokens=160,     # Shorter for speed
+                    max_output_tokens=160,
                     top_p=0.85,
-                    top_k=25,                 # Smaller search space
+                    top_k=25,
                 ),
             ):
                 if chunk.text:
                     yield chunk.text
         except Exception as e:
             logger.error(f"❌ Ultra-fast Gemini error: {e}")
-            try:
-                from google import genai
-                client = genai.Client(api_key=config.services.gemini_api_key)
-                for chunk in client.models.generate_content_stream(
-                    model='gemini-2.0-flash',
-                    contents=prompt,
-                    config=genai.types.GenerateContentConfig(temperature=0.7, max_output_tokens=180),
-                ):
-                    if chunk.text:
-                        yield chunk.text
-            except Exception as ee:
-                logger.error(f"❌ Gemini fallback failed: {ee}")
-                raise
+            # Single fallback model
+            from google import genai
+            client = genai.Client(api_key=config.services.gemini_api_key)
+            for chunk in client.models.generate_content_stream(
+                model='gemini-2.0-flash',
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(temperature=0.7, max_output_tokens=180),
+            ):
+                if chunk.text:
+                    yield chunk.text
     
     async def _safe_tts_publish(self, tts_callback: Callable, phrase: str, session_id: str):
         try:
@@ -285,29 +264,3 @@ class StreamingAIService:
 
 # Global instance
 streaming_ai_service = StreamingAIService()
-
-# Legacy compatibility
-class LegacyStreamingMetrics:
-    def __init__(self):
-        self.partial_count = 0
-        self.final_count = 0
-        self.first_partial_times = []
-    
-    def record_partial(self, ms: float):
-        self.partial_count += 1
-        if self.partial_count == 1:
-            self.first_partial_times.append(ms)
-    
-    def record_final(self):
-        self.final_count += 1
-    
-    def get_stats(self) -> Dict[str, Any]:
-        avg_first = sum(self.first_partial_times)/len(self.first_partial_times) if self.first_partial_times else 0
-        return {
-            "partial_transcripts": self.partial_count,
-            "final_transcripts": self.final_count,
-            "avg_first_partial_ms": round(avg_first, 1),
-            "streaming_mode": "ULTRA_SOTA_OPTIMIZED"
-        }
-
-streaming_metrics = LegacyStreamingMetrics()
