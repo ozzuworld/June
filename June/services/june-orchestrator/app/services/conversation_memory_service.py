@@ -1,5 +1,5 @@
 """Conversation Memory Service for ChatGPT-style conversational experience"""
-import redis
+import redis.asyncio as redis
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -82,7 +82,7 @@ class ConversationMemoryService:
         """Retrieve conversation context from Redis"""
         try:
             key = f"conversation:context:{session_id}"
-            data = self.redis.get(key)
+            data = await self.redis.get(key)
             
             if not data:
                 return None
@@ -105,7 +105,7 @@ class ConversationMemoryService:
             context_dict['last_interaction'] = context.last_interaction.isoformat()
             context_dict['conversation_state'] = context.conversation_state.value
             
-            self.redis.setex(
+            await self.redis.setex(
                 key, 
                 self.context_ttl, 
                 json.dumps(context_dict, default=str)
@@ -139,11 +139,11 @@ class ConversationMemoryService:
             message_dict['timestamp'] = message.timestamp.isoformat()
             
             # Use Redis list to maintain order
-            self.redis.lpush(key, json.dumps(message_dict))
-            self.redis.expire(key, self.history_ttl)
+            await self.redis.lpush(key, json.dumps(message_dict))
+            await self.redis.expire(key, self.history_ttl)
             
             # Keep only last 200 messages per session
-            self.redis.ltrim(key, 0, 199)
+            await self.redis.ltrim(key, 0, 199)
         except Exception as e:
             logger.error(f"Error adding message to {session_id}: {e}")
     
@@ -151,7 +151,7 @@ class ConversationMemoryService:
         """Retrieve conversation history"""
         try:
             key = f"conversation:history:{session_id}"
-            messages_data = self.redis.lrange(key, 0, limit - 1)
+            messages_data = await self.redis.lrange(key, 0, limit - 1)
             
             messages = []
             for msg_data in reversed(messages_data):  # Reverse to get chronological order
@@ -287,7 +287,7 @@ class ConversationMemoryService:
             
             # Store summary
             summary_key = f"conversation:summary:{session_id}"
-            self.redis.setex(summary_key, self.summary_ttl, json.dumps(summary))
+            await self.redis.setex(summary_key, self.summary_ttl, json.dumps(summary))
             
             return json.dumps(summary, indent=2)
         except Exception as e:
@@ -298,7 +298,7 @@ class ConversationMemoryService:
         """Retrieve conversation summary"""
         try:
             summary_key = f"conversation:summary:{session_id}"
-            data = self.redis.get(summary_key)
+            data = await self.redis.get(summary_key)
             
             if data:
                 return json.loads(data)
@@ -323,21 +323,19 @@ class ConversationMemoryService:
             return 0
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get memory service statistics"""
+        """Get memory service statistics (sync method for backward compatibility)"""
         try:
-            # Count active contexts and histories
-            context_keys = self.redis.keys("conversation:context:*")
-            history_keys = self.redis.keys("conversation:history:*")
-            summary_keys = self.redis.keys("conversation:summary:*")
-            
+            # For sync compatibility, we'll return basic stats
+            # In a production system, you might want to make this async
             return {
-                "active_contexts": len(context_keys),
-                "active_histories": len(history_keys),
-                "stored_summaries": len(summary_keys),
+                "service": "conversation_memory",
+                "backend": "redis",
                 "context_ttl_days": self.context_ttl // 86400,
                 "history_ttl_days": self.history_ttl // 86400,
-                "summary_ttl_days": self.summary_ttl // 86400
+                "summary_ttl_days": self.summary_ttl // 86400,
+                "tech_categories": len(self.tech_keywords),
+                "total_keywords": sum(len(keywords) for keywords in self.tech_keywords.values())
             }
         except Exception as e:
             logger.error(f"Error getting memory stats: {e}")
-            return {}
+            return {"error": str(e)}
