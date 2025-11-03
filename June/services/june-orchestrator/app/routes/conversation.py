@@ -10,7 +10,11 @@ from ..services.conversational_ai_processor import (
     ConversationResponse
 )
 from ..services.conversation_memory_service import ConversationMemoryService
-from ..dependencies import get_current_user
+from ..core.dependencies import (
+    conversational_ai_processor_dependency,
+    conversation_memory_service_dependency,
+    get_current_user
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -40,35 +44,15 @@ class ConversationInsightsResponse(BaseModel):
     session_id: str
     insights: Dict[str, Any]
 
-# Dependency injection helpers
-def get_conversation_processor() -> ConversationalAIProcessor:
-    """Get conversational AI processor - this will be replaced with proper DI"""
-    # This is a temporary implementation until we integrate with your existing DI
-    import redis
-    from ..config import Config
-    from ..services.conversation_memory_service import ConversationMemoryService
-    
-    redis_client = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
-    memory_service = ConversationMemoryService(redis_client)
-    config = Config()
-    
-    return ConversationalAIProcessor(memory_service, config)
-
-def get_memory_service() -> ConversationMemoryService:
-    """Get conversation memory service - temporary implementation"""
-    import redis
-    redis_client = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
-    return ConversationMemoryService(redis_client)
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_conversation(
     chat_request: ChatMessage,
+    processor: ConversationalAIProcessor = Depends(conversational_ai_processor_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Main conversational AI endpoint - ChatGPT-style interaction"""
     try:
-        processor = get_conversation_processor()
-        
         # Convert to internal request format
         request = ConversationRequest(
             session_id=chat_request.session_id,
@@ -99,16 +83,16 @@ async def chat_conversation(
         logger.error(f"[CHAT] Error processing conversation: {e}")
         raise HTTPException(status_code=500, detail=f"Conversation processing failed: {str(e)}")
 
+
 @router.get("/history/{session_id}", response_model=ConversationHistoryResponse)
 async def get_conversation_history(
     session_id: str,
     limit: int = 20,
+    memory_service: ConversationMemoryService = Depends(conversation_memory_service_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Get conversation history for a session"""
     try:
-        memory_service = get_memory_service()
-        
         # Get conversation history
         messages = await memory_service.get_conversation_history(session_id, limit)
         
@@ -141,14 +125,15 @@ async def get_conversation_history(
         logger.error(f"[HISTORY] Error retrieving history for {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve conversation history: {str(e)}")
 
+
 @router.get("/insights/{session_id}", response_model=ConversationInsightsResponse)
 async def get_conversation_insights(
     session_id: str,
+    processor: ConversationalAIProcessor = Depends(conversational_ai_processor_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Get detailed insights about a conversation session"""
     try:
-        processor = get_conversation_processor()
         insights = await processor.get_conversation_insights(session_id)
         
         logger.info(f"[INSIGHTS] Generated insights for session {session_id}")
@@ -162,16 +147,16 @@ async def get_conversation_insights(
         logger.error(f"[INSIGHTS] Error generating insights for {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate insights: {str(e)}")
 
+
 @router.post("/context/{session_id}/topic")
 async def set_conversation_topic(
     session_id: str,
     topic: str,
+    memory_service: ConversationMemoryService = Depends(conversation_memory_service_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Manually set the current conversation topic"""
     try:
-        memory_service = get_memory_service()
-        
         # Get current context
         context = await memory_service.get_context(session_id)
         if not context:
@@ -192,15 +177,15 @@ async def set_conversation_topic(
         logger.error(f"[TOPIC] Error setting topic for {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to set topic: {str(e)}")
 
+
 @router.delete("/sessions/{session_id}")
 async def clear_conversation(
     session_id: str,
+    memory_service: ConversationMemoryService = Depends(conversation_memory_service_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Clear conversation history and context for a session"""
     try:
-        memory_service = get_memory_service()
-        
         # Clear conversation data (this would be implemented in the memory service)
         # For now, we'll create a new context to effectively reset
         from ..services.conversation_memory_service import ConversationContext
@@ -219,13 +204,14 @@ async def clear_conversation(
         logger.error(f"[CLEAR] Error clearing conversation for {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to clear conversation: {str(e)}")
 
+
 @router.get("/stats")
 async def get_conversation_stats(
+    memory_service: ConversationMemoryService = Depends(conversation_memory_service_dependency),
     current_user: dict = Depends(get_current_user)
 ):
     """Get overall conversation system statistics"""
     try:
-        memory_service = get_memory_service()
         stats = memory_service.get_stats()
         
         logger.info("[STATS] Retrieved conversation system statistics")
@@ -240,7 +226,10 @@ async def get_conversation_stats(
                 "elaboration_support": True,
                 "learning_adaptation": True,
                 "conversation_patterns": True,
-                "follow_up_suggestions": True
+                "follow_up_suggestions": True,
+                "redis_backend": True,
+                "persistent_memory": True,
+                "pattern_analysis": True
             }
         }
         
