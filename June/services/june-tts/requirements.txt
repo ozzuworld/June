@@ -1,17 +1,16 @@
-# June TTS Service - Chatterbox TTS with GPU support
-# Core TTS Engine - Chatterbox only
-chatterbox-tts>=0.2.0
+# June TTS Service - Chatterbox TTS with optimized dependencies
+# Core TTS Engine - Install from source to avoid version conflicts
+# chatterbox-tts will be installed from source in Dockerfile
 
 # FastAPI and web server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 
-# Audio processing
+# Audio processing - compatible versions
 soundfile==0.12.1
-numpy>=1.24.0,<2.0
+numpy>=1.24.0,<2.0  # Compatible with Chatterbox requirements
 scipy==1.11.3
-torchaudio>=2.1.0
 
 # LiveKit integration
 livekit==0.11.1
@@ -20,10 +19,6 @@ livekit-api==0.11.1
 # Networking and HTTP
 httpx==0.27.2
 websockets>=11.0.0
-
-# GPU and ML
-# torch and torchaudio installed separately in Dockerfile with CUDA support
-transformers==4.35.0
 
 # Utilities
 psutil>=5.9.0
@@ -34,5 +29,13 @@ nvidia-ml-py>=11.5.0
 # Development and debugging
 rich>=13.0.0
 
-# Note: PyTorch with CUDA support is installed in Dockerfile:
-# torch==2.1.0+cu118 torchaudio==2.1.0+cu118
+# Chatterbox dependencies (will be installed manually in Dockerfile)
+# librosa==0.10.1
+# transformers==4.35.0
+# diffusers
+# resemble-perth
+# conformer
+# safetensors
+
+# Note: PyTorch, Chatterbox TTS and its dependencies are installed 
+# separately in Dockerfile to handle version conflicts properly
