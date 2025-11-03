@@ -9,7 +9,7 @@ logger = logging.getLogger("june-tts")
 
 async def get_livekit_token(identity: str, room_name: str = "ozzu-main", max_retries: int = 2) -> tuple[str, str]:
     """Get LiveKit token with resilience: new payload + dual-path fallback"""
-    base = os.getenv("ORCHESTRATOR_URL", getattr(config, "ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080"))
+    base = os.getenv("ORCHESTRATOR_URL", getattr(config, "ORCHESTRATOR_URL", "http://api.ozzu.world"))
     paths = ["/api/livekit/token", "/token"]
 
     last_err = None

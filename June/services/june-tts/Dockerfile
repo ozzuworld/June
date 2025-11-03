@@ -1,4 +1,4 @@
-# June TTS Service - GPU-Optimized Dockerfile for Chatterbox/Kokoro TTS
+# June TTS Service - GPU-Optimized Dockerfile for Chatterbox TTS
 FROM nvidia/cuda:11.8-devel-ubuntu20.04
 
 # Prevent interactive prompts during installation

@@ -76,8 +76,7 @@ class ServiceConfig:
     metrics_enabled: bool = True
     
     # External services
-    orchestrator_url: str = "http://june-orchestrator.june-services.svc.cluster.local:8080"
-
+    orchestrator_url: str = "https://api.ozzu.world"
 class Config:
     """Main configuration class"""
     
