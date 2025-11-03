@@ -1,5 +1,5 @@
 # Real-Time Conversation Engine - SOTA Natural Flow Implementation
-# Fixed to use SessionService API for history via Session.messages
+# Fix: convert Session.Message objects to simple dicts for context/history usage
 
 import asyncio
 import logging
@@ -38,13 +38,18 @@ class RealTimeConversationEngine:
         self.INTERRUPTION_DETECT_MS = 200
         self.TURN_TAKING_PAUSE_MS = 150
 
+    def _msg_to_dict(self, m) -> Dict[str, Any]:
+        # Session.Message domain model → simple dict accepted by build_context_for_voice
+        try:
+            return {"role": getattr(m, "role", "user"), "content": getattr(m, "content", "")}
+        except Exception:
+            # Already a dict or unknown object
+            return m if isinstance(m, dict) else {"role": "user", "content": str(m)}
+
     async def _get_history(self, room_name: str, user_id: str) -> List[Dict[str, Any]]:
-        """Fetch conversation history using SessionService Session.messages"""
         session_service = get_session_service()
-        # Ensure session exists for room
         session = await session_service.get_or_create_for_room(room_name, user_id)
-        # Session.messages is already a list of {role, content, metadata}
-        return list(session.messages)
+        return [self._msg_to_dict(m) for m in list(session.messages)]
 
     async def _preprocess_ai_response(self, session_id: str, room_name: str, user_id: str, text: str):
         try:
