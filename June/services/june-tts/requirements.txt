@@ -15,7 +15,6 @@ torchaudio>=2.1.0
 
 # LiveKit integration
 livekit==0.11.1
-livekit-api==0.11.1
 
 # Networking and HTTP
 httpx==0.27.2
