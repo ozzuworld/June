@@ -1,4 +1,4 @@
-# June Orchestrator Dependencies - Enhanced with Skills and Voice Cloning
+# June Orchestrator Dependencies - Enhanced with Skills, Voice Cloning, and Conversational AI
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 
@@ -20,3 +20,6 @@ scipy==1.11.3
 
 # Utilities
 python-multipart==0.0.6
+
+# Conversational AI Memory - Redis for context management
+redis==5.0.1
