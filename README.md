@@ -4,17 +4,17 @@
 ![Version](https://img.shields.io/badge/Version-2.0.0-green?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
 
-June is a comprehensive AI-powered voice assistant platform built for real-time conversational experiences. The platform combines state-of-the-art speech synthesis, real-time audio streaming, and intelligent conversation management.
+June is a comprehensive AI-powered voice assistant platform built for real-time conversational experiences. The platform combines state-of-the-art **Chatterbox TTS** speech synthesis, real-time audio streaming, and intelligent conversation management.
 
 ## 🚀 Features
 
 ### Core Capabilities
 - **Real-time Voice Conversations**: Ultra-low latency voice interactions using WebRTC
-- **Advanced TTS Engine**: Chatterbox/Kokoro TTS with streaming audio generation
+- **Chatterbox TTS Engine**: State-of-the-art open-source TTS with streaming audio generation
+- **Voice Cloning**: Zero-shot voice cloning with reference audio samples
 - **LiveKit Integration**: Professional-grade WebRTC infrastructure
 - **GPU Optimization**: CUDA-accelerated speech synthesis
 - **Streaming AI**: Real-time response generation with phrase-level TTS
-- **Voice Cloning**: Zero-shot voice cloning with 7-20 seconds of reference audio
 
 ### Platform Architecture 
 - **Microservices Design**: Scalable, containerized service architecture
@@ -44,9 +44,10 @@ June is a comprehensive AI-powered voice assistant platform built for real-time 
 │      - Subscribes: ALL audio tracks                │
 │      - Processing: Transcribe → Webhook            │
 │                                                     │
-│  Participant 3: TTS Service                        │
+│  Participant 3: Chatterbox TTS Service             │
 │      - Publishes: AI response audio                │
 │      - Triggered by: Orchestrator via API          │
+│      - Features: Voice cloning, streaming           │
 │                                                     │
 └─────────────────────────────────────────────────────┘
                         ↓
@@ -66,10 +67,12 @@ Central coordination service managing:
 
 ### june-tts (NEW - v2.0)
 High-performance TTS service featuring:
-- **Chatterbox/Kokoro TTS engine** with GPU acceleration
-- **Streaming audio generation** with 200ms chunks
+- **Chatterbox TTS engine** with GPU acceleration
+- **Streaming audio generation** with customizable chunk sizes
+- **Voice cloning** with reference audio samples
 - **LiveKit WebRTC publishing** for real-time audio
-- **Voice selection and emotion control**
+- **Emotion control** with Chatterbox's exaggeration parameter
+- **Advanced voice control** with temperature and cfg_weight parameters
 - **Comprehensive metrics and monitoring**
 
 ### june-stt
@@ -91,7 +94,7 @@ Identity provider service handling:
 ### Prerequisites
 - Docker and Docker Compose
 - Kubernetes cluster (for production)
-- NVIDIA GPU (recommended for TTS)
+- NVIDIA GPU (recommended for Chatterbox TTS)
 - LiveKit server instance
 
 ### Development Setup
@@ -126,16 +129,18 @@ Identity provider service handling:
    helm install june ./helm/june-platform
    ```
 
-### TTS Service Configuration
+### Chatterbox TTS Service Configuration
 
-The new june-tts service supports extensive configuration via environment variables:
+The june-tts service supports extensive configuration via environment variables:
 
 ```bash
-# TTS Engine Settings
-TTS_ENGINE=kokoro              # TTS engine (kokoro/chatterbox)
-TTS_DEVICE=cuda               # Device (cuda/cpu/auto)
-TTS_DEFAULT_VOICE=af_bella    # Default voice ID
-TTS_MAX_CONCURRENT=4          # Max concurrent requests
+# Chatterbox TTS Engine Settings
+TTS_ENGINE=chatterbox           # Only Chatterbox TTS supported
+TTS_DEVICE=cuda                 # Device (cuda/cpu/auto)
+CHATTERBOX_CHUNK_SIZE=25        # Tokens per streaming chunk
+CHATTERBOX_EXAGGERATION=0.5     # Emotion intensity (0.0-1.5)
+CHATTERBOX_TEMPERATURE=0.9      # Voice randomness (0.1-1.0)
+CHATTERBOX_CFG_WEIGHT=0.3       # Guidance weight (0.0-1.0)
 
 # LiveKit Integration
 LIVEKIT_WS_URL=wss://livekit.ozzu.world
@@ -143,26 +148,39 @@ LIVEKIT_API_KEY=your-api-key
 LIVEKIT_API_SECRET=your-secret
 
 # Performance Tuning
-TTS_SAMPLE_RATE=24000         # Audio sample rate
-CUDA_VISIBLE_DEVICES=0        # GPU device selection
+TTS_SAMPLE_RATE=24000           # Audio sample rate
+TTS_MAX_CONCURRENT=4            # Max concurrent requests
+CUDA_VISIBLE_DEVICES=0          # GPU device selection
 ```
 
 ## 🎯 API Endpoints
 
-### TTS Service (june-tts)
+### Chatterbox TTS Service (june-tts)
 ```bash
-# Synthesize and stream to LiveKit room
+# Synthesize and stream to LiveKit room with voice cloning
 POST /api/tts/synthesize
 {
-  "text": "Hello, this is June speaking!",
+  "text": "Hello, this is June speaking with Chatterbox TTS!",
   "room_name": "ozzu-main",
-  "voice_id": "af_bella",
+  "voice_reference": "/path/to/reference_voice.wav",
   "speed": 1.0,
-  "emotion_level": 0.6
+  "emotion_level": 0.6,
+  "temperature": 0.9,
+  "cfg_weight": 0.3
 }
 
-# List available voices
+# Get Chatterbox capabilities
 GET /api/voices
+{
+  "engine": "chatterbox",
+  "voice_cloning": true,
+  "streaming": true,
+  "parameters": {
+    "emotion_level": {"min": 0.0, "max": 1.5, "default": 0.5},
+    "temperature": {"min": 0.1, "max": 1.0, "default": 0.9},
+    "cfg_weight": {"min": 0.0, "max": 1.0, "default": 0.3}
+  }
+}
 
 # Health check
 GET /health
@@ -185,49 +203,56 @@ POST /api/conversation/process
 
 # Voice management
 GET /api/voices
-POST /api/voices/profile
 ```
 
 ## 🔧 Configuration
 
-### Voice Configuration
-The platform supports multiple high-quality voices:
+### Chatterbox TTS Parameters
+The platform supports advanced Chatterbox TTS configuration:
 
 ```json
 {
-  "af_bella": {
-    "name": "Bella",
-    "language": "en",
-    "gender": "female",
-    "accent": "american",
-    "description": "Warm, friendly female voice"
-  },
-  "am_adam": {
-    "name": "Adam", 
-    "language": "en",
-    "gender": "male",
-    "accent": "american",
-    "description": "Deep, authoritative male voice"
+  "chatterbox_parameters": {
+    "exaggeration": {
+      "description": "Emotion intensity and expressiveness",
+      "range": "0.0-1.5",
+      "default": 0.5
+    },
+    "temperature": {
+      "description": "Voice randomness and variation",
+      "range": "0.1-1.0", 
+      "default": 0.9
+    },
+    "cfg_weight": {
+      "description": "Guidance weight for voice control",
+      "range": "0.0-1.0",
+      "default": 0.3
+    },
+    "chunk_size": {
+      "description": "Tokens per streaming chunk",
+      "range": "1-100",
+      "default": 25
+    }
   }
 }
 ```
 
 ### Performance Optimization
-- **GPU Memory Management**: Configurable memory fraction and caching
-- **Streaming Chunks**: 200ms chunks for optimal latency/quality balance
-- **Concurrent Processing**: Smart queuing prevents GPU overload
+- **GPU Memory Management**: Configurable memory fraction and model caching
+- **Streaming Chunks**: Configurable token-based chunking for optimal latency
+- **Voice Cloning**: Per-request voice cloning with reference audio
 - **Connection pooling**: Efficient LiveKit connection reuse
 
 ## 📊 Monitoring & Metrics
 
 The platform provides comprehensive monitoring:
 
-### TTS Metrics
+### Chatterbox TTS Metrics
 - First chunk latency (target: <500ms)
+- Voice cloning request counts
 - GPU utilization and memory usage
-- Audio quality scores
-- Concurrent request handling
-- Stream completion rates
+- Streaming completion rates
+- Emotion and temperature parameter usage
 
 ### Conversation Metrics
 - Session duration and message counts
@@ -266,10 +291,10 @@ The platform provides comprehensive monitoring:
    kubectl apply -f k8s/june-ingress.yaml
    ```
 
-### GPU Node Requirements
-For optimal TTS performance:
+### GPU Node Requirements for Chatterbox TTS
+For optimal performance:
 - NVIDIA GPU with CUDA 11.8+ support
-- Minimum 8GB GPU memory
+- Minimum 8GB GPU memory for Chatterbox models
 - NVIDIA Container Toolkit installed
 - Kubernetes GPU device plugin
 
@@ -284,10 +309,15 @@ pytest June/services/june-orchestrator/tests/
 
 ### Integration Tests
 ```bash
-# Test TTS service
+# Test Chatterbox TTS service
 curl -X POST http://localhost:8000/api/tts/synthesize \
   -H "Content-Type: application/json" \
-  -d '{"text":"Hello world", "room_name":"test-room"}'
+  -d '{
+    "text":"Hello from Chatterbox TTS!", 
+    "room_name":"test-room",
+    "emotion_level": 0.7,
+    "temperature": 0.8
+  }'
 
 # Test orchestrator
 curl -X GET http://localhost:8080/health
@@ -295,8 +325,8 @@ curl -X GET http://localhost:8080/health
 
 ### Load Testing
 ```bash
-# TTS load test
-k6 run scripts/load-test-tts.js
+# Chatterbox TTS load test
+k6 run scripts/load-test-chatterbox.js
 
 # End-to-end conversation test
 k6 run scripts/load-test-conversation.js
@@ -322,15 +352,15 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## 📈 Roadmap
 
 ### Q4 2025
-- [ ] Enhanced voice cloning with fewer reference samples
+- [ ] Enhanced Chatterbox voice cloning with fewer reference samples
 - [ ] Multi-language conversation support
 - [ ] Advanced emotion recognition and synthesis
-- [ ] Real-time voice conversion
+- [ ] Real-time voice conversion with Chatterbox
 
 ### Q1 2026
 - [ ] Mobile SDK for iOS/Android integration
 - [ ] Advanced conversation analytics
-- [ ] Custom voice training pipeline
+- [ ] Custom Chatterbox model training pipeline
 - [ ] Edge deployment optimizations
 
 ## 📄 License
@@ -346,11 +376,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **Chatterbox TTS**: High-quality open-source TTS engine
+- **Chatterbox TTS**: High-quality open-source TTS engine by Resemble AI
 - **LiveKit**: Professional WebRTC infrastructure
 - **FastAPI**: Modern Python web framework
 - **Kubernetes**: Container orchestration platform
 
 ---
 
-**June AI Platform v2.0** - Bringing human-like voice conversations to applications worldwide.
+**June AI Platform v2.0** - Powered by Chatterbox TTS for human-like voice conversations.
