@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - Chatterbox Integration with Streaming
-High-performance TTS service with LiveKit integration and GPU optimization
+High-performance TTS service with Chatterbox TTS, LiveKit integration and GPU optimization
 """
 
 import asyncio
@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Dict, Any
 
 import torch
+import torchaudio
 import numpy as np
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,13 +23,13 @@ import uvicorn
 from shared import require_service_auth, require_user_auth, extract_user_id
 from livekit_token import get_livekit_token, connect_room_as_publisher
 
-# TTS and audio processing
+# Chatterbox TTS - the only TTS engine we use
 try:
-    from kokoro import KokoroTTS
-    KOKORO_AVAILABLE = True
+    from chatterbox.tts import ChatterboxTTS
+    CHATTERBOX_AVAILABLE = True
 except ImportError:
-    KOKORO_AVAILABLE = False
-    logging.warning("⚠️ Kokoro TTS not available - using fallback")
+    CHATTERBOX_AVAILABLE = False
+    logging.warning("⚠️ Chatterbox TTS not available - using fallback")
 
 from livekit import rtc
 import soundfile as sf
@@ -46,8 +47,8 @@ class Config:
         self.sample_rate = 24000
         self.chunk_duration = 0.2  # 200ms chunks for streaming
         self.max_text_length = 1000
-        self.default_voice = "af_bella"  # Kokoro default voice
         self.enable_streaming = True
+        self.chunk_size = 25  # Tokens per chunk for Chatterbox streaming
         
 config = Config()
 
@@ -55,9 +56,11 @@ config = Config()
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=config.max_text_length, description="Text to synthesize")
     room_name: str = Field(..., description="LiveKit room name")
-    voice_id: Optional[str] = Field(None, description="Voice ID for synthesis")
+    voice_reference: Optional[str] = Field(None, description="Path or URL to reference voice audio for cloning")
     speed: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
-    emotion_level: float = Field(0.5, ge=0.0, le=1.0, description="Emotion intensity")
+    emotion_level: float = Field(0.5, ge=0.0, le=1.5, description="Emotion exaggeration (0.0-1.5)")
+    temperature: float = Field(0.9, ge=0.1, le=1.0, description="Voice randomness/variation")
+    cfg_weight: float = Field(0.3, ge=0.0, le=1.0, description="Guidance weight for voice control")
     language: str = Field("en", description="Language code")
     streaming: bool = Field(True, description="Enable streaming mode")
 
@@ -66,86 +69,104 @@ class TTSResponse(BaseModel):
     room_name: str
     duration_ms: Optional[float] = None
     chunks_sent: Optional[int] = None
-    voice_used: Optional[str] = None
+    voice_cloned: bool = False
 
 class HealthResponse(BaseModel):
     service: str = "june-tts"
     version: str = "2.0.0"
     status: str = "healthy"
-    engine: str = "kokoro"
+    engine: str = "chatterbox"
     gpu_available: bool
     device: str
-    voices_available: int
+    streaming_enabled: bool
 
 # Global TTS engine and metrics
-tts_engine: Optional[KokoroTTS] = None
+tts_engine: Optional[ChatterboxTTS] = None
 active_rooms: Dict[str, rtc.Room] = {}
 metrics = {
     "requests_processed": 0,
     "streaming_requests": 0,
+    "voice_cloning_requests": 0,
     "total_audio_seconds": 0.0,
     "avg_latency_ms": 0.0,
     "gpu_utilization": 0.0
 }
 
-class StreamingTTSEngine:
-    """Chatterbox/Kokoro TTS engine with streaming capabilities"""
+class StreamingChatterboxEngine:
+    """Chatterbox TTS engine with streaming capabilities"""
     
     def __init__(self, device: str = "cuda"):
         self.device = device
         self.model = None
         self.sample_rate = config.sample_rate
-        self.chunk_size = int(config.chunk_duration * self.sample_rate)
         
     async def initialize(self):
-        """Initialize TTS model"""
+        """Initialize Chatterbox TTS model"""
         try:
-            if KOKORO_AVAILABLE:
-                self.model = KokoroTTS(device=self.device)
-                logger.info(f"✅ Kokoro TTS initialized on {self.device}")
+            if CHATTERBOX_AVAILABLE:
+                self.model = ChatterboxTTS.from_pretrained(device=self.device)
+                logger.info(f"✅ Chatterbox TTS initialized on {self.device}")
             else:
-                # Fallback to basic TTS simulation
-                logger.warning("⚠️ Using fallback TTS - install Kokoro for production")
+                # Fallback to basic TTS simulation for development
+                logger.warning("⚠️ Using fallback TTS - install Chatterbox for production")
                 self.model = "fallback"
         except Exception as e:
-            logger.error(f"❌ TTS initialization failed: {e}")
+            logger.error(f"❌ Chatterbox TTS initialization failed: {e}")
             raise
     
     async def synthesize_streaming(
         self, 
         text: str, 
-        voice: str = None, 
+        voice_reference: Optional[str] = None,
         speed: float = 1.0,
-        emotion_level: float = 0.5
+        emotion_level: float = 0.5,
+        temperature: float = 0.9,
+        cfg_weight: float = 0.3
     ) -> AsyncIterator[np.ndarray]:
-        """Generate streaming audio chunks"""
+        """Generate streaming audio chunks using Chatterbox TTS"""
         
         if not self.model:
-            raise RuntimeError("TTS engine not initialized")
+            raise RuntimeError("Chatterbox TTS engine not initialized")
             
         try:
-            if KOKORO_AVAILABLE and self.model != "fallback":
-                # Real Kokoro TTS streaming
-                voice_id = voice or config.default_voice
+            if CHATTERBOX_AVAILABLE and self.model != "fallback":
+                # Real Chatterbox TTS streaming
+                logger.info(f"🎤 Chatterbox streaming: {text[:50]}...")
                 
-                # Configure generation parameters
-                generation_config = {
-                    'speed': speed,
-                    'emotion': emotion_level,
-                    'streaming': True
+                # Configure Chatterbox generation parameters
+                generation_params = {
+                    'exaggeration': emotion_level,  # Chatterbox emotion parameter
+                    'cfg_weight': cfg_weight,       # Chatterbox guidance weight
+                    'temperature': temperature,     # Chatterbox randomness
+                    'chunk_size': config.chunk_size # Tokens per chunk
                 }
                 
-                # Generate audio stream
-                async for audio_chunk in self.model.generate_stream(
+                # Add voice reference for cloning if provided
+                if voice_reference:
+                    generation_params['audio_prompt_path'] = voice_reference
+                    logger.info(f"🎭 Using voice reference: {voice_reference}")
+                
+                # Generate streaming audio using Chatterbox
+                async for audio_chunk, metrics_data in self.model.generate_stream(
                     text=text,
-                    voice=voice_id,
-                    **generation_config
+                    **generation_params
                 ):
-                    # Ensure chunk is numpy array
+                    # Convert Chatterbox output to numpy array
                     if isinstance(audio_chunk, torch.Tensor):
                         audio_chunk = audio_chunk.cpu().numpy()
                     
+                    # Adjust speed if needed
+                    if speed != 1.0:
+                        # Simple speed adjustment by resampling
+                        target_length = int(len(audio_chunk) / speed)
+                        audio_chunk = np.interp(
+                            np.linspace(0, len(audio_chunk), target_length),
+                            np.arange(len(audio_chunk)),
+                            audio_chunk
+                        )
+                    
                     yield audio_chunk
+                    
             else:
                 # Fallback: Generate silence chunks for testing
                 words = text.split()
@@ -164,7 +185,7 @@ class StreamingTTSEngine:
                     await asyncio.sleep(0.05)  # Small delay between chunks
                     
         except Exception as e:
-            logger.error(f"❌ TTS synthesis error: {e}")
+            logger.error(f"❌ Chatterbox TTS synthesis error: {e}")
             raise
 
 class LiveKitAudioPublisher:
@@ -209,7 +230,7 @@ class LiveKitAudioPublisher:
                 num_channels=1
             )
             track = rtc.LocalAudioTrack.create_audio_track(
-                "tts-audio", 
+                "chatterbox-audio", 
                 audio_source
             )
             
@@ -221,7 +242,7 @@ class LiveKitAudioPublisher:
                 )
             )
             
-            logger.info(f"🎵 Starting audio stream to {room_name}")
+            logger.info(f"🎵 Starting Chatterbox audio stream to {room_name}")
             
             # Stream audio chunks
             async for audio_chunk in audio_stream:
@@ -242,7 +263,7 @@ class LiveKitAudioPublisher:
             # Unpublish track
             await room.local_participant.unpublish_track(publication.sid)
             
-            logger.info(f"✅ Audio stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
+            logger.info(f"✅ Chatterbox audio stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
             
             return {
                 "chunks_sent": chunks_sent,
@@ -279,7 +300,7 @@ class LiveKitAudioPublisher:
         return frame
 
 # Global instances
-streaming_engine: Optional[StreamingTTSEngine] = None
+streaming_engine: Optional[StreamingChatterboxEngine] = None
 audio_publisher: Optional[LiveKitAudioPublisher] = None
 
 @asynccontextmanager
@@ -287,18 +308,18 @@ async def lifespan(app: FastAPI):
     """Application lifecycle management"""
     global streaming_engine, audio_publisher
     
-    logger.info("🚀 Starting June TTS Service v2.0")
+    logger.info("🚀 Starting June TTS Service v2.0 with Chatterbox")
     logger.info(f"Device: {config.device}")
     logger.info(f"GPU Available: {torch.cuda.is_available()}")
     
-    # Initialize TTS engine
-    streaming_engine = StreamingTTSEngine(config.device)
+    # Initialize Chatterbox TTS engine
+    streaming_engine = StreamingChatterboxEngine(config.device)
     await streaming_engine.initialize()
     
     # Initialize audio publisher
     audio_publisher = LiveKitAudioPublisher()
     
-    logger.info("✅ June TTS Service ready")
+    logger.info("✅ June TTS Service with Chatterbox ready")
     
     yield
     
@@ -310,7 +331,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="June TTS Service",
     version="2.0.0",
-    description="High-performance TTS service with Chatterbox/Kokoro and LiveKit streaming",
+    description="High-performance TTS service with Chatterbox TTS and LiveKit streaming",
     lifespan=lifespan
 )
 
@@ -328,7 +349,7 @@ async def synthesize_tts(
     request: TTSRequest,
     auth_data: dict = Depends(require_service_auth)
 ):
-    """Synthesize TTS and stream to LiveKit room"""
+    """Synthesize TTS using Chatterbox and stream to LiveKit room"""
     
     start_time = time.time()
     
@@ -336,17 +357,19 @@ async def synthesize_tts(
         if not streaming_engine or not audio_publisher:
             raise HTTPException(
                 status_code=503, 
-                detail="TTS service not initialized"
+                detail="Chatterbox TTS service not initialized"
             )
         
-        logger.info(f"🎤 TTS request: '{request.text[:50]}...' -> {request.room_name}")
+        logger.info(f"🎤 Chatterbox TTS request: '{request.text[:50]}...' -> {request.room_name}")
         
-        # Generate streaming audio
+        # Generate streaming audio using Chatterbox
         audio_stream = streaming_engine.synthesize_streaming(
             text=request.text,
-            voice=request.voice_id,
+            voice_reference=request.voice_reference,
             speed=request.speed,
-            emotion_level=request.emotion_level
+            emotion_level=request.emotion_level,
+            temperature=request.temperature,
+            cfg_weight=request.cfg_weight
         )
         
         # Publish to LiveKit room
@@ -361,42 +384,51 @@ async def synthesize_tts(
         metrics["streaming_requests"] += 1
         metrics["total_audio_seconds"] += result["duration_seconds"]
         
+        if request.voice_reference:
+            metrics["voice_cloning_requests"] += 1
+        
         # Update average latency
         if metrics["avg_latency_ms"] == 0:
             metrics["avg_latency_ms"] = duration_ms
         else:
             metrics["avg_latency_ms"] = (metrics["avg_latency_ms"] * 0.9 + duration_ms * 0.1)
         
-        logger.info(f"✅ TTS completed: {duration_ms:.0f}ms, {result['chunks_sent']} chunks")
+        logger.info(f"✅ Chatterbox TTS completed: {duration_ms:.0f}ms, {result['chunks_sent']} chunks")
         
         return TTSResponse(
             status="completed",
             room_name=request.room_name,
             duration_ms=duration_ms,
             chunks_sent=result["chunks_sent"],
-            voice_used=request.voice_id or config.default_voice
+            voice_cloned=bool(request.voice_reference)
         )
         
     except Exception as e:
-        logger.error(f"❌ TTS synthesis failed: {e}")
+        logger.error(f"❌ Chatterbox TTS synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/voices")
 async def list_voices(auth_data: dict = Depends(require_service_auth)):
-    """List available voices"""
-    
-    # Default Kokoro voices
-    voices = {
-        "af_bella": {"name": "Bella", "language": "en", "gender": "female"},
-        "af_sarah": {"name": "Sarah", "language": "en", "gender": "female"},
-        "am_adam": {"name": "Adam", "language": "en", "gender": "male"},
-        "am_michael": {"name": "Michael", "language": "en", "gender": "male"},
-    }
+    """List Chatterbox TTS capabilities"""
     
     return {
-        "voices": voices,
-        "default_voice": config.default_voice,
-        "engine": "kokoro" if KOKORO_AVAILABLE else "fallback"
+        "engine": "chatterbox",
+        "voice_cloning": True,
+        "streaming": True,
+        "supported_languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh"],
+        "parameters": {
+            "emotion_level": {"min": 0.0, "max": 1.5, "default": 0.5},
+            "temperature": {"min": 0.1, "max": 1.0, "default": 0.9},
+            "cfg_weight": {"min": 0.0, "max": 1.0, "default": 0.3},
+            "speed": {"min": 0.5, "max": 2.0, "default": 1.0}
+        },
+        "features": [
+            "Zero-shot voice cloning",
+            "Real-time streaming",
+            "Emotion control",
+            "Multi-language support",
+            "GPU acceleration"
+        ]
     }
 
 @app.get("/health", response_model=HealthResponse)
@@ -406,7 +438,7 @@ async def health_check():
     return HealthResponse(
         gpu_available=torch.cuda.is_available(),
         device=config.device,
-        voices_available=4  # Default Kokoro voices
+        streaming_enabled=config.enable_streaming
     )
 
 @app.get("/metrics")
@@ -429,7 +461,8 @@ async def get_metrics(auth_data: dict = Depends(require_service_auth)):
             "device": config.device,
             "sample_rate": config.sample_rate,
             "chunk_duration": config.chunk_duration,
-            "streaming_enabled": config.enable_streaming
+            "streaming_enabled": config.enable_streaming,
+            "chunk_size": config.chunk_size
         }
     }
 
@@ -440,8 +473,8 @@ async def root():
     return {
         "service": "june-tts",
         "version": "2.0.0",
-        "description": "High-performance TTS service with Chatterbox/Kokoro and LiveKit streaming",
-        "engine": "kokoro" if KOKORO_AVAILABLE else "fallback",
+        "description": "High-performance TTS service with Chatterbox TTS and LiveKit streaming",
+        "engine": "chatterbox" if CHATTERBOX_AVAILABLE else "fallback",
         "gpu_available": torch.cuda.is_available(),
         "device": config.device,
         "endpoints": [
