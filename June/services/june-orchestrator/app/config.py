@@ -22,6 +22,26 @@ class LiveKitConfig(BaseModel):
     ws_url: str
 
 
+class RedisConfig(BaseModel):
+    """Redis configuration for conversational AI"""
+    host: str = "redis.june-services.svc.cluster.local"
+    port: int = 6379
+    db: int = 1
+    password: str = ""
+    
+
+class ConversationalAIConfig(BaseModel):
+    """Conversational AI configuration"""
+    enabled: bool = True
+    context_ttl_days: int = 7
+    history_ttl_days: int = 30
+    summary_ttl_days: int = 90
+    max_conversation_length: int = 200  # Max messages per conversation
+    topic_extraction_enabled: bool = True
+    intent_recognition_enabled: bool = True
+    learning_adaptation_enabled: bool = True
+
+
 class SessionConfig(BaseModel):
     """Session management configuration"""
     max_history_messages: int = 20  # Keep recent N messages
@@ -34,7 +54,7 @@ class AIConfig(BaseModel):
     """AI service configuration"""
     model: str = "gemini-2.0-flash-exp"
     temperature: float = 0.7
-    max_output_tokens: int = 200  # Keep responses short for voice
+    max_output_tokens: int = 1000  # Increased for conversational AI
     max_input_length: int = 1000  # Character limit for user input
     enable_summarization: bool = True  # Auto-summarize long conversations
     voice_response_mode: bool = True  # Optimize for voice (brief responses)
@@ -95,6 +115,12 @@ class AppConfig:
         # LiveKit configuration
         self.livekit = self._load_livekit_config()
         
+        # Redis configuration
+        self.redis = self._load_redis_config()
+        
+        # Conversational AI configuration
+        self.conversational_ai = self._load_conversational_ai_config()
+        
         # Session configuration
         self.sessions = self._load_session_config()
         
@@ -134,6 +160,22 @@ class AppConfig:
             )
         )
     
+    def _load_redis_config(self) -> RedisConfig:
+        return RedisConfig(
+            host=os.getenv("REDIS_HOST", "redis.june-services.svc.cluster.local"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=int(os.getenv("REDIS_DB", "1")),
+            password=os.getenv("REDIS_PASSWORD", "")
+        )
+    
+    def _load_conversational_ai_config(self) -> ConversationalAIConfig:
+        return ConversationalAIConfig(
+            enabled=os.getenv("CONVERSATIONAL_AI_ENABLED", "true").lower() == "true",
+            context_ttl_days=int(os.getenv("CONTEXT_TTL_DAYS", "7")),
+            history_ttl_days=int(os.getenv("HISTORY_TTL_DAYS", "30")),
+            summary_ttl_days=int(os.getenv("SUMMARY_TTL_DAYS", "90"))
+        )
+    
     def _load_session_config(self) -> SessionConfig:
         return SessionConfig(
             max_history_messages=int(os.getenv("MAX_HISTORY_MESSAGES", "20")),
@@ -146,7 +188,7 @@ class AppConfig:
         return AIConfig(
             model=os.getenv("AI_MODEL", "gemini-2.0-flash-exp"),
             temperature=float(os.getenv("AI_TEMPERATURE", "0.7")),
-            max_output_tokens=int(os.getenv("AI_MAX_OUTPUT_TOKENS", "200")),
+            max_output_tokens=int(os.getenv("AI_MAX_OUTPUT_TOKENS", "1000")),
             max_input_length=int(os.getenv("AI_MAX_INPUT_LENGTH", "1000")),
             enable_summarization=os.getenv("AI_ENABLE_SUMMARIZATION", "true").lower() == "true",
             voice_response_mode=os.getenv("AI_VOICE_MODE", "true").lower() == "true",
