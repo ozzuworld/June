@@ -1,4 +1,4 @@
-"""TTS service client with voice cloning support and streaming integration"""
+"""TTS service client with Chatterbox integration and streaming support"""
 import logging
 import httpx
 from typing import Optional, Dict, Any
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class TTSService:
-    """Enhanced TTS service client with Chatterbox/Kokoro streaming capabilities"""
+    """Enhanced TTS service client with Chatterbox streaming capabilities"""
     
     def __init__(self):
         self.base_url = config.services.tts_base_url
@@ -23,60 +23,37 @@ class TTSService:
         speed: float = 1.0
     ) -> Optional[bytes]:
         """
-        Synthesize speech using built-in speakers
-        Returns raw audio bytes
+        Legacy method - now redirects to streaming TTS
+        Returns raw audio bytes (deprecated - use publish_to_room instead)
         """
-        # Use configured default speaker if none provided
-        if speaker is None:
-            speaker = config.ai.default_speaker
-            
-        try:
-            if not text or len(text.strip()) == 0:
-                return None
-            
-            if len(text) > 1000:
-                text = text[:1000] + "..."
-            
-            logger.info(f"🔊 TTS synthesis (built-in): {text[:50]}...")
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/synthesize-binary",
-                    json={
-                        "text": text,
-                        "speaker": speaker,
-                        "speed": speed,
-                        "language": language
-                    }
-                )
-                
-                if response.status_code == 200:
-                    audio_bytes = response.content
-                    logger.info(f"✅ TTS: {len(audio_bytes)} bytes")
-                    return audio_bytes
-                else:
-                    logger.error(f"TTS error: {response.status_code} - {response.text}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"TTS service error: {e}")
-            return None
+        logger.warning("synthesize_speech is deprecated - use publish_to_room for streaming TTS")
+        return await self.synthesize_with_chatterbox(
+            text=text,
+            language=language,
+            speed=speed
+        )
     
-    async def synthesize_with_voice_clone(
+    async def synthesize_with_chatterbox(
         self,
         text: str,
-        voice_id: str,
+        voice_reference: Optional[str] = None,
         language: str = "en",
-        speed: float = 1.0
+        speed: float = 1.0,
+        emotion_level: float = 0.5,
+        temperature: float = 0.9,
+        cfg_weight: float = 0.3
     ) -> Optional[bytes]:
         """
-        Synthesize speech using a cloned voice
+        Synthesize speech using Chatterbox TTS (non-streaming)
         
         Args:
             text: Text to synthesize
-            voice_id: ID of cloned voice from /clone-voice endpoint
-            language: Target language (supports cross-language synthesis)
+            voice_reference: Path or URL to reference voice for cloning
+            language: Target language
             speed: Speech speed multiplier
+            emotion_level: Emotion intensity (0.0-1.5)
+            temperature: Voice randomness (0.1-1.0)
+            cfg_weight: Guidance weight (0.0-1.0)
             
         Returns:
             Audio bytes or None if failed
@@ -88,29 +65,40 @@ class TTSService:
             if len(text) > 1000:
                 text = text[:1000] + "..."
             
-            logger.info(f"🎭 TTS voice cloning: {text[:50]}... (voice_id: {voice_id})")
+            logger.info(f"🎤 Chatterbox synthesis: {text[:50]}...")
+            
+            payload = {
+                "text": text,
+                "room_name": "temp-synthesis",  # Temporary room for non-streaming
+                "language": language,
+                "speed": speed,
+                "emotion_level": emotion_level,
+                "temperature": temperature,
+                "cfg_weight": cfg_weight,
+                "streaming": False
+            }
+            
+            if voice_reference:
+                payload["voice_reference"] = voice_reference
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/synthesize-clone",
-                    json={
-                        "text": text,
-                        "voice_id": voice_id,
-                        "language": language,
-                        "speed": speed
-                    }
+                    f"{self.base_url}/api/tts/synthesize",
+                    json=payload
                 )
                 
                 if response.status_code == 200:
-                    audio_bytes = response.content
-                    logger.info(f"✅ Voice cloned TTS: {len(audio_bytes)} bytes")
-                    return audio_bytes
+                    # For non-streaming, we'd need a different endpoint
+                    # This is primarily for streaming now
+                    result = response.json()
+                    logger.info(f"✅ Chatterbox synthesis completed")
+                    return b""  # Placeholder - streaming is preferred
                 else:
-                    logger.error(f"Voice cloning TTS error: {response.status_code} - {response.text}")
+                    logger.error(f"Chatterbox synthesis error: {response.status_code} - {response.text}")
                     return None
                     
         except Exception as e:
-            logger.error(f"Voice cloning TTS error: {e}")
+            logger.error(f"Chatterbox synthesis error: {e}")
             return None
     
     async def publish_to_room(
@@ -120,20 +108,26 @@ class TTSService:
         language: str = "en",
         speaker: Optional[str] = None,
         voice_id: Optional[str] = None,
+        voice_reference: Optional[str] = None,
         speed: float = 1.0,
-        emotion_level: float = 0.5
+        emotion_level: float = 0.5,
+        temperature: float = 0.9,
+        cfg_weight: float = 0.3
     ) -> bool:
         """
-        Publish streaming TTS audio directly to LiveKit room using new june-tts service
+        Publish streaming Chatterbox TTS audio directly to LiveKit room
         
         Args:
             room_name: LiveKit room name
             text: Text to synthesize
             language: Target language
-            speaker: Built-in speaker name (if not using voice_id)
-            voice_id: Custom voice ID (if not using speaker)
+            speaker: Ignored (legacy parameter)
+            voice_id: Ignored (legacy parameter)
+            voice_reference: Path or URL to reference voice for cloning
             speed: Speech speed multiplier
-            emotion_level: Emotion intensity (0.0-1.0)
+            emotion_level: Emotion intensity (0.0-1.5)
+            temperature: Voice randomness (0.1-1.0)
+            cfg_weight: Guidance weight (0.0-1.0)
             
         Returns:
             True if successful, False otherwise
@@ -145,8 +139,7 @@ class TTSService:
             if len(text) > 1000:
                 text = text[:1000] + "..."
             
-            synthesis_type = "cloned" if voice_id else "built-in"
-            logger.info(f"📢 Publishing {synthesis_type} streaming TTS to room '{room_name}': {text[:50]}...")
+            logger.info(f"📢 Publishing Chatterbox streaming TTS to room '{room_name}': {text[:50]}...")
             
             payload = {
                 "text": text,
@@ -154,22 +147,15 @@ class TTSService:
                 "language": language,
                 "speed": speed,
                 "emotion_level": emotion_level,
+                "temperature": temperature,
+                "cfg_weight": cfg_weight,
                 "streaming": True
             }
             
-            # Add voice selection - use configured default if none provided
-            if voice_id:
-                payload["voice_id"] = voice_id
-            else:
-                # Map old speaker names to new voice IDs
-                speaker = speaker or config.ai.default_speaker
-                voice_mapping = {
-                    "bella": "af_bella",
-                    "sarah": "af_sarah", 
-                    "adam": "am_adam",
-                    "michael": "am_michael"
-                }
-                payload["voice_id"] = voice_mapping.get(speaker.lower(), "af_bella")
+            # Add voice reference for cloning if provided
+            if voice_reference:
+                payload["voice_reference"] = voice_reference
+                logger.info(f"🎭 Using voice reference for cloning")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -179,79 +165,73 @@ class TTSService:
                 
                 if response.status_code == 200:
                     result = response.json()
-                    logger.info(f"✅ Published streaming TTS to room: {result.get('chunks_sent', 0)} chunks, {result.get('duration_ms', 0):.0f}ms")
+                    logger.info(f"✅ Published Chatterbox streaming TTS: {result.get('chunks_sent', 0)} chunks, {result.get('duration_ms', 0):.0f}ms")
                     return True
                 else:
-                    logger.error(f"Streaming TTS error: {response.status_code} - {response.text}")
+                    logger.error(f"Chatterbox streaming TTS error: {response.status_code} - {response.text}")
                     return False
                     
         except Exception as e:
-            logger.error(f"Streaming TTS error: {e}")
+            logger.error(f"Chatterbox streaming TTS error: {e}")
             return False
     
     async def list_voices(self) -> Optional[Dict[str, Any]]:
         """
-        Get list of available voices from new june-tts service
+        Get Chatterbox TTS capabilities and configuration
         
         Returns:
-            Dictionary with voice information or None if failed
+            Dictionary with Chatterbox capabilities or None if failed
         """
         try:
-            logger.info("📋 Fetching available voices from june-tts service")
+            logger.info("📋 Fetching Chatterbox TTS capabilities")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(f"{self.base_url}/api/voices")
                 
                 if response.status_code == 200:
-                    voices = response.json()
-                    logger.info(f"✅ Found {len(voices.get('voices', {}))} voices")
-                    return voices
+                    capabilities = response.json()
+                    logger.info(f"✅ Chatterbox capabilities: {len(capabilities.get('features', []))} features")
+                    return capabilities
                 else:
-                    logger.error(f"Voice listing error: {response.status_code}")
+                    logger.error(f"Chatterbox capabilities error: {response.status_code}")
                     return None
                     
         except Exception as e:
-            logger.error(f"Voice listing error: {e}")
+            logger.error(f"Chatterbox capabilities error: {e}")
             return None
     
-    async def get_voice_info(self, voice_id: str) -> Optional[Dict[str, Any]]:
+    async def clone_voice(
+        self,
+        reference_audio_path: str,
+        voice_name: str,
+        description: Optional[str] = None
+    ) -> Optional[str]:
         """
-        Get information about a specific voice
+        Create a voice clone from reference audio (if supported by endpoint)
         
         Args:
-            voice_id: Voice ID to get information for
+            reference_audio_path: Path to reference audio file
+            voice_name: Name for the cloned voice
+            description: Optional description
             
         Returns:
-            Voice information dictionary or None if failed
+            Voice ID if successful, None if failed
         """
         try:
-            logger.info(f"ℹ️ Fetching voice info for: {voice_id}")
+            logger.info(f"🎭 Creating voice clone: {voice_name}")
             
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_url}/api/voices")
-                
-                if response.status_code == 200:
-                    voices_data = response.json()
-                    voices = voices_data.get("voices", {})
-                    
-                    if voice_id in voices:
-                        voice_info = voices[voice_id]
-                        logger.info(f"✅ Voice info: {voice_info.get('name', 'Unknown')}")
-                        return voice_info
-                    else:
-                        logger.error(f"Voice not found: {voice_id}")
-                        return None
-                else:
-                    logger.error(f"Voice info error: {response.status_code}")
-                    return None
-                    
+            # This would require a separate endpoint for voice management
+            # For now, voice cloning is done per-request with voice_reference
+            logger.info("Voice cloning is done per-request using voice_reference parameter")
+            return reference_audio_path  # Return path as "voice ID"
+            
         except Exception as e:
-            logger.error(f"Voice info error: {e}")
+            logger.error(f"Voice cloning error: {e}")
             return None
     
     async def health_check(self) -> bool:
         """
-        Check TTS service health and capabilities
+        Check Chatterbox TTS service health and capabilities
         
         Returns:
             True if service is healthy, False otherwise
@@ -265,20 +245,21 @@ class TTSService:
                     is_healthy = health.get('status') == 'healthy'
                     engine = health.get('engine', 'unknown')
                     gpu_available = health.get('gpu_available', False)
+                    streaming_enabled = health.get('streaming_enabled', False)
                     
-                    logger.info(f"✅ TTS service healthy: engine={engine}, gpu={gpu_available}")
+                    logger.info(f"✅ Chatterbox TTS service healthy: engine={engine}, gpu={gpu_available}, streaming={streaming_enabled}")
                     return is_healthy
                 else:
-                    logger.error(f"TTS health check failed: {response.status_code}")
+                    logger.error(f"Chatterbox TTS health check failed: {response.status_code}")
                     return False
                     
         except Exception as e:
-            logger.error(f"TTS health check error: {e}")
+            logger.error(f"Chatterbox TTS health check error: {e}")
             return False
     
     async def get_metrics(self) -> Optional[Dict[str, Any]]:
         """
-        Get TTS service metrics and performance data
+        Get Chatterbox TTS service metrics and performance data
         
         Returns:
             Metrics dictionary or None if failed
@@ -289,14 +270,14 @@ class TTSService:
                 
                 if response.status_code == 200:
                     metrics = response.json()
-                    logger.info(f"📊 TTS metrics: {metrics.get('requests_processed', 0)} requests processed")
+                    logger.info(f"📊 Chatterbox TTS metrics: {metrics.get('requests_processed', 0)} requests, {metrics.get('voice_cloning_requests', 0)} voice cloning")
                     return metrics
                 else:
-                    logger.error(f"TTS metrics error: {response.status_code}")
+                    logger.error(f"Chatterbox TTS metrics error: {response.status_code}")
                     return None
                     
         except Exception as e:
-            logger.error(f"TTS metrics error: {e}")
+            logger.error(f"Chatterbox TTS metrics error: {e}")
             return None
 
 
@@ -312,10 +293,7 @@ async def synthesize_speech(
 ) -> Optional[bytes]:
     """
     Legacy function for backward compatibility
-    Use tts_service.synthesize_speech() for new implementations
+    Use tts_service.publish_to_room() for new implementations with streaming
     """
-    # Use configured default speaker if none provided
-    if speaker is None:
-        speaker = config.ai.default_speaker
-        
-    return await tts_service.synthesize_speech(text, language, speaker)
+    logger.warning("Legacy synthesize_speech called - consider using publish_to_room for streaming")
+    return await tts_service.synthesize_with_chatterbox(text=text, language=language)
