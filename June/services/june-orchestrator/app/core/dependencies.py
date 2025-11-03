@@ -1,5 +1,6 @@
-"""Dependency injection container - Phase 2 enhanced"""
+"""Dependency injection container - Phase 2 enhanced with Conversational AI"""
 import logging
+import redis.asyncio as redis
 from functools import lru_cache
 from typing import Optional
 
@@ -10,6 +11,9 @@ from ..services.external.tts import TTSClient
 from ..services.conversation.processor import ConversationProcessor
 from ..services.conversation.security_guard import SecurityGuard
 from ..services.conversation.tts_orchestrator import TTSOrchestrator
+# Conversational AI imports
+from ..services.conversation_memory_service import ConversationMemoryService
+from ..services.conversational_ai_processor import ConversationalAIProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +24,64 @@ _tts_client: Optional[TTSClient] = None
 _security_guard: Optional[SecurityGuard] = None
 _tts_orchestrator: Optional[TTSOrchestrator] = None
 _conversation_processor: Optional[ConversationProcessor] = None
+# Conversational AI singletons
+_redis_client: Optional[redis.Redis] = None
+_conversation_memory_service: Optional[ConversationMemoryService] = None
+_conversational_ai_processor: Optional[ConversationalAIProcessor] = None
 
 
 @lru_cache()
 def get_config() -> AppConfig:
     """Get application configuration"""
     return config
+
+
+@lru_cache()
+def get_redis_client() -> redis.Redis:
+    """Get Redis client instance (singleton)"""
+    global _redis_client
+    
+    if _redis_client is None:
+        _redis_client = redis.Redis(
+            host=config.redis.host,
+            port=config.redis.port,
+            db=config.redis.db,
+            password=config.redis.password if config.redis.password else None,
+            encoding="utf-8",
+            decode_responses=True
+        )
+        logger.info(f"✅ Redis client singleton created: {config.redis.host}:{config.redis.port}/{config.redis.db}")
+    
+    return _redis_client
+
+
+@lru_cache()
+def get_conversation_memory_service() -> ConversationMemoryService:
+    """Get conversation memory service instance (singleton)"""
+    global _conversation_memory_service
+    
+    if _conversation_memory_service is None:
+        redis_client = get_redis_client()
+        _conversation_memory_service = ConversationMemoryService(redis_client)
+        logger.info("✅ Conversation memory service singleton created")
+    
+    return _conversation_memory_service
+
+
+@lru_cache()
+def get_conversational_ai_processor() -> ConversationalAIProcessor:
+    """Get conversational AI processor instance (singleton)"""
+    global _conversational_ai_processor
+    
+    if _conversational_ai_processor is None:
+        memory_service = get_conversation_memory_service()
+        _conversational_ai_processor = ConversationalAIProcessor(
+            memory_service=memory_service,
+            config=config
+        )
+        logger.info("✅ Conversational AI processor singleton created")
+    
+    return _conversational_ai_processor
 
 
 @lru_cache()
@@ -149,6 +205,21 @@ def config_dependency() -> AppConfig:
     return get_config()
 
 
+def redis_client_dependency() -> redis.Redis:
+    """FastAPI dependency for Redis client"""
+    return get_redis_client()
+
+
+def conversation_memory_service_dependency() -> ConversationMemoryService:
+    """FastAPI dependency for conversation memory service"""
+    return get_conversation_memory_service()
+
+
+def conversational_ai_processor_dependency() -> ConversationalAIProcessor:
+    """FastAPI dependency for conversational AI processor"""
+    return get_conversational_ai_processor()
+
+
 def conversation_processor_dependency() -> ConversationProcessor:
     """FastAPI dependency for conversation processor - Phase 2"""
     return get_conversation_processor()
@@ -164,11 +235,19 @@ def tts_orchestrator_dependency() -> TTSOrchestrator:
     return get_tts_orchestrator()
 
 
+# Simple authentication dependency (replace with your actual auth system)
+def get_current_user():
+    """Temporary auth dependency - replace with your actual authentication"""
+    # This is a placeholder - integrate with your existing auth system
+    return {"sub": "user", "username": "june_user"}
+
+
 # Cleanup function for testing
 def reset_singletons():
     """Reset singleton instances (for testing)"""
     global _session_service, _livekit_client, _tts_client, _security_guard
     global _tts_orchestrator, _conversation_processor
+    global _redis_client, _conversation_memory_service, _conversational_ai_processor
     
     _session_service = None
     _livekit_client = None
@@ -176,5 +255,8 @@ def reset_singletons():
     _security_guard = None
     _tts_orchestrator = None
     _conversation_processor = None
+    _redis_client = None
+    _conversation_memory_service = None
+    _conversational_ai_processor = None
     
-    logger.info("🗑️ Singletons reset for testing")
+    logger.info("🗑️ All singletons reset for testing")
