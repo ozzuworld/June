@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from livekit import api as lk_api
 
 from ..config import config
-from ..dependencies import get_current_user
+from ..core.dependencies import get_current_user  # moved to DI module
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,7 +41,6 @@ async def generate_livekit_token(
         )
         
         # Create access token with explicit TTL to avoid scientific notation issues
-        # Standard 6-hour TTL to match LiveKit best practices
         ttl = datetime.timedelta(hours=6)
         
         at = (
@@ -49,24 +48,18 @@ async def generate_livekit_token(
                 api_key=config.livekit.api_key,
                 api_secret=config.livekit.api_secret,
             )
-            .with_identity(str(participant_name))  # Ensure string format
-            .with_name(str(participant_name))      # Add name claim
-            .with_ttl(ttl)                         # Explicit TTL
+            .with_identity(str(participant_name))
+            .with_name(str(participant_name))
+            .with_ttl(ttl)
             .with_grants(grants)
         )
         
         if metadata:
             at = at.with_metadata(str(metadata))
 
-        # Generate token
         token = at.to_jwt()
-        
-        # Log token for debugging (first 50 chars)
         logger.info(f"[TOKEN REQ] Generated token: {token[:50]}...")
-        
-        # Return LiveKit URL exactly as configured - no transformations
         livekit_url = config.livekit.ws_url
-
         logger.info(f"[TOKEN REQ] Success; total elapsed: {time.time()-t0:.3f}s")
         
         response_data = {
@@ -75,9 +68,7 @@ async def generate_livekit_token(
             "participantName": str(participant_name),
             "livekitUrl": livekit_url,
         }
-        
         logger.info(f"[TOKEN REQ] Response data: {response_data}")
-        
         return response_data
         
     except HTTPException:
