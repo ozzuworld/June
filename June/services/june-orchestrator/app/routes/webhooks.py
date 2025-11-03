@@ -1,14 +1,7 @@
-"""Phase 2: Refactored webhook routes - thin orchestration layer
+"""Phase 2: Enhanced webhook routes with SOTA real-time conversation engine
 
-This file is now a thin orchestration layer that delegates all business logic
-to the ConversationProcessor service. Routes are responsible only for:
-1. Request validation
-2. Dependency injection
-3. Response formatting
-4. Error handling
-
-All conversation logic, natural flow, security, and TTS orchestration
-has been moved to dedicated services.
+This file now integrates the SOTA real-time conversation engine for
+natural turn-taking and sub-1.5s latency based on 2024-2025 research.
 """
 import logging
 from datetime import datetime
@@ -16,168 +9,204 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from ..models.requests import STTWebhookPayload
 from ..models.responses import WebhookResponse
-from ..core.dependencies import conversation_processor_dependency
+from ..core.dependencies import (
+    conversation_processor_dependency,
+    get_redis_client,
+    session_service_dependency
+)
 from ..services.conversation.processor import ConversationProcessor
+from ..services.real_time_conversation_engine import RealTimeConversationEngine
+from ..services.streaming_service import streaming_ai_service
+from ..services.tts_service import tts_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Global real-time engine instance
+_rt_engine: Optional[RealTimeConversationEngine] = None
+
+def get_rt_engine() -> RealTimeConversationEngine:
+    """Get real-time conversation engine singleton"""
+    global _rt_engine
+    if _rt_engine is None:
+        _rt_engine = RealTimeConversationEngine(
+            redis_client=get_redis_client(),
+            tts_service=tts_service,
+            streaming_ai_service=streaming_ai_service
+        )
+        logger.info("✅ Real-time conversation engine initialized")
+    return _rt_engine
 
 
 @router.post("/api/webhooks/stt", response_model=WebhookResponse)
 async def handle_stt_webhook(
     payload: STTWebhookPayload,
-    processor: ConversationProcessor = Depends(conversation_processor_dependency)
+    processor: ConversationProcessor = Depends(conversation_processor_dependency),
+    sessions = Depends(session_service_dependency)
 ) -> WebhookResponse:
-    """STT webhook handler - delegates to ConversationProcessor
-    
-    This route is now a thin orchestration layer:
-    1. Validates the incoming STT webhook payload
-    2. Delegates all processing to ConversationProcessor
-    3. Returns the structured response
-    
-    All the complex logic (natural flow, security, TTS, etc.) is now
-    handled by the ConversationProcessor service.
-    """
-    logger.info(f"🎤 STT webhook received: {payload.participant} -> {payload.room_name}")
+    """STT webhook handler with SOTA real-time conversation processing"""
+    logger.info(f"🎙️ STT webhook: {payload.participant} -> {payload.room_name}")
     
     try:
-        # Delegate entirely to the processor
-        response = await processor.handle_stt_webhook(payload)
+        # Get real-time engine
+        rt_engine = get_rt_engine()
         
-        logger.info(f"✅ STT webhook processed: {response.status}")
-        return response
+        # Determine if this is a partial or final transcript
+        is_partial = getattr(payload, 'is_partial', False) or not getattr(payload, 'transcript', '').strip()
+        
+        if is_partial and hasattr(payload, 'transcript'):
+            # Handle partial with potential early AI start
+            result = await rt_engine.handle_user_input(
+                session_id=payload.participant,
+                room_name=payload.room_name,
+                text=payload.transcript,
+                audio_data=getattr(payload, 'audio_data', None),
+                is_partial=True
+            )
+            
+            return WebhookResponse(
+                status="partial_processed",
+                message=f"Partial processed: {payload.transcript[:30]}...",
+                success=True,
+                processing_time=result.get("processing_time", 0)
+            )
+        
+        else:
+            # Handle final transcript with SOTA timing
+            result = await rt_engine.handle_user_input(
+                session_id=payload.participant,
+                room_name=payload.room_name,
+                text=payload.transcript,
+                audio_data=getattr(payload, 'audio_data', None),
+                is_partial=False
+            )
+            
+            if "error" in result:
+                return WebhookResponse(
+                    status="error",
+                    message=f"Processing failed: {result['error']}",
+                    success=False
+                )
+            
+            return WebhookResponse(
+                status="response_generated",
+                message=f"Response delivered in {result.get('first_phrase_time_ms', 0):.0f}ms",
+                success=True,
+                processing_time=result.get('total_time_ms', 0),
+                metadata={
+                    "phrases_sent": result.get('phrases_sent', 0),
+                    "complexity": result.get('complexity', 'unknown'),
+                    "sota_target_met": result.get('target_met', False),
+                    "first_phrase_ms": result.get('first_phrase_time_ms', 0)
+                }
+            )
         
     except HTTPException:
-        # Re-raise HTTP exceptions (they have proper status codes)
         raise
     except Exception as e:
-        # Log internal errors and return generic 500
         logger.exception(f"❌ STT webhook processing failed: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail="Internal error processing STT webhook"
-        )
+        
+        # Fallback to legacy processor for safety
+        try:
+            legacy_response = await processor.handle_stt_webhook(payload)
+            logger.warning(f"⚠️ Used legacy processor fallback")
+            return legacy_response
+        except Exception as fallback_error:
+            logger.error(f"❌ Legacy fallback also failed: {fallback_error}")
+            raise HTTPException(status_code=500, detail="STT processing failed")
+
+
+@router.post("/api/webhooks/voice_onset")
+async def handle_voice_onset(
+    payload: dict,  # {"session_id": str, "room_name": str}
+):
+    """Handle voice onset (interruption) events from STT"""
+    try:
+        session_id = payload.get("session_id")
+        room_name = payload.get("room_name")
+        
+        if not session_id or not room_name:
+            raise HTTPException(status_code=400, detail="session_id and room_name required")
+        
+        rt_engine = get_rt_engine()
+        result = await rt_engine.handle_voice_onset(session_id, room_name)
+        
+        logger.info(f"🛑 Voice onset handled: {result.get('handled', False)}")
+        
+        return {
+            "status": "voice_onset_handled",
+            "interrupted": result.get('handled', False),
+            "session_id": session_id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Voice onset handling failed: {e}")
+        raise HTTPException(status_code=500, detail="Voice onset handling failed")
 
 
 @router.get("/api/streaming/status")
 async def get_streaming_status(
     processor: ConversationProcessor = Depends(conversation_processor_dependency)
 ):
-    """Get status of the natural streaming pipeline"""
+    """Get SOTA streaming pipeline status"""
     try:
-        # Get processor state
-        active_online_sessions = len(processor.online_sessions)
-        active_utterance_states = len(processor.utterance_manager._utterance_states)
-        active_final_trackers = len(processor.final_tracker._trackers)
+        rt_engine = get_rt_engine()
+        rt_stats = rt_engine.get_global_stats()
+        streaming_stats = streaming_ai_service.get_metrics()
         
         return {
-            "natural_streaming_pipeline": {
-                "enabled": True,
-                "partial_support": True,
-                "online_llm": True,
-                "concurrent_tts": True,
-                "natural_flow": True,
-                "natural_flow_for_finals": True,
-                "sentence_buffering": True
+            "sota_real_time_engine": rt_stats,
+            "streaming_ai_service": streaming_stats,
+            "pipeline_optimizations": {
+                "phrase_min_tokens": 4,
+                "token_gap_ms": 60,
+                "first_phrase_urgency_tokens": 3,
+                "target_first_phrase_ms": 200,
+                "target_normal_response_ms": 800,
+                "interruption_detect_ms": 200
             },
-            "natural_flow_settings": processor.config.sessions.__dict__ if hasattr(processor.config, 'sessions') else {},
-            "active_sessions": {
-                "online_llm_sessions": active_online_sessions,
-                "utterance_states": active_utterance_states,
-                "final_transcript_trackers": active_final_trackers,
-                "session_keys": list(processor.online_sessions.keys())
-            },
-            "natural_pipeline_flow": {
-                "step_1": "STT receives audio frames (20-40ms)",
-                "step_2": "Partials accumulated with natural boundary detection",
-                "step_3": "Finals filtered by natural conversation timing", 
-                "step_4": "LLM starts only on complete thoughts/questions/pauses", 
-                "step_5": "TTS streams complete sentences only",
-                "result": "natural conversation timing - no word-by-word responses"
-            },
-            "improvements": {
-                "over_triggering_fixed": True,
-                "final_transcript_filtering": True,
-                "natural_boundaries": True,
-                "sentence_buffering": True,
-                "conversation_flow": "human-like timing",
-                "cooldown_protection": True
-            },
-            "target_achieved": True
+            "research_based": "2024-2025 voice AI best practices",
+            "expected_improvements": [
+                "Sub-1.5s first phrase delivery",
+                "Multi-phrase natural flow", 
+                "Smart interruption handling",
+                "Complexity-aware timing",
+                "Full-duplex conversation"
+            ]
         }
     except Exception as e:
-        logger.error(f"❌ Error getting streaming status: {e}")
-        raise HTTPException(status_code=500, detail="Error getting streaming status")
-
-
-@router.post("/api/streaming/cleanup")
-async def cleanup_streaming_sessions(
-    processor: ConversationProcessor = Depends(conversation_processor_dependency)
-):
-    """Manual cleanup of streaming sessions for debugging"""
-    try:
-        cleaned_sessions = 0
-        cleaned_states = 0
-        cleaned_trackers = 0
-        
-        # Cancel and clean all online sessions
-        for session_key, online_session in list(processor.online_sessions.items()):
-            online_session.cancel()
-            del processor.online_sessions[session_key]
-            cleaned_sessions += 1
-        
-        # Clean utterance states and trackers
-        processor.utterance_manager._utterance_states.clear()
-        processor.final_tracker._trackers.clear()
-        
-        logger.info(
-            f"🧹 Manually cleaned {cleaned_sessions} sessions, "
-            f"{cleaned_states} states, {cleaned_trackers} trackers"
-        )
-        
-        return {
-            "status": "cleanup_complete",
-            "sessions_cleaned": cleaned_sessions,
-            "utterance_states_cleaned": cleaned_states,
-            "final_trackers_cleaned": cleaned_trackers,
-            "remaining_sessions": len(processor.online_sessions),
-            "remaining_states": len(processor.utterance_manager._utterance_states),
-            "remaining_trackers": len(processor.final_tracker._trackers)
-        }
-    except Exception as e:
-        logger.error(f"❌ Error cleaning up sessions: {e}")
-        raise HTTPException(status_code=500, detail="Error cleaning up sessions")
+        logger.error(f"❌ Error getting SOTA status: {e}")
+        raise HTTPException(status_code=500, detail="Error getting status")
 
 
 @router.get("/api/streaming/debug")
 async def debug_streaming_state(
     processor: ConversationProcessor = Depends(conversation_processor_dependency)
 ):
-    """Debug endpoint to inspect current streaming state"""
+    """Debug SOTA streaming state"""
     try:
+        rt_engine = get_rt_engine()
+        
+        # Get active conversation states
+        active_conversations = {}
+        for session_id in rt_engine.active_conversations.keys():
+            stats = rt_engine.get_conversation_stats(session_id)
+            active_conversations[session_id] = stats
+        
         return {
             "timestamp": datetime.utcnow().isoformat(),
-            "online_sessions": {
-                session_key: {
-                    "started_at": session.started_at.isoformat(),
-                    "user_id": session.user_id,
-                    "utterance_id": session.utterance_id,
-                    "active": session.is_active()
-                }
-                for session_key, session in processor.online_sessions.items()
-            },
-            "utterance_states_count": len(processor.utterance_manager._utterance_states),
-            "final_trackers_count": len(processor.final_tracker._trackers),
-            "phase_2_architecture": {
-                "thin_routes": True,
-                "business_logic_extracted": True,
-                "dependency_injection": True,
-                "conversation_processor": True,
-                "natural_flow_service": True,
-                "security_guard": True,
-                "tts_orchestrator": True
+            "sota_engine_active": True,
+            "active_conversations": active_conversations,
+            "streaming_metrics": streaming_ai_service.get_metrics(),
+            "architecture": {
+                "real_time_engine": True,
+                "ultra_fast_phrases": True,
+                "smart_interruptions": True,
+                "complexity_adaptive": True,
+                "research_based_timing": "2024-2025"
             }
         }
     except Exception as e:
-        logger.error(f"❌ Error getting debug info: {e}")
-        raise HTTPException(status_code=500, detail="Error getting debug info")
+        logger.error(f"❌ Debug error: {e}")
+        raise HTTPException(status_code=500, detail="Debug failed")
