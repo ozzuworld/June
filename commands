@@ -65,11 +65,11 @@ com.example.livekitvoiceapp:/*
 livekit://auth
 
 
-
+git pull
 docker build -f June/services/june-vast/Dockerfile -t ozzuworld/june-vast:latest .
 docker push ozzuworld/june-vast:latest
 
-kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://72.19.59.132:46307"}]}]}}}}'
+kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://76.65.53.225:50939"}]}]}}}}'
 kubectl get pods -n june-services -w
 
 
