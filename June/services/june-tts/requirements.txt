@@ -1,6 +1,6 @@
-# June TTS Service - Chatterbox/Kokoro with GPU support
-# Core TTS Engine
-kokoro>=0.9.4
+# June TTS Service - Chatterbox TTS with GPU support
+# Core TTS Engine - Chatterbox only
+chatterbox-tts>=0.2.0
 
 # FastAPI and web server
 fastapi==0.104.1
@@ -11,7 +11,7 @@ pydantic==2.5.0
 soundfile==0.12.1
 numpy>=1.24.0,<2.0
 scipy==1.11.3
-librosa==0.10.1
+torchaudio>=2.1.0
 
 # LiveKit integration
 livekit==0.11.1
@@ -34,6 +34,5 @@ nvidia-ml-py>=11.5.0
 # Development and debugging
 rich>=13.0.0
 
-# Note: torch and torchaudio are installed in Dockerfile
-# with specific CUDA 11.8 support:
+# Note: PyTorch with CUDA support is installed in Dockerfile:
 # torch==2.1.0+cu118 torchaudio==2.1.0+cu118
