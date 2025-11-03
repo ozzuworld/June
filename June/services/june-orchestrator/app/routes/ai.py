@@ -1,9 +1,9 @@
-"""AI processing routes"""
+"""AI processing routes - updated to use SessionService instead of legacy session_manager"""
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from ..models import AIRequest, AIResponse
-from ..session_manager import session_manager
+from ..core.dependencies import get_session_service
 from ..services.ai_service import generate_response
 from ..services.tts_service import synthesize_speech
 
@@ -12,22 +12,20 @@ router = APIRouter()
 
 
 @router.post("/process", response_model=AIResponse)
-async def process_with_ai(request: AIRequest):
+async def process_with_ai(request: AIRequest, session_service = Depends(get_session_service)):
     """
     Process text with AI and generate TTS
-    
-    This is called by:
-    - STT service after transcription
-    - Direct API calls
+    - Called by STT service after transcription
+    - Or direct API calls
     """
     try:
         # Get session
-        session = session_manager.get_session(request.session_id)
+        session = session_service.get_session(request.session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         
         # Add user message to history
-        session_manager.add_to_history(
+        session_service.add_message(
             request.session_id,
             role="user",
             content=request.text
@@ -38,11 +36,11 @@ async def process_with_ai(request: AIRequest):
             text=request.text,
             user_id=session.user_id,
             session_id=request.session_id,
-            conversation_history=session.conversation_history
+            conversation_history=session.get_recent_history()
         )
         
         # Add AI response to history
-        session_manager.add_to_history(
+        session_service.add_message(
             request.session_id,
             role="assistant",
             content=ai_text
@@ -56,8 +54,6 @@ async def process_with_ai(request: AIRequest):
         )
         
         if audio_bytes:
-            # In production, upload to storage and return URL
-            # For now, just indicate it's available
             audio_url = f"/api/audio/{request.session_id}/latest"
         
         return AIResponse(
