@@ -1,4 +1,4 @@
-"""TTS service client with voice cloning support"""
+"""TTS service client with voice cloning support and streaming integration"""
 import logging
 import httpx
 from typing import Optional, Dict, Any
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class TTSService:
-    """Enhanced TTS service client with voice cloning capabilities"""
+    """Enhanced TTS service client with Chatterbox/Kokoro streaming capabilities"""
     
     def __init__(self):
         self.base_url = config.services.tts_base_url
@@ -120,10 +120,11 @@ class TTSService:
         language: str = "en",
         speaker: Optional[str] = None,
         voice_id: Optional[str] = None,
-        speed: float = 1.0
+        speed: float = 1.0,
+        emotion_level: float = 0.5
     ) -> bool:
         """
-        Publish TTS audio directly to LiveKit room
+        Publish streaming TTS audio directly to LiveKit room using new june-tts service
         
         Args:
             room_name: LiveKit room name
@@ -132,6 +133,7 @@ class TTSService:
             speaker: Built-in speaker name (if not using voice_id)
             voice_id: Custom voice ID (if not using speaker)
             speed: Speech speed multiplier
+            emotion_level: Emotion intensity (0.0-1.0)
             
         Returns:
             True if successful, False otherwise
@@ -144,55 +146,65 @@ class TTSService:
                 text = text[:1000] + "..."
             
             synthesis_type = "cloned" if voice_id else "built-in"
-            logger.info(f"📢 Publishing {synthesis_type} TTS to room '{room_name}': {text[:50]}...")
+            logger.info(f"📢 Publishing {synthesis_type} streaming TTS to room '{room_name}': {text[:50]}...")
             
             payload = {
-                "room_name": room_name,
                 "text": text,
+                "room_name": room_name,
                 "language": language,
-                "speed": speed
+                "speed": speed,
+                "emotion_level": emotion_level,
+                "streaming": True
             }
             
             # Add voice selection - use configured default if none provided
             if voice_id:
                 payload["voice_id"] = voice_id
             else:
-                payload["speaker"] = speaker or config.ai.default_speaker
+                # Map old speaker names to new voice IDs
+                speaker = speaker or config.ai.default_speaker
+                voice_mapping = {
+                    "bella": "af_bella",
+                    "sarah": "af_sarah", 
+                    "adam": "am_adam",
+                    "michael": "am_michael"
+                }
+                payload["voice_id"] = voice_mapping.get(speaker.lower(), "af_bella")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/publish-to-room",
+                    f"{self.base_url}/api/tts/synthesize",
                     json=payload
                 )
                 
                 if response.status_code == 200:
                     result = response.json()
-                    logger.info(f"✅ Published to room: {result.get('audio_size', 0)} bytes")
+                    logger.info(f"✅ Published streaming TTS to room: {result.get('chunks_sent', 0)} chunks, {result.get('duration_ms', 0):.0f}ms")
                     return True
                 else:
-                    logger.error(f"Room publishing error: {response.status_code} - {response.text}")
+                    logger.error(f"Streaming TTS error: {response.status_code} - {response.text}")
                     return False
                     
         except Exception as e:
-            logger.error(f"Room publishing error: {e}")
+            logger.error(f"Streaming TTS error: {e}")
             return False
     
     async def list_voices(self) -> Optional[Dict[str, Any]]:
         """
-        Get list of available voices (built-in and custom)
+        Get list of available voices from new june-tts service
         
         Returns:
             Dictionary with voice information or None if failed
         """
         try:
-            logger.info("📋 Fetching available voices")
+            logger.info("📋 Fetching available voices from june-tts service")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_url}/voices")
+                response = await client.get(f"{self.base_url}/api/voices")
                 
                 if response.status_code == 200:
                     voices = response.json()
-                    logger.info(f"✅ Found {voices.get('summary', {}).get('total_voices', 0)} voices")
+                    logger.info(f"✅ Found {len(voices.get('voices', {}))} voices")
                     return voices
                 else:
                     logger.error(f"Voice listing error: {response.status_code}")
@@ -216,12 +228,19 @@ class TTSService:
             logger.info(f"ℹ️ Fetching voice info for: {voice_id}")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_url}/voices/{voice_id}")
+                response = await client.get(f"{self.base_url}/api/voices")
                 
                 if response.status_code == 200:
-                    voice_info = response.json()
-                    logger.info(f"✅ Voice info: {voice_info.get('name', 'Unknown')}")
-                    return voice_info
+                    voices_data = response.json()
+                    voices = voices_data.get("voices", {})
+                    
+                    if voice_id in voices:
+                        voice_info = voices[voice_id]
+                        logger.info(f"✅ Voice info: {voice_info.get('name', 'Unknown')}")
+                        return voice_info
+                    else:
+                        logger.error(f"Voice not found: {voice_id}")
+                        return None
                 else:
                     logger.error(f"Voice info error: {response.status_code}")
                     return None
@@ -239,12 +258,16 @@ class TTSService:
         """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.base_url}/healthz")
+                response = await client.get(f"{self.base_url}/health")
                 
                 if response.status_code == 200:
                     health = response.json()
-                    logger.info(f"✅ TTS service healthy: {health.get('features', [])}")
-                    return health.get('tts_ready', False)
+                    is_healthy = health.get('status') == 'healthy'
+                    engine = health.get('engine', 'unknown')
+                    gpu_available = health.get('gpu_available', False)
+                    
+                    logger.info(f"✅ TTS service healthy: engine={engine}, gpu={gpu_available}")
+                    return is_healthy
                 else:
                     logger.error(f"TTS health check failed: {response.status_code}")
                     return False
@@ -252,6 +275,29 @@ class TTSService:
         except Exception as e:
             logger.error(f"TTS health check error: {e}")
             return False
+    
+    async def get_metrics(self) -> Optional[Dict[str, Any]]:
+        """
+        Get TTS service metrics and performance data
+        
+        Returns:
+            Metrics dictionary or None if failed
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self.base_url}/metrics")
+                
+                if response.status_code == 200:
+                    metrics = response.json()
+                    logger.info(f"📊 TTS metrics: {metrics.get('requests_processed', 0)} requests processed")
+                    return metrics
+                else:
+                    logger.error(f"TTS metrics error: {response.status_code}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"TTS metrics error: {e}")
+            return None
 
 
 # Global TTS service instance
