@@ -75,15 +75,16 @@ done
 success "Configuration loaded"
 log "Domain: $DOMAIN"
 
-# Define installation phases (FIXED ORDER - GPU Operator after Helm)
+# Define installation phases (ensure Helm before Redis)
 PHASES=(
     "01-prerequisites"
     "02-docker"
     "02.5-gpu"
     "03-kubernetes"
     "04-infrastructure"
-    "05-helm"
-    "03.5-gpu-operator"    # MOVED HERE - After Helm is installed
+    "05-helm"           # Ensure helm is installed before Redis helm chart
+    "04.5-redis"        # New: Redis deployment via Helm
+    "03.5-gpu-operator" # After Helm is installed
     "06-certificates"
     "07-stunner"
     "08-livekit"
