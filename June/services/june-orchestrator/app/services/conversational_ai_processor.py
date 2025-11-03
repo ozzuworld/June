@@ -13,6 +13,7 @@ from .conversation_memory_service import (
     ConversationState,
     ConversationMessage
 )
+from .ai_service import generate_response
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,9 @@ class ConversationalAIProcessor:
                 context, request.message, intent
             )
             
-            # Generate context-aware response
+            # Generate context-aware response using existing AI service
             response = await self._generate_contextual_response(
-                request.message, context, conversation_context, intent
+                request.message, context, conversation_context, intent, request.user_id, request.session_id
             )
             
             # Calculate response time
@@ -255,21 +256,27 @@ class ConversationalAIProcessor:
         message: str,
         context: ConversationContext,
         conversation_context: Dict[str, Any],
-        intent: str
+        intent: str,
+        user_id: str,
+        session_id: str
     ) -> ConversationResponse:
-        """Generate response using conversational context"""
+        """Generate response using conversational context and existing AI service"""
         
-        # Build context-aware prompt
-        prompt = self._build_conversational_prompt(
-            message, context, conversation_context, intent
-        )
+        # Build enhanced conversation history for existing AI service
+        enhanced_history = self._build_enhanced_history(conversation_context, intent, context)
         
-        # Generate response using AI service
+        # Generate response using existing AI service with enhanced context
         try:
-            response_text = await self._call_ai_service(prompt)
+            response_text, response_time = await generate_response(
+                text=message,
+                user_id=user_id,
+                session_id=session_id,
+                conversation_history=enhanced_history
+            )
         except Exception as e:
             logger.error(f"AI service error: {e}")
             response_text = self._generate_fallback_response(message, intent)
+            response_time = 0
         
         # Generate contextual follow-up suggestions
         followups = self._generate_contextual_followups(context, intent)
@@ -285,118 +292,34 @@ class ConversationalAIProcessor:
             conversation_state=context.conversation_state.value,
             context_references=references,
             followup_suggestions=followups,
-            topics_discussed=response_topics
+            topics_discussed=response_topics,
+            response_metadata={"ai_response_time_ms": response_time}
         )
     
-    def _build_conversational_prompt(
-        self,
-        message: str,
-        context: ConversationContext,
-        conversation_context: Dict[str, Any],
-        intent: str
-    ) -> str:
-        """Build comprehensive context-aware prompt for AI"""
+    def _build_enhanced_history(self, conversation_context: Dict[str, Any], intent: str, context: ConversationContext) -> List[Dict]:
+        """Build enhanced conversation history with context information"""
+        history = []
         
-        prompt_parts = [
-            "You are June, a conversational AI assistant specialized in technology concepts and learning.",
-            "You maintain context across conversations and build naturally on previous discussions.",
-            "",
-            f"CONVERSATION STATE: {context.conversation_state.value}",
-            f"USER'S LEARNING LEVEL: {context.understanding_level}",
-            f"LEARNING PREFERENCES: {context.learning_preferences}",
-        ]
+        # Add context primer based on conversation state
+        context_primer = f"""[Context: This is a {context.conversation_state.value} conversation. 
+User prefers {context.understanding_level} level explanations. 
+Current topic: {context.current_topic or 'general'}. 
+Intent: {intent}]"""
         
-        # Add conversation history context
-        if conversation_context.get("recent_history"):
-            prompt_parts.append("\nRECENT CONVERSATION:")
-            for msg in conversation_context["recent_history"][-3:]:  # Last 3 messages
-                role_label = "You" if msg.role == "assistant" else "User"
-                content = msg.content[:300] + "..." if len(msg.content) > 300 else msg.content
-                prompt_parts.append(f"{role_label}: {content}")
+        history.append({
+            "role": "system",
+            "content": context_primer
+        })
         
-        # Add topic context if relevant
-        if context.current_topic and conversation_context.get("topic_context"):
-            prompt_parts.append(f"\nPREVIOUS DISCUSSION ABOUT '{context.current_topic.upper()}'S:")
-            for msg in conversation_context["topic_context"][-2:]:
-                role_label = "You" if msg.role == "assistant" else "User"
-                content = msg.content[:200] + "..." if len(msg.content) > 200 else msg.content
-                prompt_parts.append(f"{role_label}: {content}")
+        # Add recent conversation history
+        recent_history = conversation_context.get("recent_history", [])
+        for msg in recent_history[-10:]:  # Last 10 messages
+            history.append({
+                "role": msg.role,
+                "content": msg.content
+            })
         
-        # Add topics we've been exploring
-        if context.topic_history:
-            recent_topics = ", ".join(context.topic_history[-5:])
-            prompt_parts.append(f"\nTOPICS WE'VE DISCUSSED: {recent_topics}")
-        
-        # Add elaboration context
-        if context.elaboration_requests:
-            elaborations = ", ".join(context.elaboration_requests[-3:])
-            prompt_parts.append(f"\nTOPICS YOU'VE ELABORATED ON: {elaborations}")
-        
-        # Intent-specific guidance
-        if intent == 'elaboration':
-            prompt_parts.append("\nINSTRUCTION: The user is asking for elaboration. Build upon previous explanations with deeper insights, examples, or different perspectives. Reference what we've already discussed.")
-        elif intent == 'explanation':
-            prompt_parts.append(f"\nINSTRUCTION: Provide a clear explanation suitable for {context.understanding_level} level. Use examples that match their learning preferences.")
-        elif intent == 'implementation':
-            prompt_parts.append("\nINSTRUCTION: Focus on practical implementation. Provide code examples, architecture patterns, or step-by-step guidance.")
-        elif intent == 'comparison':
-            prompt_parts.append("\nINSTRUCTION: Provide a thorough comparison. Reference any related concepts we've discussed before.")
-        elif intent == 'clarification':
-            prompt_parts.append("\nINSTRUCTION: Clarify the concept by building on our previous discussion. Use simpler terms or different analogies.")
-        elif intent == 'follow_up':
-            prompt_parts.append("\nINSTRUCTION: This is a follow-up question. Connect it naturally to our ongoing conversation thread.")
-        
-        # Add conversation patterns context
-        patterns = conversation_context.get("conversation_patterns", {})
-        if patterns.get("elaboration_requests", 0) > 2:
-            prompt_parts.append("\nNOTE: The user frequently asks for elaboration - they appreciate detailed, comprehensive explanations.")
-        if patterns.get("implementation_requests", 0) > 1:
-            prompt_parts.append("\nNOTE: The user is interested in practical implementation - include code examples when relevant.")
-        
-        prompt_parts.extend([
-            f"\nCURRENT USER MESSAGE: {message}",
-            "",
-            "RESPONSE GUIDELINES:",
-            "- Reference our previous conversation naturally when relevant",
-            "- Build upon concepts we've already established",
-            "- Match the user's learning level and preferences",
-            "- Be conversational and engaging",
-            "- Provide practical examples for technical concepts",
-            "- Suggest natural follow-ups or deeper exploration",
-            "- If elaborating, add new insights rather than repeating"
-        ])
-        
-        return "\n".join(prompt_parts)
-    
-    async def _call_ai_service(self, prompt: str) -> str:
-        """Call AI service with the conversational prompt"""
-        try:
-            # Use your existing AI service integration
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # Adjust this URL to match your actual AI service
-                response = await client.post(
-                    f"{self.config.services.gemini_api_url or 'http://localhost:8000'}/generate",
-                    json={
-                        "prompt": prompt,
-                        "max_tokens": self.config.ai.max_output_tokens or 1000,
-                        "temperature": 0.7,
-                        "model": self.config.ai.model or "gemini-pro"
-                    },
-                    headers={
-                        "Authorization": f"Bearer {self.config.services.gemini_api_key}"
-                    } if self.config.services.gemini_api_key else {}
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    return result.get("response", result.get("text", "I apologize, but I couldn't generate a response."))
-                else:
-                    logger.error(f"AI service returned status {response.status_code}: {response.text}")
-                    raise Exception(f"AI service error: {response.status_code}")
-                    
-        except Exception as e:
-            logger.error(f"Error calling AI service: {e}")
-            raise
+        return history
     
     def _generate_fallback_response(self, message: str, intent: str) -> str:
         """Generate a fallback response when AI service is unavailable"""
