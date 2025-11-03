@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service Configuration
-Centralized configuration management for TTS service
+June TTS Service Configuration - Chatterbox TTS
+Centralized configuration management for Chatterbox TTS service
 """
 
 import os
@@ -9,10 +9,10 @@ from typing import List, Optional
 from dataclasses import dataclass
 
 @dataclass
-class TTSConfig:
-    """TTS-specific configuration"""
+class ChatterboxConfig:
+    """Chatterbox TTS-specific configuration"""
     # Engine settings
-    engine: str = "kokoro"  # or "chatterbox"
+    engine: str = "chatterbox"  # Only Chatterbox TTS
     device: str = "auto"  # auto, cuda, cpu
     model_cache_dir: str = "/app/models"
     
@@ -20,9 +20,14 @@ class TTSConfig:
     sample_rate: int = 24000
     chunk_duration: float = 0.2  # seconds
     max_text_length: int = 1000
+    chunk_size: int = 25  # Tokens per chunk for Chatterbox streaming
     
-    # Voice settings
-    default_voice: str = "af_bella"
+    # Chatterbox-specific parameters
+    default_exaggeration: float = 0.5  # Emotion level (0.0-1.5)
+    default_temperature: float = 0.9   # Voice randomness (0.1-1.0)
+    default_cfg_weight: float = 0.3    # Guidance weight (0.0-1.0)
+    
+    # Voice cloning settings
     enable_voice_cloning: bool = True
     voice_reference_max_length: int = 30  # seconds
     
@@ -34,8 +39,6 @@ class TTSConfig:
     
     # Quality settings
     default_speed: float = 1.0
-    default_emotion_level: float = 0.5
-    enable_emotion_control: bool = True
 
 @dataclass  
 class LiveKitConfig:
@@ -56,7 +59,7 @@ class ServiceConfig:
     # Service identity
     name: str = "june-tts"
     version: str = "2.0.0"
-    description: str = "High-performance TTS service with Chatterbox/Kokoro"
+    description: str = "High-performance TTS service with Chatterbox TTS"
     
     # Server settings
     host: str = "0.0.0.0"
@@ -76,12 +79,13 @@ class ServiceConfig:
     metrics_enabled: bool = True
     
     # External services
-    orchestrator_url: str = "https://api.ozzu.world"
+    orchestrator_url: str = "http://june-orchestrator.june-services.svc.cluster.local:8080"
+
 class Config:
-    """Main configuration class"""
+    """Main configuration class for Chatterbox TTS service"""
     
     def __init__(self):
-        self.tts = TTSConfig()
+        self.chatterbox = ChatterboxConfig()
         self.livekit = LiveKitConfig()
         self.service = ServiceConfig()
         
@@ -89,9 +93,9 @@ class Config:
         self._load_from_env()
         
         # Auto-detect device if needed
-        if self.tts.device == "auto":
+        if self.chatterbox.device == "auto":
             import torch
-            self.tts.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.chatterbox.device = "cuda" if torch.cuda.is_available() else "cpu"
             
         # Set CORS origins default
         if self.service.cors_origins is None:
@@ -100,13 +104,22 @@ class Config:
     def _load_from_env(self):
         """Load configuration from environment variables"""
         
-        # TTS settings
-        self.tts.engine = os.getenv("TTS_ENGINE", self.tts.engine)
-        self.tts.device = os.getenv("TTS_DEVICE", self.tts.device)
-        self.tts.sample_rate = int(os.getenv("TTS_SAMPLE_RATE", self.tts.sample_rate))
-        self.tts.default_voice = os.getenv("TTS_DEFAULT_VOICE", self.tts.default_voice)
-        self.tts.max_concurrent_requests = int(os.getenv(
-            "TTS_MAX_CONCURRENT", self.tts.max_concurrent_requests
+        # Chatterbox TTS settings
+        self.chatterbox.engine = os.getenv("TTS_ENGINE", self.chatterbox.engine)
+        self.chatterbox.device = os.getenv("TTS_DEVICE", self.chatterbox.device)
+        self.chatterbox.sample_rate = int(os.getenv("TTS_SAMPLE_RATE", self.chatterbox.sample_rate))
+        self.chatterbox.chunk_size = int(os.getenv("CHATTERBOX_CHUNK_SIZE", self.chatterbox.chunk_size))
+        self.chatterbox.default_exaggeration = float(os.getenv(
+            "CHATTERBOX_EXAGGERATION", self.chatterbox.default_exaggeration
+        ))
+        self.chatterbox.default_temperature = float(os.getenv(
+            "CHATTERBOX_TEMPERATURE", self.chatterbox.default_temperature
+        ))
+        self.chatterbox.default_cfg_weight = float(os.getenv(
+            "CHATTERBOX_CFG_WEIGHT", self.chatterbox.default_cfg_weight
+        ))
+        self.chatterbox.max_concurrent_requests = int(os.getenv(
+            "TTS_MAX_CONCURRENT", self.chatterbox.max_concurrent_requests
         ))
         
         # LiveKit settings
@@ -131,69 +144,93 @@ class Config:
         if cors_env:
             self.service.cors_origins = [origin.strip() for origin in cors_env.split(",")]
     
-    def get_voices_config(self) -> dict:
-        """Get available voices configuration"""
+    def get_chatterbox_config(self) -> dict:
+        """Get Chatterbox TTS configuration"""
         return {
-            "default_voice": self.tts.default_voice,
-            "available_voices": {
-                "af_bella": {
-                    "name": "Bella",
-                    "language": "en",
-                    "gender": "female",
-                    "accent": "american",
-                    "description": "Warm, friendly female voice"
+            "engine": "chatterbox",
+            "device": self.chatterbox.device,
+            "sample_rate": self.chatterbox.sample_rate,
+            "chunk_size": self.chatterbox.chunk_size,
+            "streaming_enabled": self.chatterbox.enable_streaming,
+            "voice_cloning_enabled": self.chatterbox.enable_voice_cloning,
+            "max_reference_length": self.chatterbox.voice_reference_max_length,
+            "parameters": {
+                "exaggeration": {
+                    "min": 0.0,
+                    "max": 1.5,
+                    "default": self.chatterbox.default_exaggeration,
+                    "description": "Emotion intensity and expressiveness"
                 },
-                "af_sarah": {
-                    "name": "Sarah", 
-                    "language": "en",
-                    "gender": "female",
-                    "accent": "american",
-                    "description": "Clear, professional female voice"
+                "temperature": {
+                    "min": 0.1,
+                    "max": 1.0,
+                    "default": self.chatterbox.default_temperature,
+                    "description": "Voice randomness and variation"
                 },
-                "am_adam": {
-                    "name": "Adam",
-                    "language": "en", 
-                    "gender": "male",
-                    "accent": "american",
-                    "description": "Deep, authoritative male voice"
+                "cfg_weight": {
+                    "min": 0.0,
+                    "max": 1.0,
+                    "default": self.chatterbox.default_cfg_weight,
+                    "description": "Guidance weight for voice control"
                 },
-                "am_michael": {
-                    "name": "Michael",
-                    "language": "en",
-                    "gender": "male", 
-                    "accent": "american",
-                    "description": "Friendly, conversational male voice"
+                "speed": {
+                    "min": 0.5,
+                    "max": 2.0,
+                    "default": self.chatterbox.default_speed,
+                    "description": "Speech speed multiplier"
                 }
             },
-            "voice_cloning_enabled": self.tts.enable_voice_cloning,
-            "max_reference_length": self.tts.voice_reference_max_length
+            "supported_languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh"],
+            "features": [
+                "Zero-shot voice cloning",
+                "Real-time streaming",
+                "Emotion control (exaggeration)",
+                "Voice guidance (cfg_weight)",
+                "Temperature control",
+                "Multi-language support",
+                "GPU acceleration"
+            ]
         }
     
     def get_performance_config(self) -> dict:
         """Get performance-related configuration"""
         return {
-            "device": self.tts.device,
-            "max_concurrent_requests": self.tts.max_concurrent_requests,
-            "gpu_memory_fraction": self.tts.gpu_memory_fraction,
-            "batch_size": self.tts.batch_size,
-            "streaming_enabled": self.tts.enable_streaming,
-            "chunk_duration": self.tts.chunk_duration,
-            "sample_rate": self.tts.sample_rate
+            "device": self.chatterbox.device,
+            "max_concurrent_requests": self.chatterbox.max_concurrent_requests,
+            "gpu_memory_fraction": self.chatterbox.gpu_memory_fraction,
+            "batch_size": self.chatterbox.batch_size,
+            "streaming_enabled": self.chatterbox.enable_streaming,
+            "chunk_duration": self.chatterbox.chunk_duration,
+            "chunk_size": self.chatterbox.chunk_size,
+            "sample_rate": self.chatterbox.sample_rate
         }
     
     def validate(self) -> List[str]:
         """Validate configuration and return list of issues"""
         issues = []
         
-        # Validate TTS settings
-        if self.tts.sample_rate not in [16000, 22050, 24000, 44100, 48000]:
-            issues.append(f"Invalid sample rate: {self.tts.sample_rate}")
+        # Validate Chatterbox TTS settings
+        if self.chatterbox.sample_rate not in [16000, 22050, 24000, 44100, 48000]:
+            issues.append(f"Invalid sample rate: {self.chatterbox.sample_rate}")
             
-        if self.tts.chunk_duration <= 0 or self.tts.chunk_duration > 2.0:
-            issues.append(f"Invalid chunk duration: {self.tts.chunk_duration}")
+        if self.chatterbox.chunk_duration <= 0 or self.chatterbox.chunk_duration > 2.0:
+            issues.append(f"Invalid chunk duration: {self.chatterbox.chunk_duration}")
             
-        if self.tts.max_concurrent_requests <= 0 or self.tts.max_concurrent_requests > 20:
-            issues.append(f"Invalid max concurrent requests: {self.tts.max_concurrent_requests}")
+        if self.chatterbox.chunk_size <= 0 or self.chatterbox.chunk_size > 100:
+            issues.append(f"Invalid chunk size: {self.chatterbox.chunk_size}")
+            
+        if self.chatterbox.max_concurrent_requests <= 0 or self.chatterbox.max_concurrent_requests > 20:
+            issues.append(f"Invalid max concurrent requests: {self.chatterbox.max_concurrent_requests}")
+        
+        # Validate Chatterbox parameters
+        if not (0.0 <= self.chatterbox.default_exaggeration <= 1.5):
+            issues.append(f"Invalid exaggeration: {self.chatterbox.default_exaggeration}")
+            
+        if not (0.1 <= self.chatterbox.default_temperature <= 1.0):
+            issues.append(f"Invalid temperature: {self.chatterbox.default_temperature}")
+            
+        if not (0.0 <= self.chatterbox.default_cfg_weight <= 1.0):
+            issues.append(f"Invalid cfg_weight: {self.chatterbox.default_cfg_weight}")
         
         # Validate LiveKit settings
         if not self.livekit.ws_url.startswith(("ws://", "wss://")):
@@ -207,15 +244,18 @@ class Config:
     
     def __str__(self) -> str:
         """String representation of configuration"""
-        return f"""June TTS Service Configuration:
-  Engine: {self.tts.engine} on {self.tts.device}
-  Sample Rate: {self.tts.sample_rate}Hz
-  Default Voice: {self.tts.default_voice}
+        return f"""June TTS Service Configuration (Chatterbox):
+  Engine: {self.chatterbox.engine} on {self.chatterbox.device}
+  Sample Rate: {self.chatterbox.sample_rate}Hz
+  Chunk Size: {self.chatterbox.chunk_size} tokens
+  Exaggeration: {self.chatterbox.default_exaggeration}
+  Temperature: {self.chatterbox.default_temperature}
+  CFG Weight: {self.chatterbox.default_cfg_weight}
   LiveKit: {self.livekit.ws_url}
   Service: {self.service.host}:{self.service.port}
   Auth Enabled: {self.service.enable_auth}
-  Streaming: {self.tts.enable_streaming}
-  Max Concurrent: {self.tts.max_concurrent_requests}"""
+  Streaming: {self.chatterbox.enable_streaming}
+  Max Concurrent: {self.chatterbox.max_concurrent_requests}"""
 
 # Global configuration instance
 config = Config()
