@@ -4,6 +4,7 @@ This file now integrates the SOTA real-time conversation engine for
 natural turn-taking and sub-1.5s latency based on 2024-2025 research.
 """
 import logging
+from typing import Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
 
@@ -146,17 +147,15 @@ async def handle_voice_onset(
 
 
 @router.get("/api/streaming/status")
-async def get_streaming_status(
-    processor: ConversationProcessor = Depends(conversation_processor_dependency)
-):
+async def get_streaming_status():
     """Get SOTA streaming pipeline status"""
     try:
         rt_engine = get_rt_engine()
-        rt_stats = rt_engine.get_global_stats()
+        from ..services.streaming_service import streaming_ai_service
         streaming_stats = streaming_ai_service.get_metrics()
         
         return {
-            "sota_real_time_engine": rt_stats,
+            "sota_real_time_engine": rt_engine.get_global_stats(),
             "streaming_ai_service": streaming_stats,
             "pipeline_optimizations": {
                 "phrase_min_tokens": 4,
@@ -166,14 +165,7 @@ async def get_streaming_status(
                 "target_normal_response_ms": 800,
                 "interruption_detect_ms": 200
             },
-            "research_based": "2024-2025 voice AI best practices",
-            "expected_improvements": [
-                "Sub-1.5s first phrase delivery",
-                "Multi-phrase natural flow", 
-                "Smart interruption handling",
-                "Complexity-aware timing",
-                "Full-duplex conversation"
-            ]
+            "research_based": "2024-2025 voice AI best practices"
         }
     except Exception as e:
         logger.error(f"❌ Error getting SOTA status: {e}")
@@ -181,31 +173,22 @@ async def get_streaming_status(
 
 
 @router.get("/api/streaming/debug")
-async def debug_streaming_state(
-    processor: ConversationProcessor = Depends(conversation_processor_dependency)
-):
+async def debug_streaming_state():
     """Debug SOTA streaming state"""
     try:
         rt_engine = get_rt_engine()
         
-        # Get active conversation states
-        active_conversations = {}
-        for session_id in rt_engine.active_conversations.keys():
-            stats = rt_engine.get_conversation_stats(session_id)
-            active_conversations[session_id] = stats
+        active_conversations = {
+            sid: rt_engine.get_conversation_stats(sid)
+            for sid in list(rt_engine.active_conversations.keys())
+        }
         
+        from ..services.streaming_service import streaming_ai_service
         return {
             "timestamp": datetime.utcnow().isoformat(),
             "sota_engine_active": True,
             "active_conversations": active_conversations,
             "streaming_metrics": streaming_ai_service.get_metrics(),
-            "architecture": {
-                "real_time_engine": True,
-                "ultra_fast_phrases": True,
-                "smart_interruptions": True,
-                "complexity_adaptive": True,
-                "research_based_timing": "2024-2025"
-            }
         }
     except Exception as e:
         logger.error(f"❌ Debug error: {e}")
