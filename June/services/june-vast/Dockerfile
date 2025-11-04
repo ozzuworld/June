@@ -11,6 +11,7 @@ ENV PATH=/usr/local/cuda/bin:$PATH
 # Base system deps (both services + CosyVoice requirements)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
+    python3.10-dev cython3 pkg-config libsndfile1-dev \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
     ca-certificates curl git wget \
     build-essential cmake sox libsox-dev git-lfs unzip \
@@ -72,7 +73,7 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
     # Clone CosyVoice (source usage; not a pip package)
     git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
     cd /opt/CosyVoice && git submodule update --init --recursive && \
-    # Install CosyVoice repo requirements
+    # Install CosyVoice repo requirements (pyworld will build using headers above)
     /venv-tts/bin/pip install -r requirements.txt && \
     # Optional: ensure WeTextProcessing present
     /venv-tts/bin/pip install WeTextProcessing==1.0.3 && \
@@ -97,7 +98,7 @@ for repo, name in pairs:
 PY
 
 # Add CosyVoice source to PYTHONPATH for runtime imports
-ENV PYTHONPATH=/app:/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:$PYTHONPATH
+ENV PYTHONPATH=/app:/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:${PYTHONPATH}
 
 # Copy application code
 COPY June/services/june-stt/ /app/stt/
