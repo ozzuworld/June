@@ -1,6 +1,7 @@
 """
 WhisperX Service with Enhanced Features and Silero VAD Integration
 Provides word-level timestamps, speaker diarization, and accent optimization
+(Pure WhisperX API usage)
 """
 import os
 import time
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class WhisperXService:
-    """Enhanced WhisperX service with word-level timestamps and diarization"""
+    """Enhanced WhisperX service with word-level timestamps and diarization (pure WhisperX API)"""
     
     def __init__(self):
         self.model = None
@@ -48,7 +49,7 @@ class WhisperXService:
         
         logger.info(f"WhisperX service initialized: device={self.device}, compute={self.compute_type}")
         
-        # Accent optimization prompts
+        # Accent optimization prompts (used via asr_options at model load)
         self.accent_prompts = {
             "latin": "English speech with Latin accent. Mathematical terms: square root, calculations, numbers. Technical vocabulary: programming, computer, algorithm, function, variable.",
             "general": "Clear English speech with mathematical and technical vocabulary. Numbers, calculations, computer terms.",
@@ -66,11 +67,11 @@ class WhisperXService:
             
             logger.info(f"Loading WhisperX {config.WHISPER_MODEL} on {self.device}")
             
-            # Load WhisperX model
+            # Load WhisperX model (pure API)
             loop = asyncio.get_event_loop()
             self.model = await loop.run_in_executor(None, self._load_whisperx_model)
             
-            # Load alignment model for word-level timestamps
+            # Preload alignment model for word-level timestamps
             logger.info("Loading alignment model for word-level timestamps...")
             self.align_model, self.align_metadata = await loop.run_in_executor(
                 None, 
@@ -104,8 +105,7 @@ class WhisperXService:
             raise
     
     def _load_whisperx_model(self):
-        """Load WhisperX transcription model with initial_prompt in asr_options"""
-        # Build asr_options with initial_prompt if accent optimization is enabled
+        """Load WhisperX transcription model with asr_options for prompt-like behavior"""
         asr_options = {}
         if config.ACCENT_OPTIMIZATION and self.active_prompt:
             asr_options["initial_prompt"] = self.active_prompt
@@ -117,11 +117,12 @@ class WhisperXService:
             compute_type=self.compute_type,
             download_root=config.WHISPER_CACHE_DIR,
             language=config.DEFAULT_LANGUAGE if config.FORCE_LANGUAGE else None,
-            asr_options=asr_options if asr_options else None
+            asr_options=asr_options or None,
         )
     
     def _load_alignment_model(self):
         """Load alignment model for word-level timestamps"""
+        # Language for alignment should match output language from transcribe; we preload with default
         language = config.DEFAULT_LANGUAGE if config.FORCE_LANGUAGE else "en"
         return whisperx.load_align_model(
             language_code=language,
@@ -173,9 +174,8 @@ class WhisperXService:
         return self.is_ready.is_set() and self.model is not None and not self.load_error
     
     def has_speech_content(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
-        """Use Silero VAD for intelligent speech detection"""
+        """Use Silero VAD or fallback RMS-based detection"""
         if not config.SILERO_VAD_ENABLED or self.vad_model is None:
-            # Fallback to RMS-based detection
             rms = np.sqrt(np.mean(audio ** 2)) if len(audio) > 0 else 0.0
             return rms > 0.001
         
@@ -183,10 +183,8 @@ class WhisperXService:
             if len(audio) == 0:
                 return False
                 
-            # Convert to tensor
             audio_tensor = torch.from_numpy(audio.astype(np.float32))
             
-            # Get speech timestamps
             speech_timestamps = self.get_speech_timestamps(
                 audio_tensor,
                 self.vad_model,
@@ -200,12 +198,10 @@ class WhisperXService:
             if not speech_timestamps:
                 return False
             
-            # Calculate total speech duration
             total_speech_duration = sum(
                 segment['end'] - segment['start'] for segment in speech_timestamps
             )
             
-            # Require minimum speech content
             min_required_speech = config.MIN_UTTERANCE_SEC * 0.6
             has_speech = total_speech_duration >= min_required_speech
             
@@ -224,13 +220,8 @@ class WhisperXService:
         enable_diarization: bool = False
     ) -> Dict[str, Any]:
         """
-        Enhanced transcription with WhisperX
-        
-        Features:
-        - Word-level timestamps
-        - Speaker diarization (optional)
-        - Accent optimization via asr_options
-        - Silero VAD preprocessing
+        Pure WhisperX transcription with optional alignment and diarization
+        - load_audio -> model.transcribe(audio) -> align (optional)
         """
         if not self.is_model_ready():
             raise RuntimeError("WhisperX model not ready")
@@ -241,24 +232,10 @@ class WhisperXService:
             async with self.model_lock:
                 self._model_usage_count += 1
                 
-                # Preprocessing with Silero VAD
-                if config.SILERO_VAD_ENABLED:
-                    should_process = await self._vad_preprocess(audio_path)
-                    if not should_process:
-                        return {
-                            "text": "",
-                            "language": language or config.DEFAULT_LANGUAGE,
-                            "processing_time_ms": int((time.time() - start_time) * 1000),
-                            "segments": [],
-                            "word_segments": [],
-                            "skipped_reason": "no_speech_detected_by_silero_vad",
-                            "method": "whisperx_silero_filtered"
-                        }
-                
                 # Determine language
                 optimal_language = self._get_optimal_language(language)
                 
-                # Load audio with WhisperX
+                # Load audio via WhisperX utility (ensures expected format)
                 loop = asyncio.get_event_loop()
                 audio = await loop.run_in_executor(
                     None,
@@ -266,22 +243,21 @@ class WhisperXService:
                     audio_path
                 )
                 
-                # Transcribe with WhisperX (initial_prompt now handled in asr_options)
-                logger.debug("Running WhisperX transcription...")
+                # Transcribe using pure WhisperX API
+                logger.debug("Running WhisperX transcription (pure API)...")
                 result = await loop.run_in_executor(
                     None,
                     lambda: self.model.transcribe(
                         audio,
                         batch_size=config.BATCH_SIZE,
-                        language=optimal_language if config.FORCE_LANGUAGE else None
-                        # Note: initial_prompt is now set in asr_options during model loading
+                        language=optimal_language if config.FORCE_LANGUAGE else None,
                     )
                 )
                 
-                # Word-level alignment
+                # Optional word-level alignment
                 word_segments = []
-                if return_word_timestamps and self.align_model:
-                    logger.debug("Performing word-level alignment...")
+                if return_word_timestamps and self.align_model and result.get("segments"):
+                    logger.debug("Performing word-level alignment (pure API)...")
                     result = await loop.run_in_executor(
                         None,
                         lambda: whisperx.align(
@@ -293,13 +269,11 @@ class WhisperXService:
                             return_char_alignments=False
                         )
                     )
-                    
-                    # Extract word-level timestamps
                     word_segments = self._extract_word_segments(result)
                 
-                # Speaker diarization (optional)
+                # Optional speaker diarization
                 speakers = None
-                if enable_diarization and self.diarize_model:
+                if enable_diarization and self.diarize_model and result.get("segments"):
                     logger.debug("Running speaker diarization...")
                     diarize_segments = await loop.run_in_executor(
                         None,
@@ -309,30 +283,28 @@ class WhisperXService:
                     speakers = self._extract_speaker_info(result)
                 
                 # Build response
-                full_text = " ".join([seg["text"].strip() for seg in result["segments"]]).strip()
-                
+                segs = result.get("segments", [])
+                full_text = " ".join([seg.get("text", "").strip() for seg in segs]).strip()
                 processing_time = int((time.time() - start_time) * 1000)
                 
                 response = {
                     "text": full_text,
                     "language": result.get("language", optimal_language),
                     "processing_time_ms": processing_time,
-                    "method": "whisperx_enhanced",
+                    "method": "whisperx_pure",
                     "segments": [
                         {
-                            "start": seg["start"],
-                            "end": seg["end"],
-                            "text": seg["text"].strip()
-                        } for seg in result["segments"]
+                            "start": seg.get("start"),
+                            "end": seg.get("end"),
+                            "text": seg.get("text", "").strip()
+                        } for seg in segs
                     ]
                 }
                 
-                # Add word-level timestamps if available
                 if word_segments:
                     response["word_segments"] = word_segments
                     response["has_word_timestamps"] = True
                 
-                # Add speaker info if available
                 if speakers:
                     response["speakers"] = speakers
                     response["has_diarization"] = True
@@ -350,29 +322,9 @@ class WhisperXService:
             logger.error(f"WhisperX transcription failed after {processing_time}ms: {e}")
             raise
     
-    async def _vad_preprocess(self, audio_path: str) -> bool:
-        """Preprocess audio with Silero VAD to check for speech"""
-        try:
-            import soundfile as sf
-            audio_data, sr = sf.read(audio_path)
-            
-            if not isinstance(audio_data, np.ndarray):
-                audio_data = np.array(audio_data)
-            
-            # Convert to mono if needed
-            if len(audio_data.shape) > 1:
-                audio_data = audio_data.mean(axis=1)
-            
-            return self.has_speech_content(audio_data, sr)
-            
-        except Exception as e:
-            logger.warning(f"VAD preprocessing error: {e}, proceeding with transcription")
-            return True  # Proceed if VAD fails
-    
     def _extract_word_segments(self, aligned_result: Dict) -> List[Dict]:
         """Extract word-level timestamps from aligned result"""
         word_segments = []
-        
         for segment in aligned_result.get("segments", []):
             for word_info in segment.get("words", []):
                 word_segments.append({
@@ -381,57 +333,36 @@ class WhisperXService:
                     "end": word_info.get("end", 0.0),
                     "score": word_info.get("score", 1.0)
                 })
-        
         return word_segments
     
     def _extract_speaker_info(self, diarized_result: Dict) -> List[Dict]:
         """Extract speaker information from diarized result"""
         speakers = []
-        
         for segment in diarized_result.get("segments", []):
             if "speaker" in segment:
                 speakers.append({
                     "speaker": segment["speaker"],
                     "start": segment["start"],
                     "end": segment["end"],
-                    "text": segment["text"].strip()
+                    "text": segment.get("text", "").strip()
                 })
-        
         return speakers
     
     def _get_optimal_language(self, requested_language: Optional[str] = None) -> str:
-        """Determine optimal language with accent handling"""
         if config.FORCE_LANGUAGE:
             return config.DEFAULT_LANGUAGE
-        
         if requested_language:
             return requested_language
-            
         return config.DEFAULT_LANGUAGE
     
-    def _get_accent_prompt(self, language: str) -> str:
-        """Get accent-optimized initial prompt (now handled in asr_options)"""
-        # This method is kept for backward compatibility but initial_prompt
-        # is now set in asr_options during model loading
-        if not config.ACCENT_OPTIMIZATION:
-            return ""
-            
-        if language == "en":
-            return self.active_prompt
-        
-        return ""
-    
     def set_accent_mode(self, mode: str = "latin"):
-        """Set accent optimization mode (requires model reload to take effect)"""
         if mode in self.accent_prompts:
             self.active_prompt = self.accent_prompts[mode]
             logger.info(f"Accent mode set to '{mode}' - model reload required for changes to take effect")
-            logger.warning("Note: To apply new accent prompt, the model needs to be reloaded")
         else:
             logger.warning(f"Unknown accent mode '{mode}', available: {list(self.accent_prompts.keys())}")
     
     def get_model_info(self) -> Dict[str, Any]:
-        """Get comprehensive model information"""
         model_size_map = {
             "tiny": "39M", "base": "74M", "small": "244M", "medium": "769M",
             "large": "1.5B", "large-v2": "1.5B", "large-v3": "1.5B", "large-v3-turbo": "809M"
@@ -450,36 +381,27 @@ class WhisperXService:
                 "speaker_diarization": self.diarize_model is not None,
                 "silero_vad_preprocessing": self.vad_model is not None,
                 "accent_optimization": config.ACCENT_OPTIMIZATION,
-                "initial_prompt_in_asr_options": True,  # New approach
             },
             "language_forcing": config.FORCE_LANGUAGE,
             "default_language": config.DEFAULT_LANGUAGE,
         }
     
     async def cleanup(self):
-        """Cleanup models and free memory"""
         logger.info("Cleaning up WhisperX models...")
-        
         if self.model:
             del self.model
             self.model = None
-        
         if self.align_model:
             del self.align_model
             self.align_model = None
-        
         if self.diarize_model:
             del self.diarize_model
             self.diarize_model = None
-        
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
         gc.collect()
-        
         self.is_ready.clear()
         logger.info("✅ WhisperX cleanup complete")
-
 
 # Global service instance
 whisper_service = WhisperXService()
