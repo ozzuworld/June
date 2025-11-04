@@ -1,84 +1,84 @@
-# June vast.ai combined STT+TTS image with official faster-whisper GPU setup
+# June TTS service with CosyVoice 2.0 for ultra-low latency synthesis
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH
+# Prevent interactive prompts during build
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
 
-# Base system deps (both services)
+# Install system dependencies including miniconda for pynini
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
-    ca-certificates curl git \
+    ca-certificates curl git wget build-essential \
+    sox libsox-dev git-lfs unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install miniconda for conda-forge pynini installation
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/miniconda && \
+    rm /tmp/miniconda.sh
+ENV PATH="/opt/miniconda/bin:$PATH"
 
 WORKDIR /app
 
-# Create separate virtualenvs to avoid dependency conflicts
-RUN python3.10 -m venv /venv-stt && python3.10 -m venv /venv-tts
+# Create TTS virtual environment
+RUN python3.10 -m venv /venv-tts
+ENV PATH="/venv-tts/bin:$PATH"
 
-# Copy shared module first (required by both services)
+# Copy shared module and requirements
 COPY June/services/shared/ /app/shared/
+COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
-# Install shared module in both virtual environments
-RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
-    /venv-stt/bin/pip install -e /app/shared
-
+# Install shared module
 RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
     /venv-tts/bin/pip install -e /app/shared
 
-# Copy requirements
-COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
-COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
-
-# STT deps with official faster-whisper GPU libraries
-RUN /venv-stt/bin/pip install "numpy<2.0" && \
-    /venv-stt/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
-      --index-url https://download.pytorch.org/whl/cu121 && \
-    /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
-    rm -rf /root/.cache
-
-# TTS deps: switch to chatterbox-streaming fork for true streaming + lower latency
+# Install TTS dependencies with CosyVoice 2 support
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    # Install streaming fork from PyPI for real generate_stream API
-    /venv-tts/bin/pip install --no-cache-dir chatterbox-streaming && \
-    # Install explicit compatible dependencies
-    /venv-tts/bin/pip install --no-deps s3tokenizer && \
+    # Install pynini from conda-forge to avoid authentication issues
+    conda install -y -c conda-forge pynini=2.1.5 && \
+    # Install CosyVoice dependencies
     /venv-tts/bin/pip install \
-      librosa==0.11.0 \
-      transformers==4.46.3 \
-      diffusers==0.29.0 \
-      resemble-perth==1.0.1 \
-      conformer==0.3.2 \
-      safetensors==0.5.3 \
-      accelerate==0.24.1 \
+      modelscope==1.9.5 \
+      onnxruntime-gpu==1.16.0 \
+      librosa==0.10.1 \
       scipy==1.11.0 \
-      onnx==1.16.0 && \
-    # Install remaining app deps from requirements
+      soundfile==0.12.1 \
+      accelerate==0.24.1 \
+      transformers==4.35.0 \
+      onnx==1.16.0 \
+      protobuf==3.20.3 && \
+    # Clone and install CosyVoice with proper submodule initialization
+    git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /tmp/cosyvoice && \
+    cd /tmp/cosyvoice && \
+    git submodule update --init --recursive && \
+    /venv-tts/bin/pip install --no-deps -e . && \
+    # Install remaining TTS service dependencies
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
-    rm -rf /root/.cache
+    # Clean up
+    rm -rf /root/.cache /tmp/cosyvoice
 
 # Copy application code
-COPY June/services/june-stt/ /app/stt/
 COPY June/services/june-tts/ /app/tts/
 
-# Runtime env with CUDA library paths
-ENV TTS_CACHE_PATH=/app/cache \
-    TTS_HOME=/app/models \
-    WHISPER_CACHE_DIR=/app/models \
-    COQUI_TOS_AGREED=1 \
-    STT_PORT=8001 \
-    TTS_PORT=8000 \
-    PYTHONPATH=/app
+# Set runtime environment
+ENV TTS_CACHE_PATH=/app/cache
+ENV TTS_HOME=/app/models
+ENV COQUI_TOS_AGREED=1
+ENV TTS_PORT=8000
+ENV PYTHONPATH=/app
+ENV COSYVOICE_MODEL_DIR=/app/models/cosyvoice
 
-# Expose service ports
-EXPOSE 8000 8001
+# Create necessary directories
+RUN mkdir -p /app/cache /app/models/cosyvoice
 
-# Add entrypoint script that starts both services
-COPY June/services/june-vast/start-both.sh /app/start-both.sh
-RUN chmod +x /app/start-both.sh
+# Expose TTS service port
+EXPOSE 8000
 
-ENTRYPOINT ["/app/start-both.sh"]
+# Default command to run TTS service
+CMD ["/venv-tts/bin/python", "/app/tts/main.py"]
