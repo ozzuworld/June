@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Chatterbox Integration with Conservative CUDA Optimizations
-Applies only safe CUDA optimizations, skips dtype conversion to avoid compatibility issues
+June TTS Service - CosyVoice 2 Integration for Ultra-Low Latency Streaming
+Replaces Chatterbox with CosyVoice 2 for <200ms first chunk synthesis
 """
 
 import asyncio
@@ -19,11 +19,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
-# Strict Chatterbox import (no fallback)
+# CosyVoice 2 imports
 try:
-    from chatterbox.tts import ChatterboxTTS
+    from cosyvoice.cli.cosyvoice import CosyVoice2
+    from cosyvoice.utils.file_utils import load_wav
+    import soundfile as sf
 except Exception as e:
-    logging.error(f"❌ Chatterbox import failed: {e}")
+    logging.error(f"❌ CosyVoice 2 import failed: {e}")
     sys.exit(1)
 
 from livekit import rtc
@@ -38,16 +40,18 @@ logger = logging.getLogger("june-tts")
 class Config:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.sample_rate_override = None  # use model.sr by default
-        self.chunk_duration = 0.2  # seconds
+        self.sample_rate = 22050  # CosyVoice 2 native sample rate
+        self.chunk_duration = 0.1  # Smaller chunks for lower latency
         self.max_text_length = 1000
         self.enable_streaming = True
         self.voices_dir = "/app/voices"
-        self.warmup_text = os.getenv("WARMUP_TEXT", "Hello, this is a warmup test.")
-        self.default_room = "ozzu-main"  # Default room to stay connected to
-        # Conservative optimization flags - only safe CUDA opts
-        self.enable_cuda_opts = os.getenv("TTS_CUDA_OPTS", "true").lower() == "true"
-        self.use_bfloat16 = os.getenv("TTS_USE_BF16", "false").lower() == "true"  # disabled by default
+        self.models_dir = os.getenv("COSYVOICE_MODELS", "/app/models/cosyvoice")
+        self.model_name = "CosyVoice2-0.5B"  # Optimized model
+        self.warmup_text = os.getenv("WARMUP_TEXT", "Hello world")
+        self.default_room = "ozzu-main"
+        # Performance settings
+        self.enable_fp16 = os.getenv("TTS_FP16", "true").lower() == "true"
+        self.default_speaker = os.getenv("COSYVOICE_DEFAULT_SPEAKER", "中文女")
 
 config = Config()
 
@@ -61,7 +65,6 @@ class TTSRequest(BaseModel):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     emotion_level: float = Field(0.5, ge=0.0, le=1.5)
     temperature: float = Field(0.9, ge=0.1, le=1.0)
-    cfg_weight: float = Field(0.3, ge=0.0, le=1.0)
     seed: Optional[int] = None
     language: str = Field("en")
     streaming: bool = True
@@ -76,15 +79,15 @@ class TTSResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     service: str = "june-tts"
-    version: str = "2.1.0"
+    version: str = "3.0.0"
     status: str
-    engine: str = "chatterbox"
+    engine: str = "cosyvoice2"
     gpu_available: bool
     device: str
     streaming_enabled: bool
-    chatterbox_available: bool
+    cosyvoice_available: bool
     livekit_connected: bool
-    optimizations: Dict[str, Any]
+    model_loaded: bool
 
 # Global metrics
 metrics = {
@@ -94,83 +97,105 @@ metrics = {
     "predefined_voice_requests": 0,
     "total_audio_seconds": 0.0,
     "avg_latency_ms": 0.0,
-    "optimization_errors": []
+    "first_chunk_latencies": []
 }
 
-class ConservativeChatterboxEngine:
+class StreamingCosyVoiceEngine:
     def __init__(self, device: str = "cuda"):
         self.device = device
-        self.model: Optional[ChatterboxTTS] = None
-        self.model_sr: Optional[int] = None
+        self.model: Optional[CosyVoice2] = None
+        self.model_path = os.path.join(config.models_dir, config.model_name)
         self.optimizations_applied = []
 
     async def initialize(self):
         try:
-            # Apply only safe CUDA optimizations
-            if torch.cuda.is_available() and config.enable_cuda_opts:
-                try:
-                    logger.info("🚀 Enabling conservative CUDA optimizations")
-                    torch.backends.cudnn.benchmark = True
-                    torch.backends.cuda.matmul.allow_tf32 = True
-                    self.optimizations_applied.extend(["cudnn_benchmark", "tf32_matmul"])
-                    logger.info("✅ CUDA fast math enabled")
-                except Exception as e:
-                    logger.warning(f"⚠️ CUDA optimizations failed: {e}")
-                    metrics["optimization_errors"].append(f"cuda_opts: {e}")
+            # Check if model exists
+            if not os.path.exists(self.model_path):
+                logger.error(f"❌ CosyVoice model not found at {self.model_path}")
+                logger.info("💡 Run model download: python3 download_models.py")
+                raise FileNotFoundError(f"Model not found: {self.model_path}")
 
-            # Load model in default dtype (no conversion)
-            logger.info(f"📦 Loading Chatterbox TTS on {self.device}")
-            self.model = ChatterboxTTS.from_pretrained(device=self.device)
-            self.model_sr = int(getattr(self.model, "sr", 24000))
+            # Apply CUDA optimizations
+            if torch.cuda.is_available():
+                logger.info("🚀 Enabling CUDA optimizations for CosyVoice 2")
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                self.optimizations_applied.extend(["cudnn_benchmark", "tf32_matmul"])
 
-            # Skip dtype conversion entirely to avoid compatibility issues
-            if config.use_bfloat16:
-                logger.info("⏭️ Skipping bfloat16 conversion (disabled for stability)")
-            else:
-                logger.info("✅ Using default model precision (float32)")
-
-            logger.info(f"✅ Chatterbox TTS initialized on {self.device} (sr={self.model_sr})")
-            logger.info(f"🎯 Conservative optimizations applied: {', '.join(self.optimizations_applied) or 'none'}")
+            # Load CosyVoice 2 model with streaming optimizations
+            logger.info(f"📦 Loading CosyVoice2-0.5B from {self.model_path}")
+            
+            self.model = CosyVoice2(
+                model_dir=self.model_path,
+                load_jit=False,  # Disable JIT for faster startup
+                fp16=config.enable_fp16 and self.device == "cuda"  # Use fp16 on GPU
+            )
+            
+            if config.enable_fp16 and self.device == "cuda":
+                self.optimizations_applied.append("fp16")
+            
+            logger.info(f"✅ CosyVoice 2 initialized on {self.device} (sr={config.sample_rate})")
+            logger.info(f"🎯 Optimizations applied: {', '.join(self.optimizations_applied)}")
 
         except Exception as e:
-            logger.error(f"❌ Chatterbox TTS initialization failed: {e}")
+            logger.error(f"❌ CosyVoice 2 initialization failed: {e}")
             raise
 
     async def warmup(self):
-        """Lightweight warmup generation"""
+        """Warmup CosyVoice 2 for optimal performance"""
         if not self.model or not config.warmup_text:
             return
         try:
-            logger.info("🔥 Running conservative warmup")
+            logger.info("🔥 Running CosyVoice 2 warmup")
             warmup_start = time.time()
-            # Very short warmup text
-            warmup_text = config.warmup_text[:16]  # Just a few words
-            async for chunk in self.synthesize_streaming(text=warmup_text):
-                break  # Just need first chunk
+            
+            # Test default voice synthesis
+            warmup_chunks = 0
+            async for chunk in self.synthesize_streaming(text=config.warmup_text[:20]):
+                warmup_chunks += 1
+                if warmup_chunks >= 3:  # Just a few chunks
+                    break
+            
             warmup_time = (time.time() - warmup_start) * 1000
-            logger.info(f"✅ Warmup complete: {warmup_time:.0f}ms")
+            logger.info(f"✅ CosyVoice 2 warmup complete: {warmup_time:.0f}ms, {warmup_chunks} chunks")
+            
         except Exception as e:
             logger.warning(f"⚠️ Warmup failed (non-critical): {e}")
 
-    def _voice_config(self, voice_mode: str, predefined_voice_id: Optional[str], voice_reference: Optional[str]) -> Dict[str, Any]:
+    def _prepare_voice_prompt(self, voice_mode: str, predefined_voice_id: Optional[str], 
+                             voice_reference: Optional[str]) -> tuple[Optional[str], Optional[np.ndarray]]:
+        """Prepare voice cloning prompt for CosyVoice 2"""
         if voice_mode == "clone" and voice_reference:
-            return {"audio_prompt_path": voice_reference}
+            if os.path.exists(voice_reference):
+                try:
+                    prompt_speech = load_wav(voice_reference, config.sample_rate)
+                    return "Reference voice sample for cloning", prompt_speech
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load voice reference {voice_reference}: {e}")
+        
         if voice_mode == "predefined" and predefined_voice_id:
             voice_path = os.path.join(config.voices_dir, predefined_voice_id)
             if os.path.exists(voice_path):
-                return {"audio_prompt_path": voice_path}
-            logger.warning(f"Predefined voice not found: {voice_path}, using default")
-        return {}
+                try:
+                    prompt_speech = load_wav(voice_path, config.sample_rate)
+                    return f"Predefined voice: {predefined_voice_id}", prompt_speech
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load predefined voice {voice_path}: {e}")
+        
+        # Default: no voice prompt (use built-in speaker)
+        return None, None
 
-    def _time_scale(self, wav_np: np.ndarray, speed: float) -> np.ndarray:
-        if speed == 1.0:
-            return wav_np
-        # Simple resampling for time-scale change
-        target_len = max(1, int(len(wav_np) / speed))
+    def _apply_speed_adjustment(self, audio_chunk: np.ndarray, speed: float) -> np.ndarray:
+        """Apply speed adjustment to audio chunk"""
+        if speed == 1.0 or len(audio_chunk) == 0:
+            return audio_chunk
+        
+        # Simple time-scale modification
+        target_len = max(1, int(len(audio_chunk) / speed))
         return np.interp(
-            np.linspace(0, len(wav_np), target_len, endpoint=False),
-            np.arange(len(wav_np)),
-            wav_np
+            np.linspace(0, len(audio_chunk), target_len, endpoint=False),
+            np.arange(len(audio_chunk)),
+            audio_chunk
         ).astype(np.float32)
 
     async def synthesize_streaming(
@@ -182,69 +207,75 @@ class ConservativeChatterboxEngine:
         speed: float = 1.0,
         emotion_level: float = 0.5,
         temperature: float = 0.9,
-        cfg_weight: float = 0.3,
         seed: Optional[int] = None
     ) -> AsyncIterator[np.ndarray]:
-        if not self.model:
-            raise RuntimeError("Chatterbox TTS not initialized")
         
-        # Try streaming API first (if chatterbox-streaming fork is available)
-        if hasattr(self.model, 'generate_stream'):
-            logger.info("⚡ Using streaming API (generate_stream)")
-            params: Dict[str, Any] = {
-                "exaggeration": emotion_level,
-                "cfg_weight": cfg_weight,
-                "temperature": temperature,
-            }
-            if seed is not None:
-                params["seed"] = seed
-            params.update(self._voice_config(voice_mode, predefined_voice_id, voice_reference))
+        if not self.model:
+            raise RuntimeError("CosyVoice 2 not initialized")
+        
+        logger.info(f"⚡ CosyVoice 2 streaming synthesis (mode={voice_mode})")
+        first_chunk_start = time.time()
+        
+        # Prepare voice prompt
+        prompt_text, prompt_speech = self._prepare_voice_prompt(
+            voice_mode, predefined_voice_id, voice_reference
+        )
+        
+        try:
+            chunk_count = 0
             
-            async for audio_chunk, _ in self.model.generate_stream(text=text, **params):
+            if prompt_speech is not None:
+                # Zero-shot voice cloning with streaming
+                logger.info("🎙️ Using zero-shot voice cloning")
+                stream_iter = self.model.inference_zero_shot(
+                    text=text,
+                    prompt_text=prompt_text,
+                    prompt_speech=prompt_speech,
+                    stream=True,  # 🔥 Enable streaming
+                    speed=speed
+                )
+            else:
+                # Default voice with streaming
+                logger.info(f"🎤 Using default speaker: {config.default_speaker}")
+                stream_iter = self.model.inference_sft(
+                    text=text,
+                    spk_id=config.default_speaker,
+                    stream=True,  # 🔥 Enable streaming
+                    speed=speed
+                )
+            
+            # Stream audio chunks as they're generated
+            for chunk_data in stream_iter:
+                audio_chunk = chunk_data['tts_speech']
+                
+                # Convert to numpy float32
                 if isinstance(audio_chunk, torch.Tensor):
-                    audio_chunk = audio_chunk.detach().cpu().numpy().astype(np.float32)
+                    audio_chunk = audio_chunk.detach().cpu().numpy()
+                
+                audio_chunk = audio_chunk.astype(np.float32)
+                
+                # Ensure mono
                 if audio_chunk.ndim > 1:
-                    audio_chunk = audio_chunk.squeeze()
-                if speed != 1.0:
-                    audio_chunk = self._time_scale(audio_chunk, speed)
+                    audio_chunk = audio_chunk.mean(axis=0)
+                
+                # Track first chunk latency
+                if chunk_count == 0:
+                    first_chunk_latency = (time.time() - first_chunk_start) * 1000
+                    metrics["first_chunk_latencies"].append(first_chunk_latency)
+                    logger.info(f"⚡ First chunk ready: {first_chunk_latency:.0f}ms")
+                
+                chunk_count += 1
                 yield audio_chunk
-                await asyncio.sleep(0)
-        else:
-            # Fallback to synchronous + chunking
-            logger.info("🎤 Using synchronous API with chunking (generate)")
-            params: Dict[str, Any] = {
-                "exaggeration": emotion_level,
-                "cfg_weight": cfg_weight,
-                "temperature": temperature,
-            }
-            if seed is not None:
-                params["seed"] = seed
-            params.update(self._voice_config(voice_mode, predefined_voice_id, voice_reference))
-
-            # Generate full waveform synchronously
-            wav = self.model.generate(text, **params)
-            # Convert torch.Tensor to numpy float32 mono
-            if isinstance(wav, torch.Tensor):
-                wav = wav.detach().cpu()
-            wav_np = wav.squeeze().numpy().astype(np.float32)
-            if wav_np.ndim > 1:
-                wav_np = wav_np.mean(axis=0).astype(np.float32)
-
-            # Apply speed time-scaling if needed
-            wav_np = self._time_scale(wav_np, speed)
-
-            sr = self.model_sr or 24000
-            chunk_len = max(1, int(config.chunk_duration * sr))
-            total_samples = len(wav_np)
-            for start in range(0, total_samples, chunk_len):
-                chunk = wav_np[start:start + chunk_len]
-                if chunk.size == 0:
-                    break
-                yield chunk
-                await asyncio.sleep(0)  # yield control to event loop
+                await asyncio.sleep(0)  # Yield control
+            
+            logger.info(f"✅ CosyVoice 2 streaming complete: {chunk_count} chunks")
+            
+        except Exception as e:
+            logger.error(f"❌ CosyVoice 2 synthesis failed: {e}")
+            raise
 
 class PersistentLiveKitPublisher:
-    """LiveKit publisher that maintains persistent room connections like STT service"""
+    """LiveKit publisher that maintains persistent room connections"""
     
     def __init__(self):
         self.rooms: Dict[str, rtc.Room] = {}
@@ -273,7 +304,6 @@ class PersistentLiveKitPublisher:
         async with self.room_locks[room_name]:
             if room_name in self.rooms:
                 room = self.rooms[room_name]
-                # Correct Python SDK connectivity check
                 try:
                     if room.isconnected():
                         return room
@@ -297,14 +327,14 @@ class PersistentLiveKitPublisher:
         
         # Create audio source and track
         audio_source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1)
-        track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", audio_source)
+        track = rtc.LocalAudioTrack.create_audio_track("cosyvoice-audio", audio_source)
         publication = await room.local_participant.publish_track(
             track,
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         )
         
         chunks_sent, total_duration = 0, 0.0
-        logger.info(f"🎵 Starting conservative Chatterbox stream to {room_name}")
+        logger.info(f"🎵 Starting CosyVoice 2 stream to {room_name}")
         
         async for audio_chunk in audio_stream:
             # Convert float32 [-1,1] to int16
@@ -312,6 +342,7 @@ class PersistentLiveKitPublisher:
                 audio_i16 = (np.clip(audio_chunk, -1.0, 1.0) * 32767.0).astype(np.int16)
             else:
                 audio_i16 = audio_chunk
+            
             frame = rtc.AudioFrame.create(sample_rate=sample_rate, num_channels=1, samples_per_channel=len(audio_i16))
             frame_data = np.frombuffer(frame.data, dtype=np.int16).reshape((1, len(audio_i16)))
             frame_data[0] = audio_i16
@@ -321,7 +352,7 @@ class PersistentLiveKitPublisher:
 
         await asyncio.sleep(0.05)
         await room.local_participant.unpublish_track(publication.sid)
-        logger.info(f"✅ Conservative stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
+        logger.info(f"✅ CosyVoice 2 stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
         return {"chunks_sent": chunks_sent, "duration_seconds": total_duration, "room_name": room_name}
 
     def get_connection_status(self) -> Dict[str, Any]:
@@ -336,40 +367,51 @@ class PersistentLiveKitPublisher:
         }
 
 # Global instances
-streaming_engine: Optional[ConservativeChatterboxEngine] = None
+streaming_engine: Optional[StreamingCosyVoiceEngine] = None
 publisher: Optional[PersistentLiveKitPublisher] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global streaming_engine, publisher
-    logger.info("🚀 Starting June TTS Service (Conservative optimizations, persistent LiveKit)")
+    logger.info("🚀 Starting June TTS Service (CosyVoice 2 streaming mode)")
     os.makedirs(config.voices_dir, exist_ok=True)
     
-    # Initialize conservative Chatterbox engine
-    streaming_engine = ConservativeChatterboxEngine(config.device)
+    # Initialize CosyVoice 2 streaming engine
+    streaming_engine = StreamingCosyVoiceEngine(config.device)
     try:
         await streaming_engine.initialize()
         
-        # Run lightweight warmup
+        # Run warmup for optimal first-request performance
         if config.warmup_text:
             await streaming_engine.warmup()
             
-    except Exception:
-        logger.error("❌ Fatal: Chatterbox not usable. Exiting.")
-        raise
+    except Exception as e:
+        logger.error(f"❌ Fatal: CosyVoice 2 not usable: {e}")
+        # Try downloading models if missing
+        if "not found" in str(e).lower():
+            logger.info("📦 Attempting to download CosyVoice 2 models...")
+            try:
+                from download_models import download_cosyvoice_models
+                download_cosyvoice_models()
+                await streaming_engine.initialize()  # Retry
+            except Exception:
+                logger.error("❌ Model download failed. Exiting.")
+                raise
+        else:
+            raise
     
     # Initialize persistent LiveKit publisher
     publisher = PersistentLiveKitPublisher()
     try:
         await publisher.initialize(config.default_room)
-        logger.info("✅ June TTS Service ready with conservative Chatterbox + persistent LiveKit")
+        logger.info("✅ June TTS Service ready with CosyVoice 2 + persistent LiveKit")
     except Exception:
         logger.error("❌ Fatal: LiveKit publisher not usable. Exiting.")
         raise
     
     yield
 
-app = FastAPI(title="June TTS Service", version="2.1.0", description="Conservative Chatterbox TTS with persistent LiveKit streaming", lifespan=lifespan)
+app = FastAPI(title="June TTS Service", version="3.0.0", description="CosyVoice 2 ultra-low latency streaming TTS", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -381,12 +423,12 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize_tts(request: TTSRequest):
-    """Main conservative Chatterbox TTS synthesis endpoint (auth disabled temporarily)"""
+    """CosyVoice 2 ultra-low latency streaming synthesis endpoint"""
     start_time = time.time()
     if not streaming_engine or not publisher:
-        raise HTTPException(status_code=503, detail="Chatterbox not initialized")
+        raise HTTPException(status_code=503, detail="CosyVoice 2 not initialized")
     
-    logger.info(f"🎤 Conservative TTS synthesis for room {request.room_name}: {request.text[:50]}...")
+    logger.info(f"🎤 CosyVoice 2 synthesis for room {request.room_name}: {request.text[:50]}...")
     
     audio_stream = streaming_engine.synthesize_streaming(
         text=request.text,
@@ -396,11 +438,15 @@ async def synthesize_tts(request: TTSRequest):
         speed=request.speed,
         emotion_level=request.emotion_level,
         temperature=request.temperature,
-        cfg_weight=request.cfg_weight,
         seed=request.seed
     )
-    sr = streaming_engine.model_sr or 24000
-    result = await publisher.publish_streaming_audio(room_name=request.room_name, audio_stream=audio_stream, sample_rate=sr)
+    
+    result = await publisher.publish_streaming_audio(
+        room_name=request.room_name, 
+        audio_stream=audio_stream, 
+        sample_rate=config.sample_rate
+    )
+    
     duration_ms = (time.time() - start_time) * 1000
     
     # Update metrics
@@ -412,7 +458,7 @@ async def synthesize_tts(request: TTSRequest):
     else:
         metrics["predefined_voice_requests"] += 1
     
-    logger.info(f"✅ Conservative TTS complete: {duration_ms:.0f}ms total, {result['chunks_sent']} chunks")
+    logger.info(f"✅ CosyVoice 2 synthesis complete: {duration_ms:.0f}ms total, {result['chunks_sent']} chunks")
     
     return TTSResponse(
         status="completed", 
@@ -426,20 +472,16 @@ async def synthesize_tts(request: TTSRequest):
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     livekit_connected = publisher.connected if publisher else False
-    optimizations = {
-        "cuda_opts_enabled": config.enable_cuda_opts,
-        "bfloat16_disabled": not config.use_bfloat16,
-        "applied": streaming_engine.optimizations_applied if streaming_engine else [],
-        "errors": metrics["optimization_errors"]
-    }
+    model_loaded = streaming_engine is not None and streaming_engine.model is not None
+    
     return HealthResponse(
         status="healthy", 
         gpu_available=torch.cuda.is_available(), 
         device=config.device, 
         streaming_enabled=config.enable_streaming, 
-        chatterbox_available=True,
+        cosyvoice_available=True,
         livekit_connected=livekit_connected,
-        optimizations=optimizations
+        model_loaded=model_loaded
     )
 
 @app.get("/connections")
@@ -451,7 +493,7 @@ async def get_connections():
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get service metrics"""
+    """Get CosyVoice 2 performance metrics"""
     gpu_metrics = {}
     if torch.cuda.is_available():
         try:
@@ -465,21 +507,38 @@ async def get_metrics():
     
     connection_status = publisher.get_connection_status() if publisher else {}
     
+    # Calculate average first chunk latency
+    avg_first_chunk = 0
+    if metrics["first_chunk_latencies"]:
+        avg_first_chunk = sum(metrics["first_chunk_latencies"]) / len(metrics["first_chunk_latencies"])
+    
     return {
         **metrics,
         **gpu_metrics,
         **connection_status,
+        "avg_first_chunk_ms": avg_first_chunk,
         "optimizations_applied": streaming_engine.optimizations_applied if streaming_engine else [],
-        "chatterbox_available": True
+        "cosyvoice_available": True
     }
+
+@app.get("/models/download")
+async def download_models_endpoint():
+    """Trigger model download via API"""
+    try:
+        from download_models import download_cosyvoice_models
+        download_cosyvoice_models()
+        return {"status": "success", "message": "CosyVoice 2 models downloaded"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model download failed: {e}")
 
 @app.get("/")
 async def root():
     return {
         "service": "june-tts", 
-        "version": "2.1.0", 
-        "engine": "chatterbox", 
-        "optimizations": "conservative_cuda_only", 
+        "version": "3.0.0", 
+        "engine": "cosyvoice2", 
+        "features": "streaming+voice_cloning+ultra_low_latency", 
+        "target_latency": "<200ms_first_chunk",
         "auth": "disabled",
         "livekit": "persistent_connection"
     }
