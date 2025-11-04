@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional, Dict, Any
+from typing import AsyncIterator, Optional, Dict, Any, Union
 
 import torch
 import torchaudio
@@ -23,13 +23,17 @@ import uvicorn
 from shared import require_service_auth, require_user_auth, extract_user_id
 from livekit_token import get_livekit_token, connect_room_as_publisher
 
-# Chatterbox TTS - the only TTS engine we use
+# Chatterbox TTS - the only TTS engine we use (with robust import handling)
+CHATTERBOX_AVAILABLE = False
+ChatterboxTTS = None  # type: ignore
+
 try:
-    from chatterbox.tts import ChatterboxTTS
+    from chatterbox.tts import ChatterboxTTS as _ChatterboxTTS
+    ChatterboxTTS = _ChatterboxTTS
     CHATTERBOX_AVAILABLE = True
-except ImportError:
-    CHATTERBOX_AVAILABLE = False
-    logging.warning("⚠️ Chatterbox TTS not available - using fallback")
+    logging.info("✅ Chatterbox TTS module imported successfully")
+except Exception as e:
+    logging.warning(f"⚠️ Chatterbox TTS not available - using fallback: {e}")
 
 from livekit import rtc
 import soundfile as sf
@@ -81,7 +85,7 @@ class HealthResponse(BaseModel):
     streaming_enabled: bool
 
 # Global TTS engine and metrics
-tts_engine: Optional[ChatterboxTTS] = None
+tts_engine = None  # Will be ChatterboxTTS if available
 active_rooms: Dict[str, rtc.Room] = {}
 metrics = {
     "requests_processed": 0,
@@ -103,7 +107,7 @@ class StreamingChatterboxEngine:
     async def initialize(self):
         """Initialize Chatterbox TTS model"""
         try:
-            if CHATTERBOX_AVAILABLE:
+            if CHATTERBOX_AVAILABLE and ChatterboxTTS:
                 self.model = ChatterboxTTS.from_pretrained(device=self.device)
                 logger.info(f"✅ Chatterbox TTS initialized on {self.device}")
             else:
@@ -112,7 +116,8 @@ class StreamingChatterboxEngine:
                 self.model = "fallback"
         except Exception as e:
             logger.error(f"❌ Chatterbox TTS initialization failed: {e}")
-            raise
+            # Don't raise - use fallback mode
+            self.model = "fallback"
     
     async def synthesize_streaming(
         self, 
@@ -312,6 +317,16 @@ async def lifespan(app: FastAPI):
     logger.info(f"Device: {config.device}")
     logger.info(f"GPU Available: {torch.cuda.is_available()}")
     
+    # Debug Chatterbox availability
+    try:
+        if CHATTERBOX_AVAILABLE:
+            import chatterbox
+            logger.info(f"✅ Chatterbox module found: {getattr(chatterbox, '__file__', 'unknown')}")
+        else:
+            logger.warning("⚠️ Chatterbox not available - will use fallback mode")
+    except Exception as e:
+        logger.error(f"❌ Chatterbox import debug failed: {e}")
+    
     # Initialize Chatterbox TTS engine
     streaming_engine = StreamingChatterboxEngine(config.device)
     await streaming_engine.initialize()
@@ -319,7 +334,8 @@ async def lifespan(app: FastAPI):
     # Initialize audio publisher
     audio_publisher = LiveKitAudioPublisher()
     
-    logger.info("✅ June TTS Service with Chatterbox ready")
+    engine_status = "chatterbox" if CHATTERBOX_AVAILABLE else "fallback"
+    logger.info(f"✅ June TTS Service ready with {engine_status} engine")
     
     yield
     
@@ -415,6 +431,7 @@ async def list_voices(auth_data: dict = Depends(require_service_auth)):
         "engine": "chatterbox",
         "voice_cloning": True,
         "streaming": True,
+        "available": CHATTERBOX_AVAILABLE,
         "supported_languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh"],
         "parameters": {
             "emotion_level": {"min": 0.0, "max": 1.5, "default": 0.5},
@@ -438,7 +455,8 @@ async def health_check():
     return HealthResponse(
         gpu_available=torch.cuda.is_available(),
         device=config.device,
-        streaming_enabled=config.enable_streaming
+        streaming_enabled=config.enable_streaming,
+        engine="chatterbox" if CHATTERBOX_AVAILABLE else "fallback"
     )
 
 @app.get("/metrics")
@@ -447,15 +465,19 @@ async def get_metrics(auth_data: dict = Depends(require_service_auth)):
     
     gpu_metrics = {}
     if torch.cuda.is_available():
-        gpu_metrics = {
-            "gpu_memory_used": torch.cuda.memory_allocated() / 1024**3,  # GB
-            "gpu_memory_total": torch.cuda.get_device_properties(0).total_memory / 1024**3,  # GB
-            "gpu_utilization": torch.cuda.utilization() if hasattr(torch.cuda, 'utilization') else 0
-        }
+        try:
+            gpu_metrics = {
+                "gpu_memory_used": torch.cuda.memory_allocated() / 1024**3,  # GB
+                "gpu_memory_total": torch.cuda.get_device_properties(0).total_memory / 1024**3,  # GB
+                "gpu_utilization": torch.cuda.utilization() if hasattr(torch.cuda, 'utilization') else 0
+            }
+        except Exception as e:
+            logger.warning(f"GPU metrics unavailable: {e}")
     
     return {
         **metrics,
         **gpu_metrics,
+        "chatterbox_available": CHATTERBOX_AVAILABLE,
         "active_rooms": len(audio_publisher.rooms) if audio_publisher else 0,
         "config": {
             "device": config.device,
@@ -475,6 +497,7 @@ async def root():
         "version": "2.0.0",
         "description": "High-performance TTS service with Chatterbox TTS and LiveKit streaming",
         "engine": "chatterbox" if CHATTERBOX_AVAILABLE else "fallback",
+        "chatterbox_available": CHATTERBOX_AVAILABLE,
         "gpu_available": torch.cuda.is_available(),
         "device": config.device,
         "endpoints": [
