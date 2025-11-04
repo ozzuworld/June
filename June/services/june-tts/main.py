@@ -53,6 +53,7 @@ class Config:
         self.max_text_length = 1000
         self.enable_streaming = True
         self.chunk_size = 25  # Tokens per chunk for Chatterbox streaming
+        self.voices_dir = "/app/voices"  # Predefined voices directory
         
 config = Config()
 
@@ -60,11 +61,14 @@ config = Config()
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=config.max_text_length, description="Text to synthesize")
     room_name: str = Field(..., description="LiveKit room name")
+    voice_mode: str = Field("predefined", description="Voice mode: 'predefined' or 'clone'")
+    predefined_voice_id: Optional[str] = Field(None, description="Predefined voice filename from /voices directory")
     voice_reference: Optional[str] = Field(None, description="Path or URL to reference voice audio for cloning")
     speed: float = Field(1.0, ge=0.5, le=2.0, description="Speech speed multiplier")
     emotion_level: float = Field(0.5, ge=0.0, le=1.5, description="Emotion exaggeration (0.0-1.5)")
     temperature: float = Field(0.9, ge=0.1, le=1.0, description="Voice randomness/variation")
     cfg_weight: float = Field(0.3, ge=0.0, le=1.0, description="Guidance weight for voice control")
+    seed: Optional[int] = Field(None, description="Generation seed for consistency")
     language: str = Field("en", description="Language code")
     streaming: bool = Field(True, description="Enable streaming mode")
 
@@ -73,6 +77,7 @@ class TTSResponse(BaseModel):
     room_name: str
     duration_ms: Optional[float] = None
     chunks_sent: Optional[int] = None
+    voice_mode: str
     voice_cloned: bool = False
 
 class HealthResponse(BaseModel):
@@ -83,6 +88,7 @@ class HealthResponse(BaseModel):
     gpu_available: bool
     device: str
     streaming_enabled: bool
+    chatterbox_available: bool
 
 # Global TTS engine and metrics
 tts_engine = None  # Will be ChatterboxTTS if available
@@ -91,13 +97,14 @@ metrics = {
     "requests_processed": 0,
     "streaming_requests": 0,
     "voice_cloning_requests": 0,
+    "predefined_voice_requests": 0,
     "total_audio_seconds": 0.0,
     "avg_latency_ms": 0.0,
     "gpu_utilization": 0.0
 }
 
 class StreamingChatterboxEngine:
-    """Chatterbox TTS engine with streaming capabilities"""
+    """Chatterbox TTS engine with streaming capabilities and voice modes"""
     
     def __init__(self, device: str = "cuda"):
         self.device = device
@@ -119,14 +126,40 @@ class StreamingChatterboxEngine:
             # Don't raise - use fallback mode
             self.model = "fallback"
     
+    def _get_voice_config(
+        self, 
+        voice_mode: str,
+        predefined_voice_id: Optional[str] = None,
+        voice_reference: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get voice configuration for Chatterbox generation"""
+        
+        if voice_mode == "clone" and voice_reference:
+            # Voice cloning mode
+            return {"audio_prompt_path": voice_reference}
+        elif voice_mode == "predefined" and predefined_voice_id:
+            # Predefined voice mode
+            voice_path = os.path.join(config.voices_dir, predefined_voice_id)
+            if os.path.exists(voice_path):
+                return {"audio_prompt_path": voice_path}
+            else:
+                logger.warning(f"Predefined voice not found: {voice_path}, using default")
+                return {}
+        else:
+            # Default voice (no audio_prompt_path)
+            return {}
+    
     async def synthesize_streaming(
         self, 
         text: str, 
+        voice_mode: str = "predefined",
+        predefined_voice_id: Optional[str] = None,
         voice_reference: Optional[str] = None,
         speed: float = 1.0,
         emotion_level: float = 0.5,
         temperature: float = 0.9,
-        cfg_weight: float = 0.3
+        cfg_weight: float = 0.3,
+        seed: Optional[int] = None
     ) -> AsyncIterator[np.ndarray]:
         """Generate streaming audio chunks using Chatterbox TTS"""
         
@@ -136,7 +169,7 @@ class StreamingChatterboxEngine:
         try:
             if CHATTERBOX_AVAILABLE and self.model != "fallback":
                 # Real Chatterbox TTS streaming
-                logger.info(f"🎤 Chatterbox streaming: {text[:50]}...")
+                logger.info(f"🎤 Chatterbox streaming ({voice_mode}): {text[:50]}...")
                 
                 # Configure Chatterbox generation parameters
                 generation_params = {
@@ -146,10 +179,18 @@ class StreamingChatterboxEngine:
                     'chunk_size': config.chunk_size # Tokens per chunk
                 }
                 
-                # Add voice reference for cloning if provided
-                if voice_reference:
-                    generation_params['audio_prompt_path'] = voice_reference
-                    logger.info(f"🎭 Using voice reference: {voice_reference}")
+                # Add seed for consistency if provided
+                if seed is not None:
+                    generation_params['seed'] = seed
+                
+                # Add voice configuration
+                voice_config = self._get_voice_config(voice_mode, predefined_voice_id, voice_reference)
+                generation_params.update(voice_config)
+                
+                if voice_config:
+                    logger.info(f"🎭 Using voice: {voice_config}")
+                else:
+                    logger.info("🎵 Using Chatterbox default voice")
                 
                 # Generate streaming audio using Chatterbox
                 async for audio_chunk, metrics_data in self.model.generate_stream(
@@ -176,6 +217,8 @@ class StreamingChatterboxEngine:
                 # Fallback: Generate silence chunks for testing
                 words = text.split()
                 chunk_duration = 0.2  # 200ms per chunk
+                
+                logger.info(f"🔇 Fallback mode streaming: {len(words)} words")
                 
                 for i in range(0, len(words), 3):  # 3 words per chunk
                     chunk_words = ' '.join(words[i:i+3])
@@ -316,6 +359,7 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting June TTS Service v2.0 with Chatterbox")
     logger.info(f"Device: {config.device}")
     logger.info(f"GPU Available: {torch.cuda.is_available()}")
+    logger.info(f"Voices Directory: {config.voices_dir}")
     
     # Debug Chatterbox availability
     try:
@@ -326,6 +370,9 @@ async def lifespan(app: FastAPI):
             logger.warning("⚠️ Chatterbox not available - will use fallback mode")
     except Exception as e:
         logger.error(f"❌ Chatterbox import debug failed: {e}")
+    
+    # Create voices directory if it doesn't exist
+    os.makedirs(config.voices_dir, exist_ok=True)
     
     # Initialize Chatterbox TTS engine
     streaming_engine = StreamingChatterboxEngine(config.device)
@@ -377,15 +424,19 @@ async def synthesize_tts(
             )
         
         logger.info(f"🎤 Chatterbox TTS request: '{request.text[:50]}...' -> {request.room_name}")
+        logger.info(f"Voice mode: {request.voice_mode}")
         
         # Generate streaming audio using Chatterbox
         audio_stream = streaming_engine.synthesize_streaming(
             text=request.text,
+            voice_mode=request.voice_mode,
+            predefined_voice_id=request.predefined_voice_id,
             voice_reference=request.voice_reference,
             speed=request.speed,
             emotion_level=request.emotion_level,
             temperature=request.temperature,
-            cfg_weight=request.cfg_weight
+            cfg_weight=request.cfg_weight,
+            seed=request.seed
         )
         
         # Publish to LiveKit room
@@ -400,8 +451,10 @@ async def synthesize_tts(
         metrics["streaming_requests"] += 1
         metrics["total_audio_seconds"] += result["duration_seconds"]
         
-        if request.voice_reference:
+        if request.voice_mode == "clone":
             metrics["voice_cloning_requests"] += 1
+        else:
+            metrics["predefined_voice_requests"] += 1
         
         # Update average latency
         if metrics["avg_latency_ms"] == 0:
@@ -416,7 +469,8 @@ async def synthesize_tts(
             room_name=request.room_name,
             duration_ms=duration_ms,
             chunks_sent=result["chunks_sent"],
-            voice_cloned=bool(request.voice_reference)
+            voice_mode=request.voice_mode,
+            voice_cloned=(request.voice_mode == "clone")
         )
         
     except Exception as e:
@@ -425,24 +479,41 @@ async def synthesize_tts(
 
 @app.get("/api/voices")
 async def list_voices(auth_data: dict = Depends(require_service_auth)):
-    """List Chatterbox TTS capabilities"""
+    """List Chatterbox TTS capabilities and available voices"""
+    
+    # List predefined voices
+    predefined_voices = []
+    if os.path.exists(config.voices_dir):
+        for filename in os.listdir(config.voices_dir):
+            if filename.endswith(('.wav', '.mp3', '.flac')):
+                predefined_voices.append({
+                    "id": filename,
+                    "name": filename.replace('.wav', '').replace('.mp3', '').replace('.flac', ''),
+                    "type": "predefined"
+                })
     
     return {
         "engine": "chatterbox",
         "voice_cloning": True,
         "streaming": True,
         "available": CHATTERBOX_AVAILABLE,
+        "voice_modes": ["predefined", "clone"],
+        "predefined_voices": predefined_voices,
+        "default_voice": "Built-in Chatterbox default voice",
         "supported_languages": ["en", "es", "fr", "de", "it", "pt", "ru", "zh"],
         "parameters": {
             "emotion_level": {"min": 0.0, "max": 1.5, "default": 0.5},
             "temperature": {"min": 0.1, "max": 1.0, "default": 0.9},
             "cfg_weight": {"min": 0.0, "max": 1.0, "default": 0.3},
-            "speed": {"min": 0.5, "max": 2.0, "default": 1.0}
+            "speed": {"min": 0.5, "max": 2.0, "default": 1.0},
+            "seed": {"description": "Integer for consistent generation, null for random"}
         },
         "features": [
             "Zero-shot voice cloning",
+            "Built-in predefined voices", 
             "Real-time streaming",
             "Emotion control",
+            "Generation consistency (seed)",
             "Multi-language support",
             "GPU acceleration"
         ]
@@ -456,7 +527,8 @@ async def health_check():
         gpu_available=torch.cuda.is_available(),
         device=config.device,
         streaming_enabled=config.enable_streaming,
-        engine="chatterbox" if CHATTERBOX_AVAILABLE else "fallback"
+        engine="chatterbox" if CHATTERBOX_AVAILABLE else "fallback",
+        chatterbox_available=CHATTERBOX_AVAILABLE
     )
 
 @app.get("/metrics")
@@ -484,7 +556,8 @@ async def get_metrics(auth_data: dict = Depends(require_service_auth)):
             "sample_rate": config.sample_rate,
             "chunk_duration": config.chunk_duration,
             "streaming_enabled": config.enable_streaming,
-            "chunk_size": config.chunk_size
+            "chunk_size": config.chunk_size,
+            "voices_dir": config.voices_dir
         }
     }
 
@@ -500,9 +573,10 @@ async def root():
         "chatterbox_available": CHATTERBOX_AVAILABLE,
         "gpu_available": torch.cuda.is_available(),
         "device": config.device,
+        "voice_modes": ["predefined", "clone"],
         "endpoints": [
             "/api/tts/synthesize",
-            "/api/voices",
+            "/api/voices", 
             "/health",
             "/metrics"
         ]
