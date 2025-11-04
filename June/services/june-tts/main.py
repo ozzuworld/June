@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Chatterbox Integration with Streaming (Strict Mode, Auth Disabled Temporarily)
-Implements correct Chatterbox API usage: synchronous generate() with manual chunked streaming.
+June TTS Service - Chatterbox Integration with Persistent LiveKit Connection
+Maintains persistent room connections like STT service for immediate audio publishing.
 """
 
 import asyncio
@@ -44,6 +44,7 @@ class Config:
         self.enable_streaming = True
         self.voices_dir = "/app/voices"
         self.warmup_text = os.getenv("WARMUP_TEXT", "")
+        self.default_room = "ozzu-main"  # Default room to stay connected to
 
 config = Config()
 
@@ -79,9 +80,9 @@ class HealthResponse(BaseModel):
     device: str
     streaming_enabled: bool
     chatterbox_available: bool
+    livekit_connected: bool
 
-# Global TTS engine and metrics
-active_rooms: Dict[str, rtc.Room] = {}
+# Global metrics
 metrics = {
     "requests_processed": 0,
     "streaming_requests": 0,
@@ -175,22 +176,67 @@ class StreamingChatterboxEngine:
             yield chunk
             await asyncio.sleep(0)  # yield control to event loop
 
-class LiveKitAudioPublisher:
-    async def connect_to_room(self, room_name: str) -> rtc.Room:
-        room = rtc.Room()
-        from livekit_token import connect_room_as_publisher  # local import to avoid circular
-        await connect_room_as_publisher(room, "june-tts", room_name)
-        return room
+class PersistentLiveKitPublisher:
+    """LiveKit publisher that maintains persistent room connections like STT service"""
+    
+    def __init__(self):
+        self.rooms: Dict[str, rtc.Room] = {}
+        self.room_locks: Dict[str, asyncio.Lock] = {}
+        self.connected = False
+
+    async def initialize(self, default_room: str = "ozzu-main"):
+        """Initialize and connect to default room at startup"""
+        try:
+            from livekit_token import connect_room_as_publisher
+            self.connect_room_as_publisher = connect_room_as_publisher
+            
+            # Connect to default room
+            await self._ensure_room_connection(default_room)
+            self.connected = True
+            logger.info(f"✅ TTS LiveKit publisher ready (default room: {default_room})")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize LiveKit publisher: {e}")
+            raise
+
+    async def _ensure_room_connection(self, room_name: str) -> rtc.Room:
+        """Ensure connection to room exists, create if needed"""
+        if room_name not in self.room_locks:
+            self.room_locks[room_name] = asyncio.Lock()
+        
+        async with self.room_locks[room_name]:
+            if room_name in self.rooms:
+                room = self.rooms[room_name]
+                # Check if connection is still alive
+                if room.connection_state == rtc.ConnectionState.CONNECTED:
+                    return room
+                else:
+                    # Reconnect if disconnected
+                    logger.info(f"🔄 Reconnecting to room {room_name}")
+                    del self.rooms[room_name]
+            
+            # Create new connection
+            logger.info(f"🔗 Connecting TTS to LiveKit room: {room_name}")
+            room = rtc.Room()
+            await self.connect_room_as_publisher(room, "june-tts", room_name)
+            self.rooms[room_name] = room
+            logger.info(f"✅ TTS connected to room: {room_name}")
+            return room
 
     async def publish_streaming_audio(self, room_name: str, audio_stream: AsyncIterator[np.ndarray], sample_rate: int) -> Dict[str, Any]:
-        room = await self.connect_to_room(room_name)
+        """Publish audio to room using persistent connection"""
+        room = await self._ensure_room_connection(room_name)
+        
+        # Create audio source and track
         audio_source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1)
         track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", audio_source)
         publication = await room.local_participant.publish_track(
             track,
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         )
+        
         chunks_sent, total_duration = 0, 0.0
+        logger.info(f"🎵 Starting Chatterbox stream to {room_name} (persistent connection)")
+        
         async for audio_chunk in audio_stream:
             # Convert float32 [-1,1] to int16
             if audio_chunk.dtype != np.int16:
@@ -203,19 +249,34 @@ class LiveKitAudioPublisher:
             await audio_source.capture_frame(frame)
             chunks_sent += 1
             total_duration += len(audio_i16) / sample_rate
+
         await asyncio.sleep(0.05)
         await room.local_participant.unpublish_track(publication.sid)
+        logger.info(f"✅ Chatterbox stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
         return {"chunks_sent": chunks_sent, "duration_seconds": total_duration, "room_name": room_name}
+
+    def get_connection_status(self) -> Dict[str, Any]:
+        """Get status of all room connections"""
+        return {
+            "connected_rooms": len(self.rooms),
+            "rooms": {
+                name: room.connection_state.name 
+                for name, room in self.rooms.items()
+            },
+            "publisher_ready": self.connected
+        }
 
 # Global instances
 streaming_engine: Optional[StreamingChatterboxEngine] = None
-publisher: Optional[LiveKitAudioPublisher] = None
+publisher: Optional[PersistentLiveKitPublisher] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global streaming_engine, publisher
-    logger.info("🚀 Starting June TTS Service (Strict Chatterbox mode, auth disabled)")
+    logger.info("🚀 Starting June TTS Service (Strict Chatterbox mode, persistent LiveKit)")
     os.makedirs(config.voices_dir, exist_ok=True)
+    
+    # Initialize Chatterbox engine
     streaming_engine = StreamingChatterboxEngine(config.device)
     try:
         await streaming_engine.initialize()
@@ -226,10 +287,19 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.error("❌ Fatal: Chatterbox not usable. Exiting.")
         raise
-    publisher = LiveKitAudioPublisher()
+    
+    # Initialize persistent LiveKit publisher
+    publisher = PersistentLiveKitPublisher()
+    try:
+        await publisher.initialize(config.default_room)
+        logger.info("✅ June TTS Service ready with persistent LiveKit connection")
+    except Exception:
+        logger.error("❌ Fatal: LiveKit publisher not usable. Exiting.")
+        raise
+    
     yield
 
-app = FastAPI(title="June TTS Service", version="2.0.0", description="Chatterbox TTS with LiveKit streaming (strict, auth disabled)", lifespan=lifespan)
+app = FastAPI(title="June TTS Service", version="2.0.0", description="Chatterbox TTS with persistent LiveKit streaming", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -241,9 +311,13 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize_tts(request: TTSRequest):
+    """Main Chatterbox TTS synthesis endpoint (auth disabled temporarily)"""
     start_time = time.time()
     if not streaming_engine or not publisher:
         raise HTTPException(status_code=503, detail="Chatterbox not initialized")
+    
+    logger.info(f"🎤 TTS synthesis request for room {request.room_name}: {request.text[:50]}...")
+    
     audio_stream = streaming_engine.synthesize_streaming(
         text=request.text,
         voice_mode=request.voice_mode,
@@ -258,6 +332,8 @@ async def synthesize_tts(request: TTSRequest):
     sr = streaming_engine.model_sr or 24000
     result = await publisher.publish_streaming_audio(room_name=request.room_name, audio_stream=audio_stream, sample_rate=sr)
     duration_ms = (time.time() - start_time) * 1000
+    
+    # Update metrics
     metrics["requests_processed"] += 1
     metrics["streaming_requests"] += 1
     metrics["total_audio_seconds"] += result["duration_seconds"]
@@ -265,15 +341,69 @@ async def synthesize_tts(request: TTSRequest):
         metrics["voice_cloning_requests"] += 1
     else:
         metrics["predefined_voice_requests"] += 1
-    return TTSResponse(status="completed", room_name=request.room_name, duration_ms=duration_ms, chunks_sent=result["chunks_sent"], voice_mode=request.voice_mode, voice_cloned=(request.voice_mode == "clone"))
+    
+    logger.info(f"✅ TTS synthesis complete: {duration_ms:.0f}ms total, {result['chunks_sent']} chunks")
+    
+    return TTSResponse(
+        status="completed", 
+        room_name=request.room_name, 
+        duration_ms=duration_ms, 
+        chunks_sent=result["chunks_sent"], 
+        voice_mode=request.voice_mode, 
+        voice_cloned=(request.voice_mode == "clone")
+    )
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    return HealthResponse(status="healthy", gpu_available=torch.cuda.is_available(), device=config.device, streaming_enabled=config.enable_streaming, chatterbox_available=True)
+    livekit_connected = publisher.connected if publisher else False
+    return HealthResponse(
+        status="healthy", 
+        gpu_available=torch.cuda.is_available(), 
+        device=config.device, 
+        streaming_enabled=config.enable_streaming, 
+        chatterbox_available=True,
+        livekit_connected=livekit_connected
+    )
+
+@app.get("/connections")
+async def get_connections():
+    """Get LiveKit connection status for debugging"""
+    if not publisher:
+        return {"error": "Publisher not initialized"}
+    return publisher.get_connection_status()
+
+@app.get("/metrics")
+async def get_metrics():
+    """Get service metrics"""
+    gpu_metrics = {}
+    if torch.cuda.is_available():
+        try:
+            gpu_metrics = {
+                "gpu_memory_used_gb": torch.cuda.memory_allocated() / 1024**3,
+                "gpu_memory_total_gb": torch.cuda.get_device_properties(0).total_memory / 1024**3
+            }
+        except Exception:
+            pass
+    
+    connection_status = publisher.get_connection_status() if publisher else {}
+    
+    return {
+        **metrics,
+        **gpu_metrics,
+        **connection_status,
+        "chatterbox_available": True
+    }
 
 @app.get("/")
 async def root():
-    return {"service": "june-tts", "version": "2.0.0", "engine": "chatterbox", "strict_mode": True, "auth": "disabled"}
+    return {
+        "service": "june-tts", 
+        "version": "2.0.0", 
+        "engine": "chatterbox", 
+        "strict_mode": True, 
+        "auth": "disabled",
+        "livekit": "persistent_connection"
+    }
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="info")
