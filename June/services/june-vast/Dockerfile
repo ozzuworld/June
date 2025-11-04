@@ -33,7 +33,7 @@ RUN python3.10 -m venv /venv-stt && \
     python3.10 -m venv /venv-tts
 
 # Copy shared module
-COPY June/services/shared/ /app/shared/ 2>/dev/null || true
+COPY June/services/shared/ /app/shared/
 
 # Install shared module in both environments
 RUN if [ -d /app/shared ]; then \
