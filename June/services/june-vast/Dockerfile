@@ -79,24 +79,6 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install WeTextProcessing==1.0.3 && \
     true
 
-# Bake pretrained models into the image (ModelScope snapshot_download)
-ENV COSYVOICE_MODELS=/app/models/cosyvoice \
-    TTS_HOME=/app/models \
-    TTS_CACHE_PATH=/app/cache
-RUN mkdir -p /app/models/pretrained_models /app/cache && \
-    /venv-tts/bin/python - << 'PY'
-from modelscope import snapshot_download
-import os
-pairs = [
-    ('iic/CosyVoice2-0.5B', 'CosyVoice2-0.5B'),
-]
-os.makedirs('/app/models/pretrained_models', exist_ok=True)
-for repo, name in pairs:
-    local_dir = f'/app/models/pretrained_models/{name}'
-    if not os.path.exists(local_dir):
-        snapshot_download(repo, local_dir=local_dir)
-PY
-
 # Add CosyVoice source to PYTHONPATH for runtime imports
 ENV PYTHONPATH=/app:/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:${PYTHONPATH}
 
@@ -105,18 +87,21 @@ COPY June/services/june-stt/ /app/stt/
 COPY June/services/june-tts/ /app/tts/
 
 # Runtime env with model paths
-ENV WHISPER_CACHE_DIR=/app/models \
+ENV TTS_HOME=/app/models \
+    TTS_CACHE_PATH=/app/cache \
+    COSYVOICE_MODELS=/app/models/pretrained_models/CosyVoice2-0.5B \
+    WHISPER_CACHE_DIR=/app/models \
     COQUI_TTS_AGREED=1 \
     STT_PORT=8001 \
     TTS_PORT=8000
 
-# Create model directories
-RUN mkdir -p /app/models/cosyvoice /app/voices /app/cache
+# Create model directories (download happens at runtime)
+RUN mkdir -p /app/models/pretrained_models /app/cache
 
 # Expose service ports
 EXPOSE 8000 8001
 
-# Add entrypoint script that downloads models and starts both services
+# Add entrypoint script that starts both services (models downloaded on first run)
 COPY June/services/june-vast/start-both.sh /app/start-both.sh
 RUN chmod +x /app/start-both.sh
 
