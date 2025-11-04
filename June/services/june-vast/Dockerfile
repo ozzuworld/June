@@ -1,5 +1,5 @@
-# June vast.ai combined STT+TTS image with CosyVoice2
-FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+# June vast.ai combined STT+TTS image with CosyVoice2 (full features)
+FROM nvidia/cuda:12.3.2-cudnn9-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,7 +67,7 @@ RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/Cosy
     cd /opt/CosyVoice && \
     git submodule update --init --recursive
 
-# Install TTS dependencies (CosyVoice2) - use conda environment for Python path
+# Install TTS dependencies (CosyVoice2)
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install \
       torch==2.2.2 \
