@@ -56,8 +56,8 @@ COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
     /venv-stt/bin/pip install --no-cache-dir \
       --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.8.0+cu124 \
-      torchaudio==2.8.0+cu124 && \
+      torch==2.6.0+cu124 \
+      torchaudio==2.6.0+cu124 && \
     /venv-stt/bin/pip install --no-cache-dir -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
@@ -70,9 +70,9 @@ RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/Cosy
 RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
     /venv-tts/bin/pip install --no-cache-dir \
       --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.8.0+cu124 \
-      torchvision==0.19.0+cu124 \
-      torchaudio==2.8.0+cu124 && \
+      torch==2.6.0+cu124 \
+      torchvision==0.21.0+cu124 \
+      torchaudio==2.6.0+cu124 && \
     cd /opt/CosyVoice && \
     /venv-tts/bin/pip install --no-cache-dir -r requirements.txt && \
     /venv-tts/bin/pip install --no-cache-dir -r /tmp/tts-requirements.txt && \
