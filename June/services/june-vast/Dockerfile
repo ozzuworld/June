@@ -18,21 +18,29 @@ WORKDIR /app
 # Create separate virtualenvs to avoid dependency conflicts
 RUN python3.10 -m venv /venv-stt && python3.10 -m venv /venv-tts
 
+# Copy shared module first (required by both services)
+COPY June/services/shared/ /app/shared/
+
+# Install shared module in both virtual environments
+RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-stt/bin/pip install -e /app/shared
+
+RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-tts/bin/pip install -e /app/shared
+
 # Copy requirements
 COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
 COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
 # STT deps with official faster-whisper GPU libraries
-RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
-    /venv-stt/bin/pip install "numpy<2.0" && \
+RUN /venv-stt/bin/pip install "numpy<2.0" && \
     /venv-stt/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
     /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
-# TTS deps with CUDA 12.3 compatibility
-RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
-    /venv-tts/bin/pip install "numpy<2.0" && \
+# TTS deps with CUDA 12.3 compatibility and Chatterbox from source
+RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
     # Install Chatterbox from source without deps to avoid numpy pin conflicts
@@ -61,7 +69,8 @@ ENV TTS_CACHE_PATH=/app/cache \
     WHISPER_CACHE_DIR=/app/models \
     COQUI_TOS_AGREED=1 \
     STT_PORT=8001 \
-    TTS_PORT=8000
+    TTS_PORT=8000 \
+    PYTHONPATH=/app
 
 # Expose service ports
 EXPOSE 8000 8001
