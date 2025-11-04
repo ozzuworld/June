@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-June STT Service Configuration - Enhanced for Latino English Accent
+June STT Service Configuration - WhisperX Enhanced
 """
 import os
 from typing import Optional
 
-class EnhancedConfig:
+class WhisperXConfig:
     # Server Configuration
     PORT: int = int(os.getenv("STT_PORT", "8001"))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     HOST: str = os.getenv("HOST", "0.0.0.0")
     
-    # Whisper Model Configuration - Enhanced for accented speech
-    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "large-v3-turbo")  # Upgraded default
+    # Whisper Model Configuration - WhisperX Compatible
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "large-v3-turbo")
     WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "auto")
     WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
     WHISPER_CACHE_DIR: str = os.getenv("WHISPER_CACHE_DIR", "/app/models")
@@ -22,24 +22,26 @@ class EnhancedConfig:
     WHISPER_CPU_THREADS: int = int(os.getenv("WHISPER_CPU_THREADS", "4"))
     WHISPER_BEAM_SIZE: int = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
     
-    # Processing Options
-    USE_BATCHED_INFERENCE: bool = os.getenv("USE_BATCHED_INFERENCE", "true").lower() == "true"
+    # WhisperX Specific Configuration
     BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "8"))
+    USE_BATCHED_INFERENCE: bool = os.getenv("USE_BATCHED_INFERENCE", "true").lower() == "true"
     
-    # Dynamic Model Loading
-    DYNAMIC_MODEL_LOADING: bool = os.getenv("DYNAMIC_MODEL_LOADING", "true").lower() == "true"
-    MODEL_UNLOAD_TIMEOUT: int = int(os.getenv("MODEL_UNLOAD_TIMEOUT", "300"))
+    # WhisperX Features
+    ENABLE_WORD_TIMESTAMPS: bool = os.getenv("ENABLE_WORD_TIMESTAMPS", "true").lower() == "true"
+    DIARIZATION_ENABLED: bool = os.getenv("DIARIZATION_ENABLED", "false").lower() == "true"
+    MIN_SPEAKERS: int = int(os.getenv("MIN_SPEAKERS", "1"))
+    MAX_SPEAKERS: int = int(os.getenv("MAX_SPEAKERS", "5"))
     
-    # Silero VAD Configuration - Enhanced for accented speech
+    # Silero VAD Configuration - Preprocessing for WhisperX
     SILERO_VAD_ENABLED: bool = os.getenv("SILERO_VAD_ENABLED", "true").lower() == "true"
-    SILERO_VAD_THRESHOLD: float = float(os.getenv("SILERO_VAD_THRESHOLD", "0.45"))  # More sensitive for accents
-    SILERO_MIN_SPEECH_MS: int = int(os.getenv("SILERO_MIN_SPEECH_MS", "80"))        # Faster detection
-    SILERO_MIN_SILENCE_MS: int = int(os.getenv("SILERO_MIN_SILENCE_MS", "150"))     # Accent-friendly
+    SILERO_VAD_THRESHOLD: float = float(os.getenv("SILERO_VAD_THRESHOLD", "0.45"))
+    SILERO_MIN_SPEECH_MS: int = int(os.getenv("SILERO_MIN_SPEECH_MS", "80"))
+    SILERO_MIN_SILENCE_MS: int = int(os.getenv("SILERO_MIN_SILENCE_MS", "150"))
     
-    # Legacy VAD (fallback only)
-    VAD_ENABLED: bool = os.getenv("VAD_ENABLED", "false").lower() == "true"
+    # Legacy VAD (disabled with WhisperX)
+    VAD_ENABLED: bool = False
     
-    # Language & Accent Settings - Critical for Latino English
+    # Language & Accent Settings - Latino English Optimization
     DEFAULT_LANGUAGE: str = os.getenv("DEFAULT_LANGUAGE", "en")
     FORCE_LANGUAGE: bool = os.getenv("FORCE_LANGUAGE", "true").lower() == "true"
     ACCENT_OPTIMIZATION: bool = os.getenv("ACCENT_OPTIMIZATION", "true").lower() == "true"
@@ -51,7 +53,7 @@ class EnhancedConfig:
     # Transcription Quality Settings
     CONDITION_ON_PREVIOUS_TEXT: bool = os.getenv("CONDITION_ON_PREVIOUS_TEXT", "false").lower() == "true"
     TEMPERATURE: float = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))
-    LANGUAGE: Optional[str] = os.getenv("WHISPER_LANGUAGE", "en")  # Force English
+    LANGUAGE: Optional[str] = os.getenv("WHISPER_LANGUAGE", "en")
     
     # LiveKit Configuration
     LIVEKIT_ENABLED: bool = os.getenv("LIVEKIT_ENABLED", "true").lower() == "true"
@@ -62,11 +64,11 @@ class EnhancedConfig:
     
     # Natural Conversation Timing - Optimized for real-time chat
     UTTERANCE_PROCESSING: bool = os.getenv("UTTERANCE_PROCESSING", "true").lower() == "true"
-    MIN_UTTERANCE_SEC: float = float(os.getenv("MIN_UTTERANCE_SEC", "0.4"))      # More responsive
-    MAX_UTTERANCE_SEC: float = float(os.getenv("MAX_UTTERANCE_SEC", "8.0"))       # Faster chunks
-    SILENCE_TIMEOUT_SEC: float = float(os.getenv("SILENCE_TIMEOUT_SEC", "1.2"))   # Natural pauses
+    MIN_UTTERANCE_SEC: float = float(os.getenv("MIN_UTTERANCE_SEC", "0.4"))
+    MAX_UTTERANCE_SEC: float = float(os.getenv("MAX_UTTERANCE_SEC", "8.0"))
+    SILENCE_TIMEOUT_SEC: float = float(os.getenv("SILENCE_TIMEOUT_SEC", "1.2"))
     
-    # SOTA Streaming Configuration - For immediate feedback
+    # SOTA Streaming Configuration
     SOTA_MODE_ENABLED: bool = os.getenv("SOTA_MODE_ENABLED", "true").lower() == "true"
     ULTRA_FAST_PARTIALS: bool = os.getenv("ULTRA_FAST_PARTIALS", "true").lower() == "true"
     AGGRESSIVE_VAD_TUNING: bool = os.getenv("AGGRESSIVE_VAD_TUNING", "true").lower() == "true"
@@ -74,9 +76,10 @@ class EnhancedConfig:
     STT_PARTIALS_ENABLED: bool = os.getenv("STT_PARTIALS_ENABLED", "true").lower() == "true"
     STT_CONTINUOUS_PARTIALS: bool = os.getenv("STT_CONTINUOUS_PARTIALS", "true").lower() == "true"
     
-    # Faster partial delivery
-    PARTIAL_EMIT_INTERVAL_MS: int = int(os.getenv("PARTIAL_EMIT_INTERVAL_MS", "150"))  # Faster
-    PARTIAL_MIN_SPEECH_MS: int = int(os.getenv("PARTIAL_MIN_SPEECH_MS", "150"))        # Quicker start
+    # WhisperX Enhanced Partials
+    WORD_LEVEL_PARTIALS: bool = os.getenv("WORD_LEVEL_PARTIALS", "true").lower() == "true"
+    PARTIAL_EMIT_INTERVAL_MS: int = int(os.getenv("PARTIAL_EMIT_INTERVAL_MS", "150"))
+    PARTIAL_MIN_SPEECH_MS: int = int(os.getenv("PARTIAL_MIN_SPEECH_MS", "150"))
     
     # Anti-feedback Configuration
     EXCLUDE_PARTICIPANTS: set = {
@@ -90,8 +93,13 @@ class EnhancedConfig:
         "http://june-orchestrator.june-services.svc.cluster.local:8080"
     )
     ORCHESTRATOR_ENABLED: bool = os.getenv("ORCHESTRATOR_ENABLED", "true").lower() == "true"
+    STT_SERVICE_TOKEN: str = os.getenv("STT_SERVICE_TOKEN", "")
+    
+    # HuggingFace Token for Diarization
+    HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN", None)
     
     def validate_configuration(self):
+        """Validate WhisperX configuration"""
         errors = []
         
         if self.LIVEKIT_ENABLED and not self.LIVEKIT_API_KEY:
@@ -107,24 +115,45 @@ class EnhancedConfig:
         supported_models = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "large-v3-turbo"]
         if self.WHISPER_MODEL not in supported_models:
             errors.append(f"WHISPER_MODEL must be one of: {supported_models}")
+        
+        if self.DIARIZATION_ENABLED and not self.HF_TOKEN:
+            errors.append("HF_TOKEN required for speaker diarization (get from https://huggingface.co/settings/tokens)")
             
         if errors:
             raise ValueError(f"Configuration errors: {'; '.join(errors)}")
     
     def log_configuration(self):
+        """Log WhisperX configuration"""
         import logging
         logger = logging.getLogger(__name__)
         
-        logger.info(f"June STT Configuration (Latino Accent Optimized):")
+        logger.info("=" * 80)
+        logger.info("June STT Configuration (WhisperX Enhanced)")
+        logger.info("=" * 80)
+        logger.info(f"  Framework: WhisperX")
         logger.info(f"  Port: {self.PORT}")
-        logger.info(f"  Whisper: {self.WHISPER_MODEL} on {self.WHISPER_DEVICE}")
+        logger.info(f"  Model: {self.WHISPER_MODEL} on {self.WHISPER_DEVICE}")
         logger.info(f"  Language: {self.LANGUAGE} (forced: {self.FORCE_LANGUAGE})")
         logger.info(f"  Accent Optimization: {self.ACCENT_OPTIMIZATION}")
-        logger.info(f"  Timing: MIN={self.MIN_UTTERANCE_SEC}s, MAX={self.MAX_UTTERANCE_SEC}s, SILENCE={self.SILENCE_TIMEOUT_SEC}s")
-        logger.info(f"  VAD: Silero={self.SILERO_VAD_ENABLED} (threshold={self.SILERO_VAD_THRESHOLD})")
-        logger.info(f"  Streaming: {self.STT_STREAMING_ENABLED}, Partials: {self.PARTIAL_EMIT_INTERVAL_MS}ms")
-        logger.info(f"  Batched: {self.USE_BATCHED_INFERENCE} (size={self.BATCH_SIZE})")
-        logger.info(f"  Initial Prompt: {self.INITIAL_PROMPT[:50]}...")
+        logger.info("=" * 80)
+        logger.info("WhisperX Features:")
+        logger.info(f"  Word-level Timestamps: {self.ENABLE_WORD_TIMESTAMPS}")
+        logger.info(f"  Speaker Diarization: {self.DIARIZATION_ENABLED}")
+        logger.info(f"  Silero VAD Preprocessing: {self.SILERO_VAD_ENABLED}")
+        logger.info("=" * 80)
+        logger.info("Timing Configuration:")
+        logger.info(f"  MIN Utterance: {self.MIN_UTTERANCE_SEC}s")
+        logger.info(f"  MAX Utterance: {self.MAX_UTTERANCE_SEC}s")
+        logger.info(f"  Silence Timeout: {self.SILENCE_TIMEOUT_SEC}s")
+        logger.info("=" * 80)
+        logger.info("Streaming:")
+        logger.info(f"  Enabled: {self.STT_STREAMING_ENABLED}")
+        logger.info(f"  Partials: {self.PARTIAL_EMIT_INTERVAL_MS}ms interval")
+        logger.info(f"  Word-level Partials: {self.WORD_LEVEL_PARTIALS}")
+        logger.info("=" * 80)
+        if self.INITIAL_PROMPT:
+            logger.info(f"Initial Prompt: {self.INITIAL_PROMPT[:80]}...")
+            logger.info("=" * 80)
 
-config = EnhancedConfig()
+config = WhisperXConfig()
 config.validate_configuration()

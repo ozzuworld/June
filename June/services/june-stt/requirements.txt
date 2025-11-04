@@ -1,11 +1,28 @@
+# June STT Service - WhisperX Enhanced Dependencies
 fastapi==0.104.1
 uvicorn==0.24.0
 livekit==0.11.1
-faster-whisper==1.2.0
-torch>=2.0.0
+
+# WhisperX and dependencies
+whisperx @ git+https://github.com/m-bain/whisperX.git
+torch>=2.0.0,<2.2.0
+torchaudio>=2.0.0
+transformers>=4.30.0
+
+# Audio processing
 soundfile==0.12.1
 scipy==1.11.4
+librosa>=0.10.0
+numpy>=1.24.0,<2.0.0
+
+# Additional WhisperX requirements
+pyannote.audio>=3.1.0
+faster-whisper>=0.10.0  # Still used by WhisperX internally
+ctranslate2>=3.24.0
+
+# Service integration
 httpx==0.25.2
-numpy==1.24.4
 python_multipart
-whisperx @ git+https://github.com/m-bain/whisperX.git@8540ff5985fceee764acbed94f656063d7f56540
+
+# Optional: GPU acceleration
+# nvidia-ml-py3  # For GPU monitoring
