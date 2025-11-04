@@ -12,7 +12,7 @@ transformers>=4.30.0
 
 # Audio processing
 soundfile==0.12.1
-scipy==1.11.4
+scipy>=1.13.0  # NumPy 2.x compatible
 librosa>=0.10.0
 numpy>=2.0.0,<2.1.0  # Updated to match WhisperX requirements
 
