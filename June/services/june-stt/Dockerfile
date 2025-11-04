@@ -52,7 +52,6 @@ COPY --chown=sttuser:sttuser whisper_service.py /app/
 COPY --chown=sttuser:sttuser livekit_token.py /app/
 COPY --chown=sttuser:sttuser orchestrator_client.py /app/
 COPY --chown=sttuser:sttuser streaming_utils.py /app/
-COPY --chown=sttuser:sttuser README.md /app/
 
 # Set up environment
 ENV PYTHONPATH=/app
