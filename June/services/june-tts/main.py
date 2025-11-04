@@ -52,7 +52,7 @@ class Config:
 
 config = Config()
 
-# Request/Response models
+# Request/Response models for new API
 class TTSRequest(BaseModel):
     text: str = Field(..., max_length=config.max_text_length)
     room_name: str
@@ -66,6 +66,17 @@ class TTSRequest(BaseModel):
     seed: Optional[int] = None
     language: str = Field("en")
     streaming: bool = True
+
+# Legacy request model for backward compatibility
+class LegacyPublishRequest(BaseModel):
+    text: str
+    room_name: str
+    voice_reference: Optional[str] = None
+    speed: float = 1.0
+    emotion_level: float = 0.5
+    temperature: float = 0.9
+    cfg_weight: float = 0.3
+    language: str = "en"
 
 class TTSResponse(BaseModel):
     status: str
@@ -144,6 +155,7 @@ class StreamingChatterboxEngine:
         if seed is not None:
             generation_params['seed'] = seed
         generation_params.update(self._get_voice_config(voice_mode, predefined_voice_id, voice_reference))
+        logger.info(f"🎤 Chatterbox generating: {text[:50]}... (mode: {voice_mode})")
         async for audio_chunk, _ in self.model.generate_stream(text=text, **generation_params):
             if isinstance(audio_chunk, torch.Tensor):
                 audio_chunk = audio_chunk.cpu().numpy()
@@ -153,9 +165,16 @@ class StreamingChatterboxEngine:
             yield audio_chunk
 
 class LiveKitAudioPublisher:
+    def __init__(self):
+        self.rooms = {}
+
     async def connect_to_room(self, room_name: str) -> rtc.Room:
+        if room_name in self.rooms:
+            return self.rooms[room_name]
         room = rtc.Room()
         await connect_room_as_publisher(room, "june-tts", room_name)
+        self.rooms[room_name] = room
+        logger.info(f"✅ Connected to LiveKit room: {room_name}")
         return room
 
     async def publish_streaming_audio(self, room_name: str, audio_stream: AsyncIterator[np.ndarray]) -> Dict[str, Any]:
@@ -164,6 +183,7 @@ class LiveKitAudioPublisher:
         track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", audio_source)
         publication = await room.local_participant.publish_track(track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
         chunks_sent, total_duration = 0, 0.0
+        logger.info(f"🎵 Starting Chatterbox audio stream to {room_name}")
         async for audio_chunk in audio_stream:
             frame = self._numpy_to_audio_frame(audio_chunk)
             await audio_source.capture_frame(frame)
@@ -171,6 +191,7 @@ class LiveKitAudioPublisher:
             total_duration += len(audio_chunk) / config.sample_rate
         await asyncio.sleep(0.1)
         await room.local_participant.unpublish_track(publication.sid)
+        logger.info(f"✅ Chatterbox stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
         return {"chunks_sent": chunks_sent, "duration_seconds": total_duration, "room_name": room_name}
 
     def _numpy_to_audio_frame(self, audio_data: np.ndarray) -> rtc.AudioFrame:
@@ -199,9 +220,9 @@ async def lifespan(app: FastAPI):
                 break
     except Exception:
         logger.error("❌ Fatal: Chatterbox not usable. Exiting.")
-        # Fail FastAPI startup to force container restart
         raise
     publisher = LiveKitAudioPublisher()
+    logger.info("✅ June TTS Service ready with Chatterbox engine")
     yield
 
 app = FastAPI(title="June TTS Service", version="2.0.0", description="Chatterbox TTS with LiveKit streaming (strict)", lifespan=lifespan)
@@ -216,6 +237,7 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize_tts(request: TTSRequest, auth_data: dict = Depends(require_service_auth)):
+    """Main Chatterbox TTS synthesis endpoint"""
     start_time = time.time()
     if not streaming_engine or not publisher:
         raise HTTPException(status_code=503, detail="Chatterbox not initialized")
@@ -233,22 +255,75 @@ async def synthesize_tts(request: TTSRequest, auth_data: dict = Depends(require_
     result = await publisher.publish_streaming_audio(room_name=request.room_name, audio_stream=audio_stream)
     duration_ms = (time.time() - start_time) * 1000
     metrics["requests_processed"] += 1
-    metrics["streaming_requests"] += 1
-    metrics["total_audio_seconds"] += result["duration_seconds"]
     if request.voice_mode == "clone":
         metrics["voice_cloning_requests"] += 1
     else:
         metrics["predefined_voice_requests"] += 1
+    logger.info(f"✅ Chatterbox synthesis complete: {duration_ms:.0f}ms")
     return TTSResponse(status="completed", room_name=request.room_name, duration_ms=duration_ms, chunks_sent=result["chunks_sent"], voice_mode=request.voice_mode, voice_cloned=(request.voice_mode == "clone"))
+
+@app.post("/publish-to-room")
+async def legacy_publish_to_room(request: LegacyPublishRequest, auth_data: dict = Depends(require_service_auth)):
+    """Legacy endpoint for backward compatibility with orchestrator"""
+    logger.info(f"🔄 Legacy /publish-to-room called, redirecting to Chatterbox API")
+    
+    # Convert legacy request to new TTSRequest format
+    voice_mode = "clone" if request.voice_reference else "predefined"
+    
+    tts_request = TTSRequest(
+        text=request.text,
+        room_name=request.room_name,
+        voice_mode=voice_mode,
+        voice_reference=request.voice_reference,
+        speed=request.speed,
+        emotion_level=request.emotion_level,
+        temperature=request.temperature,
+        cfg_weight=request.cfg_weight,
+        language=request.language
+    )
+    
+    # Call the main synthesis endpoint
+    return await synthesize_tts(tts_request, auth_data)
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     # In strict mode, if app is up, Chatterbox is available
-    return HealthResponse(status="healthy", gpu_available=torch.cuda.is_available(), device=config.device, streaming_enabled=config.enable_streaming, chatterbox_available=True)
+    return HealthResponse(
+        status="healthy", 
+        gpu_available=torch.cuda.is_available(), 
+        device=config.device, 
+        streaming_enabled=config.enable_streaming, 
+        chatterbox_available=True
+    )
+
+@app.get("/metrics")
+async def get_metrics(auth_data: dict = Depends(require_service_auth)):
+    """Get service metrics"""
+    gpu_metrics = {}
+    if torch.cuda.is_available():
+        try:
+            gpu_metrics = {
+                "gpu_memory_used": torch.cuda.memory_allocated() / 1024**3,
+                "gpu_memory_total": torch.cuda.get_device_properties(0).total_memory / 1024**3
+            }
+        except Exception:
+            pass
+    return {
+        **metrics,
+        **gpu_metrics,
+        "chatterbox_available": True,
+        "active_rooms": len(publisher.rooms) if publisher else 0
+    }
 
 @app.get("/")
 async def root():
-    return {"service": "june-tts", "version": "2.0.0", "engine": "chatterbox", "strict_mode": True}
+    return {
+        "service": "june-tts", 
+        "version": "2.0.0", 
+        "engine": "chatterbox", 
+        "strict_mode": True,
+        "endpoints": ["/api/tts/synthesize", "/publish-to-room", "/health", "/metrics"]
+    }
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="info")
