@@ -1,5 +1,5 @@
 # June vast.ai combined STT+TTS image with CosyVoice2 (CUDA 12.4 aligned)
-FROM nvidia/cuda:12.4.1-cudnn9-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
