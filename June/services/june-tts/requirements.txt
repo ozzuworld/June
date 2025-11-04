@@ -1,40 +1,34 @@
-# June TTS Service - Chatterbox TTS with optimized dependencies
-# Core TTS Engine - Install from source to avoid version conflicts
-# chatterbox-tts will be installed from source in Dockerfile
+# CosyVoice2 TTS Service Requirements
+# Based on official CosyVoice requirements
 
-# FastAPI and web server
+# Web Framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 
-# Audio processing - compatible versions
-soundfile==0.12.1
-numpy>=1.24.0,<2.0  # Compatible with Chatterbox requirements
-scipy==1.11.3
+# PyTorch (installed from specific index)
+torch==2.2.2
+torchaudio==2.2.2
+torchvision==0.17.2
+--extra-index-url https://download.pytorch.org/whl/cu121
 
-# LiveKit integration
+# Audio Processing
+soundfile==0.12.1
+librosa==0.10.1
+scipy==1.11.0
+numpy<2.0
+
+# ModelScope for model downloads
+modelscope==1.9.5
+
+# LiveKit for real-time streaming
 livekit==0.11.1
 
-# Networking and HTTP
+# HTTP Client
 httpx==0.27.2
-websockets>=11.0.0
 
-# Utilities
+# System Utilities
 psutil>=5.9.0
 
-# GPU monitoring (optional)
-nvidia-ml-py>=11.5.0
-
-# Development and debugging
-rich>=13.0.0
-
-# Chatterbox dependencies (will be installed manually in Dockerfile)
-# librosa==0.10.1
-# transformers==4.35.0
-# diffusers
-# resemble-perth
-# conformer
-# safetensors
-
-# Note: PyTorch, Chatterbox TTS and its dependencies are installed 
-# separately in Dockerfile to handle version conflicts properly
+# Note: pynini==2.1.5 is installed via conda in Dockerfile
+# Note: CosyVoice is installed from GitHub in Dockerfile

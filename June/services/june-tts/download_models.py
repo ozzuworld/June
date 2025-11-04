@@ -1,64 +1,119 @@
 #!/usr/bin/env python3
 """
-CosyVoice 2 Model Download Script for June TTS
-Downloads the optimal CosyVoice2-0.5B model for streaming synthesis
+CosyVoice2 Model Download Script
+Downloads CosyVoice2-0.5B model from ModelScope
 """
 
 import os
 import logging
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("cosyvoice-models")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("cosyvoice2-download")
 
-def download_cosyvoice_models():
-    """Download CosyVoice 2 models for streaming TTS"""
-    models_dir = "/app/models/cosyvoice"
-    os.makedirs(models_dir, exist_ok=True)
+
+def download_cosyvoice2_model():
+    """Download CosyVoice2-0.5B model from ModelScope"""
+    
+    model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
+    model_name = "CosyVoice2-0.5B"
+    local_path = os.path.join(model_dir, model_name)
+    
+    # Create directory
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Check if model already exists
+    if os.path.exists(local_path) and os.path.isdir(local_path):
+        files = os.listdir(local_path)
+        if len(files) > 5:  # Basic check for model files
+            logger.info(f"✅ Model already exists at {local_path}")
+            logger.info(f"   Found {len(files)} files")
+            return local_path
     
     try:
         from modelscope import snapshot_download
         
-        # Download CosyVoice2-0.5B (optimal balance of speed/quality)
-        model_path = os.path.join(models_dir, "CosyVoice2-0.5B")
+        logger.info(f"📦 Downloading {model_name} from ModelScope...")
+        logger.info(f"   Target directory: {local_path}")
+        logger.info("   This may take 5-15 minutes depending on connection speed")
         
-        if os.path.exists(model_path) and len(os.listdir(model_path)) > 0:
-            logger.info(f"✅ CosyVoice2-0.5B already exists at {model_path}")
-            return
-        
-        logger.info("📦 Downloading CosyVoice2-0.5B model (optimized for streaming)...")
-        logger.info("⏳ This may take 5-10 minutes depending on connection speed")
-        
+        # Download model
         snapshot_download(
-            model_id='iic/CosyVoice2-0.5B',
-            local_dir=model_path,
+            model_id=f'iic/{model_name}',
+            local_dir=local_path,
             cache_dir='/tmp/modelscope_cache'
         )
         
-        logger.info(f"✅ CosyVoice2-0.5B downloaded successfully to {model_path}")
+        logger.info(f"✅ Model downloaded successfully to {local_path}")
         
-        # Verify essential files
-        required_files = ['pytorch_model.bin', 'config.json', 'configuration.json']
-        missing_files = []
+        # List downloaded files
+        files = os.listdir(local_path)
+        logger.info(f"   Downloaded {len(files)} files")
         
-        for file in required_files:
-            if not os.path.exists(os.path.join(model_path, file)):
-                missing_files.append(file)
+        # Check for essential files
+        essential_files = ['config.json', 'configuration.json']
+        for file in essential_files:
+            if os.path.exists(os.path.join(local_path, file)):
+                logger.info(f"   ✓ {file}")
+            else:
+                logger.warning(f"   ⚠ {file} not found")
         
-        if missing_files:
-            logger.warning(f"⚠️ Some model files may be missing: {missing_files}")
-        else:
-            logger.info("✅ All essential model files verified")
-            
+        return local_path
+        
     except ImportError as e:
-        logger.error(f"❌ modelscope not available: {e}")
-        logger.error("💡 Install with: pip install modelscope")
+        logger.error(f"❌ ModelScope not available: {e}")
+        logger.error("   Install with: pip install modelscope")
         raise
     except Exception as e:
         logger.error(f"❌ Model download failed: {e}")
         raise
 
+
+def download_ttsfrd_resource():
+    """Optionally download CosyVoice-ttsfrd for better text normalization"""
+    
+    model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
+    ttsfrd_path = os.path.join(model_dir, "CosyVoice-ttsfrd")
+    
+    if os.path.exists(ttsfrd_path):
+        logger.info(f"✅ ttsfrd resource already exists at {ttsfrd_path}")
+        return ttsfrd_path
+    
+    try:
+        from modelscope import snapshot_download
+        
+        logger.info("📦 Downloading CosyVoice-ttsfrd resource (optional)...")
+        
+        snapshot_download(
+            model_id='iic/CosyVoice-ttsfrd',
+            local_dir=ttsfrd_path,
+            cache_dir='/tmp/modelscope_cache'
+        )
+        
+        logger.info(f"✅ ttsfrd resource downloaded to {ttsfrd_path}")
+        logger.info("   Note: This resource is optional for text normalization")
+        
+        return ttsfrd_path
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to download ttsfrd resource (non-critical): {e}")
+        return None
+
+
 if __name__ == "__main__":
-    logger.info("🚀 Starting CosyVoice 2 model download for June TTS")
-    download_cosyvoice_models()
-    logger.info("🎉 Model download complete! Ready for ultra-low latency TTS")
+    logger.info("🚀 Starting CosyVoice2 model download")
+    
+    # Download main model
+    model_path = download_cosyvoice2_model()
+    
+    # Optionally download ttsfrd resource
+    ttsfrd_path = download_ttsfrd_resource()
+    
+    logger.info("🎉 Model download complete!")
+    logger.info(f"   Model: {model_path}")
+    if ttsfrd_path:
+        logger.info(f"   ttsfrd: {ttsfrd_path}")
+    logger.info("   Ready for TTS synthesis")
