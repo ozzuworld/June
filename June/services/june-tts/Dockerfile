@@ -1,102 +1,84 @@
-# June TTS Service - Production Dockerfile for Chatterbox TTS
-FROM nvidia/cuda:12.1-devel-ubuntu22.04
+# June vast.ai combined STT+TTS image with official faster-whisper GPU setup
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-# Prevent interactive prompts during installation
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV CUDA_VISIBLE_DEVICES=0
-ENV TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3.10-pip \
-    python3.10-dev \
-    python3.10-distutils \
-    build-essential \
-    cmake \
-    git \
-    curl \
-    wget \
-    # Audio processing libraries
-    ffmpeg \
-    libsndfile1 \
-    libsndfile1-dev \
-    libasound2-dev \
-    portaudio19-dev \
-    # Additional dependencies for compilation
-    pkg-config \
-    libffi-dev \
-    libssl-dev \
+# Base system deps (both services)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3.10-venv python3-pip \
+    ffmpeg espeak-ng libsndfile1 libportaudio2 \
+    ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# Create symlink for python
-RUN ln -s /usr/bin/python3.10 /usr/bin/python
-
-# Set working directory
 WORKDIR /app
 
-# Upgrade pip
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+# Create separate virtualenvs to avoid dependency conflicts
+RUN python3.10 -m venv /venv-stt && python3.10 -m venv /venv-tts
 
-# Install PyTorch with CUDA 12.1 support first (compatible with Chatterbox)
-RUN python -m pip install --no-cache-dir \
-    torch==2.1.2+cu121 \
-    torchaudio==2.1.2+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+# Copy shared module first (required by both services)
+COPY June/services/shared/ /app/shared/
 
-# Install numpy with compatible version for Chatterbox
-RUN python -m pip install --no-cache-dir "numpy>=1.24.0,<2.0"
+# Install shared module in both virtual environments
+RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-stt/bin/pip install -e /app/shared
 
-# Install Chatterbox TTS from source with compatible dependencies
-RUN git clone https://github.com/resemble-ai/chatterbox.git /tmp/chatterbox
+RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-tts/bin/pip install -e /app/shared
 
-# Install Chatterbox dependencies manually to avoid conflicts
-RUN python -m pip install --no-cache-dir \
-    librosa==0.10.1 \
-    transformers==4.35.0 \
-    diffusers==0.24.0 \
-    resemble-perth==1.0.1 \
-    conformer==0.3.2 \
-    safetensors==0.4.0 \
-    accelerate==0.24.1 \
-    scipy==1.11.0
+# Copy requirements
+COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
+COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
-# Install Chatterbox TTS from source (no deps to avoid conflicts)
-RUN cd /tmp/chatterbox && python -m pip install --no-deps -e .
+# STT deps with official faster-whisper GPU libraries
+RUN /venv-stt/bin/pip install "numpy<2.0" && \
+    /venv-stt/bin/pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+      --index-url https://download.pytorch.org/whl/cu121 && \
+    /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
+    rm -rf /root/.cache
 
-# Copy requirements and install remaining dependencies
-COPY requirements.txt .
-RUN python -m pip install --no-cache-dir -r requirements.txt
-
-# Copy the shared module first (dependency)
-COPY ../shared /app/shared
-RUN cd /app && python -m pip install -e ./shared
+# TTS deps: switch to chatterbox-streaming fork for true streaming + lower latency
+RUN /venv-tts/bin/pip install "numpy<2.0" && \
+    /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
+      --index-url https://download.pytorch.org/whl/cu121 && \
+    # Install streaming fork from PyPI for real generate_stream API
+    /venv-tts/bin/pip install --no-cache-dir chatterbox-streaming && \
+    # Install explicit compatible dependencies
+    /venv-tts/bin/pip install --no-deps s3tokenizer && \
+    /venv-tts/bin/pip install \
+      librosa==0.11.0 \
+      transformers==4.46.3 \
+      diffusers==0.29.0 \
+      resemble-perth==1.0.1 \
+      conformer==0.3.2 \
+      safetensors==0.5.3 \
+      accelerate==0.24.1 \
+      scipy==1.11.0 \
+      onnx==1.16.0 && \
+    # Install remaining app deps from requirements
+    /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
+    rm -rf /root/.cache
 
 # Copy application code
-COPY . .
+COPY June/services/june-stt/ /app/stt/
+COPY June/services/june-tts/ /app/tts/
 
-# Create necessary directories
-RUN mkdir -p /app/logs /app/models /app/temp
+# Runtime env with CUDA library paths
+ENV TTS_CACHE_PATH=/app/cache \
+    TTS_HOME=/app/models \
+    WHISPER_CACHE_DIR=/app/models \
+    COQUI_TOS_AGREED=1 \
+    STT_PORT=8001 \
+    TTS_PORT=8000 \
+    PYTHONPATH=/app
 
-# Set environment variables for optimal GPU performance
-ENV CUDA_LAUNCH_BLOCKING=0
-ENV CUDA_CACHE_DISABLE=0
-ENV TORCH_CUDNN_V8_API_ENABLED=1
-ENV OMP_NUM_THREADS=4
-ENV MKL_NUM_THREADS=4
+# Expose service ports
+EXPOSE 8000 8001
 
-# Chatterbox-specific environment variables
-ENV CHATTERBOX_CACHE_DIR=/app/models
-ENV CHATTERBOX_DEVICE=cuda
-ENV TORCH_HOME=/app/models
+# Add entrypoint script that starts both services
+COPY June/services/june-vast/start-both.sh /app/start-both.sh
+RUN chmod +x /app/start-both.sh
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Expose port
-EXPOSE 8000
-
-# Run the application
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+ENTRYPOINT ["/app/start-both.sh"]

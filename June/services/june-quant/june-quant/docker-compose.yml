@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  june-quant-signal-service:
+    build: ./services/june-quant-signal-service
+    container_name: june-quant-signal-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - june-quant-net
+
+  june-quant-execution-sim:
+    build: ./services/june-quant-execution-sim
+    container_name: june-quant-execution-sim
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    networks:
+      - june-quant-net
+
+networks:
+  june-quant-net:
+    driver: bridge
