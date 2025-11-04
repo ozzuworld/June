@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - Chatterbox Integration with Streaming (Strict Mode, Auth Disabled Temporarily)
-Chatterbox is mandatory. If import/init fails, the service will not start.
+Implements correct Chatterbox API usage: synchronous generate() with manual chunked streaming.
 """
 
 import asyncio
@@ -38,11 +38,10 @@ logger = logging.getLogger("june-tts")
 class Config:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.sample_rate = 24000
-        self.chunk_duration = 0.2  # 200ms chunks for streaming
+        self.sample_rate_override = None  # use model.sr by default
+        self.chunk_duration = 0.2  # seconds
         self.max_text_length = 1000
         self.enable_streaming = True
-        self.chunk_size = 25  # Tokens per chunk for Chatterbox streaming
         self.voices_dir = "/app/voices"
         self.warmup_text = os.getenv("WARMUP_TEXT", "")
 
@@ -82,7 +81,6 @@ class HealthResponse(BaseModel):
     chatterbox_available: bool
 
 # Global TTS engine and metrics
-chatterbox_model: Optional[ChatterboxTTS] = None
 active_rooms: Dict[str, rtc.Room] = {}
 metrics = {
     "requests_processed": 0,
@@ -97,17 +95,19 @@ class StreamingChatterboxEngine:
     def __init__(self, device: str = "cuda"):
         self.device = device
         self.model: Optional[ChatterboxTTS] = None
-        self.sample_rate = config.sample_rate
+        self.model_sr: Optional[int] = None
 
     async def initialize(self):
         try:
             self.model = ChatterboxTTS.from_pretrained(device=self.device)
-            logger.info(f"✅ Chatterbox TTS initialized on {self.device}")
+            # Chatterbox exposes sample rate via model.sr
+            self.model_sr = int(getattr(self.model, "sr", 24000))
+            logger.info(f"✅ Chatterbox TTS initialized on {self.device} (sr={self.model_sr})")
         except Exception as e:
             logger.error(f"❌ Chatterbox TTS initialization failed: {e}")
             raise
 
-    def _get_voice_config(self, voice_mode: str, predefined_voice_id: Optional[str], voice_reference: Optional[str]) -> Dict[str, Any]:
+    def _voice_config(self, voice_mode: str, predefined_voice_id: Optional[str], voice_reference: Optional[str]) -> Dict[str, Any]:
         if voice_mode == "clone" and voice_reference:
             return {"audio_prompt_path": voice_reference}
         if voice_mode == "predefined" and predefined_voice_id:
@@ -116,6 +116,17 @@ class StreamingChatterboxEngine:
                 return {"audio_prompt_path": voice_path}
             logger.warning(f"Predefined voice not found: {voice_path}, using default")
         return {}
+
+    def _time_scale(self, wav_np: np.ndarray, speed: float) -> np.ndarray:
+        if speed == 1.0:
+            return wav_np
+        # Simple resampling for time-scale change
+        target_len = max(1, int(len(wav_np) / speed))
+        return np.interp(
+            np.linspace(0, len(wav_np), target_len, endpoint=False),
+            np.arange(len(wav_np)),
+            wav_np
+        ).astype(np.float32)
 
     async def synthesize_streaming(
         self,
@@ -131,54 +142,70 @@ class StreamingChatterboxEngine:
     ) -> AsyncIterator[np.ndarray]:
         if not self.model:
             raise RuntimeError("Chatterbox TTS not initialized")
-        generation_params = {
-            'exaggeration': emotion_level,
-            'cfg_weight': cfg_weight,
-            'temperature': temperature,
-            'chunk_size': config.chunk_size
+        # Build params per Chatterbox docs
+        params: Dict[str, Any] = {
+            "exaggeration": emotion_level,
+            "cfg_weight": cfg_weight,
+            "temperature": temperature,
         }
         if seed is not None:
-            generation_params['seed'] = seed
-        generation_params.update(self._get_voice_config(voice_mode, predefined_voice_id, voice_reference))
-        async for audio_chunk, _ in self.model.generate_stream(text=text, **generation_params):
-            if isinstance(audio_chunk, torch.Tensor):
-                audio_chunk = audio_chunk.cpu().numpy()
-            if speed != 1.0:
-                target_length = int(len(audio_chunk) / speed)
-                audio_chunk = np.interp(np.linspace(0, len(audio_chunk), target_length), np.arange(len(audio_chunk)), audio_chunk)
-            yield audio_chunk
+            params["seed"] = seed
+        params.update(self._voice_config(voice_mode, predefined_voice_id, voice_reference))
+
+        # Generate full waveform synchronously
+        logger.info(f"🎤 Generating with Chatterbox (mode={voice_mode})")
+        wav = self.model.generate(text, **params)
+        # Convert torch.Tensor to numpy float32 mono
+        if isinstance(wav, torch.Tensor):
+            wav = wav.detach().cpu()
+        wav_np = wav.squeeze().numpy().astype(np.float32)
+        if wav_np.ndim > 1:
+            wav_np = wav_np.mean(axis=0).astype(np.float32)
+
+        # Apply speed time-scaling if needed
+        wav_np = self._time_scale(wav_np, speed)
+
+        sr = self.model_sr or 24000
+        chunk_len = max(1, int(config.chunk_duration * sr))
+        total_samples = len(wav_np)
+        for start in range(0, total_samples, chunk_len):
+            chunk = wav_np[start:start + chunk_len]
+            if chunk.size == 0:
+                break
+            yield chunk
+            await asyncio.sleep(0)  # yield control to event loop
 
 class LiveKitAudioPublisher:
     async def connect_to_room(self, room_name: str) -> rtc.Room:
         room = rtc.Room()
+        from livekit_token import connect_room_as_publisher  # local import to avoid circular
         await connect_room_as_publisher(room, "june-tts", room_name)
         return room
 
-    async def publish_streaming_audio(self, room_name: str, audio_stream: AsyncIterator[np.ndarray]) -> Dict[str, Any]:
+    async def publish_streaming_audio(self, room_name: str, audio_stream: AsyncIterator[np.ndarray], sample_rate: int) -> Dict[str, Any]:
         room = await self.connect_to_room(room_name)
-        audio_source = rtc.AudioSource(sample_rate=config.sample_rate, num_channels=1)
+        audio_source = rtc.AudioSource(sample_rate=sample_rate, num_channels=1)
         track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", audio_source)
-        publication = await room.local_participant.publish_track(track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
+        publication = await room.local_participant.publish_track(
+            track,
+            rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+        )
         chunks_sent, total_duration = 0, 0.0
         async for audio_chunk in audio_stream:
-            frame = self._numpy_to_audio_frame(audio_chunk)
+            # Convert float32 [-1,1] to int16
+            if audio_chunk.dtype != np.int16:
+                audio_i16 = (np.clip(audio_chunk, -1.0, 1.0) * 32767.0).astype(np.int16)
+            else:
+                audio_i16 = audio_chunk
+            frame = rtc.AudioFrame.create(sample_rate=sample_rate, num_channels=1, samples_per_channel=len(audio_i16))
+            frame_data = np.frombuffer(frame.data, dtype=np.int16).reshape((1, len(audio_i16)))
+            frame_data[0] = audio_i16
             await audio_source.capture_frame(frame)
             chunks_sent += 1
-            total_duration += len(audio_chunk) / config.sample_rate
-        await asyncio.sleep(0.1)
+            total_duration += len(audio_i16) / sample_rate
+        await asyncio.sleep(0.05)
         await room.local_participant.unpublish_track(publication.sid)
         return {"chunks_sent": chunks_sent, "duration_seconds": total_duration, "room_name": room_name}
-
-    def _numpy_to_audio_frame(self, audio_data: np.ndarray) -> rtc.AudioFrame:
-        if audio_data.dtype != np.int16:
-            audio_data = (audio_data * 32767).astype(np.int16)
-        frame = rtc.AudioFrame.create(sample_rate=config.sample_rate, num_channels=1, samples_per_channel=len(audio_data))
-        frame_data = np.frombuffer(frame.data, dtype=np.int16).reshape((1, len(audio_data)))
-        frame_data[0] = audio_data
-        return frame
-
-# Import token/room publisher after class to avoid circular import
-from livekit_token import connect_room_as_publisher
 
 # Global instances
 streaming_engine: Optional[StreamingChatterboxEngine] = None
@@ -214,7 +241,6 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize_tts(request: TTSRequest):
-    """Main Chatterbox TTS synthesis endpoint (auth disabled temporarily)"""
     start_time = time.time()
     if not streaming_engine or not publisher:
         raise HTTPException(status_code=503, detail="Chatterbox not initialized")
@@ -229,7 +255,8 @@ async def synthesize_tts(request: TTSRequest):
         cfg_weight=request.cfg_weight,
         seed=request.seed
     )
-    result = await publisher.publish_streaming_audio(room_name=request.room_name, audio_stream=audio_stream)
+    sr = streaming_engine.model_sr or 24000
+    result = await publisher.publish_streaming_audio(room_name=request.room_name, audio_stream=audio_stream, sample_rate=sr)
     duration_ms = (time.time() - start_time) * 1000
     metrics["requests_processed"] += 1
     metrics["streaming_requests"] += 1
