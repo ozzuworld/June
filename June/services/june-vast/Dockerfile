@@ -54,7 +54,10 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
       diffusers==0.29.0 \
       resemble-perth==1.0.1 \
       conformer==0.3.2 \
-      safetensors==0.5.3 && \
+      safetensors==0.5.3 \
+      accelerate==0.24.1 \
+      scipy==1.11.0 \
+      onnx==1.16.0 && \
     # Install remaining app deps from requirements (excluding chatterbox-tts line)
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
