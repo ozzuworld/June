@@ -40,12 +40,30 @@ def download_cosyvoice2_model():
         logger.info(f"   Target directory: {local_path}")
         logger.info("   This may take 5-15 minutes depending on connection speed")
         
-        # Download model
-        snapshot_download(
-            model_id=f'iic/{model_name}',
-            local_dir=local_path,
-            cache_dir='/tmp/modelscope_cache'
-        )
+        # Download model using compatible parameter format
+        try:
+            # Try new API format first (ModelScope >= 1.10)
+            downloaded_path = snapshot_download(
+                model_id=f'iic/{model_name}',
+                local_dir=local_path,
+                cache_dir='/tmp/modelscope_cache'
+            )
+        except TypeError as e:
+            if "local_dir" in str(e):
+                logger.info("   Using legacy ModelScope API format...")
+                # Use legacy API format (ModelScope < 1.10)
+                downloaded_path = snapshot_download(
+                    model_id=f'iic/{model_name}',
+                    cache_dir='/tmp/modelscope_cache'
+                )
+                # Move files to target directory
+                import shutil
+                if os.path.exists(downloaded_path) and downloaded_path != local_path:
+                    if os.path.exists(local_path):
+                        shutil.rmtree(local_path)
+                    shutil.move(downloaded_path, local_path)
+            else:
+                raise e
         
         logger.info(f"✅ Model downloaded successfully to {local_path}")
         
@@ -87,11 +105,28 @@ def download_ttsfrd_resource():
         
         logger.info("📦 Downloading CosyVoice-ttsfrd resource (optional)...")
         
-        snapshot_download(
-            model_id='iic/CosyVoice-ttsfrd',
-            local_dir=ttsfrd_path,
-            cache_dir='/tmp/modelscope_cache'
-        )
+        # Download with compatibility handling
+        try:
+            downloaded_path = snapshot_download(
+                model_id='iic/CosyVoice-ttsfrd',
+                local_dir=ttsfrd_path,
+                cache_dir='/tmp/modelscope_cache'
+            )
+        except TypeError as e:
+            if "local_dir" in str(e):
+                # Use legacy API format
+                downloaded_path = snapshot_download(
+                    model_id='iic/CosyVoice-ttsfrd',
+                    cache_dir='/tmp/modelscope_cache'
+                )
+                # Move files to target directory
+                import shutil
+                if os.path.exists(downloaded_path) and downloaded_path != ttsfrd_path:
+                    if os.path.exists(ttsfrd_path):
+                        shutil.rmtree(ttsfrd_path)
+                    shutil.move(downloaded_path, ttsfrd_path)
+            else:
+                raise e
         
         logger.info(f"✅ ttsfrd resource downloaded to {ttsfrd_path}")
         logger.info("   Note: This resource is optional for text normalization")
