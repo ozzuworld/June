@@ -1,13 +1,10 @@
-# June STT Service - WhisperX Enhanced Dependencies (CUDA 12.4/cu124 aligned)
+# June STT Service - WhisperX Enhanced Dependencies (let WhisperX manage torch)
 fastapi==0.104.1
 uvicorn==0.24.0
 livekit==0.11.1
 
-# WhisperX and dependencies
+# WhisperX and dependencies (WhisperX will install its preferred torch stack)
 whisperx @ git+https://github.com/m-bain/whisperX.git
-# Pin torch/torchaudio to CUDA 12.4 wheels
-torch==2.6.0+cu124
-torchaudio==2.6.0+cu124
 transformers>=4.30.0
 
 # Audio processing
