@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Chatterbox Integration with Safe Performance Optimizations
-Applies CUDA + dtype optimizations with graceful error handling, skips torch.compile
+June TTS Service - Chatterbox Integration with Conservative CUDA Optimizations
+Applies only safe CUDA optimizations, skips dtype conversion to avoid compatibility issues
 """
 
 import asyncio
@@ -45,9 +45,9 @@ class Config:
         self.voices_dir = "/app/voices"
         self.warmup_text = os.getenv("WARMUP_TEXT", "Hello, this is a warmup test.")
         self.default_room = "ozzu-main"  # Default room to stay connected to
-        # Performance optimization flags
+        # Conservative optimization flags - only safe CUDA opts
         self.enable_cuda_opts = os.getenv("TTS_CUDA_OPTS", "true").lower() == "true"
-        self.use_bfloat16 = os.getenv("TTS_USE_BF16", "auto").lower()  # auto, true, false
+        self.use_bfloat16 = os.getenv("TTS_USE_BF16", "false").lower() == "true"  # disabled by default
 
 config = Config()
 
@@ -97,7 +97,7 @@ metrics = {
     "optimization_errors": []
 }
 
-class SafeOptimizedChatterboxEngine:
+class ConservativeChatterboxEngine:
     def __init__(self, device: str = "cuda"):
         self.device = device
         self.model: Optional[ChatterboxTTS] = None
@@ -106,10 +106,10 @@ class SafeOptimizedChatterboxEngine:
 
     async def initialize(self):
         try:
-            # Apply CUDA optimizations safely
+            # Apply only safe CUDA optimizations
             if torch.cuda.is_available() and config.enable_cuda_opts:
                 try:
-                    logger.info("🚀 Enabling CUDA optimizations")
+                    logger.info("🚀 Enabling conservative CUDA optimizations")
                     torch.backends.cudnn.benchmark = True
                     torch.backends.cuda.matmul.allow_tf32 = True
                     self.optimizations_applied.extend(["cudnn_benchmark", "tf32_matmul"])
@@ -118,68 +118,30 @@ class SafeOptimizedChatterboxEngine:
                     logger.warning(f"⚠️ CUDA optimizations failed: {e}")
                     metrics["optimization_errors"].append(f"cuda_opts: {e}")
 
-            # Load base model
+            # Load model in default dtype (no conversion)
             logger.info(f"📦 Loading Chatterbox TTS on {self.device}")
             self.model = ChatterboxTTS.from_pretrained(device=self.device)
             self.model_sr = int(getattr(self.model, "sr", 24000))
 
-            # Apply dtype optimization safely
-            if config.enable_cuda_opts:
-                try:
-                    target_dtype = self._get_optimal_dtype()
-                    if target_dtype:
-                        logger.info(f"🎯 Converting model to {target_dtype}")
-                        if hasattr(self.model, 't3') and hasattr(self.model.t3, 'to'):
-                            self.model.t3.to(dtype=target_dtype)
-                            self.optimizations_applied.append(f"dtype_{target_dtype}")
-                            logger.info(f"✅ Model converted to {target_dtype}")
-                        else:
-                            logger.warning("⚠️ Model structure doesn't support dtype conversion")
-                except Exception as e:
-                    logger.warning(f"⚠️ Dtype optimization failed: {e}")
-                    metrics["optimization_errors"].append(f"dtype: {e}")
-
-            # Skip torch.compile due to compatibility issues
-            logger.info("⏭️ Skipping torch.compile (compatibility issues with Chatterbox)")
+            # Skip dtype conversion entirely to avoid compatibility issues
+            if config.use_bfloat16:
+                logger.info("⏭️ Skipping bfloat16 conversion (disabled for stability)")
+            else:
+                logger.info("✅ Using default model precision (float32)")
 
             logger.info(f"✅ Chatterbox TTS initialized on {self.device} (sr={self.model_sr})")
-            logger.info(f"🎯 Safe optimizations applied: {', '.join(self.optimizations_applied) or 'none'}")
+            logger.info(f"🎯 Conservative optimizations applied: {', '.join(self.optimizations_applied) or 'none'}")
 
         except Exception as e:
             logger.error(f"❌ Chatterbox TTS initialization failed: {e}")
             raise
-
-    def _get_optimal_dtype(self) -> Optional[torch.dtype]:
-        """Determine best dtype for current GPU"""
-        if not torch.cuda.is_available():
-            return None
-        
-        if config.use_bfloat16 == "false":
-            return None
-        elif config.use_bfloat16 == "true":
-            return torch.bfloat16
-        elif config.use_bfloat16 == "auto":
-            # Auto-detect based on GPU capability
-            try:
-                gpu_name = torch.cuda.get_device_name(0).lower()
-                # RTX 30xx+ and A100+ support bfloat16 efficiently
-                if any(x in gpu_name for x in ["rtx 30", "rtx 40", "rtx 50", "a100", "h100", "v100"]):
-                    logger.info(f"🎯 GPU {gpu_name} supports bfloat16")
-                    return torch.bfloat16
-                else:
-                    logger.info(f"🎯 GPU {gpu_name} using float16 fallback")
-                    return torch.float16
-            except Exception as e:
-                logger.warning(f"⚠️ GPU detection failed: {e}, using float16")
-                return torch.float16
-        return None
 
     async def warmup(self):
         """Lightweight warmup generation"""
         if not self.model or not config.warmup_text:
             return
         try:
-            logger.info("🔥 Running lightweight warmup")
+            logger.info("🔥 Running conservative warmup")
             warmup_start = time.time()
             # Very short warmup text
             warmup_text = config.warmup_text[:16]  # Just a few words
@@ -342,7 +304,7 @@ class PersistentLiveKitPublisher:
         )
         
         chunks_sent, total_duration = 0, 0.0
-        logger.info(f"🎵 Starting optimized Chatterbox stream to {room_name}")
+        logger.info(f"🎵 Starting conservative Chatterbox stream to {room_name}")
         
         async for audio_chunk in audio_stream:
             # Convert float32 [-1,1] to int16
@@ -359,7 +321,7 @@ class PersistentLiveKitPublisher:
 
         await asyncio.sleep(0.05)
         await room.local_participant.unpublish_track(publication.sid)
-        logger.info(f"✅ Optimized stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
+        logger.info(f"✅ Conservative stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
         return {"chunks_sent": chunks_sent, "duration_seconds": total_duration, "room_name": room_name}
 
     def get_connection_status(self) -> Dict[str, Any]:
@@ -374,17 +336,17 @@ class PersistentLiveKitPublisher:
         }
 
 # Global instances
-streaming_engine: Optional[SafeOptimizedChatterboxEngine] = None
+streaming_engine: Optional[ConservativeChatterboxEngine] = None
 publisher: Optional[PersistentLiveKitPublisher] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global streaming_engine, publisher
-    logger.info("🚀 Starting June TTS Service (Safe-optimized Chatterbox, persistent LiveKit)")
+    logger.info("🚀 Starting June TTS Service (Conservative optimizations, persistent LiveKit)")
     os.makedirs(config.voices_dir, exist_ok=True)
     
-    # Initialize safe optimized Chatterbox engine
-    streaming_engine = SafeOptimizedChatterboxEngine(config.device)
+    # Initialize conservative Chatterbox engine
+    streaming_engine = ConservativeChatterboxEngine(config.device)
     try:
         await streaming_engine.initialize()
         
@@ -400,14 +362,14 @@ async def lifespan(app: FastAPI):
     publisher = PersistentLiveKitPublisher()
     try:
         await publisher.initialize(config.default_room)
-        logger.info("✅ June TTS Service ready with safe-optimized Chatterbox + persistent LiveKit")
+        logger.info("✅ June TTS Service ready with conservative Chatterbox + persistent LiveKit")
     except Exception:
         logger.error("❌ Fatal: LiveKit publisher not usable. Exiting.")
         raise
     
     yield
 
-app = FastAPI(title="June TTS Service", version="2.1.0", description="Safe-optimized Chatterbox TTS with persistent LiveKit streaming", lifespan=lifespan)
+app = FastAPI(title="June TTS Service", version="2.1.0", description="Conservative Chatterbox TTS with persistent LiveKit streaming", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -419,12 +381,12 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize_tts(request: TTSRequest):
-    """Main safe-optimized Chatterbox TTS synthesis endpoint (auth disabled temporarily)"""
+    """Main conservative Chatterbox TTS synthesis endpoint (auth disabled temporarily)"""
     start_time = time.time()
     if not streaming_engine or not publisher:
         raise HTTPException(status_code=503, detail="Chatterbox not initialized")
     
-    logger.info(f"🎤 Safe-optimized TTS synthesis for room {request.room_name}: {request.text[:50]}...")
+    logger.info(f"🎤 Conservative TTS synthesis for room {request.room_name}: {request.text[:50]}...")
     
     audio_stream = streaming_engine.synthesize_streaming(
         text=request.text,
@@ -450,7 +412,7 @@ async def synthesize_tts(request: TTSRequest):
     else:
         metrics["predefined_voice_requests"] += 1
     
-    logger.info(f"✅ Safe-optimized TTS complete: {duration_ms:.0f}ms total, {result['chunks_sent']} chunks")
+    logger.info(f"✅ Conservative TTS complete: {duration_ms:.0f}ms total, {result['chunks_sent']} chunks")
     
     return TTSResponse(
         status="completed", 
@@ -466,6 +428,7 @@ async def health_check():
     livekit_connected = publisher.connected if publisher else False
     optimizations = {
         "cuda_opts_enabled": config.enable_cuda_opts,
+        "bfloat16_disabled": not config.use_bfloat16,
         "applied": streaming_engine.optimizations_applied if streaming_engine else [],
         "errors": metrics["optimization_errors"]
     }
@@ -516,7 +479,7 @@ async def root():
         "service": "june-tts", 
         "version": "2.1.0", 
         "engine": "chatterbox", 
-        "optimizations": "safe_cuda+bfloat16", 
+        "optimizations": "conservative_cuda_only", 
         "auth": "disabled",
         "livekit": "persistent_connection"
     }
