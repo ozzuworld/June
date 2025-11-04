@@ -1,71 +1,114 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[june-vast] Starting june-vast services without Tailscale"
+echo "================================================================"
+echo "June vast.ai Combined Services (STT + TTS with CosyVoice2)"
+echo "================================================================"
 
-# Use direct communication with orchestrator
+# Environment configuration
 export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
-
-mkdir -p /app/models /app/cache
-
-# Defaults
 export STT_PORT="${STT_PORT:-8001}"
 export TTS_PORT="${TTS_PORT:-8000}"
 export WHISPER_CACHE_DIR="${WHISPER_CACHE_DIR:-/app/models}"
-export TTS_HOME="${TTS_HOME:-/app/models}"
-export TTS_CACHE_PATH="${TTS_CACHE_PATH:-/app/cache}"
-export COQUI_TOS_AGREED="${COQUI_TOS_AGREED:-1}"
+export MODEL_DIR="${MODEL_DIR:-/app/pretrained_models}"
+export COSYVOICE_MODEL="${COSYVOICE_MODEL:-CosyVoice2-0.5B}"
 
-echo "[config] Using ORCHESTRATOR_URL: $ORCHESTRATOR_URL"
+echo "[config] ORCHESTRATOR_URL: $ORCHESTRATOR_URL"
+echo "[config] STT_PORT: $STT_PORT"
+echo "[config] TTS_PORT: $TTS_PORT"
+echo "[config] WHISPER_CACHE_DIR: $WHISPER_CACHE_DIR"
+echo "[config] MODEL_DIR: $MODEL_DIR"
 
-# Start STT (whisper)
+# Create necessary directories
+mkdir -p "$WHISPER_CACHE_DIR" "$MODEL_DIR" /app/cache
+
+# Check if CosyVoice2 model exists, download if not
+COSYVOICE_MODEL_PATH="$MODEL_DIR/$COSYVOICE_MODEL"
+if [ ! -d "$COSYVOICE_MODEL_PATH" ] || [ -z "$(ls -A "$COSYVOICE_MODEL_PATH" 2>/dev/null)" ]; then
+    echo "================================================================"
+    echo "[download] CosyVoice2 model not found, downloading..."
+    echo "================================================================"
+    
+    /venv-tts/bin/python /app/tts/download_models.py || {
+        echo "[error] Failed to download CosyVoice2 model"
+        exit 1
+    }
+else
+    echo "[info] CosyVoice2 model already exists at $COSYVOICE_MODEL_PATH"
+fi
+
+# Function to handle graceful shutdown
+cleanup() {
+    echo ""
+    echo "================================================================"
+    echo "[shutdown] Terminating services..."
+    echo "================================================================"
+    
+    # Send TERM signal to both processes
+    kill -TERM "$STT_PID" "$TTS_PID" 2>/dev/null || true
+    
+    # Wait for graceful shutdown (5 seconds)
+    sleep 5
+    
+    # Force kill if still running
+    kill -KILL "$STT_PID" "$TTS_PID" 2>/dev/null || true
+    
+    # Wait for processes to exit
+    wait "$STT_PID" "$TTS_PID" 2>/dev/null || true
+    
+    echo "[shutdown] Cleanup complete"
+    exit 0
+}
+
+# Set up signal handlers
+trap cleanup SIGINT SIGTERM
+
+# Start STT service
+echo "================================================================"
+echo "[stt] Starting Speech-to-Text service..."
+echo "================================================================"
 /venv-stt/bin/python /app/stt/main.py &
 STT_PID=$!
+echo "[stt] Started with PID: $STT_PID on port $STT_PORT"
 
-echo "[stt] started pid=$STT_PID on port ${STT_PORT}"
+# Wait a moment before starting TTS
+sleep 2
 
-# Start TTS (coqui/F5)
+# Start TTS service
+echo "================================================================"
+echo "[tts] Starting Text-to-Speech service (CosyVoice2)..."
+echo "================================================================"
 /venv-tts/bin/python /app/tts/main.py &
 TTS_PID=$!
+echo "[tts] Started with PID: $TTS_PID on port $TTS_PORT"
 
-echo "[tts] started pid=$TTS_PID on port ${TTS_PORT}"
+echo "================================================================"
+echo "Both services started successfully!"
+echo "================================================================"
+echo "STT: http://localhost:$STT_PORT"
+echo "TTS: http://localhost:$TTS_PORT"
+echo "================================================================"
 
-term() {
-  echo "[entrypoint] terminating services"
-  kill -TERM "$STT_PID" "$TTS_PID" 2>/dev/null || true
-  
-  # Give processes time to cleanup gracefully
-  sleep 2
-  
-  # Force kill if necessary
-  kill -KILL "$STT_PID" "$TTS_PID" 2>/dev/null || true
-  
-  wait "$STT_PID" "$TTS_PID" 2>/dev/null || true
-  
-  # Additional delay to ensure port release
-  sleep 1
-}
-trap term SIGINT SIGTERM
+# Monitor both services
+echo "[monitor] Monitoring services (press Ctrl+C to stop)..."
 
-# Wait indefinitely while both services are running
-# Only exit if both services fail
-echo "[monitor] Monitoring both services..."
 while true; do
-    # Check if both processes are still alive
+    # Check if STT process is still alive
     if ! kill -0 "$STT_PID" 2>/dev/null; then
-        echo "[error] STT process (PID: $STT_PID) has died"
-        break
+        echo ""
+        echo "[error] STT service (PID: $STT_PID) has died unexpectedly"
+        cleanup
+        exit 1
     fi
     
+    # Check if TTS process is still alive
     if ! kill -0 "$TTS_PID" 2>/dev/null; then
-        echo "[error] TTS process (PID: $TTS_PID) has died"
-        break
+        echo ""
+        echo "[error] TTS service (PID: $TTS_PID) has died unexpectedly"
+        cleanup
+        exit 1
     fi
     
-    # Both services are running, sleep and check again
+    # Sleep before next check
     sleep 5
 done
-
-echo "[monitor] One or both services have failed, initiating shutdown"
-term
-exit 1
