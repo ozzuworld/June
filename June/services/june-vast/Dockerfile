@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
     ca-certificates curl git wget \
     build-essential cmake \
-    libopenfst-dev libngram-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -45,8 +44,8 @@ RUN /venv-stt/bin/pip install "numpy<2.0" && \
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    # Install pynini first (CosyVoice requirement)
-    /venv-tts/bin/pip install pynini==2.1.5 && \
+    # Install pynini wheels (no system OpenFST required)
+    /venv-tts/bin/pip install --extra-index-url https://pypi.fury.io/kylebgorman/ pynini==2.1.5 && \
     # Install CosyVoice 2 dependencies
     /venv-tts/bin/pip install \
       modelscope==1.9.5 \
