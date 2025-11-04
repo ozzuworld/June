@@ -8,11 +8,11 @@ from config import config
 logger = logging.getLogger(__name__)
 
 async def get_livekit_token(identity: str, room_name: str = "ozzu-main", max_retries: int = 3) -> tuple[str, str]:
-    """Get LiveKit token with retry logic (updated payload + flexible path)"""
+    """Get LiveKit token with retry logic (updated payload + single known-good path)"""
     base = os.getenv("ORCHESTRATOR_URL", getattr(config, "ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080"))
 
-    # Try the new path first if orchestrator mounts with prefix, else fallback to /token
-    paths = ["/api/livekit/token", "/token"]
+    # Standardize on the working endpoint to avoid 404 noise and retries
+    paths = ["/token"]
 
     last_err = None
     for attempt in range(max_retries):
@@ -22,7 +22,6 @@ async def get_livekit_token(identity: str, room_name: str = "ozzu-main", max_ret
                 timeout = 5.0 + (attempt * 2.0)
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     logger.info(f"Getting LiveKit token from {url} (attempt {attempt + 1}/{max_retries})")
-                    # Updated payload expected by orchestrator
                     payload = {"roomName": room_name, "participantName": identity}
                     r = await client.post(url, json=payload)
                     r.raise_for_status()
@@ -34,7 +33,6 @@ async def get_livekit_token(identity: str, room_name: str = "ozzu-main", max_ret
             except Exception as e:
                 last_err = e
                 logger.warning(f"Token request failed at {url}: {e}")
-        # backoff between attempts
         if attempt < max_retries - 1:
             await asyncio.sleep(2.0 * (attempt + 1))
 
