@@ -1,8 +1,9 @@
 """TTS service client with Chatterbox integration and voice mode support (recommended API)
 
-This client calls the canonical TTS endpoint /api/tts/synthesize directly.
+This client calls the canonical TTS endpoint /api/tts/synthesize directly and includes service auth.
 """
 import logging
+import os
 import httpx
 from typing import Optional, Dict, Any
 
@@ -10,6 +11,8 @@ from ..config import config
 
 logger = logging.getLogger(__name__)
 
+# Read service-to-service auth token from env or config
+SERVICE_AUTH_TOKEN = os.getenv("SERVICE_AUTH_TOKEN", "")
 
 class TTSService:
     """TTS service client using the canonical /api/tts/synthesize endpoint"""
@@ -17,6 +20,12 @@ class TTSService:
     def __init__(self):
         self.base_url = config.services.tts_base_url
         self.timeout = 30.0
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if SERVICE_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {SERVICE_AUTH_TOKEN}"
+        return headers
 
     async def publish_to_room(
         self,
@@ -68,7 +77,9 @@ class TTSService:
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/tts/synthesize", json=payload
+                    f"{self.base_url}/api/tts/synthesize",
+                    json=payload,
+                    headers=self._headers(),
                 )
 
                 if response.status_code == 200:
@@ -89,7 +100,7 @@ class TTSService:
     async def list_voices(self) -> Optional[Dict[str, Any]]:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(f"{self.base_url}/api/voices")
+                resp = await client.get(f"{self.base_url}/api/voices", headers=self._headers())
                 if resp.status_code == 200:
                     return resp.json()
                 logger.error(f"list_voices error: {resp.status_code}")
@@ -101,7 +112,7 @@ class TTSService:
     async def health_check(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{self.base_url}/health")
+                resp = await client.get(f"{self.base_url}/health", headers=self._headers())
                 return resp.status_code == 200
         except Exception:
             return False
