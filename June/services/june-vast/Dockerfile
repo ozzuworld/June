@@ -1,5 +1,5 @@
-# June vast.ai combined STT+TTS image with CosyVoice2 (full features)
-FROM nvidia/cuda:12.3.2-cudnn9-devel-ubuntu22.04
+# June vast.ai combined STT+TTS image with CosyVoice2 (CUDA 12.4 aligned)
+FROM nvidia/cuda:12.4.1-cudnn9-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -52,14 +52,13 @@ RUN if [ -d /app/shared ]; then \
 COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
 COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
-# Install STT dependencies (Whisper)
-RUN /venv-stt/bin/pip install "numpy<2.0" && \
-    /venv-stt/bin/pip install \
-      torch==2.1.2 \
-      torchvision==0.16.2 \
-      torchaudio==2.1.2 \
-      --index-url https://download.pytorch.org/whl/cu121 && \
-    /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
+# Install STT dependencies (WhisperX with CUDA 12.4 cu124)
+RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-stt/bin/pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cu124 \
+      torch==2.8.0+cu124 \
+      torchaudio==2.8.0+cu124 && \
+    /venv-stt/bin/pip install --no-cache-dir -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
 # Clone CosyVoice repository with submodules
@@ -67,20 +66,20 @@ RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/Cosy
     cd /opt/CosyVoice && \
     git submodule update --init --recursive
 
-# Install TTS dependencies (CosyVoice2)
-RUN /venv-tts/bin/pip install "numpy<2.0" && \
-    /venv-tts/bin/pip install \
-      torch==2.2.2 \
-      torchvision==0.17.2 \
-      torchaudio==2.2.2 \
-      --index-url https://download.pytorch.org/whl/cu121 && \
+# Install TTS dependencies (CosyVoice2 with CUDA 12.4 cu124)
+RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
+    /venv-tts/bin/pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cu124 \
+      torch==2.8.0+cu124 \
+      torchvision==0.19.0+cu124 \
+      torchaudio==2.8.0+cu124 && \
     cd /opt/CosyVoice && \
-    /venv-tts/bin/pip install -r requirements.txt && \
-    /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
+    /venv-tts/bin/pip install --no-cache-dir -r requirements.txt && \
+    /venv-tts/bin/pip install --no-cache-dir -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
 # Add CosyVoice and conda environment to Python path
-ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:/opt/miniconda/envs/cosyvoice/lib/python3.10/site-packages:${PYTHONPATH}"
+ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:/opt/miniconda/envs/cosyvoice/lib/python3.10/site-packages"
 
 # Copy application code
 COPY June/services/june-stt/ /app/stt/
