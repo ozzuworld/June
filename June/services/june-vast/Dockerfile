@@ -1,18 +1,31 @@
 # June vast.ai combined STT+TTS image with CosyVoice 2 for ultra-low latency
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH
+# Prevent interactive prompts during build
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
 
 # Base system deps (both services + CosyVoice requirements)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
+    python3.10-dev cython3 pkg-config libsndfile1-dev \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
     ca-certificates curl git wget \
-    build-essential cmake \
+    build-essential cmake sox libsox-dev git-lfs unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Miniconda and configure conda-forge only (avoid defaults/ToS)
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/miniconda && \
+    rm /tmp/miniconda.sh
+ENV PATH="/opt/miniconda/bin:$PATH"
+RUN conda config --system --remove-key channels || true && \
+    conda config --system --add channels conda-forge && \
+    conda config --system --set channel_priority strict && \
+    conda clean -afy
 
 WORKDIR /app
 
@@ -44,8 +57,8 @@ RUN /venv-stt/bin/pip install "numpy<2.0" && \
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    # Install pynini wheels (no system OpenFST required)
-    /venv-tts/bin/pip install --extra-index-url https://pypi.fury.io/kylebgorman/ pynini==2.1.5 && \
+    # Install pynini via pip wheel that supports many Python versions (avoids conda solver pins)
+    /venv-tts/bin/pip install pynini==2.1.6.post1 && \
     # Install CosyVoice 2 dependencies
     /venv-tts/bin/pip install \
       modelscope==1.9.5 \
@@ -57,37 +70,38 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
       transformers==4.35.0 \
       onnx==1.16.0 \
       protobuf==3.20.3 && \
-    # Clone and install CosyVoice
-    git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /tmp/cosyvoice && \
-    /venv-tts/bin/pip install --no-deps -e /tmp/cosyvoice && \
-    # Install remaining TTS service deps
-    /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
-    rm -rf /root/.cache
+    # Clone CosyVoice (source usage; not a pip package)
+    git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
+    cd /opt/CosyVoice && git submodule update --init --recursive && \
+    # Install CosyVoice repo requirements (pyworld will build using headers above)
+    /venv-tts/bin/pip install -r requirements.txt && \
+    # Optional: ensure WeTextProcessing present
+    /venv-tts/bin/pip install WeTextProcessing==1.0.3 && \
+    true
 
-# Copy model download script
-COPY June/services/june-tts/download_models.py /app/download_models.py
+# Add CosyVoice source to PYTHONPATH for runtime imports
+ENV PYTHONPATH=/app:/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:${PYTHONPATH}
 
 # Copy application code
 COPY June/services/june-stt/ /app/stt/
 COPY June/services/june-tts/ /app/tts/
 
 # Runtime env with model paths
-ENV TTS_CACHE_PATH=/app/cache \
-    TTS_HOME=/app/models \
-    COSYVOICE_MODELS=/app/models/cosyvoice \
+ENV TTS_HOME=/app/models \
+    TTS_CACHE_PATH=/app/cache \
+    COSYVOICE_MODELS=/app/models/pretrained_models/CosyVoice2-0.5B \
     WHISPER_CACHE_DIR=/app/models \
     COQUI_TTS_AGREED=1 \
     STT_PORT=8001 \
-    TTS_PORT=8000 \
-    PYTHONPATH=/app
+    TTS_PORT=8000
 
-# Create model directories
-RUN mkdir -p /app/models/cosyvoice /app/voices /app/cache
+# Create model directories (download happens at runtime)
+RUN mkdir -p /app/models/pretrained_models /app/cache
 
 # Expose service ports
 EXPOSE 8000 8001
 
-# Add entrypoint script that downloads models and starts both services
+# Add entrypoint script that starts both services (models downloaded on first run)
 COPY June/services/june-vast/start-both.sh /app/start-both.sh
 RUN chmod +x /app/start-both.sh
 

@@ -33,7 +33,7 @@ async def get_livekit_token(
     
     base_url = os.getenv(
         "ORCHESTRATOR_URL",
-        "http://api.ozzu.world"
+        "http://june-orchestrator.june-services.svc.cluster.local:8080"
     )
     
     # Try multiple endpoints
