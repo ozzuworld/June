@@ -104,13 +104,20 @@ class WhisperXService:
             raise
     
     def _load_whisperx_model(self):
-        """Load WhisperX transcription model"""
+        """Load WhisperX transcription model with initial_prompt in asr_options"""
+        # Build asr_options with initial_prompt if accent optimization is enabled
+        asr_options = {}
+        if config.ACCENT_OPTIMIZATION and self.active_prompt:
+            asr_options["initial_prompt"] = self.active_prompt
+            logger.info(f"Using initial_prompt in asr_options: {self.active_prompt[:50]}...")
+        
         return whisperx.load_model(
             config.WHISPER_MODEL,
             device=self.device,
             compute_type=self.compute_type,
             download_root=config.WHISPER_CACHE_DIR,
-            language=config.DEFAULT_LANGUAGE if config.FORCE_LANGUAGE else None
+            language=config.DEFAULT_LANGUAGE if config.FORCE_LANGUAGE else None,
+            asr_options=asr_options if asr_options else None
         )
     
     def _load_alignment_model(self):
@@ -222,7 +229,7 @@ class WhisperXService:
         Features:
         - Word-level timestamps
         - Speaker diarization (optional)
-        - Accent optimization
+        - Accent optimization via asr_options
         - Silero VAD preprocessing
         """
         if not self.is_model_ready():
@@ -250,7 +257,6 @@ class WhisperXService:
                 
                 # Determine language
                 optimal_language = self._get_optimal_language(language)
-                initial_prompt = self._get_accent_prompt(optimal_language)
                 
                 # Load audio with WhisperX
                 loop = asyncio.get_event_loop()
@@ -260,15 +266,15 @@ class WhisperXService:
                     audio_path
                 )
                 
-                # Transcribe with WhisperX
+                # Transcribe with WhisperX (initial_prompt now handled in asr_options)
                 logger.debug("Running WhisperX transcription...")
                 result = await loop.run_in_executor(
                     None,
                     lambda: self.model.transcribe(
                         audio,
                         batch_size=config.BATCH_SIZE,
-                        language=optimal_language if config.FORCE_LANGUAGE else None,
-                        initial_prompt=initial_prompt if initial_prompt else None
+                        language=optimal_language if config.FORCE_LANGUAGE else None
+                        # Note: initial_prompt is now set in asr_options during model loading
                     )
                 )
                 
@@ -404,7 +410,9 @@ class WhisperXService:
         return config.DEFAULT_LANGUAGE
     
     def _get_accent_prompt(self, language: str) -> str:
-        """Get accent-optimized initial prompt"""
+        """Get accent-optimized initial prompt (now handled in asr_options)"""
+        # This method is kept for backward compatibility but initial_prompt
+        # is now set in asr_options during model loading
         if not config.ACCENT_OPTIMIZATION:
             return ""
             
@@ -414,10 +422,11 @@ class WhisperXService:
         return ""
     
     def set_accent_mode(self, mode: str = "latin"):
-        """Set accent optimization mode"""
+        """Set accent optimization mode (requires model reload to take effect)"""
         if mode in self.accent_prompts:
             self.active_prompt = self.accent_prompts[mode]
-            logger.info(f"Accent mode set to '{mode}'")
+            logger.info(f"Accent mode set to '{mode}' - model reload required for changes to take effect")
+            logger.warning("Note: To apply new accent prompt, the model needs to be reloaded")
         else:
             logger.warning(f"Unknown accent mode '{mode}', available: {list(self.accent_prompts.keys())}")
     
@@ -441,6 +450,7 @@ class WhisperXService:
                 "speaker_diarization": self.diarize_model is not None,
                 "silero_vad_preprocessing": self.vad_model is not None,
                 "accent_optimization": config.ACCENT_OPTIMIZATION,
+                "initial_prompt_in_asr_options": True,  # New approach
             },
             "language_forcing": config.FORCE_LANGUAGE,
             "default_language": config.DEFAULT_LANGUAGE,
