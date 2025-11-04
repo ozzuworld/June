@@ -28,7 +28,12 @@ RUN conda config --system --remove-key channels || true && \
 
 WORKDIR /app
 
-# Create separate virtual environments
+# Create conda environment with Python 3.10 for CosyVoice dependencies
+RUN conda create -n cosyvoice python=3.10 -y && \
+    conda run -n cosyvoice conda install -y -c conda-forge pynini==2.1.5 && \
+    conda clean -afy
+
+# Create separate virtual environments for STT and TTS
 RUN python3.10 -m venv /venv-stt && \
     python3.10 -m venv /venv-tts
 
@@ -57,16 +62,12 @@ RUN /venv-stt/bin/pip install "numpy<2.0" && \
     /venv-stt/bin/pip install -r /tmp/stt-requirements.txt && \
     rm -rf /root/.cache
 
-# Install pynini via conda (required by CosyVoice WeTextProcessing)
-RUN conda install -y -c conda-forge pynini==2.1.5 && \
-    conda clean -afy
-
 # Clone CosyVoice repository with submodules
 RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
     cd /opt/CosyVoice && \
     git submodule update --init --recursive
 
-# Install TTS dependencies (CosyVoice2)
+# Install TTS dependencies (CosyVoice2) - use conda environment for Python path
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install \
       torch==2.2.2 \
@@ -78,8 +79,8 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
-# Add CosyVoice to Python path
-ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:${PYTHONPATH}"
+# Add CosyVoice and conda environment to Python path
+ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:/opt/miniconda/envs/cosyvoice/lib/python3.10/site-packages:${PYTHONPATH}"
 
 # Copy application code
 COPY June/services/june-stt/ /app/stt/
