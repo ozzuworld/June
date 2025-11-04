@@ -5,8 +5,9 @@ livekit==0.11.1
 
 # WhisperX and dependencies
 whisperx @ git+https://github.com/m-bain/whisperX.git
-torch>=2.0.0,<2.2.0
-torchaudio>=2.0.0
+# Align with WhisperX 3.7.4 requirements
+torch~=2.8.0
+torchaudio~=2.8.0
 transformers>=4.30.0
 
 # Audio processing
@@ -17,7 +18,6 @@ numpy>=2.0.0,<2.1.0  # Updated to match WhisperX requirements
 
 # Additional WhisperX requirements
 pyannote.audio>=3.3.0  # Updated for numpy 2.0 compatibility
-# Use faster-whisper per WhisperX 3.7.4 requirement
 faster-whisper>=1.1.1
 ctranslate2>=3.24.0
 
