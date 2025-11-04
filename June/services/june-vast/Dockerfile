@@ -1,18 +1,26 @@
 # June vast.ai combined STT+TTS image with CosyVoice 2 for ultra-low latency
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    CUDA_HOME=/usr/local/cuda \
-    PATH=/usr/local/cuda/bin:$PATH
+# Prevent interactive prompts during build
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
 
 # Base system deps (both services + CosyVoice requirements)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-venv python3-pip \
     ffmpeg espeak-ng libsndfile1 libportaudio2 \
     ca-certificates curl git wget \
-    build-essential cmake \
+    build-essential cmake sox libsox-dev git-lfs unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install miniconda for conda-forge pynini installation
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/miniconda && \
+    rm /tmp/miniconda.sh
+ENV PATH="/opt/miniconda/bin:$PATH"
 
 WORKDIR /app
 
@@ -44,8 +52,8 @@ RUN /venv-stt/bin/pip install "numpy<2.0" && \
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    # Install pynini wheels (no system OpenFST required)
-    /venv-tts/bin/pip install --extra-index-url https://pypi.fury.io/kylebgorman/ pynini==2.1.5 && \
+    # Install pynini from conda-forge to avoid authentication issues
+    conda install -y -c conda-forge pynini=2.1.5 && \
     # Install CosyVoice 2 dependencies
     /venv-tts/bin/pip install \
       modelscope==1.9.5 \
@@ -57,12 +65,15 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
       transformers==4.35.0 \
       onnx==1.16.0 \
       protobuf==3.20.3 && \
-    # Clone and install CosyVoice
+    # Clone and install CosyVoice with proper submodule initialization
     git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /tmp/cosyvoice && \
-    /venv-tts/bin/pip install --no-deps -e /tmp/cosyvoice && \
+    cd /tmp/cosyvoice && \
+    git submodule update --init --recursive && \
+    /venv-tts/bin/pip install --no-deps -e . && \
     # Install remaining TTS service deps
     /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
-    rm -rf /root/.cache
+    # Clean up
+    rm -rf /root/.cache /tmp/cosyvoice
 
 # Copy model download script
 COPY June/services/june-tts/download_models.py /app/download_models.py
