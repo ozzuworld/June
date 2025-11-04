@@ -1,29 +1,26 @@
-# June STT Service - WhisperX Enhanced Dependencies
+# June STT Service - WhisperX Enhanced Dependencies (CUDA 12.4/cu124 aligned)
 fastapi==0.104.1
 uvicorn==0.24.0
 livekit==0.11.1
 
 # WhisperX and dependencies
 whisperx @ git+https://github.com/m-bain/whisperX.git
-# Align with WhisperX 3.7.4 requirements
-torch~=2.8.0
-torchaudio~=2.8.0
+# Pin torch/torchaudio to CUDA 12.4 wheels (installed via PyTorch cu124 index)
+torch==2.8.0+cu124
+torchaudio==2.8.0+cu124
 transformers>=4.30.0
 
 # Audio processing
 soundfile==0.12.1
 scipy>=1.13.0  # NumPy 2.x compatible
 librosa>=0.10.0
-numpy>=2.0.0,<2.1.0  # Updated to match WhisperX requirements
+numpy>=2.0.0,<2.1.0
 
 # Additional WhisperX requirements
-pyannote.audio>=3.3.0  # Updated for numpy 2.0 compatibility
+pyannote.audio>=3.3.0
 faster-whisper>=1.1.1
 ctranslate2>=3.24.0
 
 # Service integration
 httpx==0.25.2
 python_multipart
-
-# Optional: GPU acceleration
-# nvidia-ml-py3  # For GPU monitoring
