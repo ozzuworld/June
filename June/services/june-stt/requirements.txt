@@ -17,7 +17,8 @@ numpy>=2.0.0,<2.1.0  # Updated to match WhisperX requirements
 
 # Additional WhisperX requirements
 pyannote.audio>=3.3.0  # Updated for numpy 2.0 compatibility
-faster-whisper>=0.10.0,<1.1.0  # Pin to avoid recent breaking changes
+# Use faster-whisper per WhisperX 3.7.4 requirement
+faster-whisper>=1.1.1
 ctranslate2>=3.24.0
 
 # Service integration
