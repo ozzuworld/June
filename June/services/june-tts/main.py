@@ -206,13 +206,15 @@ class PersistentLiveKitPublisher:
         async with self.room_locks[room_name]:
             if room_name in self.rooms:
                 room = self.rooms[room_name]
-                # Check if connection is still alive
-                if room.connection_state == rtc.ConnectionState.CONNECTED:
-                    return room
-                else:
-                    # Reconnect if disconnected
-                    logger.info(f"🔄 Reconnecting to room {room_name}")
-                    del self.rooms[room_name]
+                # Correct Python SDK connectivity check
+                try:
+                    if room.isconnected():
+                        return room
+                except Exception:
+                    pass
+                # Reconnect if disconnected
+                logger.info(f"🔄 Reconnecting to room {room_name}")
+                del self.rooms[room_name]
             
             # Create new connection
             logger.info(f"🔗 Connecting TTS to LiveKit room: {room_name}")
@@ -260,7 +262,7 @@ class PersistentLiveKitPublisher:
         return {
             "connected_rooms": len(self.rooms),
             "rooms": {
-                name: room.connection_state.name 
+                name: ("connected" if (hasattr(room, "isconnected") and room.isconnected()) else "disconnected")
                 for name, room in self.rooms.items()
             },
             "publisher_ready": self.connected
