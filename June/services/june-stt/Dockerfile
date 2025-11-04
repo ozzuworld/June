@@ -1,7 +1,8 @@
 # WhisperX Enhanced June STT Service
 # Multi-stage build for optimized WhisperX deployment
 
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS runtime
+# Switch to CUDA 12.x with cuDNN 9 runtime to match torch/torchaudio 2.8.x wheels
+FROM nvidia/cuda:12.4.1-cudnn9-runtime-ubuntu22.04 AS runtime
 
 # Environment setup
 ENV DEBIAN_FRONTEND=noninteractive
