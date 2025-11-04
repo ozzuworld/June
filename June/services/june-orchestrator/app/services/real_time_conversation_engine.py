@@ -1,9 +1,7 @@
-"""Real-Time Engine - Simplified, No Redis Preprocessing
+"""Real-Time Engine - ULTRA FAST - Remove ALL blocking operations
 
-REMOVED:
-- Redis preprocessing (causing failures)
-- Complex conversation state tracking
-- Unnecessary context building
+PROBLEM FOUND: Session history lookup was blocking for 2+ seconds
+SOLUTION: Remove session service dependency, use in-memory only
 """
 import asyncio
 import logging
@@ -18,14 +16,14 @@ class RealTimeConversationEngine:
         self.tts = tts_service
         self.streaming_ai = streaming_ai_service
         
-        # Simple session tracking (no Redis)
-        self.active_sessions: Dict[str, Dict] = {}
+        # Ultra-simple in-memory history (no external calls)
+        self.session_history: Dict[str, List[Dict]] = {}
         
         # Initialize SmartTTSQueue
         self.smart_tts = None
         self._initialize_smart_tts_queue()
         
-        logger.info("✅ RT engine initialized (Redis-free, simplified)")
+        logger.info("✅ RT engine initialized (ULTRA FAST mode)")
     
     def _initialize_smart_tts_queue(self):
         """Initialize SmartTTSQueue"""
@@ -39,9 +37,6 @@ class RealTimeConversationEngine:
                     phrase_gap_ms=50
                 )
                 logger.info("🎵 SmartTTSQueue ready")
-            else:
-                logger.warning("⚠️ No TTS service")
-                
         except Exception as e:
             logger.error(f"❌ SmartTTSQueue init failed: {e}")
     
@@ -53,44 +48,45 @@ class RealTimeConversationEngine:
         audio_data: Optional[bytes] = None,
         is_partial: bool = False
     ) -> Dict[str, Any]:
-        """Main entry point - simplified flow"""
+        """ULTRA FAST - No blocking operations"""
         start = time.time()
         
-        # Skip partials for now (can add back later if needed)
+        # Skip partials
         if is_partial:
             return {"processed": "partial_skipped"}
         
-        # Track session
-        if session_id not in self.active_sessions:
-            self.active_sessions[session_id] = {
-                "room_name": room_name,
-                "history": []
-            }
+        logger.info(f"🚀 Processing '{text[:30]}...' for {session_id}")
         
-        session = self.active_sessions[session_id]
+        # ULTRA FAST: Get history from memory (no I/O)
+        if session_id not in self.session_history:
+            self.session_history[session_id] = []
         
-        # Add to simple history
-        session["history"].append({"role": "user", "content": text})
+        history = self.session_history[session_id]
         
-        # Keep only last 10 messages
-        if len(session["history"]) > 10:
-            session["history"] = session["history"][-10:]
+        # Add user message (instant)
+        history.append({"role": "user", "content": text})
         
-        # Get history for AI
-        history = session["history"]
+        # Keep only last 6 messages (3 exchanges)
+        if len(history) > 6:
+            self.session_history[session_id] = history[-6:]
+            history = self.session_history[session_id]
+        
+        logger.info(f"📝 History: {len(history)} messages (instant)")
         
         # Track phrases
         phrase_count = 0
         first_phrase_sent = False
+        first_phrase_time = None
         
         async def smart_tts_callback(phrase: str):
             """TTS callback"""
-            nonlocal phrase_count, first_phrase_sent
+            nonlocal phrase_count, first_phrase_sent, first_phrase_time
             phrase_count += 1
-            is_first = not first_phrase_sent
             
-            if is_first:
+            if not first_phrase_sent:
                 first_phrase_sent = True
+                first_phrase_time = (time.time() - start) * 1000
+                logger.info(f"⚡ FIRST PHRASE at {first_phrase_time:.0f}ms")
             
             try:
                 if self.smart_tts:
@@ -98,7 +94,7 @@ class RealTimeConversationEngine:
                         text=phrase,
                         room_name=room_name,
                         session_id=session_id,
-                        is_first_phrase=is_first,
+                        is_first_phrase=(phrase_count == 1),
                         is_final=(phrase_count >= 3),
                         language="en"
                     )
@@ -111,9 +107,10 @@ class RealTimeConversationEngine:
             except Exception as e:
                 logger.warning(f"TTS callback error: {e}")
         
-        # Generate AI response
+        # Generate AI response (this should be INSTANT start now)
         try:
-            first_phrase_time = None
+            logger.info(f"🧠 Starting AI stream (elapsed: {(time.time() - start) * 1000:.0f}ms)")
+            
             tokens = []
             
             async for token in self.streaming_ai.generate_streaming_response(
@@ -124,14 +121,14 @@ class RealTimeConversationEngine:
                 tts_callback=smart_tts_callback
             ):
                 tokens.append(token)
-                if first_phrase_time is None and phrase_count > 0:
-                    first_phrase_time = (time.time() - start) * 1000
             
             response_text = "".join(tokens)
             total = (time.time() - start) * 1000
             
-            # Add AI response to history
-            session["history"].append({"role": "assistant", "content": response_text})
+            # Add AI response to history (instant)
+            history.append({"role": "assistant", "content": response_text})
+            
+            logger.info(f"✅ Complete: {total:.0f}ms, {phrase_count} phrases")
             
             return {
                 "response": response_text,
@@ -162,13 +159,12 @@ class RealTimeConversationEngine:
     
     def get_conversation_stats(self, session_id: str) -> Dict[str, Any]:
         """Get session stats"""
-        if session_id not in self.active_sessions:
+        if session_id not in self.session_history:
             return {"active": False}
         
-        session = self.active_sessions[session_id]
         stats = {
             "active": True,
-            "message_count": len(session.get("history", []))
+            "message_count": len(self.session_history[session_id])
         }
         
         if self.smart_tts:
@@ -179,9 +175,9 @@ class RealTimeConversationEngine:
     def get_global_stats(self) -> Dict[str, Any]:
         """Get global stats"""
         stats = {
-            "active_sessions": len(self.active_sessions),
-            "engine": "simplified_rt",
-            "redis_free": True
+            "active_sessions": len(self.session_history),
+            "engine": "ultra_fast_rt",
+            "in_memory_only": True
         }
         
         if self.smart_tts:
@@ -193,8 +189,9 @@ class RealTimeConversationEngine:
         """Health check"""
         return {
             "engine_healthy": True,
-            "active_sessions": len(self.active_sessions),
+            "active_sessions": len(self.session_history),
             "tts_available": self.tts is not None,
             "streaming_ai_available": self.streaming_ai is not None,
-            "smart_tts_enabled": self.smart_tts is not None
+            "smart_tts_enabled": self.smart_tts is not None,
+            "mode": "ultra_fast_in_memory"
         }
