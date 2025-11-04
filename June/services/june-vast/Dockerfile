@@ -21,7 +21,6 @@ RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.s
     bash /tmp/miniconda.sh -b -p /opt/miniconda && \
     rm /tmp/miniconda.sh
 ENV PATH="/opt/miniconda/bin:$PATH"
-# Remove defaults channel to avoid ToS; use conda-forge only with strict priority
 RUN conda config --system --remove-key channels || true && \
     conda config --system --add channels conda-forge && \
     conda config --system --set channel_priority strict && \
@@ -57,8 +56,8 @@ RUN /venv-stt/bin/pip install "numpy<2.0" && \
 RUN /venv-tts/bin/pip install "numpy<2.0" && \
     /venv-tts/bin/pip install torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 \
       --index-url https://download.pytorch.org/whl/cu121 && \
-    # Install pynini from conda-forge to avoid authentication issues and ToS prompts
-    conda install -y -c conda-forge pynini=2.1.5 && \
+    # Install pynini via pip wheel that supports many Python versions (avoids conda solver pins)
+    /venv-tts/bin/pip install pynini==2.1.6.post1 && \
     # Install CosyVoice 2 dependencies
     /venv-tts/bin/pip install \
       modelscope==1.9.5 \
