@@ -72,7 +72,7 @@ class UtteranceState:
         self.partial_sequence = 0
         self.utterance_id = str(uuid.uuid4())
 
-def _ensure_utterance_state(pid: str) -> UtteranceState:
+def _ensure_utterance_state(pid: str) -> 'UtteranceState':
     if pid not in utterance_states:
         utterance_states[pid] = UtteranceState()
     return utterance_states[pid]
@@ -146,6 +146,9 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str],
     except Exception:
         orchestrator_available = False
 
+# First-frame seen set for per-participant logging
+_first_frame_seen = set()
+
 def _frame_to_float32_mono(frame: rtc.AudioFrame):
     sr = frame.sample_rate
     ch = frame.num_channels
@@ -206,9 +209,12 @@ async def _continuous_partial_processor(pid: str, state: UtteranceState, streame
                                         partial_audio = np.concatenate(recent_frames, axis=0)
                                         min_samples = int(first_partial_threshold / 1000 * SAMPLE_RATE)
                                         
+                                        logger.debug(f"[PARTIAL] try pid={pid} first_sent={state.first_partial_sent} buf_frames={len(state.buffer)}")
+                                        
                                         if len(partial_audio) >= min_samples:
                                             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
                                                 sf.write(tmp.name, partial_audio, SAMPLE_RATE, subtype='PCM_16')
+                                                logger.info(f"[PARTIAL] transcribe pid={pid} samples={len(partial_audio)}")
                                                 res = await whisper_service.transcribe(tmp.name, language=None)
                                             
                                             partial_text = res.get("text", "").strip()
@@ -230,6 +236,7 @@ async def _continuous_partial_processor(pid: str, state: UtteranceState, streame
                                                 state.last_partial_sent_at = now
                                                 state.first_partial_sent = True
                                                 streaming_metrics.record_partial(0)
+                                                logger.info(f"[PARTIAL] emit pid={pid} seq={state.partial_sequence} text='{partial_text[:60]}'")
                                     
                                     except Exception:
                                         pass
@@ -257,14 +264,18 @@ async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray, utteran
         return
         
     try:
+        logger.info(f"[FINAL] transcribe pid={pid} samples={len(audio)} (pre-VAD check)")
         if not whisper_service.has_speech_content(audio, SAMPLE_RATE):
+            logger.info(f"[FINAL] skipped by VAD pid={pid}")
             return
             
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
             sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
+            logger.info(f"[FINAL] calling whisperx pid={pid}")
             res = await whisper_service.transcribe(tmp.name, language=None)
             
         text = res.get("text", "").strip()
+        logger.info(f"[FINAL] result pid={pid} len={len(text)} text='{text[:80]}'")
         
         if text and len(text) > 1:
             filtered_words = {"you", "you.", "uh", "um", "mm", "hmm", "yeah", "mhm", "ah", "oh"}
@@ -293,7 +304,7 @@ async def _process_utterances_with_streaming():
             
             for pid in participants_to_process:
                 try:
-                    if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
+                    if pid in EXCLUDE_PARTICIPANTS:
                         continue
                     
                     state = _ensure_utterance_state(pid)
@@ -306,6 +317,7 @@ async def _process_utterances_with_streaming():
                             now = datetime.utcnow()
                             
                             if not state.is_active:
+                                logger.info(f"[UTT] start pid={pid} buffer_frames=1")
                                 state.is_active = True
                                 state.started_at = now
                                 state.last_audio_at = now
@@ -342,6 +354,8 @@ async def _process_utterances_with_streaming():
                                 )
                                 
                                 if should_end:
+                                    logger.info(f"[UTT] end pid={pid} dur={duration:.2f}s silence={silence_duration:.2f}s samples={state.total_samples} frames={len(state.buffer)}")
+                                    
                                     if pid in partial_streaming_tasks:
                                         partial_streaming_tasks[pid].cancel()
                                         try:
@@ -371,22 +385,33 @@ async def _process_utterances_with_streaming():
         await asyncio.sleep(PROCESS_SLEEP_SEC)
 
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
-    if pid in EXCLUDE_PARTICIPANTS or "tts" in pid.lower() or "stt" in pid.lower():
+    if pid in EXCLUDE_PARTICIPANTS:
         return
     try:
         pcm, sr = _frame_to_float32_mono(frame)
         pcm16k = _resample_to_16k_mono(pcm, sr)
+        if pid not in _first_frame_seen:
+            logger.info(f"[AUDIO] first converted frame pid={pid} in_sr={sr} out_sr=16000 samples={len(pcm16k)}")
+            _first_frame_seen.add(pid)
         _ensure_buffer(pid).append(pcm16k)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"[AUDIO] frame error pid={pid}: {e}", exc_info=False)
 
 def setup_room_callbacks(room: rtc.Room):
     @room.on("participant_connected")
     def _p_join(p):
-        logger.info(f"Participant joined: {p.identity}")
+        logger.info(f"[LK] participant_connected id={getattr(p, 'sid', 'n/a')} ident={p.identity} tracks={len(getattr(p, 'tracks', []))}")
         if p.identity not in EXCLUDE_PARTICIPANTS:
             _ensure_utterance_state(p.identity)
             _ensure_buffer(p.identity)
+
+    @room.on("track_published")
+    def _track_pub(pub, participant):
+        try:
+            kind = getattr(pub, "kind", None) or getattr(pub, "track", {}).get("kind")
+        except Exception:
+            kind = "unknown"
+        logger.info(f"[LK] track_published kind={kind} pub_sid={getattr(pub, 'sid', 'n/a')} participant={participant.identity}")
 
     @room.on("participant_disconnected")
     def _p_leave(p):
@@ -403,18 +428,25 @@ def setup_room_callbacks(room: rtc.Room):
 
     @room.on("track_subscribed")
     def _track_sub(track: rtc.Track, pub, participant):
+        logger.info(f"[LK] track_subscribed kind={track.kind} track_sid={getattr(track, 'sid', 'n/a')} participant={participant.identity}")
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
         pid = participant.identity or participant.sid
         if pid in EXCLUDE_PARTICIPANTS:
+            logger.info(f"[LK] skipping excluded participant pid={pid}")
             return
         
         _ensure_utterance_state(pid)
         _ensure_buffer(pid)
         
         stream = rtc.AudioStream(track)
+        first_frame = {"seen": False}
         async def consume():
+            logger.info(f"[LK] consuming audio frames pid={pid} track_sid={getattr(track, 'sid', 'n/a')}")
             async for event in stream:
+                if not first_frame["seen"]:
+                    logger.info(f"[LK] first frame recv pid={pid} sr={event.frame.sample_rate} ch={event.frame.num_channels} len={len(event.frame.data)}")
+                    first_frame["seen"] = True
                 await _on_audio_frame(pid, event.frame)
         asyncio.create_task(consume())
 
