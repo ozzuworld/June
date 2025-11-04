@@ -69,32 +69,45 @@ RUN /venv-tts/bin/pip install "numpy<2.0" && \
       transformers==4.35.0 \
       onnx==1.16.0 \
       protobuf==3.20.3 && \
-    # Clone and install CosyVoice with proper submodule initialization
-    git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /tmp/cosyvoice && \
-    cd /tmp/cosyvoice && \
-    git submodule update --init --recursive && \
-    /venv-tts/bin/pip install --no-deps -e . && \
-    # Install remaining TTS service deps
-    /venv-tts/bin/pip install -r /tmp/tts-requirements.txt && \
-    # Clean up
-    rm -rf /root/.cache /tmp/cosyvoice
+    # Clone CosyVoice (source usage; not a pip package)
+    git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
+    cd /opt/CosyVoice && git submodule update --init --recursive && \
+    # Install CosyVoice repo requirements
+    /venv-tts/bin/pip install -r requirements.txt && \
+    # Optional: ensure WeTextProcessing present
+    /venv-tts/bin/pip install WeTextProcessing==1.0.3 && \
+    true
 
-# Copy model download script
-COPY June/services/june-tts/download_models.py /app/download_models.py
+# Bake pretrained models into the image (ModelScope snapshot_download)
+ENV COSYVOICE_MODELS=/app/models/cosyvoice \
+    TTS_HOME=/app/models \
+    TTS_CACHE_PATH=/app/cache
+RUN mkdir -p /app/models/pretrained_models /app/cache && \
+    /venv-tts/bin/python - << 'PY'
+from modelscope import snapshot_download
+import os
+pairs = [
+    ('iic/CosyVoice2-0.5B', 'CosyVoice2-0.5B'),
+]
+os.makedirs('/app/models/pretrained_models', exist_ok=True)
+for repo, name in pairs:
+    local_dir = f'/app/models/pretrained_models/{name}'
+    if not os.path.exists(local_dir):
+        snapshot_download(repo, local_dir=local_dir)
+PY
+
+# Add CosyVoice source to PYTHONPATH for runtime imports
+ENV PYTHONPATH=/app:/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:$PYTHONPATH
 
 # Copy application code
 COPY June/services/june-stt/ /app/stt/
 COPY June/services/june-tts/ /app/tts/
 
 # Runtime env with model paths
-ENV TTS_CACHE_PATH=/app/cache \
-    TTS_HOME=/app/models \
-    COSYVOICE_MODELS=/app/models/cosyvoice \
-    WHISPER_CACHE_DIR=/app/models \
+ENV WHISPER_CACHE_DIR=/app/models \
     COQUI_TTS_AGREED=1 \
     STT_PORT=8001 \
-    TTS_PORT=8000 \
-    PYTHONPATH=/app
+    TTS_PORT=8000
 
 # Create model directories
 RUN mkdir -p /app/models/cosyvoice /app/voices /app/cache
