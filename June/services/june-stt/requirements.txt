@@ -5,9 +5,9 @@ livekit==0.11.1
 
 # WhisperX and dependencies
 whisperx @ git+https://github.com/m-bain/whisperX.git
-# Pin torch/torchaudio to CUDA 12.4 wheels (installed via PyTorch cu124 index)
-torch==2.8.0+cu124
-torchaudio==2.8.0+cu124
+# Pin torch/torchaudio to CUDA 12.4 wheels
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
 transformers>=4.30.0
 
 # Audio processing
