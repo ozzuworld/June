@@ -19,6 +19,22 @@ echo "[config] TTS_PORT: $TTS_PORT"
 echo "[config] WHISPER_CACHE_DIR: $WHISPER_CACHE_DIR"
 echo "[config] MODEL_DIR: $MODEL_DIR"
 
+# Verify CUDA/cuDNN libraries
+echo "================================================================"
+echo "[cuda] Verifying CUDA installation..."
+echo "================================================================"
+if command -v nvidia-smi &> /dev/null; then
+    nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+else
+    echo "[warning] nvidia-smi not available"
+fi
+
+# Check cuDNN
+echo ""
+echo "[cudnn] Checking cuDNN libraries..."
+ldconfig -p | grep cudnn || echo "[warning] cuDNN libraries not found in ldconfig"
+ls -la /usr/local/cuda/lib64/libcudnn* 2>/dev/null || echo "[warning] cuDNN not found in CUDA lib64"
+
 # Create necessary directories
 mkdir -p "$WHISPER_CACHE_DIR" "$MODEL_DIR" /app/cache
 
@@ -29,7 +45,7 @@ if [ ! -d "$COSYVOICE_MODEL_PATH" ] || [ -z "$(ls -A "$COSYVOICE_MODEL_PATH" 2>/
     echo "[download] CosyVoice2 model not found, downloading..."
     echo "================================================================"
     
-    /venv-tts/bin/python /app/tts/download_models.py || {
+    /venv/bin/python /app/tts/download_models.py || {
         echo "[error] Failed to download CosyVoice2 model"
         exit 1
     }
@@ -67,7 +83,7 @@ trap cleanup SIGINT SIGTERM
 echo "================================================================"
 echo "[stt] Starting Speech-to-Text service..."
 echo "================================================================"
-/venv-stt/bin/python /app/stt/main.py &
+/venv/bin/python /app/stt/main.py &
 STT_PID=$!
 echo "[stt] Started with PID: $STT_PID on port $STT_PORT"
 
@@ -78,7 +94,7 @@ sleep 2
 echo "================================================================"
 echo "[tts] Starting Text-to-Speech service (CosyVoice2)..."
 echo "================================================================"
-/venv-tts/bin/python /app/tts/main.py &
+/venv/bin/python /app/tts/main.py &
 TTS_PID=$!
 echo "[tts] Started with PID: $TTS_PID on port $TTS_PORT"
 

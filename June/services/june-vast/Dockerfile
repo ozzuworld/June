@@ -1,11 +1,12 @@
 # June vast.ai combined STT+TTS image with CosyVoice2 (CUDA 12.4 aligned)
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn9-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,42 +31,56 @@ RUN conda create -n cosyvoice python=3.10 -y && \
     conda run -n cosyvoice conda install -y -c conda-forge pynini==2.1.5 && \
     conda clean -afy
 
-# Separate venvs
-RUN python3.10 -m venv /venv-stt && \
-    python3.10 -m venv /venv-tts
+# Create single shared venv for both services (to ensure torch compatibility)
+RUN python3.10 -m venv /venv
+
+# Install PyTorch stack FIRST for both services (CUDA 12.4 + cuDNN 9)
+RUN /venv/bin/pip install --upgrade pip setuptools wheel && \
+    /venv/bin/pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cu124 \
+      torch==2.6.0+cu124 \
+      torchvision==0.21.0+cu124 \
+      torchaudio==2.6.0+cu124
 
 # Shared module
 COPY June/services/shared/ /app/shared/
 RUN if [ -d /app/shared ]; then \
-      /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
-      /venv-stt/bin/pip install -e /app/shared && \
-      /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
-      /venv-tts/bin/pip install -e /app/shared ; \
+      /venv/bin/pip install -e /app/shared ; \
     fi
 
-# Requirements
+# Copy requirements
 COPY June/services/june-stt/requirements.txt /tmp/stt-requirements.txt
 COPY June/services/june-tts/requirements.txt /tmp/tts-requirements.txt
 
-# STT: let WhisperX control torch version (Solution A)
-RUN /venv-stt/bin/pip install --upgrade pip setuptools wheel && \
-    /venv-stt/bin/pip install --no-cache-dir -r /tmp/stt-requirements.txt && \
+# Install STT dependencies (without torch - already installed)
+RUN /venv/bin/pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn==0.24.0 \
+    livekit==0.11.1 \
+    transformers>=4.30.0 \
+    soundfile==0.12.1 \
+    scipy>=1.13.0 \
+    librosa>=0.10.0 \
+    numpy>=2.0.0,<2.1.0 \
+    pyannote.audio>=3.3.0 \
+    faster-whisper>=1.1.1 \
+    httpx==0.25.2 \
+    python_multipart && \
+    rm -rf /root/.cache
+
+# Install WhisperX (it will use existing torch installation)
+RUN /venv/bin/pip install --no-cache-dir \
+    git+https://github.com/m-bain/whisperX.git && \
     rm -rf /root/.cache
 
 # CosyVoice checkout
 RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
     cd /opt/CosyVoice && git submodule update --init --recursive
 
-# TTS: install torch/cu124 stack
-RUN /venv-tts/bin/pip install --upgrade pip setuptools wheel && \
-    /venv-tts/bin/pip install --no-cache-dir \
-      --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.6.0+cu124 \
-      torchvision==0.21.0+cu124 \
-      torchaudio==2.6.0+cu124 && \
-    cd /opt/CosyVoice && \
-    /venv-tts/bin/pip install --no-cache-dir -r requirements.txt && \
-    /venv-tts/bin/pip install --no-cache-dir -r /tmp/tts-requirements.txt && \
+# Install CosyVoice + TTS dependencies (torch already installed)
+RUN cd /opt/CosyVoice && \
+    /venv/bin/pip install --no-cache-dir -r requirements.txt && \
+    /venv/bin/pip install --no-cache-dir -r /tmp/tts-requirements.txt && \
     rm -rf /root/.cache
 
 # PYTHONPATH for CosyVoice + conda
