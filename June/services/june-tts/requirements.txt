@@ -1,5 +1,5 @@
-# June TTS Service - Minimal TTS-only dependencies
-# Remove STT/ASR stack (WhisperX/faster-whisper/pyannote) since this is a TTS service
+# June TTS Service - CosyVoice2 Dependencies
+# TTS-only stack with CosyVoice2 engine
 
 # Web Framework
 fastapi==0.104.1
@@ -7,14 +7,10 @@ uvicorn==0.24.0
 python-multipart
 httpx==0.25.2
 
-# LiveKit Integration (if used by TTS streaming)
+# LiveKit Integration
 livekit==0.11.1
 
-# Core ML/TTS deps (adjust to your engine; keep only what june-tts actually uses)
-# Torch is installed via Dockerfile with CUDA wheels
-# torchaudio used for audio I/O and saving
-# transformers only if your TTS model or tokenizer needs it
-# Remove if unused to slim image
+# Core ML/TTS dependencies
 transformers>=4.30.0,<5.0.0
 
 # Audio Processing
@@ -23,8 +19,14 @@ scipy>=1.11.0,<2.0.0
 librosa>=0.10.0,<1.0.0
 numpy>=1.24.0,<2.0.0
 
-# NOTE:
-# - Removed whisperx and faster-whisper to avoid PyAV/FFmpeg-dev/Cython complications.
-# - Removed pyannote.audio (ASR alignment/diarization library)
-# - If your TTS engine (e.g., F5-TTS/CosyVoice components) needs extra packages
-#   like pydub, sentencepiece, add only those explicitly required by june-tts/main.py.
+# CosyVoice2 TTS Engine
+# Install from GitHub since it's not on PyPI
+# This will handle its own dependencies including any needed av/ffmpeg libs
+git+https://github.com/FunAudioLLM/CosyVoice.git
+
+# Additional dependencies that CosyVoice might need
+# (these are commonly required by TTS models)
+torchaudio  # Already installed via Dockerfile but listed for clarity
+sentencepiece  # For tokenization if needed
+pydub  # For audio format handling
+matplotlib  # For any visualization in CosyVoice
