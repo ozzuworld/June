@@ -2,7 +2,7 @@
 # TTS-only image. CosyVoice is cloned into /opt/CosyVoice (no pip install)
 
 # Use CUDA 12.1 base image for PyTorch 2.x compatibility
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
