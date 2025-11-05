@@ -42,12 +42,12 @@ class TTSRequest(BaseModel):
     """TTS synthesis request - compatible with orchestrator"""
     text: str = Field(..., description="Text to synthesize")
     room_name: str = Field("ozzu-main", description="LiveKit room name")
-    mode: str = Field("sft", description="Synthesis mode")
+    mode: str = Field("sft", description="Synthesis mode (ignored for CosyVoice2)")
     
     # All possible speaker field names for compatibility
     voice: Optional[str] = Field(None, description="Voice/speaker (legacy)")
     speaker: Optional[str] = Field(None, description="Speaker (legacy)")
-    speaker_id: Optional[str] = Field(None, description="Speaker ID")
+    speaker_id: Optional[str] = Field(None, description="Speaker ID (legacy)")
     
     # Optional fields
     streaming: bool = Field(True, description="Enable streaming")
@@ -57,15 +57,8 @@ class TTSRequest(BaseModel):
     instruct: Optional[str] = Field(None, description="Instruction for instruct mode")
     
     def get_speaker_id(self) -> str:
-        """Get effective speaker ID from any field"""
-        # Try all possible field names
-        speaker = self.speaker_id or self.speaker or self.voice
-        
-        # If none provided, use default
-        if not speaker:
-            return "中文女"  # Default Chinese Female
-        
-        return speaker
+        """Get effective speaker ID from any field for logging only"""
+        return self.speaker_id or self.speaker or self.voice or ""
 
 class TTSResponse(BaseModel):
     """TTS response"""
@@ -78,7 +71,7 @@ class TTSResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response"""
     service: str = "cosyvoice2-tts"
-    version: str = "1.0.1"
+    version: str = "1.1.0"
     status: str
     model: str
     device: str
@@ -90,13 +83,14 @@ class HealthResponse(BaseModel):
 # =============================================================================
 
 class TTSEngine:
-    """CosyVoice2 TTS Engine with speaker validation"""
+    """CosyVoice2 TTS Engine using cross-lingual path (no SFT speakers)."""
     
     def __init__(self):
         self.model = None
         self.device = config.cosyvoice.device
         self.sample_rate = config.cosyvoice.sample_rate
-        self.available_speakers = []
+        # Optional registry for reusable zero-shot speakers (disabled by default)
+        self.zero_shot_registry = {}
         
     async def initialize(self):
         """Initialize the TTS engine"""
@@ -115,93 +109,29 @@ class TTSEngine:
             fp16=config.cosyvoice.fp16 and self.device == "cuda"
         )
         
-        # Get available speakers
-        try:
-            self.available_speakers = self.model.list_available_spks()
-            logger.info(f"✅ Available speakers: {self.available_speakers}")
-        except Exception as e:
-            logger.warning(f"⚠️ Could not get speaker list: {e}")
-            # Fallback list
-            self.available_speakers = ['中文女', '中文男', '英文女', '英文男', '日语男', '粤语女', '韩语女']
-        
         logger.info(f"✅ CosyVoice2 loaded on {self.device}")
     
     async def warmup(self):
         """Warmup the engine"""
-        logger.info("🔥 Warming up CosyVoice2...")
+        logger.info("🔥 Warming up CosyVoice2 via cross_lingual...")
         start = time.time()
-        
-        warmup_speaker = self.available_speakers[0] if self.available_speakers else '中文女'
-        
-        for result in self.model.inference_sft("Hello warmup", warmup_speaker, stream=False):
-            break
-        
+        try:
+            for result in self.model.inference_cross_lingual("Hello warmup", None, stream=False):
+                break
+        except Exception as e:
+            logger.warning(f"Warmup cross_lingual failed: {e}")
         elapsed = (time.time() - start) * 1000
         logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
     
-    def validate_speaker(self, speaker_id: str) -> str:
-        """Validate and fix speaker ID with intelligent fallback - ULTRA DEFENSIVE"""
-        if not speaker_id:
-            # No speaker provided - use first available
-            default = self.available_speakers[0] if self.available_speakers else '中文女'
-            logger.info(f"No speaker specified, using: {default}")
-            return default
-        
-        # If no speakers loaded yet, just return what was requested
-        if not self.available_speakers:
-            logger.warning(f"⚠️ No speakers loaded yet, using requested: {speaker_id}")
-            return speaker_id
-        
-        # Direct match
-        if speaker_id in self.available_speakers:
-            logger.info(f"✅ Direct match: {speaker_id}")
-            return speaker_id
-        
-        # Case-insensitive match
-        speaker_lower = speaker_id.lower()
-        for available in self.available_speakers:
-            if available.lower() == speaker_lower:
-                logger.info(f"✅ Case match: '{speaker_id}' -> '{available}'")
-                return available
-        
-        # Partial match
-        for available in self.available_speakers:
-            if speaker_lower in available.lower() or available.lower() in speaker_lower:
-                logger.info(f"✅ Partial match: '{speaker_id}' -> '{available}'")
-                return available
-        
-        # Check if it contains Chinese/English/etc and try language fallback
-        if any(ord(c) > 127 for c in speaker_id):  # Contains non-ASCII (likely Chinese)
-            # Try to find any Chinese speaker
-            for available in self.available_speakers:
-                if any(ord(c) > 127 for c in available):
-                    logger.info(f"✅ Language fallback (Chinese): '{speaker_id}' -> '{available}'")
-                    return available
-        else:
-            # ASCII only - try to find English speaker
-            for available in self.available_speakers:
-                if 'english' in available.lower() or 'en' in available.lower():
-                    logger.info(f"✅ Language fallback (English): '{speaker_id}' -> '{available}'")
-                    return available
-        
-        # Last resort: use first available
-        default = self.available_speakers[0] if self.available_speakers else speaker_id
-        logger.warning(f"⚠️ Speaker '{speaker_id}' not found in {self.available_speakers}")
-        logger.warning(f"   Using fallback: {default}")
-        return default
-    
-    async def synthesize(self, text: str, speaker_id: str, stream: bool = True):
-        """Synthesize speech with validated speaker"""
+    async def synthesize(self, text: str, stream: bool = True):
+        """Synthesize speech using CosyVoice2 cross_lingual (no per-request cloning)."""
         if not self.model:
             raise RuntimeError("Model not initialized")
         
-        # Validate speaker
-        validated_speaker = self.validate_speaker(speaker_id)
-        
-        logger.info(f"🎤 Synthesis ({validated_speaker}): {text[:50]}...")
+        logger.info(f"🎤 Synthesis (cross_lingual): {text[:100]}...")
         
         try:
-            for result in self.model.inference_sft(text, validated_speaker, stream=stream):
+            for result in self.model.inference_cross_lingual(text, None, stream=stream):
                 audio = result['tts_speech']
                 
                 if isinstance(audio, torch.Tensor):
@@ -212,13 +142,11 @@ class TTSEngine:
                 
         except Exception as e:
             logger.error(f"❌ Synthesis failed: {e}")
-            logger.error(f"   Speaker: {validated_speaker}")
-            logger.error(f"   Available: {self.available_speakers}")
             raise
     
     def get_speakers(self) -> list:
-        """Get available speakers"""
-        return self.available_speakers
+        """Return empty list; CosyVoice2 cross_lingual has no predefined SFT speakers."""
+        return []
 
 # =============================================================================
 # LIVEKIT PUBLISHER
@@ -328,7 +256,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CosyVoice2 TTS Service",
-    version="1.0.1",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -346,21 +274,21 @@ app.add_middleware(
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
 async def synthesize(request: TTSRequest):
-    """Synthesize speech and stream to LiveKit"""
+    """Synthesize speech and stream to LiveKit (CosyVoice2 cross_lingual)."""
     if not engine or not publisher:
         raise HTTPException(status_code=503, detail="Service not ready")
     
     start_time = time.time()
-    speaker_id = request.get_speaker_id()
+    resolved_speaker = request.get_speaker_id()
     
     logger.info(f"🎤 TTS request: room={request.room_name}, mode={request.mode}")
     logger.info(f"   Speaker fields: speaker_id={request.speaker_id}, speaker={request.speaker}, voice={request.voice}")
-    logger.info(f"   Resolved speaker: {speaker_id}")
-    logger.info(f"   Text: {request.text[:100]}...")
+    logger.info(f"   (CosyVoice2) Ignoring speaker fields; using cross_lingual path.")
+    logger.info(f"   Text: {request.text[:200]}...")
     
     try:
-        # Generate audio stream
-        audio_stream = engine.synthesize(request.text, speaker_id, request.streaming)
+        # Generate audio stream (cross_lingual)
+        audio_stream = engine.synthesize(request.text, request.streaming)
         
         # Publish to LiveKit
         result = await publisher.publish_audio(request.room_name, audio_stream, engine.sample_rate)
@@ -379,8 +307,6 @@ async def synthesize(request: TTSRequest):
         
     except Exception as e:
         logger.error(f"❌ Synthesis failed: {e}")
-        logger.error(f"   Speaker requested: {speaker_id}")
-        logger.error(f"   Available speakers: {engine.get_speakers()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
@@ -397,17 +323,15 @@ async def health_check():
 
 @app.get("/speakers")
 async def list_speakers():
-    """List available speakers"""
-    if not engine:
-        return {"speakers": []}
-    return {"speakers": engine.get_speakers()}
+    """List available speakers (none for CosyVoice2 cross_lingual)."""
+    return {"speakers": engine.get_speakers() if engine else []}
 
 @app.get("/")
 async def root():
     """Service info"""
     return {
         "service": "cosyvoice2-tts",
-        "version": "1.0.1",
+        "version": "1.1.0",
         "status": "healthy"
     }
 
