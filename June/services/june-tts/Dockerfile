@@ -1,6 +1,5 @@
-# WhisperX Enhanced June STT Service
-# Based on official WhisperX requirements and best practices
-# Reference: https://github.com/m-bain/whisperX
+# June TTS Service with F5-TTS and Voice Cloning
+# Based on CosyVoice dependency management approach
 
 # Use CUDA 12.1 base image for PyTorch 2.x compatibility
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
@@ -14,12 +13,12 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="8.2.0-whisperx-stable"
-LABEL description="June STT with WhisperX 3.1.1 - Stable NumPy 1.x"
-LABEL service="june-stt"
-LABEL framework="whisperx"
+LABEL version="1.0.0-tts-stable"
+LABEL description="June TTS with F5-TTS Voice Cloning"
+LABEL service="june-tts"
+LABEL framework="f5-tts"
 
-# Install system dependencies
+# Install system dependencies (following CosyVoice approach)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3.10-dev \
@@ -32,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     git \
     build-essential \
+    cmake \
+    pkg-config \
+    unzip \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,19 +49,17 @@ RUN useradd -m -u 1001 sttuser
 WORKDIR /app
 RUN chown -R sttuser:sttuser /app
 
-# Install PyTorch with CUDA 12.1 support first (official recommendation)
-# WhisperX 3.1.1 works best with PyTorch 2.2.0 and NumPy 1.x
+# Install PyTorch with CUDA 12.1 support first
 RUN pip install --no-cache-dir \
     torch==2.2.0 \
     torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Copy requirements and install dependencies
+# Copy requirements and install with extended timeout (CosyVoice approach)
 COPY --chown=sttuser:sttuser requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --default-timeout=3600 -r requirements.txt
 
 # Copy all Python files from the build context
-# This will copy whatever exists in June/services/june-stt/
 COPY --chown=sttuser:sttuser *.py /app/
 
 # Set up environment
@@ -69,39 +69,25 @@ USER sttuser
 # Create necessary directories
 RUN mkdir -p /app/models /app/cache /app/temp
 
-# WhisperX Environment Configuration
-ENV WHISPER_CACHE_DIR=/app/models
-ENV PORT=8001
+# TTS Environment Configuration
+ENV PORT=8002
 ENV LOG_LEVEL=INFO
 
-# WhisperX Model Configuration
-ENV WHISPER_MODEL=large-v3-turbo
-ENV USE_BATCHED_INFERENCE=true
-ENV ENABLE_WORD_TIMESTAMPS=true
+# F5-TTS Configuration
+ENV TTS_MODEL=f5-tts
+ENV VOICE_CLONING_ENABLED=true
+ENV STREAMING_ENABLED=true
+ENV BATCH_SIZE=1
 
-# Silero VAD Preprocessing
-ENV SILERO_VAD_ENABLED=true
-ENV VAD_ENABLED=false
+# LiveKit Integration
+ENV LIVEKIT_ENABLED=true
+ENV LIVEKIT_URL="wss://june-livekit.ozzu.cloud"
 
-# Language & Accent Optimization
-ENV DEFAULT_LANGUAGE=en
-ENV FORCE_LANGUAGE=true
-ENV ACCENT_OPTIMIZATION=true
-ENV INITIAL_PROMPT="English speech with Latino accent. Technical vocabulary: Kubernetes, Docker, API, microservices, Redis, database. Mathematical terms: square root, calculations, numbers."
+EXPOSE 8002
 
-# WhisperX Streaming Features
-ENV SOTA_MODE_ENABLED=true
-ENV ULTRA_FAST_PARTIALS=true
-ENV WORD_LEVEL_PARTIALS=true
-ENV STT_STREAMING_ENABLED=true
-ENV STT_PARTIALS_ENABLED=true
-ENV STT_CONTINUOUS_PARTIALS=true
-
-EXPOSE 8001
-
-# Enhanced health check for WhisperX
+# Health check
 HEALTHCHECK --interval=20s --timeout=15s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8001/healthz || exit 1
+    CMD curl -f http://localhost:8002/healthz || exit 1
 
 # Startup command
 CMD ["python", "main.py"]
