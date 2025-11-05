@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-CosyVoice2 Model Download Script
+CosyVoice2 Model Download Script - FIXED
 Downloads CosyVoice2-0.5B model from ModelScope with robust retries
+Fixed: Removed 'timeout' parameter that's not supported in older modelscope versions
 """
 
 import os
@@ -87,7 +88,7 @@ def _git_clone_fallback(target_dir: str) -> str:
 
 
 def _modelscope_download(model_id: str, local_path: str) -> str:
-    """Download using ModelScope SDK"""
+    """Download using ModelScope SDK - FIXED VERSION"""
     try:
         from modelscope import snapshot_download
     except ImportError:
@@ -103,13 +104,12 @@ def _modelscope_download(model_id: str, local_path: str) -> str:
     logger.info("This may take 5-10 minutes depending on your connection...")
     logger.info("")
     
-    # Try new API first (with local_dir parameter)
+    # Try new API first (with local_dir parameter, WITHOUT timeout)
     try:
         return snapshot_download(
             model_id=model_id,
             local_dir=local_path,
             cache_dir=CACHE_DIR,
-            timeout=600,
         )
     except TypeError as e:
         # Fallback to legacy API (without local_dir)
@@ -118,7 +118,6 @@ def _modelscope_download(model_id: str, local_path: str) -> str:
             path = snapshot_download(
                 model_id=model_id,
                 cache_dir=CACHE_DIR,
-                timeout=600,
             )
             # Move to target location
             if os.path.exists(path) and path != local_path:
@@ -130,7 +129,7 @@ def _modelscope_download(model_id: str, local_path: str) -> str:
 
 
 def download_blank_en_model(target_dir: str):
-    """Download CosyVoice-BlankEN model (Qwen-based LLM)"""
+    """Download CosyVoice-BlankEN model (Qwen-based LLM) - FIXED"""
     blank_en_path = os.path.join(target_dir, "CosyVoice-BlankEN")
     
     # Check if already exists and has model files
@@ -147,17 +146,17 @@ def download_blank_en_model(target_dir: str):
         logger.info("   This is required for text processing")
         
         try:
+            # FIXED: Removed timeout parameter
             snapshot_download(
                 model_id='iic/CosyVoice-BlankEN',
                 local_dir=blank_en_path,
                 cache_dir=CACHE_DIR,
-                timeout=600,
             )
         except TypeError:
+            # FIXED: Removed timeout parameter
             path = snapshot_download(
                 model_id='iic/CosyVoice-BlankEN',
                 cache_dir=CACHE_DIR,
-                timeout=600,
             )
             if os.path.exists(path) and path != blank_en_path:
                 if os.path.exists(blank_en_path):
@@ -284,7 +283,7 @@ def download_cosyvoice2_model():
 
 
 def download_ttsfrd_resource():
-    """Optionally download CosyVoice-ttsfrd for better text normalization"""
+    """Optionally download CosyVoice-ttsfrd for better text normalization - FIXED"""
     model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
     ttsfrd_path = os.path.join(model_dir, "CosyVoice-ttsfrd")
 
@@ -297,17 +296,17 @@ def download_ttsfrd_resource():
         logger.info("📦 Downloading CosyVoice-ttsfrd (optional text normalization)...")
         
         try:
+            # FIXED: Removed timeout parameter
             snapshot_download(
                 model_id='iic/CosyVoice-ttsfrd',
                 local_dir=ttsfrd_path,
                 cache_dir=CACHE_DIR,
-                timeout=300,
             )
         except TypeError:
+            # FIXED: Removed timeout parameter
             path = snapshot_download(
                 model_id='iic/CosyVoice-ttsfrd',
                 cache_dir=CACHE_DIR,
-                timeout=300,
             )
             if os.path.exists(path) and path != ttsfrd_path:
                 if os.path.exists(ttsfrd_path):
