@@ -1,6 +1,5 @@
-# June STT Service - WhisperX Enhanced Dependencies
-# Based on official WhisperX requirements
-# Reference: https://github.com/m-bain/whisperX
+# June TTS Service - Updated Dependencies
+# Based on official requirements and compatibility fixes
 
 # Web Framework
 fastapi==0.104.1
@@ -14,8 +13,8 @@ livekit==0.11.1
 # torch==2.2.0
 # torchaudio==2.2.0
 
-# IMPORTANT: WhisperX 3.7.4 has NumPy compatibility issues
-# Use a stable older version instead
+# Use WhisperX instead of faster-whisper to avoid av dependency issues
+# WhisperX uses faster-whisper internally but handles dependencies better
 whisperx==3.1.1
 
 # NumPy (compatible with WhisperX 3.1.1)
@@ -28,7 +27,8 @@ librosa>=0.10.0,<1.0.0
 
 # Core Dependencies
 transformers>=4.30.0,<5.0.0
-faster-whisper>=0.10.0,<1.0.0
+# Remove faster-whisper to avoid av dependency conflicts
+# faster-whisper>=0.10.0,<1.0.0
 pyannote.audio>=3.1.0,<4.0.0
 
 # Service Integration
