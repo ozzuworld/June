@@ -48,11 +48,7 @@ jobs:
     
     strategy:
       matrix:
-        service: ${{ fromJson(
-          inputs.service == 'all-services' && 
-          '["june-orchestrator", "june-stt", "june-tts", "june-dark", "june-idp", "june-quant", "june-vast"]' ||
-          format('["{0}"]', inputs.service)
-        ) }}
+        service: ${{ inputs.service == 'all-services' && fromJson('["june-orchestrator", "june-stt", "june-tts", "june-dark", "june-idp", "june-quant", "june-vast"]') || fromJson(format('["${0}"]', inputs.service)) }}
     
     steps:
       - name: Checkout repository
