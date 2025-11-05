@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June STT Service - Clean and Optimized
-Real-time Speech-to-Text with LiveKit integration and Silero VAD
+June STT Service - WhisperX Native Implementation
+Real-time Speech-to-Text with WhisperX built-in VAD
 """
 import asyncio
 import logging
@@ -25,7 +25,7 @@ import httpx
 from config import config
 from whisper_service import whisper_service
 from livekit_token import connect_room_as_subscriber
-from streaming_utils import PartialTranscriptStreamer, streaming_metrics
+from streaming_utils import streaming_metrics
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("june-stt")
@@ -33,7 +33,6 @@ logger = logging.getLogger("june-stt")
 # Feature flags
 STREAMING_ENABLED = getattr(config, "STT_STREAMING_ENABLED", True)
 PARTIALS_ENABLED = getattr(config, "STT_PARTIALS_ENABLED", True)
-CONTINUOUS_PARTIALS = os.getenv("STT_CONTINUOUS_PARTIALS", "true").lower() == "true"
 
 # Global state
 room: Optional[rtc.Room] = None
@@ -41,24 +40,19 @@ room_connected: bool = False
 orchestrator_available: bool = False
 buffers: Dict[str, Deque[np.ndarray]] = {}
 utterance_states: Dict[str, 'UtteranceState'] = {}
-partial_streamers: Dict[str, PartialTranscriptStreamer] = {}
-partial_streaming_tasks: Dict[str, asyncio.Task] = {}
 processed_utterances = 0
 partial_transcripts_sent = 0
 
-# Configurable constants from environment variables
+# Constants
 SAMPLE_RATE = 16000
-MAX_UTTERANCE_SEC = float(os.getenv("MAX_UTTERANCE_SEC", "15.0"))    # Configurable (was 8.0)
-MIN_UTTERANCE_SEC = float(os.getenv("MIN_UTTERANCE_SEC", "1.0"))     # Configurable (was 0.3)
-SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "2.5")) # Configurable (was 0.8)
-PROCESS_SLEEP_SEC = 0.03
+MAX_UTTERANCE_SEC = float(os.getenv("MAX_UTTERANCE_SEC", "8.0"))
+MIN_UTTERANCE_SEC = float(os.getenv("MIN_UTTERANCE_SEC", "0.4"))
+SILENCE_TIMEOUT_SEC = float(os.getenv("SILENCE_TIMEOUT_SEC", "1.2"))
+PROCESS_SLEEP_SEC = 0.05
 EXCLUDE_PARTICIPANTS = {"june-tts", "june-stt", "tts", "stt"}
-PARTIAL_CHUNK_MS = 150
-PARTIAL_MIN_SPEECH_MS = 200
-PARTIAL_EMIT_INTERVAL_MS = 200
-MAX_PARTIAL_LENGTH = 120
 
-logger.info(f"⚡ Configurable timing: MAX={MAX_UTTERANCE_SEC}s, MIN={MIN_UTTERANCE_SEC}s, SILENCE={SILENCE_TIMEOUT_SEC}s")
+logger.info(f"⚡ Timing config: MAX={MAX_UTTERANCE_SEC}s, MIN={MIN_UTTERANCE_SEC}s, SILENCE={SILENCE_TIMEOUT_SEC}s")
+
 
 class UtteranceState:
     def __init__(self):
@@ -67,28 +61,20 @@ class UtteranceState:
         self.started_at: Optional[datetime] = None
         self.last_audio_at: Optional[datetime] = None
         self.total_samples = 0
-        self.first_partial_sent = False
-        self.last_partial_sent_at: Optional[datetime] = None
-        self.partial_sequence = 0
         self.utterance_id = str(uuid.uuid4())
+
 
 def _ensure_utterance_state(pid: str) -> 'UtteranceState':
     if pid not in utterance_states:
         utterance_states[pid] = UtteranceState()
     return utterance_states[pid]
 
+
 def _ensure_buffer(pid: str) -> Deque[np.ndarray]:
     if pid not in buffers:
         buffers[pid] = deque(maxlen=800)
     return buffers[pid]
 
-def _ensure_partial_streamer(pid: str) -> PartialTranscriptStreamer:
-    if pid not in partial_streamers:
-        partial_streamers[pid] = PartialTranscriptStreamer(
-            chunk_duration_ms=PARTIAL_CHUNK_MS,
-            min_speech_ms=PARTIAL_MIN_SPEECH_MS,
-        )
-    return partial_streamers[pid]
 
 def _reset_utterance_state(state: UtteranceState):
     state.buffer.clear()
@@ -96,10 +82,8 @@ def _reset_utterance_state(state: UtteranceState):
     state.started_at = None
     state.last_audio_at = None
     state.total_samples = 0
-    state.first_partial_sent = False
-    state.last_partial_sent_at = None
-    state.partial_sequence = 0
     state.utterance_id = str(uuid.uuid4())
+
 
 async def _check_orchestrator_health() -> bool:
     if not config.ORCHESTRATOR_URL:
@@ -111,8 +95,8 @@ async def _check_orchestrator_health() -> bool:
     except Exception:
         return False
 
-async def _notify_orchestrator(user_id: str, text: str, language: Optional[str], partial: bool = False, 
-                              utterance_id: Optional[str] = None, partial_sequence: int = 0):
+
+async def _notify_orchestrator(user_id: str, text: str, language: Optional[str], partial: bool = False):
     global orchestrator_available, partial_transcripts_sent
     
     if not config.ORCHESTRATOR_URL:
@@ -129,13 +113,6 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str],
         "room_name": "ozzu-main",
         "partial": partial,
     }
-    
-    if partial:
-        payload.update({
-            "utterance_id": utterance_id,
-            "partial_sequence": partial_sequence,
-            "is_streaming": True,
-        })
 
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
@@ -146,26 +123,33 @@ async def _notify_orchestrator(user_id: str, text: str, language: Optional[str],
     except Exception:
         orchestrator_available = False
 
-# First-frame seen set for per-participant logging
+
 _first_frame_seen = set()
 
+
 def _frame_to_float32_mono(frame: rtc.AudioFrame):
+    """Convert LiveKit audio frame to float32 mono"""
     sr = frame.sample_rate
     ch = frame.num_channels
     buf = memoryview(frame.data)
+    
     try:
         arr = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
     except Exception:
         arr = np.frombuffer(buf, dtype=np.float32)
+    
     if ch and ch > 1:
         try:
             arr = arr.reshape(-1, ch).mean(axis=1)
         except Exception:
             frames = arr[: (len(arr) // ch) * ch]
             arr = frames.reshape(-1, ch).mean(axis=1)
+    
     return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32), sr
 
+
 def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
+    """Resample audio to 16kHz"""
     if sr == SAMPLE_RATE:
         return pcm
     gcd = np.gcd(sr, SAMPLE_RATE)
@@ -174,120 +158,51 @@ def _resample_to_16k_mono(pcm: np.ndarray, sr: int) -> np.ndarray:
     out = signal.resample_poly(pcm, up, down).astype(np.float32)
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
 
-async def _continuous_partial_processor(pid: str, state: UtteranceState, streamer: PartialTranscriptStreamer):
-    if not CONTINUOUS_PARTIALS or not whisper_service.is_model_ready():
-        return
-        
-    utterance_id = state.utterance_id
-    
-    try:
-        while state.is_active:
-            try:
-                if state.started_at:
-                    duration_ms = (datetime.utcnow() - state.started_at).total_seconds() * 1000
-                    
-                    first_partial_threshold = PARTIAL_MIN_SPEECH_MS
-                    if not state.first_partial_sent:
-                        first_partial_threshold = 150
-                    
-                    if duration_ms >= first_partial_threshold:
-                        now = datetime.utcnow()
-                        emit_interval = PARTIAL_EMIT_INTERVAL_MS
-                        
-                        if state.first_partial_sent:
-                            emit_interval = max(150, PARTIAL_EMIT_INTERVAL_MS - 50)
-                        
-                        if (not state.last_partial_sent_at or 
-                            (now - state.last_partial_sent_at).total_seconds() * 1000 >= emit_interval):
-                            
-                            if len(state.buffer) > 0:
-                                window_duration = 1.2 if state.first_partial_sent else 0.8
-                                recent_frames = list(state.buffer)[-int(window_duration * SAMPLE_RATE / 320):]
-                                
-                                if recent_frames:
-                                    try:
-                                        partial_audio = np.concatenate(recent_frames, axis=0)
-                                        min_samples = int(first_partial_threshold / 1000 * SAMPLE_RATE)
-                                        
-                                        logger.debug(f"[PARTIAL] try pid={pid} first_sent={state.first_partial_sent} buf_frames={len(state.buffer)}")
-                                        
-                                        if len(partial_audio) >= min_samples:
-                                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                                                sf.write(tmp.name, partial_audio, SAMPLE_RATE, subtype='PCM_16')
-                                                logger.info(f"[PARTIAL] transcribe pid={pid} samples={len(partial_audio)}")
-                                                res = await whisper_service.transcribe(tmp.name, language=None)
-                                            
-                                            partial_text = res.get("text", "").strip()
-                                            min_partial_length = 2 if not state.first_partial_sent else 3
-                                            
-                                            if (partial_text and len(partial_text) > min_partial_length and 
-                                                len(partial_text) <= MAX_PARTIAL_LENGTH and
-                                                streamer.should_emit_partial(partial_text)):
-                                                
-                                                state.partial_sequence += 1
-                                                
-                                                await _notify_orchestrator(
-                                                    pid, partial_text, res.get("language"), 
-                                                    partial=True, utterance_id=utterance_id,
-                                                    partial_sequence=state.partial_sequence
-                                                )
-                                                
-                                                streamer.update_partial_text(partial_text)
-                                                state.last_partial_sent_at = now
-                                                state.first_partial_sent = True
-                                                streaming_metrics.record_partial(0)
-                                                logger.info(f"[PARTIAL] emit pid={pid} seq={state.partial_sequence} text='{partial_text[:60]}'")
-                                    
-                                    except Exception:
-                                        pass
-                
-                sleep_duration = PARTIAL_EMIT_INTERVAL_MS / 1000
-                if not state.first_partial_sent:
-                    sleep_duration = 0.1
-                
-                await asyncio.sleep(sleep_duration)
-                
-            except Exception:
-                await asyncio.sleep(0.3)
-            
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
-    finally:
-        if pid in partial_streaming_tasks:
-            del partial_streaming_tasks[pid]
 
-async def _transcribe_utterance_with_silero(pid: str, audio: np.ndarray, utterance_id: str):
+async def _transcribe_utterance(pid: str, audio: np.ndarray, utterance_id: str):
+    """Transcribe complete utterance using WhisperX"""
     global processed_utterances
+    
     if not whisper_service.is_model_ready():
         return
         
     try:
-        logger.info(f"[FINAL] transcribe pid={pid} samples={len(audio)} (pre-VAD check)")
+        logger.info(f"[FINAL] transcribe pid={pid} samples={len(audio)}")
+        
+        # Simple pre-check (WhisperX VAD will do real detection)
         if not whisper_service.has_speech_content(audio, SAMPLE_RATE):
-            logger.info(f"[FINAL] skipped by VAD pid={pid}")
+            logger.info(f"[FINAL] skipped (silence) pid={pid}")
             return
             
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
             sf.write(tmp.name, audio, SAMPLE_RATE, subtype='PCM_16')
-            logger.info(f"[FINAL] calling whisperx pid={pid}")
+            logger.info(f"[FINAL] calling WhisperX pid={pid}")
+            
+            # WhisperX will handle VAD internally
             res = await whisper_service.transcribe(tmp.name, language=None)
             
+        # Check if WhisperX VAD filtered it
+        if res.get("filtered"):
+            logger.info(f"[FINAL] filtered by WhisperX: {res.get('filtered')} pid={pid}")
+            return
+        
         text = res.get("text", "").strip()
         logger.info(f"[FINAL] result pid={pid} len={len(text)} text='{text[:80]}'")
         
         if text and len(text) > 1:
+            # Filter noise words
             filtered_words = {"you", "you.", "uh", "um", "mm", "hmm", "yeah", "mhm", "ah", "oh"}
             if text.lower() not in filtered_words:
                 await _notify_orchestrator(pid, text, res.get("language"), partial=False)
                 processed_utterances += 1
                 streaming_metrics.record_final()
             
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"[FINAL] transcription error pid={pid}: {e}", exc_info=True)
 
-async def _process_utterances_with_streaming():
+
+async def _process_utterances():
+    """Process audio utterances from buffers"""
     global processed_utterances, orchestrator_available
     
     last_health_check = time.time()
@@ -309,7 +224,6 @@ async def _process_utterances_with_streaming():
                     
                     state = _ensure_utterance_state(pid)
                     buf = _ensure_buffer(pid)
-                    streamer = _ensure_partial_streamer(pid) if STREAMING_ENABLED else None
                     
                     while buf:
                         try:
@@ -317,34 +231,20 @@ async def _process_utterances_with_streaming():
                             now = datetime.utcnow()
                             
                             if not state.is_active:
-                                logger.info(f"[UTT] start pid={pid} buffer_frames=1")
+                                logger.info(f"[UTT] start pid={pid}")
                                 state.is_active = True
                                 state.started_at = now
                                 state.last_audio_at = now
                                 state.buffer.clear()
                                 state.buffer.append(frame)
                                 state.total_samples = len(frame)
-                                state.first_partial_sent = False
-                                state.last_partial_sent_at = None
-                                state.partial_sequence = 0
                                 state.utterance_id = str(uuid.uuid4())
-                                
-                                if streamer:
-                                    streamer.reset()
-                                    
-                                if (CONTINUOUS_PARTIALS and STREAMING_ENABLED and 
-                                    pid not in partial_streaming_tasks):
-                                    task = asyncio.create_task(_continuous_partial_processor(pid, state, streamer))
-                                    partial_streaming_tasks[pid] = task
                                     
                             else:
                                 state.buffer.append(frame)
                                 state.total_samples += len(frame)
                                 state.last_audio_at = now
                                 
-                                if STREAMING_ENABLED and streamer and not CONTINUOUS_PARTIALS:
-                                    streamer.add_audio_chunk(frame)
-                                    
                                 duration = (now - state.started_at).total_seconds()
                                 silence_duration = (now - state.last_audio_at).total_seconds()
                                 
@@ -354,53 +254,54 @@ async def _process_utterances_with_streaming():
                                 )
                                 
                                 if should_end:
-                                    logger.info(f"[UTT] end pid={pid} dur={duration:.2f}s silence={silence_duration:.2f}s samples={state.total_samples} frames={len(state.buffer)}")
-                                    
-                                    if pid in partial_streaming_tasks:
-                                        partial_streaming_tasks[pid].cancel()
-                                        try:
-                                            await partial_streaming_tasks[pid]
-                                        except asyncio.CancelledError:
-                                            pass
-                                        del partial_streaming_tasks[pid]
+                                    logger.info(f"[UTT] end pid={pid} dur={duration:.2f}s silence={silence_duration:.2f}s samples={state.total_samples}")
                                     
                                     if len(state.buffer) > 0:
                                         utterance_audio = np.concatenate(list(state.buffer), axis=0)
                                         utterance_id = state.utterance_id
-                                        await _transcribe_utterance_with_silero(pid, utterance_audio, utterance_id)
+                                        await _transcribe_utterance(pid, utterance_audio, utterance_id)
                                     
                                     _reset_utterance_state(state)
-                                    if streamer:
-                                        streamer.reset()
                                     
-                        except Exception:
+                        except Exception as e:
+                            logger.error(f"[UTT] frame processing error pid={pid}: {e}")
                             continue
                             
-                except Exception:
+                except Exception as e:
+                    logger.error(f"[UTT] participant processing error pid={pid}: {e}")
                     continue
                     
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"[UTT] main loop error: {e}")
             
         await asyncio.sleep(PROCESS_SLEEP_SEC)
 
+
 async def _on_audio_frame(pid: str, frame: rtc.AudioFrame):
+    """Handle incoming audio frame"""
     if pid in EXCLUDE_PARTICIPANTS:
         return
+    
     try:
         pcm, sr = _frame_to_float32_mono(frame)
         pcm16k = _resample_to_16k_mono(pcm, sr)
+        
         if pid not in _first_frame_seen:
-            logger.info(f"[AUDIO] first converted frame pid={pid} in_sr={sr} out_sr=16000 samples={len(pcm16k)}")
+            logger.info(f"[AUDIO] first frame pid={pid} in_sr={sr} out_sr=16000 samples={len(pcm16k)}")
             _first_frame_seen.add(pid)
+        
         _ensure_buffer(pid).append(pcm16k)
+        
     except Exception as e:
         logger.error(f"[AUDIO] frame error pid={pid}: {e}", exc_info=False)
 
+
 def setup_room_callbacks(room: rtc.Room):
+    """Setup LiveKit room event handlers"""
+    
     @room.on("participant_connected")
     def _p_join(p):
-        logger.info(f"[LK] participant_connected id={getattr(p, 'sid', 'n/a')} ident={p.identity} tracks={len(getattr(p, 'tracks', []))}")
+        logger.info(f"[LK] participant_connected id={getattr(p, 'sid', 'n/a')} ident={p.identity}")
         if p.identity not in EXCLUDE_PARTICIPANTS:
             _ensure_utterance_state(p.identity)
             _ensure_buffer(p.identity)
@@ -420,17 +321,14 @@ def setup_room_callbacks(room: rtc.Room):
             del buffers[pid]
         if pid in utterance_states:
             del utterance_states[pid]
-        if pid in partial_streamers:
-            del partial_streamers[pid]
-        if pid in partial_streaming_tasks:
-            partial_streaming_tasks[pid].cancel()
-            del partial_streaming_tasks[pid]
 
     @room.on("track_subscribed")
     def _track_sub(track: rtc.Track, pub, participant):
         logger.info(f"[LK] track_subscribed kind={track.kind} track_sid={getattr(track, 'sid', 'n/a')} participant={participant.identity}")
+        
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
+        
         pid = participant.identity or participant.sid
         if pid in EXCLUDE_PARTICIPANTS:
             logger.info(f"[LK] skipping excluded participant pid={pid}")
@@ -441,17 +339,22 @@ def setup_room_callbacks(room: rtc.Room):
         
         stream = rtc.AudioStream(track)
         first_frame = {"seen": False}
+        
         async def consume():
             logger.info(f"[LK] consuming audio frames pid={pid} track_sid={getattr(track, 'sid', 'n/a')}")
             async for event in stream:
                 if not first_frame["seen"]:
-                    logger.info(f"[LK] first frame recv pid={pid} sr={event.frame.sample_rate} ch={event.frame.num_channels} len={len(event.frame.data)}")
+                    logger.info(f"[LK] first frame recv pid={pid} sr={event.frame.sample_rate} ch={event.frame.num_channels}")
                     first_frame["seen"] = True
                 await _on_audio_frame(pid, event.frame)
+        
         asyncio.create_task(consume())
 
+
 async def join_livekit_room():
+    """Connect to LiveKit room"""
     global room, room_connected
+    
     if not config.LIVEKIT_ENABLED:
         logger.info("LiveKit disabled")
         return
@@ -470,13 +373,15 @@ async def join_livekit_room():
         logger.error(f"LiveKit connection failed: {e}")
         room_connected = False
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
     logger.info("June STT Service starting")
     
     try:
         await whisper_service.initialize()
-        logger.info("Whisper + Silero VAD ready")
+        logger.info("WhisperX ready (native VAD)")
     except Exception as e:
         logger.error(f"Service init failed: {e}")
         raise
@@ -485,7 +390,7 @@ async def lifespan(app: FastAPI):
     
     task = None
     if room_connected:
-        task = asyncio.create_task(_process_utterances_with_streaming())
+        task = asyncio.create_task(_process_utterances())
         logger.info("STT processing active")
     else:
         logger.info("STT running in API-only mode")
@@ -498,14 +403,6 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
-        
-    for pid, partial_task in list(partial_streaming_tasks.items()):
-        partial_task.cancel()
-        try:
-            await partial_task
-        except asyncio.CancelledError:
-            pass
-    partial_streaming_tasks.clear()
     
     if room and room_connected:
         try:
@@ -513,10 +410,11 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+
 app = FastAPI(
     title="June STT",
-    version="7.1.0-configurable",
-    description="Real-time Speech-to-Text with configurable timing parameters",
+    version="8.0.0-whisperx-native",
+    description="Real-time Speech-to-Text with WhisperX native VAD",
     lifespan=lifespan,
 )
 
@@ -528,6 +426,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe_audio(
     file: UploadFile = File(...),
@@ -535,15 +434,19 @@ async def transcribe_audio(
     language: Optional[str] = Form(None),
     response_format: Optional[str] = Form("json"),
 ):
+    """OpenAI-compatible transcription endpoint"""
     if not whisper_service.is_model_ready():
         raise HTTPException(status_code=503, detail="Whisper not ready")
+    
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             content = await file.read()
             tmp.write(content)
             tmp.flush()
             result = await whisper_service.transcribe(tmp.name, language=language)
+        
         text = result.get("text", "")
+        
         if response_format == "text":
             return text
         elif response_format == "verbose_json":
@@ -552,26 +455,27 @@ async def transcribe_audio(
                 "language": result.get("language", language or "en"),
                 "text": text,
                 "segments": result.get("segments", []),
-                "method": result.get("method", "enhanced"),
+                "method": result.get("method", "whisperx_native"),
             }
         else:
             return {"text": text}
+            
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/healthz")
 async def health():
+    """Health check endpoint"""
     return {
         "status": "healthy",
-        "version": "7.1.0-configurable",
+        "version": "8.0.0-whisperx-native",
         "components": {
             "whisper_ready": whisper_service.is_model_ready(),
             "livekit_connected": room_connected,
             "orchestrator_available": orchestrator_available,
-            "streaming_enabled": STREAMING_ENABLED,
-            "partials_enabled": PARTIALS_ENABLED,
-            "continuous_partials": CONTINUOUS_PARTIALS,
+            "vad": "whisperx_native",
         },
         "timing_config": {
             "max_utterance_sec": MAX_UTTERANCE_SEC,
@@ -580,12 +484,14 @@ async def health():
         }
     }
 
+
 @app.get("/")
 async def root():
+    """Root endpoint with service info"""
     return {
         "service": "june-stt",
-        "version": "7.1.0-configurable",
-        "description": "Real-time Speech-to-Text with configurable timing parameters",
+        "version": "8.0.0-whisperx-native",
+        "description": "Real-time Speech-to-Text with WhisperX native VAD",
         "config": {
             "max_utterance_sec": MAX_UTTERANCE_SEC,
             "min_utterance_sec": MIN_UTTERANCE_SEC,
@@ -600,20 +506,21 @@ async def root():
         "stats": streaming_metrics.get_stats(),
     }
 
+
 @app.get("/stats")
 async def stats():
+    """Detailed statistics endpoint"""
     return {
         "status": "success",
-        "version": "7.1.0-configurable",
+        "version": "8.0.0-whisperx-native",
         "connectivity": {
             "livekit_connected": room_connected,
             "orchestrator_available": orchestrator_available,
         },
-        "streaming": {
-            "enabled": STREAMING_ENABLED,
-            "partials_enabled": PARTIALS_ENABLED,
-            "continuous_partials": CONTINUOUS_PARTIALS,
-            "metrics": streaming_metrics.get_stats(),
+        "features": {
+            "vad": "whisperx_native",
+            "streaming": STREAMING_ENABLED,
+            "partials": PARTIALS_ENABLED,
         },
         "timing_config": {
             "max_utterance_sec": MAX_UTTERANCE_SEC,
@@ -624,8 +531,10 @@ async def stats():
             "processed_utterances": processed_utterances,
             "partial_transcripts_sent": partial_transcripts_sent,
             "active_participants": len(buffers),
-        }
+        },
+        "metrics": streaming_metrics.get_stats(),
     }
+
 
 if __name__ == "__main__":
     import uvicorn
