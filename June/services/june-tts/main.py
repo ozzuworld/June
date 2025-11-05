@@ -25,8 +25,13 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 # CosyVoice2 imports
-from cosyvoice.cli.cosyvoice import CosyVoice2
-from cosyvoice.utils.file_utils import load_wav
+try:
+    from cosyvoice.cli.cosyvoice import CosyVoice2
+    from cosyvoice.utils.file_utils import load_wav
+except ImportError as e:
+    logging.error(f"❌ CosyVoice2 import failed: {e}")
+    logging.error("💡 Please ensure CosyVoice2 is properly installed and models are downloaded")
+    raise
 
 # LiveKit
 from livekit import rtc
@@ -51,7 +56,7 @@ class TTSRequest(BaseModel):
     
     # Voice settings
     mode: str = Field(
-        "zero_shot",
+        "sft",
         description="Synthesis mode: zero_shot, sft, instruct"
     )
     prompt_text: Optional[str] = Field(None, description="Reference text for zero-shot")
@@ -84,6 +89,7 @@ class HealthResponse(BaseModel):
     gpu_available: bool
     streaming_enabled: bool
     livekit_connected: bool
+    model_loaded: bool
 
 
 # Global state
@@ -91,6 +97,7 @@ metrics = {
     "requests_processed": 0,
     "total_audio_seconds": 0.0,
     "first_chunk_latencies": [],
+    "failed_requests": 0,
 }
 
 
@@ -101,6 +108,7 @@ class CosyVoice2Engine:
         self.model: Optional[CosyVoice2] = None
         self.device = config.cosyvoice.device
         self.sample_rate = config.cosyvoice.sample_rate
+        self.model_loaded = False
     
     async def initialize(self):
         """Initialize CosyVoice2 model"""
@@ -113,6 +121,7 @@ class CosyVoice2Engine:
                 raise FileNotFoundError(f"Model not found: {model_path}")
             
             logger.info(f"📦 Loading CosyVoice2 from {model_path}")
+            logger.info(f"🔧 Device: {self.device}, FP16: {config.cosyvoice.fp16}")
             
             # Load model with official API
             self.model = CosyVoice2(
@@ -123,17 +132,22 @@ class CosyVoice2Engine:
                 fp16=config.cosyvoice.fp16 and self.device == "cuda"
             )
             
+            self.model_loaded = True
             logger.info(f"✅ CosyVoice2 loaded on {self.device}")
             logger.info(f"   Sample rate: {self.sample_rate}Hz")
             logger.info(f"   FP16: {config.cosyvoice.fp16 and self.device == 'cuda'}")
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize CosyVoice2: {e}")
+            logger.error(f"   Model path: {model_path}")
+            logger.error(f"   Device: {self.device}")
+            self.model_loaded = False
             raise
     
     async def warmup(self):
         """Warmup model for optimal performance"""
-        if not self.model:
+        if not self.model or not self.model_loaded:
+            logger.warning("⚠️ Cannot warmup - model not loaded")
             return
         
         try:
@@ -153,7 +167,7 @@ class CosyVoice2Engine:
                 break  # Just one chunk
             
             elapsed = (time.time() - start) * 1000
-            logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
+            logger.info(f"✅ Warmup complete: {elapsed:.0f}ms ({count} chunks)")
             
         except Exception as e:
             logger.warning(f"⚠️ Warmup failed (non-critical): {e}")
@@ -167,35 +181,44 @@ class CosyVoice2Engine:
     ) -> AsyncIterator[np.ndarray]:
         """Zero-shot voice cloning synthesis"""
         
-        if not self.model:
-            raise RuntimeError("Model not initialized")
+        if not self.model or not self.model_loaded:
+            raise RuntimeError("Model not initialized or not loaded")
         
         # Load reference audio
-        prompt_speech = load_wav(prompt_audio_path, 16000)
+        try:
+            prompt_speech = load_wav(prompt_audio_path, 16000)
+        except Exception as e:
+            logger.error(f"❌ Failed to load reference audio: {e}")
+            raise RuntimeError(f"Failed to load reference audio: {e}")
         
         logger.info(f"🎤 Zero-shot synthesis: {text[:50]}...")
         first_chunk_time = time.time()
         
-        for i, result in enumerate(self.model.inference_zero_shot(
-            text,
-            prompt_text,
-            prompt_speech,
-            stream=stream
-        )):
-            audio = result['tts_speech']
-            
-            # Convert to numpy if needed
-            if isinstance(audio, torch.Tensor):
-                audio = audio.detach().cpu().numpy()
-            
-            # Track first chunk latency
-            if i == 0:
-                latency = (time.time() - first_chunk_time) * 1000
-                metrics["first_chunk_latencies"].append(latency)
-                logger.info(f"⚡ First chunk: {latency:.0f}ms")
-            
-            yield audio
-            await asyncio.sleep(0)  # Yield control
+        try:
+            for i, result in enumerate(self.model.inference_zero_shot(
+                text,
+                prompt_text,
+                prompt_speech,
+                stream=stream
+            )):
+                audio = result['tts_speech']
+                
+                # Convert to numpy if needed
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.detach().cpu().numpy()
+                
+                # Track first chunk latency
+                if i == 0:
+                    latency = (time.time() - first_chunk_time) * 1000
+                    metrics["first_chunk_latencies"].append(latency)
+                    logger.info(f"⚡ First chunk: {latency:.0f}ms")
+                
+                yield audio
+                await asyncio.sleep(0)  # Yield control
+        except Exception as e:
+            logger.error(f"❌ Zero-shot synthesis failed: {e}")
+            metrics["failed_requests"] += 1
+            raise
     
     async def synthesize_sft(
         self,
@@ -205,29 +228,34 @@ class CosyVoice2Engine:
     ) -> AsyncIterator[np.ndarray]:
         """SFT mode synthesis with predefined speakers"""
         
-        if not self.model:
-            raise RuntimeError("Model not initialized")
+        if not self.model or not self.model_loaded:
+            raise RuntimeError("Model not initialized or not loaded")
         
         logger.info(f"🎤 SFT synthesis ({speaker_id}): {text[:50]}...")
         first_chunk_time = time.time()
         
-        for i, result in enumerate(self.model.inference_sft(
-            text,
-            speaker_id,
-            stream=stream
-        )):
-            audio = result['tts_speech']
-            
-            if isinstance(audio, torch.Tensor):
-                audio = audio.detach().cpu().numpy()
-            
-            if i == 0:
-                latency = (time.time() - first_chunk_time) * 1000
-                metrics["first_chunk_latencies"].append(latency)
-                logger.info(f"⚡ First chunk: {latency:.0f}ms")
-            
-            yield audio
-            await asyncio.sleep(0)
+        try:
+            for i, result in enumerate(self.model.inference_sft(
+                text,
+                speaker_id,
+                stream=stream
+            )):
+                audio = result['tts_speech']
+                
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.detach().cpu().numpy()
+                
+                if i == 0:
+                    latency = (time.time() - first_chunk_time) * 1000
+                    metrics["first_chunk_latencies"].append(latency)
+                    logger.info(f"⚡ First chunk: {latency:.0f}ms")
+                
+                yield audio
+                await asyncio.sleep(0)
+        except Exception as e:
+            logger.error(f"❌ SFT synthesis failed: {e}")
+            metrics["failed_requests"] += 1
+            raise
     
     async def synthesize_instruct(
         self,
@@ -238,38 +266,51 @@ class CosyVoice2Engine:
     ) -> AsyncIterator[np.ndarray]:
         """Instruct mode synthesis"""
         
-        if not self.model:
-            raise RuntimeError("Model not initialized")
+        if not self.model or not self.model_loaded:
+            raise RuntimeError("Model not initialized or not loaded")
         
-        prompt_speech = load_wav(prompt_audio_path, 16000)
+        try:
+            prompt_speech = load_wav(prompt_audio_path, 16000)
+        except Exception as e:
+            logger.error(f"❌ Failed to load reference audio: {e}")
+            raise RuntimeError(f"Failed to load reference audio: {e}")
         
         logger.info(f"🎤 Instruct synthesis: {text[:50]}...")
         first_chunk_time = time.time()
         
-        for i, result in enumerate(self.model.inference_instruct2(
-            text,
-            instruct,
-            prompt_speech,
-            stream=stream
-        )):
-            audio = result['tts_speech']
-            
-            if isinstance(audio, torch.Tensor):
-                audio = audio.detach().cpu().numpy()
-            
-            if i == 0:
-                latency = (time.time() - first_chunk_time) * 1000
-                metrics["first_chunk_latencies"].append(latency)
-                logger.info(f"⚡ First chunk: {latency:.0f}ms")
-            
-            yield audio
-            await asyncio.sleep(0)
+        try:
+            for i, result in enumerate(self.model.inference_instruct2(
+                text,
+                instruct,
+                prompt_speech,
+                stream=stream
+            )):
+                audio = result['tts_speech']
+                
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.detach().cpu().numpy()
+                
+                if i == 0:
+                    latency = (time.time() - first_chunk_time) * 1000
+                    metrics["first_chunk_latencies"].append(latency)
+                    logger.info(f"⚡ First chunk: {latency:.0f}ms")
+                
+                yield audio
+                await asyncio.sleep(0)
+        except Exception as e:
+            logger.error(f"❌ Instruct synthesis failed: {e}")
+            metrics["failed_requests"] += 1
+            raise
     
     def get_available_speakers(self) -> list:
         """Get list of available SFT speakers"""
-        if not self.model:
+        if not self.model or not self.model_loaded:
             return []
-        return self.model.list_available_spks()
+        try:
+            return self.model.list_available_spks()
+        except Exception as e:
+            logger.error(f"❌ Failed to get speakers: {e}")
+            return []
 
 
 class LiveKitPublisher:
@@ -288,6 +329,7 @@ class LiveKitPublisher:
             logger.info(f"✅ LiveKit publisher ready (room: {default_room})")
         except Exception as e:
             logger.error(f"❌ LiveKit initialization failed: {e}")
+            self.connected = False
             raise
     
     async def _ensure_room_connection(self, room_name: str) -> rtc.Room:
@@ -325,7 +367,11 @@ class LiveKitPublisher:
     ) -> Dict[str, Any]:
         """Publish streaming audio to room"""
         
-        room = await self._ensure_room_connection(room_name)
+        try:
+            room = await self._ensure_room_connection(room_name)
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to room {room_name}: {e}")
+            raise
         
         # Create audio source and track
         audio_source = rtc.AudioSource(
@@ -336,40 +382,52 @@ class LiveKitPublisher:
             "cosyvoice2-audio",
             audio_source
         )
-        publication = await room.local_participant.publish_track(
-            track,
-            rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
-        )
+        
+        try:
+            publication = await room.local_participant.publish_track(
+                track,
+                rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to publish track: {e}")
+            raise
         
         chunks_sent = 0
         total_duration = 0.0
         
         logger.info(f"🎵 Streaming audio to {room_name}")
         
-        async for audio_chunk in audio_stream:
-            # Convert float32 to int16
-            if audio_chunk.dtype != np.int16:
-                audio_i16 = (np.clip(audio_chunk, -1.0, 1.0) * 32767).astype(np.int16)
-            else:
-                audio_i16 = audio_chunk
-            
-            # Create and send frame
-            frame = rtc.AudioFrame.create(
-                sample_rate=sample_rate,
-                num_channels=1,
-                samples_per_channel=len(audio_i16)
-            )
-            frame_data = np.frombuffer(frame.data, dtype=np.int16).reshape((1, len(audio_i16)))
-            frame_data[0] = audio_i16
-            
-            await audio_source.capture_frame(frame)
-            
-            chunks_sent += 1
-            total_duration += len(audio_i16) / sample_rate
-        
-        # Cleanup
-        await asyncio.sleep(0.05)
-        await room.local_participant.unpublish_track(publication.sid)
+        try:
+            async for audio_chunk in audio_stream:
+                # Convert float32 to int16
+                if audio_chunk.dtype != np.int16:
+                    audio_i16 = (np.clip(audio_chunk, -1.0, 1.0) * 32767).astype(np.int16)
+                else:
+                    audio_i16 = audio_chunk
+                
+                # Create and send frame
+                frame = rtc.AudioFrame.create(
+                    sample_rate=sample_rate,
+                    num_channels=1,
+                    samples_per_channel=len(audio_i16)
+                )
+                frame_data = np.frombuffer(frame.data, dtype=np.int16).reshape((1, len(audio_i16)))
+                frame_data[0] = audio_i16
+                
+                await audio_source.capture_frame(frame)
+                
+                chunks_sent += 1
+                total_duration += len(audio_i16) / sample_rate
+        except Exception as e:
+            logger.error(f"❌ Audio streaming failed: {e}")
+            raise
+        finally:
+            # Cleanup
+            try:
+                await asyncio.sleep(0.05)
+                await room.local_participant.unpublish_track(publication.sid)
+            except Exception as e:
+                logger.warning(f"⚠️ Cleanup error: {e}")
         
         logger.info(f"✅ Stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
         
@@ -393,15 +451,30 @@ async def lifespan(app: FastAPI):
     logger.info(str(config))
     
     # Initialize engine
-    engine = CosyVoice2Engine()
-    await engine.initialize()
-    await engine.warmup()
+    try:
+        engine = CosyVoice2Engine()
+        await engine.initialize()
+        await engine.warmup()
+        logger.info("✅ Engine initialization complete")
+    except Exception as e:
+        logger.error(f"❌ Engine initialization failed: {e}")
+        # Don't exit - allow service to start for debugging
+        engine = None
     
     # Initialize LiveKit publisher
-    publisher = LiveKitPublisher()
-    await publisher.initialize(config.livekit.default_room)
+    try:
+        publisher = LiveKitPublisher()
+        await publisher.initialize(config.livekit.default_room)
+        logger.info("✅ LiveKit publisher initialization complete")
+    except Exception as e:
+        logger.error(f"❌ LiveKit initialization failed: {e}")
+        # Don't exit - allow service to start for debugging
+        publisher = None
     
-    logger.info("✅ Service ready")
+    if engine and engine.model_loaded and publisher and publisher.connected:
+        logger.info("✅ Service fully ready")
+    else:
+        logger.warning("⚠️ Service started with limited functionality")
     
     yield
     
@@ -429,12 +502,16 @@ app.add_middleware(
 async def synthesize_tts(request: TTSRequest):
     """Synthesize speech and stream to LiveKit room"""
     
-    if not engine or not publisher:
-        raise HTTPException(status_code=503, detail="Service not ready")
+    if not engine or not engine.model_loaded:
+        raise HTTPException(status_code=503, detail="TTS engine not ready - model not loaded")
+    
+    if not publisher or not publisher.connected:
+        raise HTTPException(status_code=503, detail="LiveKit publisher not ready")
     
     start_time = time.time()
     
     logger.info(f"🎤 TTS request for room {request.room_name}: {request.text[:50]}...")
+    logger.info(f"   Mode: {request.mode}, Speaker: {request.speaker_id}, Streaming: {request.streaming}")
     
     try:
         # Select synthesis mode
@@ -486,6 +563,7 @@ async def synthesize_tts(request: TTSRequest):
         
     except Exception as e:
         logger.error(f"❌ Synthesis failed: {e}")
+        metrics["failed_requests"] += 1
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -493,14 +571,24 @@ async def synthesize_tts(request: TTSRequest):
 async def health_check():
     """Health check endpoint"""
     
+    model_loaded = engine and engine.model_loaded if engine else False
+    livekit_connected = publisher and publisher.connected if publisher else False
+    
+    status = "healthy" if model_loaded and livekit_connected else "degraded"
+    if not engine:
+        status = "engine_failed"
+    elif not publisher:
+        status = "livekit_failed"
+    
     return HealthResponse(
-        status="healthy",
+        status=status,
         engine="cosyvoice2",
         model=config.cosyvoice.model_name,
         device=config.cosyvoice.device,
         gpu_available=torch.cuda.is_available(),
         streaming_enabled=config.cosyvoice.streaming,
-        livekit_connected=publisher.connected if publisher else False
+        livekit_connected=livekit_connected,
+        model_loaded=model_loaded
     )
 
 
@@ -527,7 +615,8 @@ async def get_metrics():
         **metrics,
         **gpu_info,
         "avg_first_chunk_ms": avg_first_chunk,
-        "livekit_connected": publisher.connected if publisher else False
+        "livekit_connected": publisher.connected if publisher else False,
+        "model_loaded": engine.model_loaded if engine else False
     }
 
 
@@ -535,7 +624,7 @@ async def get_metrics():
 async def list_speakers():
     """List available SFT speakers"""
     
-    if not engine:
+    if not engine or not engine.model_loaded:
         raise HTTPException(status_code=503, detail="Engine not ready")
     
     return {
@@ -559,7 +648,11 @@ async def root():
             "streaming",
             "livekit_integration",
             "ultra_low_latency"
-        ]
+        ],
+        "status": {
+            "model_loaded": engine.model_loaded if engine else False,
+            "livekit_connected": publisher.connected if publisher else False
+        }
     }
 
 
