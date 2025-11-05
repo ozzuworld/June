@@ -140,49 +140,54 @@ class TTSEngine:
         logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
     
     def validate_speaker(self, speaker_id: str) -> str:
-        """Validate and fix speaker ID with intelligent fallback"""
+        """Validate and fix speaker ID with intelligent fallback - ULTRA DEFENSIVE"""
         if not speaker_id:
+            # No speaker provided - use first available
             default = self.available_speakers[0] if self.available_speakers else '中文女'
             logger.info(f"No speaker specified, using: {default}")
             return default
         
+        # If no speakers loaded yet, just return what was requested
+        if not self.available_speakers:
+            logger.warning(f"⚠️ No speakers loaded yet, using requested: {speaker_id}")
+            return speaker_id
+        
         # Direct match
         if speaker_id in self.available_speakers:
+            logger.info(f"✅ Direct match: {speaker_id}")
             return speaker_id
         
         # Case-insensitive match
         speaker_lower = speaker_id.lower()
         for available in self.available_speakers:
             if available.lower() == speaker_lower:
-                logger.info(f"Case match: '{speaker_id}' -> '{available}'")
+                logger.info(f"✅ Case match: '{speaker_id}' -> '{available}'")
                 return available
         
         # Partial match
         for available in self.available_speakers:
             if speaker_lower in available.lower() or available.lower() in speaker_lower:
-                logger.info(f"Partial match: '{speaker_id}' -> '{available}'")
+                logger.info(f"✅ Partial match: '{speaker_id}' -> '{available}'")
                 return available
         
-        # Language-based fallback
-        fallback_map = {
-            'english': ['英文女', '英文男', 'English Female', 'English Male'],
-            'chinese': ['中文女', '中文男', 'Chinese Female', 'Chinese Male'],
-            'japanese': ['日语男', 'Japanese Male'],
-            'korean': ['韩语女', 'Korean Female'],
-            'cantonese': ['粤语女', 'Cantonese Female']
-        }
+        # Check if it contains Chinese/English/etc and try language fallback
+        if any(ord(c) > 127 for c in speaker_id):  # Contains non-ASCII (likely Chinese)
+            # Try to find any Chinese speaker
+            for available in self.available_speakers:
+                if any(ord(c) > 127 for c in available):
+                    logger.info(f"✅ Language fallback (Chinese): '{speaker_id}' -> '{available}'")
+                    return available
+        else:
+            # ASCII only - try to find English speaker
+            for available in self.available_speakers:
+                if 'english' in available.lower() or 'en' in available.lower():
+                    logger.info(f"✅ Language fallback (English): '{speaker_id}' -> '{available}'")
+                    return available
         
-        for lang, speakers in fallback_map.items():
-            if lang in speaker_lower or any(s.lower() in speaker_lower for s in speakers):
-                for fallback in speakers:
-                    if fallback in self.available_speakers:
-                        logger.info(f"Language fallback: '{speaker_id}' -> '{fallback}'")
-                        return fallback
-        
-        # Final fallback
-        default = self.available_speakers[0] if self.available_speakers else '中文女'
-        logger.warning(f"⚠️ Speaker '{speaker_id}' not found, using: {default}")
-        logger.warning(f"   Available: {self.available_speakers}")
+        # Last resort: use first available
+        default = self.available_speakers[0] if self.available_speakers else speaker_id
+        logger.warning(f"⚠️ Speaker '{speaker_id}' not found in {self.available_speakers}")
+        logger.warning(f"   Using fallback: {default}")
         return default
     
     async def synthesize(self, text: str, speaker_id: str, stream: bool = True):
@@ -404,6 +409,23 @@ async def root():
         "service": "cosyvoice2-tts",
         "version": "1.0.1",
         "status": "healthy"
+    }
+
+@app.get("/debug")
+async def debug_info():
+    """Debug information"""
+    if not engine:
+        return {"error": "Engine not initialized"}
+    
+    return {
+        "engine_initialized": engine is not None,
+        "model_loaded": engine.model is not None if engine else False,
+        "available_speakers": engine.get_speakers() if engine else [],
+        "speaker_count": len(engine.get_speakers()) if engine else 0,
+        "device": engine.device if engine else "unknown",
+        "sample_rate": engine.sample_rate if engine else 0,
+        "model_path": config.cosyvoice.model_path,
+        "livekit_connected": publisher.connected if publisher else False
     }
 
 # =============================================================================
