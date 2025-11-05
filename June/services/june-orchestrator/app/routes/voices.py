@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Voice management endpoints for Chatterbox TTS integration
+Voice management endpoints for CosyVoice2 integration
 """
 import logging
 from fastapi import APIRouter, HTTPException, Query
 from typing import Dict, Any
-import httpx
 
 from ..config import config
-from ..voice_registry import VOICE_REGISTRY, get_available_voices, resolve_voice_reference
+from ..voice_registry import (
+    COSYVOICE2_SPEAKERS,
+    get_speaker_id,
+    get_default_speaker,
+    list_available_speakers,
+    resolve_legacy_speaker
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -17,89 +22,120 @@ router = APIRouter()
 @router.get("/api/voices")
 async def list_available_voices():
     """
-    Get list of available voices in the registry.
+    Get list of available CosyVoice2 speakers.
     """
-    voices = get_available_voices()
+    speakers = list_available_speakers()
     
     return {
         "status": "success",
-        "voices": voices,
-        "count": len(voices),
-        "default_voice": resolve_voice_reference(None, None)
+        "engine": "cosyvoice2",
+        "speakers": speakers,
+        "count": len(speakers),
+        "default_speaker": get_default_speaker(),
+        "available_languages": ["en", "zh", "jp", "ko", "yue"]
     }
 
 
-@router.post("/api/voices/warmup")
-async def warmup_voice(voice_id: str = Query(..., description="Voice ID from registry to warmup")):
+@router.get("/api/voices/{language}")
+async def get_voices_by_language(language: str):
     """
-    Pre-warm a voice in the TTS service to cache embeddings.
-    This reduces latency for the first synthesis with this voice.
+    Get available speakers for a specific language.
     """
-    if voice_id not in VOICE_REGISTRY:
+    speakers = {}
+    
+    if language == "en":
+        speakers = {
+            "en_female": COSYVOICE2_SPEAKERS["en_female"],
+            "en_male": COSYVOICE2_SPEAKERS["en_male"]
+        }
+    elif language == "zh":
+        speakers = {
+            "zh_female": COSYVOICE2_SPEAKERS["zh_female"],
+            "zh_male": COSYVOICE2_SPEAKERS["zh_male"]
+        }
+    elif language == "jp":
+        speakers = {
+            "jp_male": COSYVOICE2_SPEAKERS["jp_male"]
+        }
+    elif language == "ko":
+        speakers = {
+            "ko_female": COSYVOICE2_SPEAKERS["ko_female"]
+        }
+    elif language == "yue":
+        speakers = {
+            "yue_female": COSYVOICE2_SPEAKERS["yue_female"]
+        }
+    else:
         raise HTTPException(
-            status_code=404, 
-            detail=f"Unknown voice_id '{voice_id}'. Available: {list(VOICE_REGISTRY.keys())}"
+            status_code=404,
+            detail=f"Language '{language}' not supported. Available: en, zh, jp, ko, yue"
         )
     
-    reference_url = VOICE_REGISTRY[voice_id]
-    
-    # Trigger a short synthesis to cache the voice embeddings
-    payload = {
-        "text": "Warmup.",
-        "language": "en",
-        "speaker_wav": [reference_url],
-        "exaggeration": 0.5,
-        "cfg_weight": 0.8
+    return {
+        "status": "success",
+        "language": language,
+        "speakers": speakers,
+        "count": len(speakers)
     }
-    
-    try:
-        tts_url = f"{config.services.tts_base_url}/synthesize"
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(tts_url, json=payload)
-            
-            if response.status_code != 200:
-                logger.error(f"❌ Voice warmup failed: {response.status_code} - {response.text}")
-                raise HTTPException(
-                    status_code=502, 
-                    detail=f"TTS service error: {response.status_code}"
-                )
-            
-            logger.info(f"✅ Voice '{voice_id}' warmed up successfully")
-            
-            return {
-                "status": "success",
-                "voice_id": voice_id,
-                "reference_url": reference_url,
-                "message": f"Voice '{voice_id}' embeddings cached in TTS service"
-            }
-            
-    except httpx.TimeoutException:
-        logger.error(f"❌ Voice warmup timeout for '{voice_id}'")
-        raise HTTPException(status_code=504, detail="TTS service timeout")
-    except Exception as e:
-        logger.error(f"❌ Voice warmup error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/voices/resolve")
-async def resolve_voice(speaker: str = None, speaker_wav: str = None):
+async def resolve_voice(speaker: str = None, language: str = "en", gender: str = "female"):
     """
-    Test voice resolution logic.
-    Shows what reference URL would be used for given speaker/speaker_wav.
+    Resolve speaker name to CosyVoice2 speaker ID.
+    Supports legacy speaker names for backward compatibility.
     """
-    resolved_reference = resolve_voice_reference(speaker, speaker_wav)
+    
+    # Try to resolve legacy speaker name
+    if speaker:
+        resolved = resolve_legacy_speaker(speaker)
+        return {
+            "status": "success",
+            "input": {"speaker": speaker},
+            "resolved_speaker_id": resolved,
+            "method": "legacy_mapping" if speaker != resolved else "direct"
+        }
+    
+    # Get speaker by language and gender
+    speaker_id = get_speaker_id(language, gender)
     
     return {
         "status": "success",
         "input": {
-            "speaker": speaker,
-            "speaker_wav": speaker_wav
+            "language": language,
+            "gender": gender
         },
-        "resolved_reference": resolved_reference,
-        "resolution_method": (
-            "direct_speaker_wav" if speaker_wav 
-            else "registry_lookup" if speaker and speaker in VOICE_REGISTRY 
-            else "default_fallback"
-        )
+        "resolved_speaker_id": speaker_id,
+        "method": "language_gender_mapping"
+    }
+
+
+@router.get("/api/voices/info")
+async def get_voice_info():
+    """
+    Get information about CosyVoice2 voice system.
+    """
+    return {
+        "status": "success",
+        "engine": "CosyVoice2-0.5B",
+        "version": "2.0",
+        "features": {
+            "sft_mode": "Predefined speakers (fastest, most stable)",
+            "zero_shot_mode": "Voice cloning from reference audio",
+            "instruct_mode": "Natural language control",
+            "streaming": "Real-time audio streaming",
+            "multilingual": True,
+            "cross_lingual": True
+        },
+        "supported_languages": {
+            "en": "English",
+            "zh": "Chinese (Mandarin)",
+            "jp": "Japanese",
+            "ko": "Korean",
+            "yue": "Cantonese"
+        },
+        "total_speakers": len(COSYVOICE2_SPEAKERS),
+        "default_speaker": get_default_speaker(),
+        "sample_rate": "22050 Hz",
+        "latency": "~150ms (first packet)"
     }
