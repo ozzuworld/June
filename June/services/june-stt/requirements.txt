@@ -16,7 +16,7 @@ numpy>=2.0.0,<2.1.0
 # Additional WhisperX requirements
 pyannote.audio>=3.3.0
 faster-whisper>=1.1.1
-ctranslate2>=3.24.0
+# Note: ctranslate2 will be installed by whisperx (>=4.5.0); do not pin here.
 
 # Service integration
 httpx==0.25.2
