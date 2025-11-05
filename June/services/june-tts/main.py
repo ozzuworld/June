@@ -39,19 +39,33 @@ logger = logging.getLogger("tts-service")
 # =============================================================================
 
 class TTSRequest(BaseModel):
-    """TTS synthesis request"""
+    """TTS synthesis request - compatible with orchestrator"""
     text: str = Field(..., description="Text to synthesize")
     room_name: str = Field("ozzu-main", description="LiveKit room name")
     mode: str = Field("sft", description="Synthesis mode")
-    voice: Optional[str] = Field(None, description="Voice/speaker")
-    speaker: Optional[str] = Field(None, description="Speaker")
+    
+    # All possible speaker field names for compatibility
+    voice: Optional[str] = Field(None, description="Voice/speaker (legacy)")
+    speaker: Optional[str] = Field(None, description="Speaker (legacy)")
     speaker_id: Optional[str] = Field(None, description="Speaker ID")
+    
+    # Optional fields
     streaming: bool = Field(True, description="Enable streaming")
     speed: float = Field(1.0, description="Speech speed")
+    prompt_audio: Optional[str] = Field(None, description="Reference audio for zero-shot")
+    prompt_text: Optional[str] = Field(None, description="Reference text for zero-shot")
+    instruct: Optional[str] = Field(None, description="Instruction for instruct mode")
     
     def get_speaker_id(self) -> str:
-        """Get effective speaker ID"""
-        return self.speaker_id or self.speaker or self.voice or "中文女"
+        """Get effective speaker ID from any field"""
+        # Try all possible field names
+        speaker = self.speaker_id or self.speaker or self.voice
+        
+        # If none provided, use default
+        if not speaker:
+            return "中文女"  # Default Chinese Female
+        
+        return speaker
 
 class TTSResponse(BaseModel):
     """TTS response"""
@@ -334,7 +348,9 @@ async def synthesize(request: TTSRequest):
     start_time = time.time()
     speaker_id = request.get_speaker_id()
     
-    logger.info(f"🎤 TTS request: room={request.room_name}, speaker={speaker_id}")
+    logger.info(f"🎤 TTS request: room={request.room_name}, mode={request.mode}")
+    logger.info(f"   Speaker fields: speaker_id={request.speaker_id}, speaker={request.speaker}, voice={request.voice}")
+    logger.info(f"   Resolved speaker: {speaker_id}")
     logger.info(f"   Text: {request.text[:100]}...")
     
     try:
@@ -358,6 +374,8 @@ async def synthesize(request: TTSRequest):
         
     except Exception as e:
         logger.error(f"❌ Synthesis failed: {e}")
+        logger.error(f"   Speaker requested: {speaker_id}")
+        logger.error(f"   Available speakers: {engine.get_speakers()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
