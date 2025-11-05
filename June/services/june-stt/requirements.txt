@@ -1,23 +1,38 @@
-# June STT Service - WhisperX Enhanced Dependencies (let WhisperX manage torch)
+# June STT Service - WhisperX Enhanced Dependencies
+# Based on official WhisperX requirements
+# Reference: https://github.com/m-bain/whisperX
+
+# Web Framework
 fastapi==0.104.1
 uvicorn==0.24.0
+python-multipart
+
+# LiveKit Integration
 livekit==0.11.1
 
-# WhisperX and dependencies (WhisperX will install its preferred torch stack)
-whisperx @ git+https://github.com/m-bain/whisperX.git
-transformers>=4.30.0
+# PyTorch (already installed in Dockerfile with CUDA 12.1)
+# torch==2.2.0
+# torchaudio==2.2.0
 
-# Audio processing
+# WhisperX - Install from PyPI for stability (v3.7.4 latest stable)
+whisperx==3.7.4
+
+# Core Dependencies (compatible versions)
+transformers>=4.30.0,<5.0.0
+faster-whisper>=1.0.0,<2.0.0
+pyannote.audio>=3.1.0,<4.0.0
+
+# Audio Processing (NumPy 2.x compatible)
 soundfile==0.12.1
-scipy>=1.13.0  # NumPy 2.x compatible
-librosa>=0.10.0
-numpy>=2.0.0,<2.1.0
+scipy>=1.11.0,<2.0.0
+librosa>=0.10.0,<1.0.0
+numpy>=1.24.0,<2.0.0
 
-# Additional WhisperX requirements
-pyannote.audio>=3.3.0
-faster-whisper>=1.1.1
-# Note: ctranslate2 will be installed by whisperx (>=4.5.0); do not pin here.
+# ctranslate2 for faster-whisper (let whisperx manage this)
+# ctranslate2>=4.0.0
 
-# Service integration
+# Service Integration
 httpx==0.25.2
-python_multipart
+
+# Note: Silero VAD will be downloaded from torch.hub automatically
+# Note: Alignment models will be downloaded by WhisperX on first use

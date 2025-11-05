@@ -1,8 +1,9 @@
 # WhisperX Enhanced June STT Service
-# Multi-stage build for optimized WhisperX deployment
+# Based on official WhisperX requirements and best practices
+# Reference: https://github.com/m-bain/whisperX
 
-# Switch to CUDA 12.x with cuDNN 9 runtime to match torch/torchaudio 2.8.x wheels
-FROM nvidia/cuda:12.4.1-cudnn9-runtime-ubuntu22.04 AS runtime
+# Use CUDA 12.1 base image for PyTorch 2.x compatibility
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
 
 # Environment setup
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,8 +14,8 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="8.0.0-whisperx"
-LABEL description="June STT with WhisperX - Word-level timestamps + Speaker diarization"
+LABEL version="8.1.0-whisperx"
+LABEL description="June STT with WhisperX - Official Installation Method"
 LABEL service="june-stt"
 LABEL framework="whisperx"
 
@@ -25,8 +26,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     ffmpeg \
     libsndfile1 \
+    sox \
+    libsox-dev \
     curl \
+    wget \
     git \
+    build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -42,7 +47,14 @@ RUN useradd -m -u 1001 sttuser
 WORKDIR /app
 RUN chown -R sttuser:sttuser /app
 
-# Install WhisperX and dependencies
+# Install PyTorch with CUDA 12.1 support first (official recommendation)
+# WhisperX 3.7.4+ requires PyTorch 2.8.0, but for stability use 2.2.0 with CUDA 12.1
+RUN pip install --no-cache-dir \
+    torch==2.2.0 \
+    torchaudio==2.2.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Copy requirements and install dependencies
 COPY --chown=sttuser:sttuser requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -53,6 +65,7 @@ COPY --chown=sttuser:sttuser whisper_service.py /app/
 COPY --chown=sttuser:sttuser livekit_token.py /app/
 COPY --chown=sttuser:sttuser orchestrator_client.py /app/
 COPY --chown=sttuser:sttuser streaming_utils.py /app/
+COPY --chown=sttuser:sttuser context_aware_stt.py /app/
 
 # Set up environment
 ENV PYTHONPATH=/app
