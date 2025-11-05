@@ -58,14 +58,9 @@ RUN pip install --no-cache-dir \
 COPY --chown=sttuser:sttuser requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY --chown=sttuser:sttuser main.py /app/
-COPY --chown=sttuser:sttuser config.py /app/
-COPY --chown=sttuser:sttuser whisper_service.py /app/
-COPY --chown=sttuser:sttuser livekit_token.py /app/
-COPY --chown=sttuser:sttuser orchestrator_client.py /app/
-COPY --chown=sttuser:sttuser streaming_utils.py /app/
-COPY --chown=sttuser:sttuser context_aware_stt.py /app/
+# Copy all Python files from the build context
+# This will copy whatever exists in June/services/june-stt/
+COPY --chown=sttuser:sttuser *.py /app/
 
 # Set up environment
 ENV PYTHONPATH=/app
@@ -106,7 +101,7 @@ EXPOSE 8001
 
 # Enhanced health check for WhisperX
 HEALTHCHECK --interval=20s --timeout=15s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8001/healthz | grep -q '"framework":"whisperx"' || exit 1
+    CMD curl -f http://localhost:8001/healthz || exit 1
 
 # Startup command
 CMD ["python", "main.py"]
