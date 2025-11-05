@@ -1,0 +1,3 @@
+# Constraints file to fix PyAV build issues
+# Pin Cython below 3.0 to avoid noexcept/nogil signature mismatches
+cython<3.0
