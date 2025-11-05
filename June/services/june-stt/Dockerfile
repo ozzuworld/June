@@ -1,9 +1,10 @@
-# WhisperX Enhanced June STT Service
+# WhisperX Enhanced June STT Service - cuDNN 9 Compatible
 # Based on official WhisperX requirements and best practices
 # Reference: https://github.com/m-bain/whisperX
+# Updated for cuDNN 9 compatibility to fix CTranslate2 issues
 
-# Use CUDA 12.1 base image for PyTorch 2.x compatibility
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
+# Use CUDA 12.3+ base image for cuDNN 9 compatibility
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04 AS runtime
 
 # Environment setup
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,8 +15,8 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="8.1.0-whisperx"
-LABEL description="June STT with WhisperX - Official Installation Method"
+LABEL version="8.2.0-whisperx-cudnn9"
+LABEL description="June STT with WhisperX - cuDNN 9 Compatible"
 LABEL service="june-stt"
 LABEL framework="whisperx"
 
@@ -47,12 +48,12 @@ RUN useradd -m -u 1001 sttuser
 WORKDIR /app
 RUN chown -R sttuser:sttuser /app
 
-# Install PyTorch with CUDA 12.1 support first (official recommendation)
-# WhisperX 3.7.4+ requires PyTorch 2.8.0, but for stability use 2.2.0 with CUDA 12.1
+# Install PyTorch with CUDA 12.4 support for cuDNN 9 compatibility
+# Updated to support latest CTranslate2 versions
 RUN pip install --no-cache-dir \
-    torch==2.2.0 \
-    torchaudio==2.2.0 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch==2.4.0 \
+    torchaudio==2.4.0 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # Copy requirements and install dependencies
 COPY --chown=sttuser:sttuser requirements.txt /app/
@@ -101,6 +102,9 @@ ENV WORD_LEVEL_PARTIALS=true
 ENV STT_STREAMING_ENABLED=true
 ENV STT_PARTIALS_ENABLED=true
 ENV STT_CONTINUOUS_PARTIALS=true
+
+# cuDNN 9 Library Path (additional safety)
+ENV LD_LIBRARY_PATH="/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH"
 
 EXPOSE 8001
 
