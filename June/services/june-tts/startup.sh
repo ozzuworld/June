@@ -54,6 +54,17 @@ else
     echo "🔄 Starting model download (this may take 5-10 minutes)..."
     echo ""
     
+    # Clear any partial downloads first
+    if [ -d "$MODEL_PATH" ]; then
+        echo "🧹 Clearing partial download at $MODEL_PATH"
+        rm -rf "$MODEL_PATH"
+    fi
+    
+    if [ -d "/tmp/modelscope_cache" ]; then
+        echo "🧹 Clearing ModelScope cache"
+        rm -rf "/tmp/modelscope_cache"
+    fi
+    
     # Run download script with detailed output
     if python download_models.py; then
         echo ""
@@ -101,11 +112,56 @@ else
     exit 1
 fi
 
-if [ -f "$MODEL_PATH/llm.pt" ] || [ -f "$MODEL_PATH/flow.pt" ]; then
-    echo "   ✅ Model weights found"
+# Enhanced model weights verification
+REQUIRED_WEIGHTS=("llm.pt" "flow.pt" "hift.pt")
+MISSING_WEIGHTS=()
+
+for weight_file in "${REQUIRED_WEIGHTS[@]}"; do
+    if [ ! -f "$MODEL_PATH/$weight_file" ]; then
+        MISSING_WEIGHTS+=("$weight_file")
+    fi
+done
+
+if [ ${#MISSING_WEIGHTS[@]} -eq 0 ]; then
+    echo "   ✅ All required model weights found (llm.pt, flow.pt, hift.pt)"
 else
-    echo "   ❌ Model weights MISSING!"
-    exit 1
+    echo "   ❌ Critical model weights MISSING!"
+    echo "   Required files: ${REQUIRED_WEIGHTS[*]}"
+    echo "   Missing files: ${MISSING_WEIGHTS[*]}"
+    echo ""
+    echo "   📋 Available .pt files:"
+    ls -la "$MODEL_PATH"/*.pt 2>/dev/null || echo "      No .pt files found"
+    echo ""
+    echo "   💡 This indicates an incomplete model download."
+    echo "      Clearing cache and forcing re-download..."
+    
+    # Force clean re-download
+    rm -rf "$MODEL_PATH"
+    rm -rf "/tmp/modelscope_cache"
+    
+    echo "   🔄 Attempting fresh download..."
+    if python download_models.py; then
+        echo "   ✅ Re-download completed"
+        
+        # Re-verify after download
+        MISSING_WEIGHTS=()
+        for weight_file in "${REQUIRED_WEIGHTS[@]}"; do
+            if [ ! -f "$MODEL_PATH/$weight_file" ]; then
+                MISSING_WEIGHTS+=("$weight_file")
+            fi
+        done
+        
+        if [ ${#MISSING_WEIGHTS[@]} -eq 0 ]; then
+            echo "   ✅ All model weights now present"
+        else
+            echo "   ❌ Re-download failed - still missing: ${MISSING_WEIGHTS[*]}"
+            echo "   💡 Try manual download: git clone https://www.modelscope.cn/iic/CosyVoice2-0.5B.git $MODEL_PATH"
+            exit 1
+        fi
+    else
+        echo "   ❌ Re-download failed!"
+        exit 1
+    fi
 fi
 
 echo ""
