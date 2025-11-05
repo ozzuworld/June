@@ -2,129 +2,137 @@
 set -euo pipefail
 
 echo "================================================================"
-echo "June vast.ai Combined Services (STT + TTS with CosyVoice2)"
+echo "June Services - Docker Compose Deployment on Vast.ai"
 echo "================================================================"
 
-# Environment configuration
-export ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-https://api.ozzu.world}"
-export STT_PORT="${STT_PORT:-8001}"
-export TTS_PORT="${TTS_PORT:-8000}"
-export WHISPER_CACHE_DIR="${WHISPER_CACHE_DIR:-/app/models}"
-export MODEL_DIR="${MODEL_DIR:-/app/pretrained_models}"
-export COSYVOICE_MODEL="${COSYVOICE_MODEL:-CosyVoice2-0.5B}"
+# Check if running on vast.ai
+if [ -d "/workspace" ]; then
+    echo "✅ Vast.ai environment detected"
+    WORKSPACE="/workspace"
+else
+    echo "⚠️  Not on vast.ai, using current directory"
+    WORKSPACE="$(pwd)"
+fi
 
-echo "[config] ORCHESTRATOR_URL: $ORCHESTRATOR_URL"
-echo "[config] STT_PORT: $STT_PORT"
-echo "[config] TTS_PORT: $TTS_PORT"
-echo "[config] WHISPER_CACHE_DIR: $WHISPER_CACHE_DIR"
-echo "[config] MODEL_DIR: $MODEL_DIR"
+cd "$WORKSPACE"
 
-# Verify CUDA/cuDNN libraries
-echo "================================================================"
-echo "[cuda] Verifying CUDA installation..."
-echo "================================================================"
+# Check for .env file
+if [ ! -f ".env" ]; then
+    echo "❌ Error: .env file not found"
+    echo "Please create .env from .env.example:"
+    echo "  cp .env.example .env"
+    echo "  nano .env  # Edit with your configuration"
+    exit 1
+fi
+
+# Load environment variables
+set -a
+source .env
+set +a
+
+echo ""
+echo "Configuration loaded:"
+echo "  ORCHESTRATOR_URL: $ORCHESTRATOR_URL"
+echo "  LIVEKIT_WS_URL: $LIVEKIT_WS_URL"
+echo ""
+
+# Check for docker-compose
+if ! command -v docker-compose &> /dev/null; then
+    echo "❌ docker-compose not found, installing..."
+    sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+    echo "✅ docker-compose installed"
+fi
+
+# Check GPU availability
+echo ""
+echo "Checking GPU availability..."
 if command -v nvidia-smi &> /dev/null; then
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+    echo "✅ GPU detected"
 else
-    echo "[warning] nvidia-smi not available"
+    echo "⚠️  Warning: nvidia-smi not available"
 fi
 
-# Check cuDNN
+# Pull latest images
 echo ""
-echo "[cudnn] Checking cuDNN libraries..."
-ldconfig -p | grep cudnn || echo "[warning] cuDNN libraries not found in ldconfig"
-ls -la /usr/local/cuda/lib64/libcudnn* 2>/dev/null || echo "[warning] cuDNN not found in CUDA lib64"
+echo "================================================================"
+echo "Pulling latest Docker images..."
+echo "================================================================"
+docker-compose pull
 
-# Create necessary directories
-mkdir -p "$WHISPER_CACHE_DIR" "$MODEL_DIR" /app/cache
+# Stop any existing containers
+echo ""
+echo "Stopping existing containers..."
+docker-compose down || true
 
-# Check if CosyVoice2 model exists, download if not
-COSYVOICE_MODEL_PATH="$MODEL_DIR/$COSYVOICE_MODEL"
-if [ ! -d "$COSYVOICE_MODEL_PATH" ] || [ -z "$(ls -A "$COSYVOICE_MODEL_PATH" 2>/dev/null)" ]; then
-    echo "================================================================"
-    echo "[download] CosyVoice2 model not found, downloading..."
-    echo "================================================================"
-    
-    /venv/bin/python /app/tts/download_models.py || {
-        echo "[error] Failed to download CosyVoice2 model"
-        exit 1
-    }
+# Start services
+echo ""
+echo "================================================================"
+echo "Starting June services..."
+echo "================================================================"
+docker-compose up -d
+
+# Wait for services to be healthy
+echo ""
+echo "Waiting for services to become healthy..."
+sleep 10
+
+# Check service status
+echo ""
+echo "================================================================"
+echo "Service Status:"
+echo "================================================================"
+docker-compose ps
+
+# Show logs
+echo ""
+echo "================================================================"
+echo "Service Logs (last 20 lines):"
+echo "================================================================"
+echo ""
+echo "--- STT Logs ---"
+docker-compose logs --tail=20 june-stt
+echo ""
+echo "--- TTS Logs ---"
+docker-compose logs --tail=20 june-tts
+
+# Health check
+echo ""
+echo "================================================================"
+echo "Health Check:"
+echo "================================================================"
+sleep 5
+
+STT_HEALTH=$(curl -sf http://localhost:8001/healthz || echo "FAILED")
+TTS_HEALTH=$(curl -sf http://localhost:8000/health || echo "FAILED")
+
+if [[ "$STT_HEALTH" == *"healthy"* ]]; then
+    echo "✅ STT Service: HEALTHY"
 else
-    echo "[info] CosyVoice2 model already exists at $COSYVOICE_MODEL_PATH"
+    echo "❌ STT Service: UNHEALTHY"
 fi
 
-# Function to handle graceful shutdown
-cleanup() {
-    echo ""
-    echo "================================================================"
-    echo "[shutdown] Terminating services..."
-    echo "================================================================"
-    
-    # Send TERM signal to both processes
-    kill -TERM "$STT_PID" "$TTS_PID" 2>/dev/null || true
-    
-    # Wait for graceful shutdown (5 seconds)
-    sleep 5
-    
-    # Force kill if still running
-    kill -KILL "$STT_PID" "$TTS_PID" 2>/dev/null || true
-    
-    # Wait for processes to exit
-    wait "$STT_PID" "$TTS_PID" 2>/dev/null || true
-    
-    echo "[shutdown] Cleanup complete"
-    exit 0
-}
+if [[ "$TTS_HEALTH" == *"healthy"* ]]; then
+    echo "✅ TTS Service: HEALTHY"
+else
+    echo "❌ TTS Service: UNHEALTHY"
+fi
 
-# Set up signal handlers
-trap cleanup SIGINT SIGTERM
-
-# Start STT service
+echo ""
 echo "================================================================"
-echo "[stt] Starting Speech-to-Text service..."
+echo "Deployment Complete!"
 echo "================================================================"
-/venv/bin/python /app/stt/main.py &
-STT_PID=$!
-echo "[stt] Started with PID: $STT_PID on port $STT_PORT"
-
-# Wait a moment before starting TTS
-sleep 2
-
-# Start TTS service
+echo "STT Service: http://localhost:8001"
+echo "TTS Service: http://localhost:8000"
+echo ""
+echo "To view logs:"
+echo "  docker-compose logs -f june-stt"
+echo "  docker-compose logs -f june-tts"
+echo ""
+echo "To check status:"
+echo "  docker-compose ps"
+echo ""
+echo "To stop services:"
+echo "  docker-compose down"
 echo "================================================================"
-echo "[tts] Starting Text-to-Speech service (CosyVoice2)..."
-echo "================================================================"
-/venv/bin/python /app/tts/main.py &
-TTS_PID=$!
-echo "[tts] Started with PID: $TTS_PID on port $TTS_PORT"
-
-echo "================================================================"
-echo "Both services started successfully!"
-echo "================================================================"
-echo "STT: http://localhost:$STT_PORT"
-echo "TTS: http://localhost:$TTS_PORT"
-echo "================================================================"
-
-# Monitor both services
-echo "[monitor] Monitoring services (press Ctrl+C to stop)..."
-
-while true; do
-    # Check if STT process is still alive
-    if ! kill -0 "$STT_PID" 2>/dev/null; then
-        echo ""
-        echo "[error] STT service (PID: $STT_PID) has died unexpectedly"
-        cleanup
-        exit 1
-    fi
-    
-    # Check if TTS process is still alive
-    if ! kill -0 "$TTS_PID" 2>/dev/null; then
-        echo ""
-        echo "[error] TTS service (PID: $TTS_PID) has died unexpectedly"
-        cleanup
-        exit 1
-    fi
-    
-    # Sleep before next check
-    sleep 5
-done

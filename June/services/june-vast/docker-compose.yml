@@ -1,0 +1,154 @@
+version: '3.8'
+
+services:
+  june-stt:
+    image: ozzuworld/june-stt:latest
+    container_name: june-stt
+    runtime: nvidia
+    restart: unless-stopped
+    environment:
+      # GPU Configuration
+      NVIDIA_VISIBLE_DEVICES: 0
+      CUDA_VISIBLE_DEVICES: 0
+      
+      # Service Configuration
+      STT_PORT: 8001
+      LOG_LEVEL: INFO
+      
+      # WhisperX Configuration
+      WHISPER_MODEL: large-v3-turbo
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      WHISPER_CACHE_DIR: /app/models
+      
+      # Streaming Configuration
+      STT_STREAMING_ENABLED: "true"
+      STT_PARTIALS_ENABLED: "true"
+      STT_CONTINUOUS_PARTIALS: "true"
+      WORD_LEVEL_PARTIALS: "true"
+      
+      # Timing Configuration (configurable)
+      MAX_UTTERANCE_SEC: "${MAX_UTTERANCE_SEC:-15.0}"
+      MIN_UTTERANCE_SEC: "${MIN_UTTERANCE_SEC:-1.0}"
+      SILENCE_TIMEOUT_SEC: "${SILENCE_TIMEOUT_SEC:-2.5}"
+      
+      # LiveKit Configuration
+      LIVEKIT_ENABLED: "true"
+      LIVEKIT_WS_URL: "${LIVEKIT_WS_URL:-wss://livekit.ozzu.world}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+      
+      # Orchestrator Integration
+      ORCHESTRATOR_URL: "${ORCHESTRATOR_URL:-https://api.ozzu.world}"
+      ORCHESTRATOR_ENABLED: "true"
+      
+      # Silero VAD
+      SILERO_VAD_ENABLED: "true"
+      SILERO_VAD_THRESHOLD: 0.45
+      
+    ports:
+      - "8001:8001"
+    
+    volumes:
+      - whisper-models:/app/models
+      - stt-cache:/app/cache
+      - stt-logs:/app/logs
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    
+    networks:
+      - june-network
+
+  june-tts:
+    image: ozzuworld/june-tts:latest
+    container_name: june-tts
+    runtime: nvidia
+    restart: unless-stopped
+    environment:
+      # GPU Configuration
+      NVIDIA_VISIBLE_DEVICES: 0
+      CUDA_VISIBLE_DEVICES: 0
+      
+      # Service Configuration
+      TTS_PORT: 8000
+      LOG_LEVEL: INFO
+      
+      # CosyVoice2 Configuration
+      MODEL_DIR: /app/pretrained_models
+      COSYVOICE_MODEL: "${COSYVOICE_MODEL:-CosyVoice2-0.5B}"
+      DEVICE: cuda
+      
+      # LiveKit Configuration
+      LIVEKIT_ENABLED: "true"
+      LIVEKIT_WS_URL: "${LIVEKIT_WS_URL:-wss://livekit.ozzu.world}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET}"
+      
+      # Orchestrator Integration
+      ORCHESTRATOR_URL: "${ORCHESTRATOR_URL:-https://api.ozzu.world}"
+      ORCHESTRATOR_ENABLED: "true"
+      
+      # Voice Configuration
+      DEFAULT_VOICE: "${DEFAULT_VOICE:-female-calm}"
+      VOICE_SPEED: "${VOICE_SPEED:-1.0}"
+      
+    ports:
+      - "8000:8000"
+    
+    volumes:
+      - cosyvoice-models:/app/pretrained_models
+      - tts-cache:/app/cache
+      - tts-logs:/app/logs
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    
+    networks:
+      - june-network
+    
+    depends_on:
+      june-stt:
+        condition: service_healthy
+
+volumes:
+  whisper-models:
+    driver: local
+  cosyvoice-models:
+    driver: local
+  stt-cache:
+    driver: local
+  tts-cache:
+    driver: local
+  stt-logs:
+    driver: local
+  tts-logs:
+    driver: local
+
+networks:
+  june-network:
+    driver: bridge
