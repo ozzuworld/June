@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
 """
 CosyVoice2 TTS Service Configuration
-Simple, clean configuration for CosyVoice2 integration
+Simplified configuration for CosyVoice2 integration
 """
 
 import os
 import torch
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 
 @dataclass
 class CosyVoice2Config:
     """CosyVoice2 model configuration"""
-    # Model settings
+    # Model paths
     model_dir: str = "/app/pretrained_models"
     model_name: str = "CosyVoice2-0.5B"
     
-    # Performance settings
+    # Device settings
     device: str = "auto"  # auto, cuda, cpu
-    load_jit: bool = False  # JIT compilation (slower startup)
+    fp16: bool = True  # Use FP16 for faster inference on GPU
+    
+    # Advanced options (usually keep disabled for stability)
+    load_jit: bool = False  # JIT compilation
     load_trt: bool = False  # TensorRT acceleration
     load_vllm: bool = False  # vLLM acceleration
-    fp16: bool = True  # FP16 for faster inference on GPU
     
     # Audio settings
     sample_rate: int = 22050  # CosyVoice2 native sample rate
-    streaming: bool = True  # Enable streaming mode
+    streaming: bool = True
     
     @property
     def model_path(self) -> str:
@@ -36,18 +38,9 @@ class CosyVoice2Config:
 @dataclass
 class ServiceConfig:
     """Service-level configuration"""
-    # Server
     host: str = "0.0.0.0"
     port: int = 8000
-    
-    # Service info
-    name: str = "june-tts"
-    version: str = "1.0.0"
-    
-    # Logging
     log_level: str = "INFO"
-    
-    # CORS
     cors_origins: List[str] = None
     
     def __post_init__(self):
@@ -62,8 +55,6 @@ class LiveKitConfig:
     api_key: str = ""
     api_secret: str = ""
     default_room: str = "ozzu-main"
-    
-    # Connection settings
     connection_timeout: int = 10
     reconnect_attempts: int = 3
 
@@ -82,14 +73,14 @@ class Config:
     def _load_from_env(self):
         """Load configuration from environment variables"""
         
-        # CosyVoice settings
+        # Model settings
         self.cosyvoice.model_dir = os.getenv("MODEL_DIR", self.cosyvoice.model_dir)
         self.cosyvoice.model_name = os.getenv("COSYVOICE_MODEL", self.cosyvoice.model_name)
         self.cosyvoice.device = os.getenv("TTS_DEVICE", self.cosyvoice.device)
         self.cosyvoice.fp16 = os.getenv("TTS_FP16", "true").lower() == "true"
         self.cosyvoice.streaming = os.getenv("TTS_STREAMING", "true").lower() == "true"
         
-        # Service settings
+        # Service settings (fixed: use SERVICE_PORT to match Dockerfile)
         self.service.host = os.getenv("SERVICE_HOST", self.service.host)
         self.service.port = int(os.getenv("SERVICE_PORT", self.service.port))
         self.service.log_level = os.getenv("LOG_LEVEL", self.service.log_level)
@@ -111,14 +102,14 @@ class Config:
             self.cosyvoice.device = "cuda" if torch.cuda.is_available() else "cpu"
     
     def __str__(self) -> str:
-        return f"""CosyVoice2 TTS Service Configuration:
+        return f"""CosyVoice2 TTS Configuration:
   Model: {self.cosyvoice.model_name}
   Device: {self.cosyvoice.device}
   FP16: {self.cosyvoice.fp16}
   Streaming: {self.cosyvoice.streaming}
   Sample Rate: {self.cosyvoice.sample_rate}Hz
-  LiveKit: {self.livekit.ws_url}
-  Service: {self.service.host}:{self.service.port}"""
+  Service: {self.service.host}:{self.service.port}
+  LiveKit: {self.livekit.ws_url}"""
 
 
 # Global configuration instance

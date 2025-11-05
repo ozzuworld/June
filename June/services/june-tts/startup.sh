@@ -1,41 +1,74 @@
 #!/bin/bash
 set -e
 
-echo "🚀 Starting June TTS with auto-download"
+echo "=========================================="
+echo "🚀 June TTS - CosyVoice2 Startup"
+echo "=========================================="
 
-# Create model directory if it doesn't exist
-mkdir -p /app/pretrained_models
+# Environment info
+echo "📋 Environment:"
+echo "   MODEL_DIR: ${MODEL_DIR:-/app/pretrained_models}"
+echo "   SERVICE_PORT: ${SERVICE_PORT:-8000}"
+echo "   CUDA Available: $(python -c 'import torch; print(torch.cuda.is_available())')"
+echo ""
 
-# Fix permissions (handle case where volume mounts as root)
-if [ "$(stat -c %u /app/pretrained_models)" != "1001" ]; then
-    echo "🔧 Fixing permissions on /app/pretrained_models"
-    # Try to fix permissions, but don't fail if we can't (non-root container)
-    chown -R 1001:1001 /app/pretrained_models 2>/dev/null || \
-    sudo chown -R 1001:1001 /app/pretrained_models 2>/dev/null || \
-    echo "⚠️  Warning: Could not fix permissions (running as non-root)"
+# Create and fix permissions on model directory
+MODEL_DIR="${MODEL_DIR:-/app/pretrained_models}"
+mkdir -p "$MODEL_DIR"
+
+echo "🔧 Checking permissions on $MODEL_DIR"
+if [ "$(stat -c %u $MODEL_DIR)" != "1001" ]; then
+    echo "   Fixing permissions..."
+    sudo chown -R 1001:1001 "$MODEL_DIR" 2>/dev/null || \
+        echo "   ⚠️  Warning: Could not fix permissions (continuing anyway)"
 fi
 
-# Check if model exists and has critical files
-if [ ! -f "/app/pretrained_models/CosyVoice2-0.5B/cosyvoice2.yaml" ]; then
-    echo "📦 Model not found or incomplete, downloading CosyVoice2-0.5B..."
+# Check if model exists and is complete
+MODEL_PATH="$MODEL_DIR/CosyVoice2-0.5B"
+CONFIG_FILE="$MODEL_PATH/cosyvoice2.yaml"
+
+if [ -f "$CONFIG_FILE" ]; then
+    echo "✅ Model found at $MODEL_PATH"
+    FILE_COUNT=$(ls -1 "$MODEL_PATH" | wc -l)
+    echo "   Files: $FILE_COUNT"
+else
+    echo "📦 Model not found or incomplete"
+    echo "   Expected: $CONFIG_FILE"
+    echo ""
+    echo "🔄 Starting model download (this may take 5-10 minutes)..."
+    echo ""
     
-    # Run the download script
-    python download_models.py
-    
-    # Verify download completed
-    if [ -f "/app/pretrained_models/CosyVoice2-0.5B/cosyvoice2.yaml" ]; then
-        echo "✅ Model download completed successfully"
+    # Run download script with detailed output
+    if python download_models.py; then
+        echo ""
+        echo "✅ Model download completed"
     else
-        echo "❌ Model download failed - cosyvoice2.yaml not found"
+        echo ""
+        echo "❌ ERROR: Model download failed!"
+        echo "   Please check the logs above for details"
         exit 1
     fi
-else
-    echo "✅ Model already exists and appears complete"
+    
+    # Verify download succeeded
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "❌ ERROR: Model verification failed!"
+        echo "   Expected file not found: $CONFIG_FILE"
+        echo ""
+        echo "📁 Contents of $MODEL_PATH:"
+        ls -la "$MODEL_PATH" 2>/dev/null || echo "   Directory does not exist"
+        exit 1
+    fi
 fi
 
-# List model files for debugging
-echo "📁 Model files:"
-ls -la /app/pretrained_models/CosyVoice2-0.5B/ 2>/dev/null || echo "   No model files found"
+# List model files for verification
+echo ""
+echo "📁 Model directory contents:"
+ls -lh "$MODEL_PATH" | head -20
+FILE_COUNT=$(ls -1 "$MODEL_PATH" | wc -l)
+echo "   Total files: $FILE_COUNT"
+echo ""
 
-echo "🎵 Starting TTS service..."
+echo "=========================================="
+echo "🎵 Starting CosyVoice2 TTS Service"
+echo "=========================================="
 exec python main.py

@@ -1,7 +1,4 @@
-# June TTS Service with F5-TTS and Voice Cloning
-# TTS-only image. CosyVoice is cloned into /opt/CosyVoice (no pip install)
-
-# Use CUDA 12.1 devel image (has nvcc for DeepSpeed compilation)
+# June TTS Service - CosyVoice2 Only
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -11,18 +8,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="1.0.5-tts-stable-autodownload"
-LABEL description="June TTS (CosyVoice2/F5-TTS) - with automatic model download"
+LABEL version="1.0.6-cosyvoice2-stable"
+LABEL description="June TTS (CosyVoice2) - with automatic model download"
 LABEL service="june-tts"
 LABEL framework="cosyvoice2"
 
-# Minimal system deps for TTS
+# System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-dev python3-pip \
     libsndfile1 sox libsox-dev \
     curl wget git git-lfs build-essential cmake unzip \
-    sudo \
-    ffmpeg \
+    sudo ffmpeg \
  && git lfs install \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -31,6 +27,7 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
+# Create user
 RUN useradd -m -u 1001 sttuser
 WORKDIR /app
 RUN chown -R sttuser:sttuser /app
@@ -38,46 +35,43 @@ RUN chown -R sttuser:sttuser /app
 # Allow sttuser to run chown via sudo for permission fixes
 RUN echo "sttuser ALL=(ALL) NOPASSWD: /bin/chown" >> /etc/sudoers
 
-# Torch with CUDA 12.1
+# Install PyTorch with CUDA 12.1
 RUN pip install --no-cache-dir \
     torch==2.2.0 torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Clone CosyVoice source and install its requirements
+# Clone CosyVoice and install dependencies
 RUN mkdir -p /opt && cd /opt && \
     git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git && \
     cd CosyVoice && git submodule update --init --recursive && \
     pip install --no-cache-dir -r requirements.txt
 
-# Expose Matcha-TTS path for imports (main.py also appends this)
-ENV PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:${PYTHONPATH}
+# Set Python path for CosyVoice imports
+ENV PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:/opt/CosyVoice:/app:${PYTHONPATH}
 
-# Copy requirements and install project deps
+# Install service dependencies
 COPY --chown=sttuser:sttuser requirements.txt /app/
 RUN pip install --no-cache-dir --prefer-binary --default-timeout=3600 -r requirements.txt
 
-# Copy app code including startup script
+# Copy application code
 COPY --chown=sttuser:sttuser *.py /app/
 COPY --chown=sttuser:sttuser startup.sh /app/
 RUN chmod +x /app/startup.sh
 
-ENV PYTHONPATH=/app:${PYTHONPATH}
 USER sttuser
 
-RUN mkdir -p /app/models /app/cache /app/temp
+# Create necessary directories
+RUN mkdir -p /app/pretrained_models /app/cache /app/temp
 
-ENV PORT=8002 \
+# Environment variables
+ENV SERVICE_PORT=8000 \
     LOG_LEVEL=INFO \
-    TTS_MODEL=f5-tts \
-    VOICE_CLONING_ENABLED=true \
-    STREAMING_ENABLED=true \
-    BATCH_SIZE=1 \
+    MODEL_DIR=/app/pretrained_models \
     LIVEKIT_ENABLED=true
 
-EXPOSE 8002
+EXPOSE 8000
 
-HEALTHCHECK --interval=20s --timeout=15s --start-period=180s --retries=3 \
-  CMD curl -f http://localhost:8002/healthz || exit 1
+HEALTHCHECK --interval=20s --timeout=15s --start-period=240s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
 
-# Use startup script instead of direct python main.py
 CMD ["/app/startup.sh"]

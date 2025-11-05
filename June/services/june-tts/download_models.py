@@ -1,69 +1,110 @@
 #!/usr/bin/env python3
 """
 CosyVoice2 Model Download Script
-Downloads CosyVoice2-0.5B model from ModelScope with robust retries and git fallback
+Downloads CosyVoice2-0.5B model from ModelScope with robust retries
 """
 
 import os
 import logging
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("cosyvoice2-download")
+logger = logging.getLogger("model-download")
 
 MODEL_NAME = "CosyVoice2-0.5B"
 MODEL_ID = f"iic/{MODEL_NAME}"
-CACHE_ROOT = "/root/.cache/modelscope"
 CACHE_DIR = "/tmp/modelscope_cache"
 
 
-def _clean_incomplete(path: str):
+def check_critical_files(model_path: str) -> tuple[bool, list]:
+    """Check if all critical model files exist"""
+    critical_files = [
+        "cosyvoice2.yaml",
+        "llm.pt",
+        "flow.pt",
+        "hift.pt"
+    ]
+    
+    missing = []
+    for file in critical_files:
+        if not os.path.exists(os.path.join(model_path, file)):
+            missing.append(file)
+    
+    return len(missing) == 0, missing
+
+
+def _clean_directory(path: str):
+    """Clean a directory if it exists"""
     try:
         if os.path.exists(path):
-            logger.info(f"   Cleaning incomplete directory: {path}")
+            logger.info(f"Cleaning directory: {path}")
             shutil.rmtree(path)
     except Exception as e:
-        logger.warning(f"   Failed to clean {path}: {e}")
-
-
-def _clean_modelscope_cache():
-    for sub in ("ast_indexer", "hub", "blobs", "snapshots"):
-        p = os.path.join(CACHE_ROOT, sub)
-        if os.path.exists(p):
-            try:
-                logger.info(f"   Cleaning ModelScope cache: {p}")
-                shutil.rmtree(p)
-            except Exception as e:
-                logger.warning(f"   Failed to clean cache {p}: {e}")
+        logger.warning(f"Failed to clean {path}: {e}")
 
 
 def _git_clone_fallback(target_dir: str) -> str:
+    """Fallback to git LFS clone"""
     repo_url = f"https://www.modelscope.cn/{MODEL_ID}.git"
-    logger.info("   Falling back to git LFS clone...")
+    logger.info("=" * 60)
+    logger.info("Attempting git LFS clone (fallback method)")
+    logger.info("=" * 60)
+    
     try:
-        subprocess.run(["git", "lfs", "install"], check=True)
+        # Ensure git lfs is installed
+        subprocess.run(["git", "lfs", "install"], check=True, capture_output=True)
+        
+        # Clean target
         if os.path.exists(target_dir):
             shutil.rmtree(target_dir)
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
-        subprocess.run(["git", "clone", repo_url, target_dir], check=True)
-        logger.info(f"✅ Git clone completed into {target_dir}")
+        
+        # Clone with progress
+        logger.info(f"Cloning from: {repo_url}")
+        logger.info(f"Target: {target_dir}")
+        logger.info("This may take several minutes...")
+        
+        subprocess.run(
+            ["git", "clone", "--progress", repo_url, target_dir],
+            check=True
+        )
+        
+        logger.info("✅ Git clone completed")
         return target_dir
+        
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Git clone failed: {e}")
         raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during git clone: {e}")
+        raise
 
 
-def _snapshot_download_robust(model_id: str, local_path: str) -> str:
-    from modelscope import snapshot_download
-
-    # Try new API (with local_dir), then legacy (without) - REMOVED RESUME PARAMETER
+def _modelscope_download(model_id: str, local_path: str) -> str:
+    """Download using ModelScope SDK"""
     try:
-        logger.info("   Using ModelScope new API (local_dir)...")
+        from modelscope import snapshot_download
+    except ImportError:
+        logger.error("❌ modelscope package not installed!")
+        logger.error("   Install with: pip install modelscope")
+        raise
+    
+    logger.info("=" * 60)
+    logger.info("Downloading via ModelScope SDK")
+    logger.info("=" * 60)
+    logger.info(f"Model ID: {model_id}")
+    logger.info(f"Target: {local_path}")
+    logger.info("This may take 5-10 minutes depending on your connection...")
+    logger.info("")
+    
+    # Try new API first (with local_dir parameter)
+    try:
         return snapshot_download(
             model_id=model_id,
             local_dir=local_path,
@@ -71,122 +112,172 @@ def _snapshot_download_robust(model_id: str, local_path: str) -> str:
             timeout=600,
         )
     except TypeError as e:
-        if "local_dir" not in str(e):
-            raise
-        logger.info("   Detected legacy ModelScope API; retrying without local_dir...")
-        path = snapshot_download(
-            model_id=model_id,
-            cache_dir=CACHE_DIR,
-            timeout=600,
-        )
-        if os.path.exists(path) and path != local_path:
-            if os.path.exists(local_path):
-                shutil.rmtree(local_path)
-            shutil.move(path, local_path)
-        return local_path
+        # Fallback to legacy API (without local_dir)
+        if "local_dir" in str(e):
+            logger.info("Using legacy ModelScope API...")
+            path = snapshot_download(
+                model_id=model_id,
+                cache_dir=CACHE_DIR,
+                timeout=600,
+            )
+            # Move to target location
+            if os.path.exists(path) and path != local_path:
+                if os.path.exists(local_path):
+                    shutil.rmtree(local_path)
+                shutil.move(path, local_path)
+            return local_path
+        raise
 
 
 def download_cosyvoice2_model():
-    """Download CosyVoice2-0.5B model with retries and fallback."""
+    """Download CosyVoice2-0.5B model with retries and verification"""
+    
     model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
     local_path = os.path.join(model_dir, MODEL_NAME)
-
+    
     os.makedirs(model_dir, exist_ok=True)
-
-    # If it looks already present and has the critical config file, return
-    config_file = os.path.join(local_path, "cosyvoice2.yaml")
-    if os.path.isdir(local_path) and os.path.exists(config_file):
-        files = os.listdir(local_path)
-        logger.info(f"✅ Model already exists at {local_path} ({len(files)} files)")
-        return local_path
-
-    # Attempt 1: clean target and download
+    
+    logger.info("=" * 60)
+    logger.info("CosyVoice2 Model Download")
+    logger.info("=" * 60)
+    logger.info(f"Model: {MODEL_NAME}")
+    logger.info(f"Target: {local_path}")
+    logger.info("")
+    
+    # Check if model already exists and is complete
+    if os.path.isdir(local_path):
+        is_complete, missing = check_critical_files(local_path)
+        if is_complete:
+            file_count = len(os.listdir(local_path))
+            logger.info(f"✅ Model already exists and is complete")
+            logger.info(f"   Files: {file_count}")
+            return local_path
+        else:
+            logger.warning(f"⚠️  Model exists but is incomplete")
+            logger.warning(f"   Missing files: {', '.join(missing)}")
+            logger.info("   Will re-download...")
+    
+    # Attempt 1: Clean download via ModelScope
     try:
-        logger.info(f"📦 Downloading {MODEL_NAME} from ModelScope...")
-        logger.info(f"   Target directory: {local_path}")
-        _clean_incomplete(local_path)
-        result = _snapshot_download_robust(MODEL_ID, local_path)
+        _clean_directory(local_path)
+        result = _modelscope_download(MODEL_ID, local_path)
         
-        # Verify critical files exist
-        if os.path.exists(os.path.join(result, "cosyvoice2.yaml")):
-            logger.info("✅ Download complete with all required files")
+        # Verify download
+        is_complete, missing = check_critical_files(result)
+        if is_complete:
+            file_count = len(os.listdir(result))
+            logger.info("=" * 60)
+            logger.info("✅ Download complete and verified")
+            logger.info(f"   Location: {result}")
+            logger.info(f"   Files: {file_count}")
+            logger.info("=" * 60)
             return result
         else:
-            raise Exception("cosyvoice2.yaml not found in downloaded files")
+            raise Exception(f"Download incomplete. Missing files: {', '.join(missing)}")
             
     except Exception as e:
-        logger.error(f"❌ Attempt 1 failed: {e}")
-
-    # Attempt 2: clean caches and retry
+        logger.error(f"❌ ModelScope download failed: {e}")
+        logger.info("")
+    
+    # Attempt 2: Clean caches and retry
     try:
-        logger.info("   Cleaning caches and retrying download (Attempt 2)...")
-        _clean_incomplete(local_path)
-        _clean_modelscope_cache()
-        result = _snapshot_download_robust(MODEL_ID, local_path)
+        logger.info("Retrying with clean cache...")
+        _clean_directory(local_path)
+        _clean_directory(CACHE_DIR)
         
-        # Verify critical files exist
-        if os.path.exists(os.path.join(result, "cosyvoice2.yaml")):
-            logger.info("✅ Download complete with all required files")
+        result = _modelscope_download(MODEL_ID, local_path)
+        
+        is_complete, missing = check_critical_files(result)
+        if is_complete:
+            file_count = len(os.listdir(result))
+            logger.info("=" * 60)
+            logger.info("✅ Download complete and verified (retry succeeded)")
+            logger.info(f"   Location: {result}")
+            logger.info(f"   Files: {file_count}")
+            logger.info("=" * 60)
             return result
         else:
-            raise Exception("cosyvoice2.yaml not found in downloaded files")
+            raise Exception(f"Download incomplete. Missing files: {', '.join(missing)}")
             
     except Exception as e:
-        logger.error(f"❌ Attempt 2 failed: {e}")
-
-    # Attempt 3: git LFS fallback
-    return _git_clone_fallback(local_path)
+        logger.error(f"❌ Retry failed: {e}")
+        logger.info("")
+    
+    # Attempt 3: Git LFS fallback
+    try:
+        result = _git_clone_fallback(local_path)
+        
+        is_complete, missing = check_critical_files(result)
+        if is_complete:
+            logger.info("=" * 60)
+            logger.info("✅ Git clone complete and verified")
+            logger.info("=" * 60)
+            return result
+        else:
+            raise Exception(f"Git clone incomplete. Missing files: {', '.join(missing)}")
+            
+    except Exception as e:
+        logger.error(f"❌ All download methods failed!")
+        logger.error(f"   Last error: {e}")
+        logger.error("")
+        logger.error("Troubleshooting:")
+        logger.error("  1. Check internet connection")
+        logger.error("  2. Verify ModelScope is accessible from your region")
+        logger.error("  3. Check disk space")
+        logger.error("  4. Try manual download from: https://modelscope.cn/models/iic/CosyVoice2-0.5B")
+        sys.exit(1)
 
 
 def download_ttsfrd_resource():
-    """Optionally download CosyVoice-ttsfrd for better text normalization, with same robustness."""
+    """Optionally download CosyVoice-ttsfrd for better text normalization"""
     model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
     ttsfrd_path = os.path.join(model_dir, "CosyVoice-ttsfrd")
 
     if os.path.exists(ttsfrd_path):
-        logger.info(f"✅ ttsfrd resource already exists at {ttsfrd_path}")
+        logger.info(f"✅ ttsfrd resource already exists")
         return ttsfrd_path
 
     try:
         from modelscope import snapshot_download
-        logger.info("📦 Downloading CosyVoice-ttsfrd resource (optional)...")
+        logger.info("📦 Downloading CosyVoice-ttsfrd (optional text normalization)...")
+        
         try:
             snapshot_download(
                 model_id='iic/CosyVoice-ttsfrd',
                 local_dir=ttsfrd_path,
                 cache_dir=CACHE_DIR,
-                timeout=600,
+                timeout=300,
             )
-        except TypeError as e:
-            if "local_dir" in str(e):
-                path = snapshot_download(
-                    model_id='iic/CosyVoice-ttsfrd',
-                    cache_dir=CACHE_DIR,
-                    timeout=600,
-                )
-                if os.path.exists(path) and path != ttsfrd_path:
-                    if os.path.exists(ttsfrd_path):
-                        shutil.rmtree(ttsfrd_path)
-                    shutil.move(path, ttsfrd_path)
-            else:
-                raise
-        logger.info(f"✅ ttsfrd resource downloaded to {ttsfrd_path}")
+        except TypeError:
+            path = snapshot_download(
+                model_id='iic/CosyVoice-ttsfrd',
+                cache_dir=CACHE_DIR,
+                timeout=300,
+            )
+            if os.path.exists(path) and path != ttsfrd_path:
+                if os.path.exists(ttsfrd_path):
+                    shutil.rmtree(ttsfrd_path)
+                shutil.move(path, ttsfrd_path)
+                
+        logger.info(f"✅ ttsfrd resource downloaded")
         return ttsfrd_path
+        
     except Exception as e:
-        logger.warning(f"⚠️ Failed to download ttsfrd resource (non-critical): {e}")
-        # Fallback via git (optional)
-        try:
-            return _git_clone_fallback(ttsfrd_path)
-        except Exception:
-            return None
+        logger.warning(f"⚠️  Failed to download ttsfrd (non-critical): {e}")
+        return None
 
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting CosyVoice2 model download")
+    logger.info("🚀 Starting model download process")
+    logger.info("")
+    
     model_path = download_cosyvoice2_model()
     ttsfrd_path = download_ttsfrd_resource()
-    logger.info("🎉 Model download complete!")
+    
+    logger.info("")
+    logger.info("🎉 Setup complete!")
     logger.info(f"   Model: {model_path}")
     if ttsfrd_path:
         logger.info(f"   ttsfrd: {ttsfrd_path}")
-    logger.info("   Ready for TTS synthesis")
+    logger.info("")
+    logger.info("Ready to start TTS service")
