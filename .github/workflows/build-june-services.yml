@@ -51,7 +51,7 @@ jobs:
         service: ${{ fromJson(
           inputs.service == 'all-services' && 
           '["june-orchestrator", "june-stt", "june-tts", "june-dark", "june-idp", "june-quant", "june-vast"]' ||
-          format('["${0}"]', inputs.service)
+          format('["{0}"]', inputs.service)
         ) }}
     
     steps:
@@ -95,7 +95,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: June/services/${{ matrix.service }}
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: ${{ inputs.push_to_registry }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
