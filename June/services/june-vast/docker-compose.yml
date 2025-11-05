@@ -82,6 +82,12 @@ services:
       NVIDIA_VISIBLE_DEVICES: 0
       CUDA_VISIBLE_DEVICES: 0
       
+      # Disable DeepSpeed and related compilation paths
+      TRANSFORMERS_NO_DEEPSPEED: "1"
+      ACCELERATE_DISABLE_DEEPSPEED: "1"
+      BNB_CUDA_VERSION: "0"
+      CUDA_HOME: "/usr/local/cuda"
+      
       # Service Configuration
       TTS_PORT: 8000
       LOG_LEVEL: INFO
