@@ -13,7 +13,7 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="1.0.1-tts-stable"
+LABEL version="1.0.2-tts-stable"
 LABEL description="June TTS with F5-TTS Voice Cloning"
 LABEL service="june-tts"
 LABEL framework="f5-tts"
@@ -62,9 +62,12 @@ RUN pip install --no-cache-dir \
     torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Copy requirements and install with extended timeout (CosyVoice approach)
-COPY --chown=sttuser:sttuser requirements.txt /app/
-RUN pip install --no-cache-dir --prefer-binary --default-timeout=3600 -r requirements.txt
+# Copy constraints and requirements files
+COPY --chown=sttuser:sttuser constraints.txt requirements.txt /app/
+
+# Install with constraints to fix PyAV Cython build issues
+RUN pip install --no-cache-dir --prefer-binary --default-timeout=3600 \
+    -c constraints.txt -r requirements.txt
 
 # Copy all Python files from the build context
 COPY --chown=sttuser:sttuser *.py /app/
