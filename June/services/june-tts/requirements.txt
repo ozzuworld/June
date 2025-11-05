@@ -1,60 +1,38 @@
-# CosyVoice2 TTS Service Requirements
-# Based on official CosyVoice requirements
-# Reference: https://github.com/FunAudioLLM/CosyVoice
+# June STT Service - WhisperX Enhanced Dependencies
+# Based on official WhisperX requirements
+# Reference: https://github.com/m-bain/whisperX
 
 # Web Framework
 fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
+uvicorn==0.24.0
+python-multipart
+
+# LiveKit Integration
+livekit==0.11.1
 
 # PyTorch (already installed in Dockerfile with CUDA 12.1)
-# torch==2.2.2
-# torchaudio==2.2.2
-# --extra-index-url https://download.pytorch.org/whl/cu121
+# torch==2.2.0
+# torchaudio==2.2.0
+
+# IMPORTANT: WhisperX 3.7.4 has NumPy compatibility issues
+# Use a stable older version instead
+whisperx==3.1.1
+
+# NumPy (compatible with WhisperX 3.1.1)
+numpy>=1.24.0,<2.0.0
 
 # Audio Processing
 soundfile==0.12.1
-librosa==0.10.1
-scipy==1.11.0
-numpy<2.0
+scipy>=1.11.0,<2.0.0
+librosa>=0.10.0,<1.0.0
 
-# ModelScope for model downloads
-modelscope==1.15.0
+# Core Dependencies
+transformers>=4.30.0,<5.0.0
+faster-whisper>=0.10.0,<1.0.0
+pyannote.audio>=3.1.0,<4.0.0
 
-# WeTextProcessing dependencies
-# pynini==2.1.5 (installed via conda in Dockerfile)
-inflect==7.3.1
+# Service Integration
+httpx==0.25.2
 
-# CosyVoice specific dependencies
-conformer==0.3.2
-diffusers==0.29.0
-gdown==5.1.0
-grpcio==1.57.0
-grpcio-tools==1.57.0
-hydra-core==1.3.2
-HyperPyYAML==1.2.2
-lightning==2.2.4
-matplotlib==3.7.5
-networkx==3.1
-omegaconf==2.3.0
-onnx==1.16.0
-openai-whisper==20231117
-protobuf==4.25.0
-pyworld==0.3.4
-rich==13.7.1
-tensorboard==2.14.0
-transformers==4.40.1
-wget==3.2
-WeTextProcessing==1.0.0
-
-# LiveKit for real-time streaming
-livekit==0.11.1
-
-# HTTP Client
-httpx==0.27.2
-
-# System Utilities
-psutil>=5.9.0
-
-# Note: CosyVoice will be installed from /opt/CosyVoice in Dockerfile
-# Note: Matcha-TTS is included as submodule in CosyVoice
+# Note: Silero VAD will be downloaded from torch.hub automatically
+# Note: Alignment models will be downloaded by WhisperX on first use

@@ -1,108 +1,112 @@
-# CosyVoice2 TTS Service - Official Implementation
-# Based on official CosyVoice requirements
-# Reference: https://github.com/FunAudioLLM/CosyVoice
+# WhisperX Enhanced June STT Service
+# Based on official WhisperX requirements and best practices
+# Reference: https://github.com/m-bain/whisperX
 
-# Use CUDA 12.1 base for PyTorch 2.2-2.3 compatibility
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+# Use CUDA 12.1 base image for PyTorch 2.x compatibility
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
 
 # Environment setup
-ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/usr/local/cuda/bin:$PATH
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV PATH=$PATH:/usr/local/cuda/bin
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="1.1.0-cosyvoice2"
-LABEL description="June TTS with CosyVoice2-0.5B - Official Method"
+LABEL version="8.2.0-whisperx-stable"
+LABEL description="June STT with WhisperX 3.1.1 - Stable NumPy 1.x"
+LABEL service="june-stt"
+LABEL framework="whisperx"
 
-# Install system dependencies (official requirements)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
-    python3.10-venv \
+    python3.10-dev \
     python3-pip \
     ffmpeg \
+    libsndfile1 \
     sox \
     libsox-dev \
-    ca-certificates \
     curl \
     wget \
     git \
-    git-lfs \
     build-essential \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Initialize git-lfs
-RUN git lfs install
+# Create symbolic links for Python
+RUN ln -sf /usr/bin/python3.10 /usr/bin/python && \
+    ln -sf /usr/bin/python3.10 /usr/bin/python3
 
-# Install Miniconda (required for pynini)
-RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
-    bash /tmp/miniconda.sh -b -p /opt/miniconda && \
-    rm /tmp/miniconda.sh
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-ENV PATH="/opt/miniconda/bin:$PATH"
-
-# Create working directory
+# Create app directory and user
+RUN useradd -m -u 1001 sttuser
 WORKDIR /app
+RUN chown -R sttuser:sttuser /app
 
-# Create Python virtual environment
-RUN python3.10 -m venv /venv
-ENV PATH="/venv/bin:$PATH"
-
-# Install PyTorch with CUDA 12.1 support FIRST (official recommendation)
-RUN /venv/bin/pip install --upgrade pip setuptools wheel && \
-    /venv/bin/pip install \
-    torch==2.2.2 \
-    torchaudio==2.2.2 \
+# Install PyTorch with CUDA 12.1 support first (official recommendation)
+# WhisperX 3.1.1 works best with PyTorch 2.2.0 and NumPy 1.x
+RUN pip install --no-cache-dir \
+    torch==2.2.0 \
+    torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install pynini via conda (REQUIRED by WeTextProcessing)
-RUN conda install -y -c conda-forge pynini==2.1.5
-
-# Clone CosyVoice repository with submodules (CRITICAL - must use --recursive)
-RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice && \
-    cd /opt/CosyVoice && \
-    git submodule update --init --recursive
-
-# Install CosyVoice dependencies
-COPY requirements.txt /tmp/requirements.txt
-RUN /venv/bin/pip install -r /tmp/requirements.txt
-
-# Install CosyVoice package
-RUN cd /opt/CosyVoice && \
-    /venv/bin/pip install --no-deps -e .
-
-# Add Matcha-TTS to Python path (REQUIRED by CosyVoice)
-ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:$PYTHONPATH"
+# Copy requirements and install dependencies
+COPY --chown=sttuser:sttuser requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config.py /app/
-COPY main.py /app/
-COPY livekit_token.py /app/
-COPY download_models.py /app/
+COPY --chown=sttuser:sttuser main.py /app/
+COPY --chown=sttuser:sttuser config.py /app/
+COPY --chown=sttuser:sttuser whisper_service.py /app/
+COPY --chown=sttuser:sttuser livekit_token.py /app/
+COPY --chown=sttuser:sttuser orchestrator_client.py /app/
+COPY --chown=sttuser:sttuser streaming_utils.py /app/
+COPY --chown=sttuser:sttuser context_aware_stt.py /app/
 
-# Create model directory
-RUN mkdir -p /app/pretrained_models
+# Set up environment
+ENV PYTHONPATH=/app
+USER sttuser
 
-# Set proper permissions
-RUN chmod -R 755 /app
+# Create necessary directories
+RUN mkdir -p /app/models /app/cache /app/temp
 
-# Environment variables
-ENV MODEL_DIR=/app/pretrained_models
-ENV COSYVOICE_MODEL=CosyVoice2-0.5B
-ENV TTS_DEVICE=auto
-ENV TTS_FP16=true
-ENV TTS_STREAMING=true
+# WhisperX Environment Configuration
+ENV WHISPER_CACHE_DIR=/app/models
+ENV PORT=8001
+ENV LOG_LEVEL=INFO
 
-EXPOSE 8000
+# WhisperX Model Configuration
+ENV WHISPER_MODEL=large-v3-turbo
+ENV USE_BATCHED_INFERENCE=true
+ENV ENABLE_WORD_TIMESTAMPS=true
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Silero VAD Preprocessing
+ENV SILERO_VAD_ENABLED=true
+ENV VAD_ENABLED=false
 
-# Download models on first run (optional - can be done at build time)
-# RUN /venv/bin/python /app/download_models.py
+# Language & Accent Optimization
+ENV DEFAULT_LANGUAGE=en
+ENV FORCE_LANGUAGE=true
+ENV ACCENT_OPTIMIZATION=true
+ENV INITIAL_PROMPT="English speech with Latino accent. Technical vocabulary: Kubernetes, Docker, API, microservices, Redis, database. Mathematical terms: square root, calculations, numbers."
+
+# WhisperX Streaming Features
+ENV SOTA_MODE_ENABLED=true
+ENV ULTRA_FAST_PARTIALS=true
+ENV WORD_LEVEL_PARTIALS=true
+ENV STT_STREAMING_ENABLED=true
+ENV STT_PARTIALS_ENABLED=true
+ENV STT_CONTINUOUS_PARTIALS=true
+
+EXPOSE 8001
+
+# Enhanced health check for WhisperX
+HEALTHCHECK --interval=20s --timeout=15s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8001/healthz | grep -q '"framework":"whisperx"' || exit 1
 
 # Startup command
-CMD ["/venv/bin/python", "/app/main.py"]
+CMD ["python", "main.py"]
