@@ -1,25 +1,27 @@
-# June TTS Service - Updated Dependencies
-# Based on official requirements and compatibility fixes
+# June TTS Service - Minimal TTS-only dependencies
+# No WhisperX/faster-whisper; CosyVoice is vendored via Dockerfile clone, not pip
 
 # Web Framework
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart
+httpx==0.25.2
 
-# LiveKit Integration
+# LiveKit Integration (if used by TTS streaming)
 livekit==0.11.1
 
-# NumPy (compatible with WhisperX 3.1.1)
-numpy>=1.24.0,<2.0.0
+# Core ML/TTS deps (adjust to your engine; keep only what june-tts actually uses)
+# Torch is installed via Dockerfile with CUDA wheels
+# transformers only if your TTS model or tokenizer needs it
+transformers>=4.30.0,<5.0.0
 
 # Audio Processing
 soundfile==0.12.1
 scipy>=1.11.0,<2.0.0
 librosa>=0.10.0,<1.0.0
+numpy>=1.24.0,<2.0.0
 
-# Core Dependencies
-transformers>=4.30.0,<5.0.0
-pyannote.audio>=3.1.0,<4.0.0
-
-# Service Integration
-httpx==0.25.2
+# Optional utilities often used in TTS pipelines
+sentencepiece
+pydub
+matplotlib

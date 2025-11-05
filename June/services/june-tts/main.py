@@ -7,7 +7,8 @@ Ultra-low latency streaming TTS with LiveKit integration
 import sys
 import os
 
-# Add Matcha-TTS to path (required by CosyVoice)
+# Add CosyVoice and Matcha-TTS to path (required by CosyVoice)
+sys.path.append('/opt/CosyVoice')
 sys.path.append('/opt/CosyVoice/third_party/Matcha-TTS')
 
 import asyncio
