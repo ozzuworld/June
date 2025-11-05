@@ -1,7 +1,7 @@
 # June TTS Service with F5-TTS and Voice Cloning
 # TTS-only image. CosyVoice is cloned into /opt/CosyVoice (no pip install)
 
-# Use CUDA 12.1 base image for PyTorch 2.x compatibility
+# Use CUDA 12.1 devel image (has nvcc for DeepSpeed compilation)
 FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -11,8 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="1.0.4-tts-stable"
-LABEL description="June TTS (CosyVoice2/F5-TTS) - vendored CosyVoice source"
+LABEL version="1.0.5-tts-stable-autodownload"
+LABEL description="June TTS (CosyVoice2/F5-TTS) - with automatic model download"
 LABEL service="june-tts"
 LABEL framework="cosyvoice2"
 
@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3.10-dev python3-pip \
     libsndfile1 sox libsox-dev \
     curl wget git git-lfs build-essential cmake unzip \
+    sudo \
     ffmpeg \
  && git lfs install \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -33,6 +34,9 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN useradd -m -u 1001 sttuser
 WORKDIR /app
 RUN chown -R sttuser:sttuser /app
+
+# Allow sttuser to run chown via sudo for permission fixes
+RUN echo "sttuser ALL=(ALL) NOPASSWD: /bin/chown" >> /etc/sudoers
 
 # Torch with CUDA 12.1
 RUN pip install --no-cache-dir \
@@ -52,8 +56,10 @@ ENV PYTHONPATH=/opt/CosyVoice/third_party/Matcha-TTS:${PYTHONPATH}
 COPY --chown=sttuser:sttuser requirements.txt /app/
 RUN pip install --no-cache-dir --prefer-binary --default-timeout=3600 -r requirements.txt
 
-# Copy app code
+# Copy app code including startup script
 COPY --chown=sttuser:sttuser *.py /app/
+COPY --chown=sttuser:sttuser startup.sh /app/
+RUN chmod +x /app/startup.sh
 
 ENV PYTHONPATH=/app:${PYTHONPATH}
 USER sttuser
@@ -70,7 +76,8 @@ ENV PORT=8002 \
 
 EXPOSE 8002
 
-HEALTHCHECK --interval=20s --timeout=15s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=20s --timeout=15s --start-period=180s --retries=3 \
   CMD curl -f http://localhost:8002/healthz || exit 1
 
-CMD ["python", "main.py"]
+# Use startup script instead of direct python main.py
+CMD ["/app/startup.sh"]
