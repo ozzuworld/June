@@ -77,7 +77,7 @@ RUN cd /opt/CosyVoice && \
 ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:$PYTHONPATH"
 
 # Copy shared module if exists
-COPY shared/ /app/shared/ 2>/dev/null || true 
+COPY shared/ /app/shared/ 2>/dev/null || true /
 RUN if [ -d /app/shared ]; then /venv/bin/pip install -e /app/shared; fi
 
 # Copy application code
