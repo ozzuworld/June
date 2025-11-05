@@ -1,5 +1,5 @@
 # June vast.ai - Production-ready STT+TTS with Supervisord
-FROM nvidia/cuda:12.4.1-cudnn9-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
