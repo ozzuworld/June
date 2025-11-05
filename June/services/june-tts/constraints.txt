@@ -1,5 +1,4 @@
 # Constraints to stabilize june-tts build
 # 1) Pin Cython below 3.0 to avoid noexcept/nogil signature mismatch when building PyAV from sdist
 cython<3.0
-# 2) Prefer PyAV 9.x to avoid Cython incompatibilities on Python 3.10
-av==9.2.0
+# 2) Remove av constraint - let WhisperX handle av dependencies internally
