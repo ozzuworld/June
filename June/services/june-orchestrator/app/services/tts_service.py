@@ -1,6 +1,6 @@
-"""TTS service client with Chatterbox integration and voice mode support (recommended API)
+"""TTS service client with CosyVoice2 compatibility and Chatterbox integration
 
-This client calls the canonical TTS endpoint /api/tts/synthesize directly and includes service auth.
+This client is adapted to work with the CosyVoice2 TTS service API structure.
 """
 import logging
 import os
@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 SERVICE_AUTH_TOKEN = os.getenv("SERVICE_AUTH_TOKEN", "")
 
 class TTSService:
-    """TTS service client using the canonical /api/tts/synthesize endpoint"""
+    """TTS service client compatible with CosyVoice2 /api/tts/synthesize endpoint"""
 
     def __init__(self):
         self.base_url = config.services.tts_base_url
-        self.timeout = 30.0
+        self.timeout = 60.0  # Increased timeout for model processing
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -41,7 +41,7 @@ class TTSService:
         seed: Optional[int] = None,
     ) -> bool:
         """
-        Publish streaming Chatterbox TTS audio directly to LiveKit room via /api/tts/synthesize
+        Publish streaming CosyVoice2 TTS audio directly to LiveKit room via /api/tts/synthesize
         """
         try:
             if not text or len(text.strip()) == 0:
@@ -50,30 +50,35 @@ class TTSService:
             if len(text) > 1000:
                 text = text[:1000] + "..."
 
-            # Determine voice mode
-            voice_mode = "clone" if voice_reference else "predefined"
             logger.info(
-                f"📢 Publishing Chatterbox TTS ({voice_mode}) to room '{room_name}': {text[:50]}..."
+                f"📢 Publishing CosyVoice2 TTS to room '{room_name}': {text[:50]}..."
             )
 
+            # Map to CosyVoice2 API structure
             payload = {
                 "text": text,
                 "room_name": room_name,
-                "voice_mode": voice_mode,
-                "language": language,
-                "speed": speed,
-                "emotion_level": emotion_level,
-                "temperature": temperature,
-                "cfg_weight": cfg_weight,
                 "streaming": True,
+                "speed": speed,
             }
 
-            if predefined_voice_id and voice_mode == "predefined":
-                payload["predefined_voice_id"] = predefined_voice_id
-            if voice_reference and voice_mode == "clone":
-                payload["voice_reference"] = voice_reference
-            if seed is not None:
-                payload["seed"] = seed
+            # Determine synthesis mode based on available parameters
+            if voice_reference:
+                # Zero-shot voice cloning mode
+                payload["mode"] = "zero_shot"
+                payload["prompt_audio"] = voice_reference
+                # Use text as prompt_text if not provided separately
+                payload["prompt_text"] = "This is a reference voice for cloning."
+            elif predefined_voice_id:
+                # SFT mode with predefined speaker
+                payload["mode"] = "sft"
+                payload["speaker_id"] = predefined_voice_id
+            else:
+                # Default to SFT mode with default speaker
+                payload["mode"] = "sft"
+                payload["speaker_id"] = "中文女"  # Default CosyVoice2 speaker
+
+            logger.info(f"🎤 CosyVoice2 mode: {payload['mode']}, speaker: {payload.get('speaker_id', 'N/A')}")
 
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -85,22 +90,27 @@ class TTSService:
                 if response.status_code == 200:
                     result = response.json()
                     logger.info(
-                        f"✅ Chatterbox TTS published: {result.get('chunks_sent', 0)} chunks, {result.get('duration_ms', 0):.0f}ms"
+                        f"✅ CosyVoice2 TTS published: {result.get('chunks_sent', 0)} chunks, {result.get('duration_ms', 0):.0f}ms"
                     )
                     return True
                 else:
                     logger.error(
-                        f"Chatterbox TTS error: {response.status_code} - {response.text}"
+                        f"CosyVoice2 TTS error: {response.status_code} - {response.text}"
                     )
                     return False
+                    
+        except httpx.TimeoutException:
+            logger.error(f"CosyVoice2 TTS timeout after {self.timeout}s - model may be loading or overloaded")
+            return False
         except Exception as e:
-            logger.error(f"Chatterbox TTS publish error: {e}")
+            logger.error(f"CosyVoice2 TTS publish error: {e}")
             return False
 
     async def list_voices(self) -> Optional[Dict[str, Any]]:
+        """List available speakers from CosyVoice2"""
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(f"{self.base_url}/api/voices", headers=self._headers())
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.base_url}/speakers", headers=self._headers())
                 if resp.status_code == 200:
                     return resp.json()
                 logger.error(f"list_voices error: {resp.status_code}")
@@ -110,6 +120,7 @@ class TTSService:
             return None
 
     async def health_check(self) -> bool:
+        """Check if CosyVoice2 TTS service is healthy"""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{self.base_url}/health", headers=self._headers())
