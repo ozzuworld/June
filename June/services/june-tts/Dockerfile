@@ -76,10 +76,6 @@ RUN cd /opt/CosyVoice && \
 # Add Matcha-TTS to Python path (REQUIRED by CosyVoice)
 ENV PYTHONPATH="/opt/CosyVoice/third_party/Matcha-TTS:$PYTHONPATH"
 
-# Copy shared module if exists
-COPY shared/ /app/shared/ 2>/dev/null || true /
-RUN if [ -d /app/shared ]; then /venv/bin/pip install -e /app/shared; fi
-
 # Copy application code
 COPY config.py /app/
 COPY main.py /app/
