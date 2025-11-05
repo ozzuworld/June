@@ -1,5 +1,5 @@
-# June STT Service - WhisperX Enhanced Dependencies (Auto-resolve)
-# Let pip automatically resolve compatible versions
+# June STT Service - WhisperX Enhanced Dependencies
+# Updated for cuDNN 9 compatibility - allows latest CTranslate2 versions
 
 # Web Framework
 fastapi==0.104.1
@@ -9,19 +9,20 @@ python-multipart
 # LiveKit Integration
 livekit==0.11.1
 
-# WhisperX - Latest version, let pip resolve numpy dependency
+# WhisperX - Latest version with cuDNN 9 support
 whisperx==3.7.4
+# CTranslate2 - Now allows latest versions (>=4.5.0) with cuDNN 9
+# No version constraint needed - auto-resolves compatible version
 
-# Core Dependencies (flexible versions for auto-resolution)
+# Core Dependencies
 transformers>=4.30.0
 faster-whisper>=1.0.0
 pyannote.audio>=3.1.0
 
-# Audio Processing (let pip resolve compatible versions)
+# Audio Processing
 soundfile>=0.12.1
 scipy>=1.11.0
 librosa>=0.10.0
-# Remove explicit numpy constraint - let whisperx determine compatible version
 
 # Service Integration
 httpx>=0.25.0
