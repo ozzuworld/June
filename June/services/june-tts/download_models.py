@@ -129,6 +129,49 @@ def _modelscope_download(model_id: str, local_path: str) -> str:
         raise
 
 
+def download_blank_en_model(target_dir: str):
+    """Download CosyVoice-BlankEN model (Qwen-based LLM)"""
+    blank_en_path = os.path.join(target_dir, "CosyVoice-BlankEN")
+    
+    # Check if already exists and has model files
+    if os.path.exists(blank_en_path):
+        model_files = ['config.json', 'pytorch_model.bin']
+        has_files = all(os.path.exists(os.path.join(blank_en_path, f)) for f in model_files)
+        if has_files:
+            logger.info("✅ CosyVoice-BlankEN already exists")
+            return
+    
+    try:
+        from modelscope import snapshot_download
+        logger.info("📦 Downloading CosyVoice-BlankEN (Qwen LLM)...")
+        logger.info("   This is required for text processing")
+        
+        try:
+            snapshot_download(
+                model_id='iic/CosyVoice-BlankEN',
+                local_dir=blank_en_path,
+                cache_dir=CACHE_DIR,
+                timeout=600,
+            )
+        except TypeError:
+            path = snapshot_download(
+                model_id='iic/CosyVoice-BlankEN',
+                cache_dir=CACHE_DIR,
+                timeout=600,
+            )
+            if os.path.exists(path) and path != blank_en_path:
+                if os.path.exists(blank_en_path):
+                    shutil.rmtree(blank_en_path)
+                shutil.move(path, blank_en_path)
+        
+        logger.info("✅ CosyVoice-BlankEN downloaded")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to download CosyVoice-BlankEN: {e}")
+        logger.error("   This is required for the model to work!")
+        raise
+
+
 def download_cosyvoice2_model():
     """Download CosyVoice2-0.5B model with retries and verification"""
     
@@ -151,6 +194,9 @@ def download_cosyvoice2_model():
             file_count = len(os.listdir(local_path))
             logger.info(f"✅ Model already exists and is complete")
             logger.info(f"   Files: {file_count}")
+            
+            # Still need to check BlankEN even if main model exists
+            download_blank_en_model(local_path)
             return local_path
         else:
             logger.warning(f"⚠️  Model exists but is incomplete")
@@ -171,6 +217,9 @@ def download_cosyvoice2_model():
             logger.info(f"   Location: {result}")
             logger.info(f"   Files: {file_count}")
             logger.info("=" * 60)
+            
+            # Download BlankEN model
+            download_blank_en_model(result)
             return result
         else:
             raise Exception(f"Download incomplete. Missing files: {', '.join(missing)}")
@@ -195,6 +244,9 @@ def download_cosyvoice2_model():
             logger.info(f"   Location: {result}")
             logger.info(f"   Files: {file_count}")
             logger.info("=" * 60)
+            
+            # Download BlankEN model
+            download_blank_en_model(result)
             return result
         else:
             raise Exception(f"Download incomplete. Missing files: {', '.join(missing)}")
@@ -212,6 +264,9 @@ def download_cosyvoice2_model():
             logger.info("=" * 60)
             logger.info("✅ Git clone complete and verified")
             logger.info("=" * 60)
+            
+            # Download BlankEN model
+            download_blank_en_model(result)
             return result
         else:
             raise Exception(f"Git clone incomplete. Missing files: {', '.join(missing)}")
@@ -274,9 +329,14 @@ if __name__ == "__main__":
     model_path = download_cosyvoice2_model()
     ttsfrd_path = download_ttsfrd_resource()
     
+    # Verify BlankEN exists
+    blank_en_path = os.path.join(model_path, "CosyVoice-BlankEN")
+    blank_en_ok = os.path.exists(os.path.join(blank_en_path, "config.json"))
+    
     logger.info("")
     logger.info("🎉 Setup complete!")
     logger.info(f"   Model: {model_path}")
+    logger.info(f"   BlankEN: {blank_en_path} {'✅' if blank_en_ok else '❌'}")
     if ttsfrd_path:
         logger.info(f"   ttsfrd: {ttsfrd_path}")
     logger.info("")
