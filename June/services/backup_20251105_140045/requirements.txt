@@ -1,0 +1,25 @@
+# June Orchestrator Dependencies - Enhanced with Skills, Voice Cloning, and Conversational AI
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# AI and HTTP clients
+httpx==0.27.2
+pydantic==2.5.0
+
+# LiveKit integration (corrected version)
+livekit-api==1.0.7
+PyJWT==2.8.0
+
+# Google AI integration - New unified SDK
+google-genai>=0.4.0
+
+# Audio processing for voice profiles
+soundfile==0.12.1
+librosa>=0.10.0
+scipy==1.11.3
+
+# Utilities
+python-multipart==0.0.6
+
+# Conversational AI Memory - Redis for context management
+redis==5.0.1
