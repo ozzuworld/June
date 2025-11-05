@@ -1,0 +1,142 @@
+name: Build June Services
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Select service to build'
+        required: true
+        type: choice
+        options:
+          - 'june-orchestrator'
+          - 'june-stt'
+          - 'june-tts'
+          - 'june-dark'
+          - 'june-idp'
+          - 'june-quant'
+          - 'june-vast'
+          - 'all-services'
+      
+      image_tag:
+        description: 'Docker image tag (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+      
+      push_to_registry:
+        description: 'Push to Docker registry'
+        required: true
+        type: boolean
+        default: true
+      
+      registry:
+        description: 'Docker registry (default: ghcr.io)'
+        required: false
+        default: 'ghcr.io'
+        type: string
+
+env:
+  REGISTRY: ${{ inputs.registry || 'ghcr.io' }}
+  IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
+
+jobs:
+  build-service:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    strategy:
+      matrix:
+        service: ${{ fromJson(
+          inputs.service == 'all-services' && 
+          '["june-orchestrator", "june-stt", "june-tts", "june-dark", "june-idp", "june-quant", "june-vast"]' ||
+          format('["${0}"]', inputs.service)
+        ) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Container Registry
+        if: ${{ inputs.push_to_registry }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}
+          tags: |
+            type=raw,value=${{ env.IMAGE_TAG }}
+            type=raw,value=build-${{ github.run_number }}
+            type=sha,prefix={{branch}}-
+      
+      - name: Check if Dockerfile exists
+        id: check-dockerfile
+        run: |
+          if [ -f "June/services/${{ matrix.service }}/Dockerfile" ]; then
+            echo "dockerfile_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Dockerfile found for ${{ matrix.service }}"
+          else
+            echo "dockerfile_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Dockerfile not found for ${{ matrix.service }}"
+          fi
+      
+      - name: Build Docker image
+        if: steps.check-dockerfile.outputs.dockerfile_exists == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: June/services/${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ inputs.push_to_registry }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+      
+      - name: Skip build (no Dockerfile)
+        if: steps.check-dockerfile.outputs.dockerfile_exists == 'false'
+        run: |
+          echo "⚠️ Skipping build for ${{ matrix.service }} - no Dockerfile found"
+          echo "Expected location: June/services/${{ matrix.service }}/Dockerfile"
+      
+      - name: Build summary
+        run: |
+          echo "## Build Summary for ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check-dockerfile.outputs.dockerfile_exists }}" == "true" ]; then
+            echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "📦 **Image**: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
+            echo "🏷️ **Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.push_to_registry }}" == "true" ]; then
+              echo "🚀 **Registry**: Pushed to ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "🏠 **Registry**: Built locally only" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ **Status**: Build skipped - no Dockerfile" >> $GITHUB_STEP_SUMMARY
+            echo "📍 **Expected**: June/services/${{ matrix.service }}/Dockerfile" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify-completion:
+    runs-on: ubuntu-latest
+    needs: build-service
+    if: always()
+    steps:
+      - name: Final summary
+        run: |
+          echo "## 🎉 June Services Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Service(s)**: ${{ inputs.service }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag**: ${{ inputs.image_tag || 'latest' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry**: ${{ inputs.registry || 'ghcr.io' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Push to registry**: ${{ inputs.push_to_registry }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow run**: [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
