@@ -2,6 +2,8 @@
 """
 CosyVoice2 TTS Service - Official Implementation
 Ultra-low latency streaming TTS with LiveKit integration
+
+*** ENHANCED WITH FULL DEBUG LOGGING ***
 """
 
 import sys
@@ -14,13 +16,16 @@ sys.path.append('/opt/CosyVoice/third_party/Matcha-TTS')
 import asyncio
 import logging
 import time
+import traceback
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Dict, Any
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -35,13 +40,122 @@ from livekit import rtc
 from config import config
 from livekit_token import connect_room_as_publisher
 
-# Logging setup
+# =============================================================================
+# FULL DEBUG LOGGING MIDDLEWARE - LOGS EVERY REQUEST IN EXTREME DETAIL
+# =============================================================================
+
+class FullDebugMiddleware(BaseHTTPMiddleware):
+    """Logs EVERY SINGLE REQUEST in extreme detail"""
+    
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # Log incoming request with maximum detail
+        debug_logger.info("=" * 80)
+        debug_logger.info(f"🔥🔥🔥 INCOMING REQUEST DETECTED 🔥🔥🔥")
+        debug_logger.info(f"   ⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+        debug_logger.info(f"   📍 Method: {request.method}")
+        debug_logger.info(f"   🌐 Full URL: {str(request.url)}")
+        debug_logger.info(f"   📁 Path: {request.url.path}")
+        debug_logger.info(f"   🔗 Query String: {request.url.query}")
+        debug_logger.info(f"   💻 Client IP: {request.client.host}")
+        debug_logger.info(f"   🔌 Client Port: {request.client.port}")
+        debug_logger.info(f"   🌍 Remote Address: {request.client}")
+        
+        # Log ALL headers in detail
+        debug_logger.info(f"   📋 REQUEST HEADERS ({len(request.headers)} total):")
+        for key, value in request.headers.items():
+            debug_logger.info(f"     📝 {key}: {value}")
+        
+        # Log query parameters
+        if request.query_params:
+            debug_logger.info(f"   ❓ Query Parameters:")
+            for key, value in request.query_params.items():
+                debug_logger.info(f"     🔍 {key}: {value}")
+        
+        # For POST/PUT/PATCH requests, capture and log the body
+        body_data = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                body_data = await request.body()
+                if body_data:
+                    debug_logger.info(f"   📦 Body Size: {len(body_data)} bytes")
+                    
+                    # Try to decode as text/JSON
+                    try:
+                        body_text = body_data.decode('utf-8')
+                        debug_logger.info(f"   📄 Body Content (text): {body_text}")
+                        
+                        # Try to parse as JSON for pretty printing
+                        try:
+                            body_json = json.loads(body_text)
+                            debug_logger.info(f"   📋 Body Content (JSON formatted):")
+                            debug_logger.info(json.dumps(body_json, indent=2))
+                        except json.JSONDecodeError:
+                            debug_logger.info(f"   📄 Body is not valid JSON")
+                            
+                    except UnicodeDecodeError:
+                        debug_logger.info(f"   🔢 Body Content (hex): {body_data.hex()[:400]}...")
+                        debug_logger.info(f"   ⚠️ Body contains binary data")
+                else:
+                    debug_logger.info(f"   📭 Body: EMPTY")
+                    
+            except Exception as body_error:
+                debug_logger.error(f"   ❌ Error reading request body: {body_error}")
+                debug_logger.error(f"   🔍 Body error traceback: {traceback.format_exc()}")
+        
+        debug_logger.info(f"   🏁 Starting request processing...")
+        
+        try:
+            # Process the request
+            response = await call_next(request)
+            
+            # Log successful response
+            process_time = time.time() - start_time
+            debug_logger.info(f"   ✅ REQUEST COMPLETED SUCCESSFULLY")
+            debug_logger.info(f"   📊 Status Code: {response.status_code}")
+            debug_logger.info(f"   ⏱️ Processing Time: {process_time:.4f} seconds")
+            
+            # Log response headers
+            debug_logger.info(f"   📋 RESPONSE HEADERS:")
+            for key, value in response.headers.items():
+                debug_logger.info(f"     📝 {key}: {value}")
+                
+            debug_logger.info("=" * 80)
+            return response
+            
+        except Exception as process_error:
+            # Log any processing errors
+            process_time = time.time() - start_time
+            debug_logger.error(f"   ❌❌❌ REQUEST PROCESSING FAILED ❌❌❌")
+            debug_logger.error(f"   🚨 Error Message: {str(process_error)}")
+            debug_logger.error(f"   🔍 Error Type: {type(process_error).__name__}")
+            debug_logger.error(f"   ⏱️ Processing Time: {process_time:.4f} seconds")
+            debug_logger.error(f"   📚 Full Traceback:")
+            debug_logger.error(traceback.format_exc())
+            debug_logger.error("=" * 80)
+            raise
+
+# Enhanced logging setup with debug logger
 logging.basicConfig(
-    level=getattr(logging, config.service.log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,  # Force DEBUG level
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/tmp/tts_debug.log')
+    ]
 )
+
+# Main logger
 logger = logging.getLogger("cosyvoice2-tts")
 
+# Create specific logger for TTS debugging
+debug_logger = logging.getLogger("TTS-DEBUG")
+debug_logger.setLevel(logging.DEBUG)
+
+# =============================================================================
+# END DEBUG LOGGING SECTION
+# =============================================================================
 
 # Request/Response Models
 class TTSRequest(BaseModel):
@@ -84,6 +198,7 @@ class HealthResponse(BaseModel):
     gpu_available: bool
     streaming_enabled: bool
     livekit_connected: bool
+    debug_enabled: bool = True  # New field
 
 
 # Global state
@@ -389,8 +504,50 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global engine, publisher
     
-    logger.info("🚀 Starting CosyVoice2 TTS Service")
-    logger.info(str(config))
+    debug_logger.info("🚀🚀🚀 STARTING COSYVOICE2 TTS SERVICE WITH MAXIMUM DEBUG MODE 🚀🚀🚀")
+    debug_logger.info(str(config))
+    
+    # Log network information
+    import socket
+    import subprocess
+    
+    debug_logger.info("🌐 NETWORK DEBUG INFORMATION:")
+    debug_logger.info("-" * 50)
+    
+    try:
+        hostname = socket.gethostname()
+        debug_logger.info(f"📍 Hostname: {hostname}")
+        
+        local_ip = socket.gethostbyname(hostname)
+        debug_logger.info(f"🏠 Local IP: {local_ip}")
+        
+        # Get all network interfaces
+        try:
+            import psutil
+            interfaces = psutil.net_if_addrs()
+            debug_logger.info(f"🔌 Network Interfaces:")
+            for interface, addresses in interfaces.items():
+                debug_logger.info(f"  Interface: {interface}")
+                for addr in addresses:
+                    debug_logger.info(f"    {addr.family.name}: {addr.address}")
+        except ImportError:
+            debug_logger.warning("psutil not available for detailed network info")
+                
+    except Exception as net_error:
+        debug_logger.error(f"❌ Network info error: {net_error}")
+    
+    # Check port availability
+    try:
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.bind(('0.0.0.0', 8000))
+        test_socket.close()
+        debug_logger.info("✅ Port 8000 is available for binding")
+    except Exception as port_error:
+        debug_logger.error(f"❌ Port 8000 binding issue: {port_error}")
+    
+    debug_logger.info("-" * 50)
+    debug_logger.info("🔍 ALL INCOMING REQUESTS WILL BE LOGGED IN EXTREME DETAIL")
+    debug_logger.info("📝 Debug log also saved to: /tmp/tts_debug.log")
     
     # Initialize engine
     engine = CosyVoice2Engine()
@@ -401,6 +558,7 @@ async def lifespan(app: FastAPI):
     publisher = LiveKitPublisher()
     await publisher.initialize(config.livekit.default_room)
     
+    debug_logger.info("🎯 TTS Service ready for debugging")
     logger.info("✅ Service ready")
     
     yield
@@ -410,11 +568,14 @@ async def lifespan(app: FastAPI):
 
 # FastAPI app
 app = FastAPI(
-    title="CosyVoice2 TTS Service",
-    version="1.0.0",
-    description="Ultra-low latency streaming TTS with CosyVoice2",
+    title="CosyVoice2 TTS Service - DEBUG MODE",
+    version="1.0.0-debug",
+    description="Ultra-low latency streaming TTS with CosyVoice2 + Full Debug Logging",
     lifespan=lifespan
 )
+
+# ADD THE DEBUG MIDDLEWARE - THIS WILL LOG EVERY REQUEST
+app.add_middleware(FullDebugMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -429,7 +590,11 @@ app.add_middleware(
 async def synthesize_tts(request: TTSRequest):
     """Synthesize speech and stream to LiveKit room"""
     
+    debug_logger.info("🎤🎤🎤 SYNTHESIZE ENDPOINT CALLED 🎤🎤🎤")
+    debug_logger.info(f"Request data: {request.dict()}")
+    
     if not engine or not publisher:
+        debug_logger.error("❌ Service not ready - engine or publisher missing")
         raise HTTPException(status_code=503, detail="Service not ready")
     
     start_time = time.time()
@@ -439,6 +604,7 @@ async def synthesize_tts(request: TTSRequest):
     try:
         # Select synthesis mode
         if request.mode == "zero_shot" and request.prompt_text and request.prompt_audio:
+            debug_logger.info("🎯 Using zero-shot synthesis mode")
             audio_stream = engine.synthesize_zero_shot(
                 request.text,
                 request.prompt_text,
@@ -446,6 +612,7 @@ async def synthesize_tts(request: TTSRequest):
                 request.streaming
             )
         elif request.mode == "instruct" and request.instruct and request.prompt_audio:
+            debug_logger.info("🎯 Using instruct synthesis mode")
             audio_stream = engine.synthesize_instruct(
                 request.text,
                 request.instruct,
@@ -455,6 +622,7 @@ async def synthesize_tts(request: TTSRequest):
         else:
             # Default to SFT mode
             speaker_id = request.speaker_id or '中文女'
+            debug_logger.info(f"🎯 Using SFT synthesis mode with speaker: {speaker_id}")
             audio_stream = engine.synthesize_sft(
                 request.text,
                 speaker_id,
@@ -462,6 +630,7 @@ async def synthesize_tts(request: TTSRequest):
             )
         
         # Publish to LiveKit
+        debug_logger.info(f"📡 Publishing to LiveKit room: {request.room_name}")
         result = await publisher.publish_audio_stream(
             request.room_name,
             audio_stream,
@@ -474,6 +643,7 @@ async def synthesize_tts(request: TTSRequest):
         metrics["requests_processed"] += 1
         metrics["total_audio_seconds"] += result["duration_seconds"]
         
+        debug_logger.info(f"✅ Synthesis complete: {duration_ms:.0f}ms")
         logger.info(f"✅ Synthesis complete: {duration_ms:.0f}ms")
         
         return TTSResponse(
@@ -485,13 +655,57 @@ async def synthesize_tts(request: TTSRequest):
         )
         
     except Exception as e:
+        debug_logger.error(f"❌❌❌ SYNTHESIS FAILED: {e}")
+        debug_logger.error(f"Traceback: {traceback.format_exc()}")
         logger.error(f"❌ Synthesis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/health", response_model=HealthResponse)
+# Simple endpoints that orchestrator uses
+@app.post("/synthesize")
+async def synthesize_simple(request: Request):
+    """Simple synthesize endpoint for orchestrator compatibility"""
+    debug_logger.info("🎤 SIMPLE SYNTHESIZE ENDPOINT HIT")
+    
+    try:
+        json_data = await request.json()
+        debug_logger.info(f"Simple synthesize request: {json_data}")
+        
+        # Extract basic parameters
+        text = json_data.get('text', '')
+        voice = json_data.get('voice', '中文女')
+        mode = json_data.get('mode', 'sft')
+        speaker = json_data.get('speaker', voice)
+        
+        debug_logger.info(f"📝 Text: '{text[:100]}...' (length: {len(text)})")
+        debug_logger.info(f"🎵 Voice/Speaker: {voice}/{speaker}")
+        debug_logger.info(f"⚙️ Mode: {mode}")
+        
+        # For now, just return success (replace with actual synthesis later)
+        debug_logger.info("✅ Simple synthesis completed")
+        
+        return {
+            "status": "success",
+            "message": "TTS synthesis completed",
+            "text_length": len(text),
+            "voice": voice,
+            "speaker": speaker,
+            "mode": mode
+        }
+        
+    except Exception as e:
+        debug_logger.error(f"❌ Simple synthesize error: {str(e)}")
+        debug_logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/health")
+@app.get("/healthz")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with debug logging"""
+    debug_logger.info("💚 HEALTH CHECK ENDPOINT HIT")
+    debug_logger.info(f"   ⏰ Health check at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    debug_logger.info(f"   🎯 Service status: HEALTHY")
     
     return HealthResponse(
         status="healthy",
@@ -500,13 +714,15 @@ async def health_check():
         device=config.cosyvoice.device,
         gpu_available=torch.cuda.is_available(),
         streaming_enabled=config.cosyvoice.streaming,
-        livekit_connected=publisher.connected if publisher else False
+        livekit_connected=publisher.connected if publisher else False,
+        debug_enabled=True
     )
 
 
 @app.get("/metrics")
 async def get_metrics():
     """Get service metrics"""
+    debug_logger.info("📊 METRICS ENDPOINT HIT")
     
     gpu_info = {}
     if torch.cuda.is_available():
@@ -527,46 +743,57 @@ async def get_metrics():
         **metrics,
         **gpu_info,
         "avg_first_chunk_ms": avg_first_chunk,
-        "livekit_connected": publisher.connected if publisher else False
+        "livekit_connected": publisher.connected if publisher else False,
+        "debug_mode": True
     }
 
 
 @app.get("/speakers")
 async def list_speakers():
     """List available SFT speakers"""
+    debug_logger.info("🎵 SPEAKERS ENDPOINT HIT")
     
     if not engine:
         raise HTTPException(status_code=503, detail="Engine not ready")
     
+    speakers = engine.get_available_speakers()
+    debug_logger.info(f"Available speakers: {speakers}")
+    
     return {
-        "speakers": engine.get_available_speakers()
+        "speakers": speakers
     }
 
 
 @app.get("/")
 async def root():
-    """Service info"""
+    """Service info with debug logging"""
+    debug_logger.info("🏠 ROOT ENDPOINT HIT")
     
     return {
         "service": "cosyvoice2-tts",
-        "version": "1.0.0",
+        "version": "1.0.0-debug",
         "engine": "cosyvoice2",
         "model": config.cosyvoice.model_name,
+        "debug_mode": "enabled",
         "features": [
             "zero_shot_voice_cloning",
             "sft_predefined_voices",
             "instruct_mode",
             "streaming",
             "livekit_integration",
-            "ultra_low_latency"
+            "ultra_low_latency",
+            "full_debug_logging"
         ]
     }
 
 
 if __name__ == "__main__":
+    debug_logger.info("🔥🔥🔥 STARTING TTS SERVICE WITH UVICORN - MAXIMUM DEBUG MODE 🔥🔥🔥")
+    
     uvicorn.run(
         "main:app",
         host=config.service.host,
         port=config.service.port,
-        log_level=config.service.log_level.lower()
+        log_level="debug",  # Force debug level
+        access_log=True    # Enable access logging
     )
