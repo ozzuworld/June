@@ -61,14 +61,13 @@ def _git_clone_fallback(target_dir: str) -> str:
 def _snapshot_download_robust(model_id: str, local_path: str) -> str:
     from modelscope import snapshot_download
 
-    # Try new API (with local_dir), then legacy (without)
+    # Try new API (with local_dir), then legacy (without) - REMOVED RESUME PARAMETER
     try:
         logger.info("   Using ModelScope new API (local_dir)...")
         return snapshot_download(
             model_id=model_id,
             local_dir=local_path,
             cache_dir=CACHE_DIR,
-            resume=True,
             timeout=600,
         )
     except TypeError as e:
@@ -78,7 +77,6 @@ def _snapshot_download_robust(model_id: str, local_path: str) -> str:
         path = snapshot_download(
             model_id=model_id,
             cache_dir=CACHE_DIR,
-            resume=True,
             timeout=600,
         )
         if os.path.exists(path) and path != local_path:
@@ -95,19 +93,27 @@ def download_cosyvoice2_model():
 
     os.makedirs(model_dir, exist_ok=True)
 
-    # If it looks already present, return
-    if os.path.isdir(local_path):
+    # If it looks already present and has the critical config file, return
+    config_file = os.path.join(local_path, "cosyvoice2.yaml")
+    if os.path.isdir(local_path) and os.path.exists(config_file):
         files = os.listdir(local_path)
-        if len(files) > 5:
-            logger.info(f"✅ Model already exists at {local_path} ({len(files)} files)")
-            return local_path
+        logger.info(f"✅ Model already exists at {local_path} ({len(files)} files)")
+        return local_path
 
     # Attempt 1: clean target and download
     try:
         logger.info(f"📦 Downloading {MODEL_NAME} from ModelScope...")
         logger.info(f"   Target directory: {local_path}")
         _clean_incomplete(local_path)
-        return _snapshot_download_robust(MODEL_ID, local_path)
+        result = _snapshot_download_robust(MODEL_ID, local_path)
+        
+        # Verify critical files exist
+        if os.path.exists(os.path.join(result, "cosyvoice2.yaml")):
+            logger.info("✅ Download complete with all required files")
+            return result
+        else:
+            raise Exception("cosyvoice2.yaml not found in downloaded files")
+            
     except Exception as e:
         logger.error(f"❌ Attempt 1 failed: {e}")
 
@@ -116,7 +122,15 @@ def download_cosyvoice2_model():
         logger.info("   Cleaning caches and retrying download (Attempt 2)...")
         _clean_incomplete(local_path)
         _clean_modelscope_cache()
-        return _snapshot_download_robust(MODEL_ID, local_path)
+        result = _snapshot_download_robust(MODEL_ID, local_path)
+        
+        # Verify critical files exist
+        if os.path.exists(os.path.join(result, "cosyvoice2.yaml")):
+            logger.info("✅ Download complete with all required files")
+            return result
+        else:
+            raise Exception("cosyvoice2.yaml not found in downloaded files")
+            
     except Exception as e:
         logger.error(f"❌ Attempt 2 failed: {e}")
 
@@ -141,7 +155,6 @@ def download_ttsfrd_resource():
                 model_id='iic/CosyVoice-ttsfrd',
                 local_dir=ttsfrd_path,
                 cache_dir=CACHE_DIR,
-                resume=True,
                 timeout=600,
             )
         except TypeError as e:
@@ -149,7 +162,6 @@ def download_ttsfrd_resource():
                 path = snapshot_download(
                     model_id='iic/CosyVoice-ttsfrd',
                     cache_dir=CACHE_DIR,
-                    resume=True,
                     timeout=600,
                 )
                 if os.path.exists(path) and path != ttsfrd_path:
