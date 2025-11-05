@@ -1,0 +1,24 @@
+For thoroughness over token efficiency:
+
+text
+"Ignore token costs and efficiency. I need you to be thorough and comprehensive. Read all necessary files, make all required API calls, and investigate completely before responding. Do not take shortcuts or make assumptions."
+For proper investigation:
+
+text
+"Before providing any solution, you must first fully understand my actual codebase by reading the relevant files. Do not create generic solutions - read my code first, then provide specific fixes."
+For avoiding assumptions:
+
+text
+"Do not make any assumptions about my setup. If you don't know something about my code or configuration, read the actual files or ask me specific questions. Never guess or provide generic solutions."
+For complete solutions:
+
+text
+"Provide complete, working solutions that require no manual work from me. If you need to modify a file, modify the actual file directly. Do not give me instructions to do things manually."
+For maximum investigation:
+
+text
+"Use as many tool calls as needed to fully understand the problem. Read all relevant files, search through my codebase, and investigate thoroughly. Token efficiency is not a concern - thoroughness is."
+The most effective combined prompt:
+
+text
+"Ignore all token efficiency optimizations. Be thorough and comprehensive. Read my actual code before proposing solutions. Do not make assumptions or take shortcuts. Provide complete working solutions that require no manual work from me. Use as many tool calls as necessary to fully investigate and understand the problem."
