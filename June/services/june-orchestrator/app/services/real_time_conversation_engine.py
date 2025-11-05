@@ -96,13 +96,15 @@ class RealTimeConversationEngine:
                         session_id=session_id,
                         is_first_phrase=(phrase_count == 1),
                         is_final=(phrase_count >= 3),
-                        language="en"
+                        language="en",
+                        speaker_id=None  # Will use default
                     )
                 else:
                     await self.tts.publish_to_room(
                         room_name=room_name,
                         text=phrase,
-                        language="en"
+                        language="en",
+                        streaming=True
                     )
             except Exception as e:
                 logger.warning(f"TTS callback error: {e}")

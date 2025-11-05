@@ -20,9 +20,7 @@ class TTSPhrase:
     timestamp: datetime
     session_id: str
     language: str = "en"
-    # Legacy fields retained for compatibility but not used by new TTS client
-    speaker: Optional[str] = None
-    voice_id: Optional[str] = None
+    speaker_id: Optional[str] = None  # CosyVoice2 speaker ID
     speed: float = 1.0
 
 class SmartTTSQueue:
@@ -67,8 +65,7 @@ class SmartTTSQueue:
         is_first_phrase: bool = False,
         is_final: bool = False,
         language: str = "en",
-        speaker: Optional[str] = None,
-        voice_id: Optional[str] = None,
+        speaker_id: Optional[str] = None,
         speed: float = 1.0
     ) -> bool:
         """
@@ -81,8 +78,7 @@ class SmartTTSQueue:
             is_first_phrase: True for urgent first response (maintains naturalness)
             is_final: True for last phrase in response
             language: Target language
-            speaker: Built-in speaker name (legacy, ignored)
-            voice_id: Custom voice ID (legacy, ignored)
+            speaker_id: CosyVoice2 speaker ID
             speed: Speech speed multiplier
             
         Returns:
@@ -106,8 +102,7 @@ class SmartTTSQueue:
                 timestamp=datetime.utcnow(),
                 session_id=session_id,
                 language=language,
-                speaker=speaker,
-                voice_id=voice_id,
+                speaker_id=speaker_id,
                 speed=speed
             )
             
@@ -142,20 +137,13 @@ class SmartTTSQueue:
             async with self.processing_semaphore:
                 logger.info(f"🚀 URGENT TTS processing: '{phrase.text[:30]}...'")
                 
-                # Map legacy fields to new client parameters
-                predefined_voice_id = None
-                voice_reference = None
-                if phrase.voice_id:
-                    predefined_voice_id = phrase.voice_id
-                # If you want to support cloning, you can pass path in phrase.voice_id and set as reference instead
-                
                 success = await self.tts_service.publish_to_room(
                     room_name=phrase.room_name,
                     text=phrase.text,
                     language=phrase.language,
-                    predefined_voice_id=predefined_voice_id,
-                    voice_reference=voice_reference,
-                    speed=phrase.speed
+                    speaker_id=phrase.speaker_id,
+                    speed=phrase.speed,
+                    streaming=True
                 )
                 
                 if success:
@@ -189,18 +177,13 @@ class SmartTTSQueue:
             async with self.processing_semaphore:
                 logger.info(f"🎵 SEQUENTIAL TTS processing: '{phrase.text[:30]}...'")
                 
-                predefined_voice_id = None
-                voice_reference = None
-                if phrase.voice_id:
-                    predefined_voice_id = phrase.voice_id
-                
                 success = await self.tts_service.publish_to_room(
                     room_name=phrase.room_name,
                     text=phrase.text,
                     language=phrase.language,
-                    predefined_voice_id=predefined_voice_id,
-                    voice_reference=voice_reference,
-                    speed=phrase.speed
+                    speaker_id=phrase.speaker_id,
+                    speed=phrase.speed,
+                    streaming=True
                 )
                 
                 if success:
