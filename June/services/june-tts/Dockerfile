@@ -13,7 +13,7 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
 
 # Metadata
 LABEL maintainer="ozzuworld <eng.ozzu@icloud.com>"
-LABEL version="1.0.0-tts-stable"
+LABEL version="1.0.1-tts-stable"
 LABEL description="June TTS with F5-TTS Voice Cloning"
 LABEL service="june-tts"
 LABEL framework="f5-tts"
@@ -34,6 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     pkg-config \
     unzip \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libavfilter-dev \
+    libswscale-dev \
+    libswresample-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -57,7 +64,7 @@ RUN pip install --no-cache-dir \
 
 # Copy requirements and install with extended timeout (CosyVoice approach)
 COPY --chown=sttuser:sttuser requirements.txt /app/
-RUN pip install --no-cache-dir --default-timeout=3600 -r requirements.txt
+RUN pip install --no-cache-dir --prefer-binary --default-timeout=3600 -r requirements.txt
 
 # Copy all Python files from the build context
 COPY --chown=sttuser:sttuser *.py /app/
