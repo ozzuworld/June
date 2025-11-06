@@ -1,10 +1,7 @@
 """CosyVoice2 TTS Service Client - Enhanced
 
 Official CosyVoice2 integration for June Orchestrator.
-Supports three synthesis modes:
-1. SFT (Supervised Fine-Tuning) - Predefined speakers (fastest, most stable)
-2. Zero-Shot - Voice cloning from reference audio
-3. Instruct - Natural language control of speech characteristics
+CosyVoice2 uses zero-shot and cross-lingual synthesis (NO SFT mode).
 
 Reference: https://github.com/FunAudioLLM/CosyVoice
 """
@@ -20,18 +17,6 @@ logger = logging.getLogger(__name__)
 # Service-to-service auth token
 SERVICE_AUTH_TOKEN = os.getenv("SERVICE_AUTH_TOKEN", "")
 
-# CosyVoice2 default speakers (SFT mode)
-# These are built into the CosyVoice2-0.5B model
-DEFAULT_SPEAKERS = {
-    "zh_female": "中文女",
-    "zh_male": "中文男",
-    "en_female": "英文女",
-    "en_male": "英文男",
-    "jp_male": "日语男",
-    "yue_female": "粤语女",
-    "ko_female": "韩语女"
-}
-
 
 class TTSService:
     """CosyVoice2 TTS service client
@@ -39,9 +24,12 @@ class TTSService:
     This client communicates with the june-tts service which runs CosyVoice2.
     CosyVoice2 is a multilingual speech synthesis model supporting:
     - Multiple languages (Chinese, English, Japanese, Korean, Cantonese)
-    - Voice cloning from short audio samples
-    - Natural language instructions for speech control
-    - Streaming synthesis for low latency
+    - Voice cloning from short audio samples (zero-shot)
+    - Cross-lingual synthesis with language tags
+    - Natural language instructions for speech control (instruct2)
+    
+    NOTE: CosyVoice2 does NOT support SFT mode with predefined speakers.
+          Use zero-shot or cross-lingual synthesis instead.
     """
 
     def __init__(self):
@@ -61,58 +49,36 @@ class TTSService:
         room_name: str,
         text: str,
         language: str = "en",
-        speaker_id: Optional[str] = None,
-        prompt_audio: Optional[str] = None,
-        prompt_text: Optional[str] = None,
-        instruct: Optional[str] = None,
-        speed: float = 1.0,
         streaming: bool = True,
     ) -> bool:
         """
         Publish TTS audio to LiveKit room using CosyVoice2
         
-        Mode Selection (automatic based on parameters):
-        1. Instruct mode: Provide both 'instruct' and 'prompt_audio'
-        2. Zero-shot mode: Provide both 'prompt_audio' and 'prompt_text'
-        3. SFT mode: Default, uses predefined 'speaker_id'
+        Uses zero-shot or cross-lingual synthesis (NOT SFT mode).
+        CosyVoice2 does NOT support predefined speaker IDs like "英文女", "中文女".
         
         Args:
             room_name: LiveKit room name to publish audio to
             text: Text to synthesize (max 1000 chars recommended)
             language: Language code (en, zh, jp, ko, yue)
-            speaker_id: SFT mode speaker ID (e.g., "中文女", "英文男")
-            prompt_audio: Path to reference audio for zero-shot/instruct
-            prompt_text: Transcript of prompt_audio (for zero-shot)
-            instruct: Natural language instruction (e.g., "Speak slowly and cheerfully")
-            speed: Speech speed multiplier (0.5-2.0)
             streaming: Enable streaming synthesis for lower latency
             
         Returns:
             True if successful, False otherwise
             
         Examples:
-            # SFT mode (predefined speaker)
+            # English synthesis
             await tts.publish_to_room(
                 room_name="room123",
                 text="Hello world",
-                language="en",
-                speaker_id="英文女"
+                language="en"
             )
             
-            # Zero-shot mode (voice cloning)
+            # Chinese synthesis
             await tts.publish_to_room(
                 room_name="room123",
-                text="Hello in cloned voice",
-                prompt_audio="path/to/reference.wav",
-                prompt_text="Reference audio transcript"
-            )
-            
-            # Instruct mode (controlled synthesis)
-            await tts.publish_to_room(
-                room_name="room123",
-                text="Hello with emotion",
-                prompt_audio="path/to/reference.wav",
-                instruct="Speak with excitement and energy"
+                text="你好世界",
+                language="zh"
             )
         """
         try:
@@ -128,40 +94,15 @@ class TTSService:
 
             logger.info(f"📢 TTS request for room '{room_name}': {text[:50]}...")
 
-            # Build request payload based on mode
+            # Build request payload for CosyVoice2
             payload = {
                 "text": text,
                 "room_name": room_name,
-                "streaming": streaming,
-                "speed": max(0.5, min(2.0, speed)),  # Clamp to valid range
+                "language": language,
+                "stream": streaming,
             }
 
-            # Determine synthesis mode (priority: instruct > zero_shot > sft)
-            if instruct and prompt_audio:
-                # Instruct mode: Natural language control
-                payload["mode"] = "instruct"
-                payload["instruct"] = instruct
-                payload["prompt_audio"] = prompt_audio
-                logger.info(f"🎤 Mode: instruct, instruction: '{instruct[:50]}...'")
-                
-            elif prompt_audio and prompt_text:
-                # Zero-shot mode: Voice cloning
-                payload["mode"] = "zero_shot"
-                payload["prompt_audio"] = prompt_audio
-                payload["prompt_text"] = prompt_text
-                logger.info(f"🎤 Mode: zero_shot, cloning from: {prompt_audio}")
-                
-            else:
-                # SFT mode: Predefined speakers (DEFAULT and most stable)
-                payload["mode"] = "sft"
-                
-                # Auto-select speaker based on language if not provided
-                if speaker_id:
-                    payload["speaker_id"] = speaker_id
-                else:
-                    payload["speaker_id"] = self._get_default_speaker_for_language(language)
-                
-                logger.info(f"🎤 Mode: sft, speaker: {payload['speaker_id']}, lang: {language}")
+            logger.info(f"🎤 Language: {language}, streaming: {streaming}")
 
             # Send request to TTS service
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -174,7 +115,7 @@ class TTSService:
                 if response.status_code == 200:
                     result = response.json()
                     chunks = result.get('chunks_sent', 0)
-                    duration = result.get('duration_ms', 0)
+                    duration = result.get('synthesis_time_ms', 0)
                     logger.info(f"✅ TTS published: {chunks} chunks, {duration:.0f}ms")
                     return True
                 elif response.status_code == 503:
@@ -199,40 +140,6 @@ class TTSService:
         except Exception as e:
             logger.error(f"❌ TTS error: {e}", exc_info=True)
             return False
-
-    def _get_default_speaker_for_language(self, language: str) -> str:
-        """Get default speaker for language"""
-        language_mapping = {
-            "zh": DEFAULT_SPEAKERS["zh_female"],
-            "en": DEFAULT_SPEAKERS["en_female"],
-            "jp": DEFAULT_SPEAKERS["jp_male"],
-            "ko": DEFAULT_SPEAKERS["ko_female"],
-            "yue": DEFAULT_SPEAKERS["yue_female"],
-        }
-        return language_mapping.get(language, DEFAULT_SPEAKERS["en_female"])
-
-    async def list_speakers(self) -> Optional[Dict[str, Any]]:
-        """List available SFT speakers from CosyVoice2 service
-        
-        Returns:
-            Dictionary of available speakers or None if request fails
-        """
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/speakers",
-                    headers=self._headers()
-                )
-                
-                if response.status_code == 200:
-                    return response.json()
-                    
-                logger.error(f"Failed to list speakers: {response.status_code}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error listing speakers: {e}")
-            return None
 
     async def health_check(self) -> Dict[str, Any]:
         """Check if TTS service is healthy and get status
@@ -271,16 +178,28 @@ class TTSService:
         """Get list of supported languages"""
         return ["en", "zh", "jp", "ko", "yue"]
 
-    def get_default_speaker(self, language: str = "en") -> str:
-        """Get default speaker ID for language
+    async def get_stats(self) -> Optional[Dict[str, Any]]:
+        """Get TTS service statistics
         
-        Args:
-            language: Language code
-            
         Returns:
-            CosyVoice2 speaker ID
+            Dictionary with service stats or None if request fails
         """
-        return self._get_default_speaker_for_language(language)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/stats",
+                    headers=self._headers()
+                )
+                
+                if response.status_code == 200:
+                    return response.json()
+                    
+                logger.error(f"Failed to get stats: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting stats: {e}")
+            return None
 
 
 # Global service instance
