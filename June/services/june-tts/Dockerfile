@@ -45,61 +45,15 @@ RUN pip install --no-cache-dir \
     livekit==0.11.1 \
     httpx==0.27.2
 
-# Download pretrained models (CosyVoice2-0.5B recommended)
+# Download pretrained models (CosyVoice2-0.5B)
 RUN pip install --no-cache-dir modelscope && \
     python -c "from modelscope import snapshot_download; \
     snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B'); \
     snapshot_download('iic/CosyVoice-ttsfrd', local_dir='pretrained_models/CosyVoice-ttsfrd')"
 
-# Download spk2info.pt for SFT speaker support (英文女, 中文女, etc.)
-# CosyVoice2-0.5B does not include spk2info.pt by default, so we get it from CosyVoice-300M-SFT
-RUN python3 << 'PYTHON_SCRIPT'
-from modelscope import snapshot_download
-import shutil
-import os
-
-print("=" * 80)
-print("📥 Downloading spk2info.pt for SFT speaker support...")
-print("=" * 80)
-
-try:
-    # Download CosyVoice-300M-SFT to get spk2info.pt
-    sft_dir = snapshot_download('iic/CosyVoice-300M-SFT', local_dir='/tmp/cosyvoice-sft')
-    src = os.path.join(sft_dir, 'spk2info.pt')
-    dst = 'pretrained_models/CosyVoice2-0.5B/spk2info.pt'
-    
-    if os.path.exists(src):
-        shutil.copy(src, dst)
-        file_size_mb = os.path.getsize(dst) / 1024 / 1024
-        print(f"✅ Successfully copied spk2info.pt to {dst}")
-        print(f"   File size: {file_size_mb:.2f} MB")
-        print("   This enables SFT mode with predefined speakers:")
-        print("   - 中文女 (Chinese Female)")
-        print("   - 中文男 (Chinese Male)")
-        print("   - 英文女 (English Female)")
-        print("   - 英文男 (English Male)")
-        print("   - 日语男 (Japanese Male)")
-        print("   - 粤语女 (Cantonese Female)")
-        print("   - 韩语女 (Korean Female)")
-    else:
-        print(f"❌ ERROR: spk2info.pt not found at {src}")
-        print("   SFT mode will not work without this file!")
-        exit(1)
-    
-    # Clean up temporary download
-    if os.path.exists('/tmp/cosyvoice-sft'):
-        shutil.rmtree('/tmp/cosyvoice-sft')
-        print("🧹 Cleaned up temporary files")
-    
-    print("=" * 80)
-    print("✅ spk2info.pt setup complete")
-    print("=" * 80)
-    
-except Exception as e:
-    print(f"❌ ERROR during spk2info.pt setup: {e}")
-    exit(1)
-
-PYTHON_SCRIPT
+# NOTE: CosyVoice2 does NOT support SFT mode with predefined speakers
+# The spk2info.pt file from CosyVoice-300M-SFT is NOT compatible with CosyVoice2
+# CosyVoice2 uses zero-shot, cross-lingual, and instruct2 methods instead
 
 # Optional: Install ttsfrd for better text normalization
 RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
@@ -112,7 +66,19 @@ COPY main.py /opt/CosyVoice/main.py
 COPY livekit_publisher.py /opt/CosyVoice/livekit_publisher.py
 
 # Create necessary directories
-RUN mkdir -p /opt/CosyVoice/logs /opt/CosyVoice/cache
+RUN mkdir -p /opt/CosyVoice/logs /opt/CosyVoice/cache /opt/CosyVoice/asset
+
+# Download reference audio files for zero-shot synthesis
+# These are required for CosyVoice2 voice cloning
+RUN cd /opt/CosyVoice && \
+    wget -q -O asset/zero_shot_prompt.wav \
+    https://github.com/FunAudioLLM/CosyVoice/raw/main/asset/zero_shot_prompt.wav || \
+    echo "Warning: Could not download reference audio. Manual setup required."
+
+RUN cd /opt/CosyVoice && \
+    wget -q -O asset/cross_lingual_prompt.wav \
+    https://github.com/FunAudioLLM/CosyVoice/raw/main/asset/cross_lingual_prompt.wav || \
+    echo "Warning: Could not download reference audio. Manual setup required."
 
 # Expose port for API
 EXPOSE 8000
