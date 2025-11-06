@@ -65,7 +65,7 @@ COPY livekit_publisher.py /opt/CosyVoice/livekit_publisher.py
 RUN mkdir -p /opt/CosyVoice/logs /opt/CosyVoice/cache
 
 # Expose port for API
-EXPOSE 50000
+EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
