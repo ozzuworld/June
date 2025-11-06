@@ -36,6 +36,10 @@ RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git . && \
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install FastAPI dependencies
+RUN pip install --no-cache-dir fastapi==0.104.1 uvicorn[standard]==0.24.0 \
+    python-multipart==0.0.6 pydantic==2.5.0
+
 # Download pretrained models (CosyVoice2-0.5B recommended)
 RUN pip install --no-cache-dir modelscope && \
     python -c "from modelscope import snapshot_download; \
@@ -48,8 +52,15 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     pip install --no-cache-dir ttsfrd_dependency-0.1-py3-none-any.whl && \
     pip install --no-cache-dir ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl || true
 
-# Expose port for web UI
+# Copy FastAPI server
+COPY server.py /opt/CosyVoice/server.py
+
+# Expose port for API
 EXPOSE 50000
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:50000/health || exit 1
+
 # Set the entrypoint
-CMD ["python", "webui.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python", "server.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
