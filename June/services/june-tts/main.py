@@ -20,6 +20,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 import logging
+import httpx
 
 # Add third_party/Matcha-TTS to path
 sys.path.append('third_party/Matcha-TTS')
@@ -186,7 +187,25 @@ async def lifespan(app: FastAPI):
             )
             
             # Connect to LiveKit
-            success = await livekit_publisher.connect()
+            # Get token from orchestrator (like STT does)
+            orchestrator_url = os.getenv("ORCHESTRATOR_URL", "http://june-orchestrator.june-services.svc.cluster.local:8080")
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{orchestrator_url}/token",
+                    json={
+                        "roomName": livekit_publisher.default_room_name,
+                        "participantName": "june-tts"
+                    }
+                )
+                token_data = response.json()
+                token = token_data["token"]
+                ws_url = token_data.get("livekitUrl", os.getenv("LIVEKIT_WS_URL"))
+            
+            # Update the ws_url if orchestrator provided one
+            livekit_publisher.livekit_url = ws_url
+            
+            success = await livekit_publisher.connect(token=token)
             
             if success:
                 logger.info("✅ LiveKit connected")

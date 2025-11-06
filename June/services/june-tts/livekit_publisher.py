@@ -14,7 +14,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import torchaudio
-from livekit import rtc, api
+from livekit import rtc
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +49,18 @@ class LiveKitTTSPublisher:
         
         logger.info(f"LiveKit TTS Publisher initialized: {livekit_url}")
     
-    async def connect(self, room_name: Optional[str] = None) -> bool:
-        """Connect to LiveKit room"""
+    async def connect(self, room_name: Optional[str] = None, token: Optional[str] = None) -> bool:
+        """Connect to LiveKit room using provided token"""
         target_room = room_name or self.default_room_name
         self.connection_attempts += 1
         
         try:
             logger.info(f"Connecting to LiveKit room: {target_room}")
             
-            # Generate access token
-            token = self._generate_token(target_room)
+            # Token must be provided (from orchestrator or helper function)
+            if not token:
+                logger.error("No token provided - get it from orchestrator first!")
+                return False
             
             # Create room and audio source
             self.room = rtc.Room()
@@ -97,21 +99,9 @@ class LiveKitTTSPublisher:
             return False
     
     def _generate_token(self, room_name: str) -> str:
-        """Generate LiveKit access token"""
-        token = api.AccessToken(self.api_key, self.api_secret)
-        token.with_identity(self.participant_name)
-        token.with_name(self.participant_name)
-        
-        grants = api.VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_publish=True,
-            can_subscribe=False,  # TTS doesn't need to subscribe
-            can_publish_data=True,
-        )
-        token.with_grants(grants)
-        
-        return token.to_jwt()
+        """Get token from orchestrator - TTS is a CLIENT, not a server"""
+        # We'll get the token from orchestrator just like STT does
+        raise NotImplementedError("Token should come from orchestrator or use get_livekit_token helper")
     
     def _setup_room_callbacks(self):
         """Setup LiveKit room event handlers"""
