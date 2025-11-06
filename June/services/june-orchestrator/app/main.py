@@ -1,4 +1,4 @@
-"""Simplified main.py - Essential services only"""
+"""Simplified main.py - Essential services only (CosyVoice2 language-based voices)"""
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -11,7 +11,7 @@ from .core.dependencies import get_session_service, get_config
 from .routes.webhooks import router as webhooks_router
 from .routes.voices import router as voices_router
 from .routes.livekit_token import router as livekit_router
-from .voice_registry import get_available_voices
+from .voice_registry import list_available_languages, SUPPORTED_LANGUAGES
 
 config = get_config()
 
@@ -75,8 +75,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"  LiveKit: {config.livekit.ws_url}")
     logger.info(f"  AI Model: {config.ai.model}")
     
-    voices = get_available_voices()
-    logger.info(f"🎭 Voices: {len(voices)} available")
+    voices = list_available_languages()
+    logger.info(f"🎭 Languages: {len(voices)} supported - {list(SUPPORTED_LANGUAGES.keys())}")
     
     logger.info("✨ STREAMLINED:")
     logger.info("  ✅ Single RT engine (no duplication)")
