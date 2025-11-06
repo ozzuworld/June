@@ -52,7 +52,7 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     pip install --no-cache-dir ttsfrd_dependency-0.1-py3-none-any.whl && \
     pip install --no-cache-dir ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl || true
 
-# Copy FastAPI server
+# Copy FastAPI main
 COPY main.py /opt/CosyVoice/main.py
 
 # Expose port for API
@@ -63,4 +63,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:50000/health || exit 1
 
 # Set the entrypoint
-CMD ["python", "server.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python", "main.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
