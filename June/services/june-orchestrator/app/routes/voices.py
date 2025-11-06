@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Voice management endpoints for CosyVoice2 integration
+
+CosyVoice2 uses language codes (en, zh, jp, ko, yue) instead of predefined speaker IDs.
+Voice characteristics come from reference audio, not speaker embeddings.
 """
 import logging
 from fastapi import APIRouter, HTTPException, Query
@@ -8,11 +11,12 @@ from typing import Dict, Any
 
 from ..config import config
 from ..voice_registry import (
-    COSYVOICE2_SPEAKERS,
-    get_speaker_id,
-    get_default_speaker,
-    list_available_speakers,
-    resolve_legacy_speaker
+    SUPPORTED_LANGUAGES,
+    get_language_code,
+    get_default_language,
+    list_available_languages,
+    get_language_name,
+    convert_legacy_speaker_to_language
 )
 
 logger = logging.getLogger(__name__)
@@ -22,120 +26,120 @@ router = APIRouter()
 @router.get("/api/voices")
 async def list_available_voices():
     """
-    Get list of available CosyVoice2 speakers.
+    Get list of available languages for CosyVoice2.
+    
+    Note: CosyVoice2 does NOT use predefined speaker IDs.
+    Voice characteristics come from reference audio.
     """
-    speakers = list_available_speakers()
+    languages = list_available_languages()
     
     return {
         "status": "success",
         "engine": "cosyvoice2",
-        "speakers": speakers,
-        "count": len(speakers),
-        "default_speaker": get_default_speaker(),
-        "available_languages": ["en", "zh", "jp", "ko", "yue"]
+        "model": "CosyVoice2-0.5B",
+        "note": "CosyVoice2 uses language codes, not speaker IDs. Voice cloning uses reference audio.",
+        "languages": languages,
+        "count": len(languages),
+        "default_language": get_default_language(),
+        "synthesis_methods": ["zero_shot", "cross_lingual", "instruct2"]
     }
 
 
 @router.get("/api/voices/{language}")
-async def get_voices_by_language(language: str):
+async def get_voice_by_language(language: str):
     """
-    Get available speakers for a specific language.
+    Get information about a specific language.
     """
-    speakers = {}
-    
-    if language == "en":
-        speakers = {
-            "en_female": COSYVOICE2_SPEAKERS["en_female"],
-            "en_male": COSYVOICE2_SPEAKERS["en_male"]
-        }
-    elif language == "zh":
-        speakers = {
-            "zh_female": COSYVOICE2_SPEAKERS["zh_female"],
-            "zh_male": COSYVOICE2_SPEAKERS["zh_male"]
-        }
-    elif language == "jp":
-        speakers = {
-            "jp_male": COSYVOICE2_SPEAKERS["jp_male"]
-        }
-    elif language == "ko":
-        speakers = {
-            "ko_female": COSYVOICE2_SPEAKERS["ko_female"]
-        }
-    elif language == "yue":
-        speakers = {
-            "yue_female": COSYVOICE2_SPEAKERS["yue_female"]
-        }
-    else:
+    if language not in SUPPORTED_LANGUAGES:
         raise HTTPException(
             status_code=404,
-            detail=f"Language '{language}' not supported. Available: en, zh, jp, ko, yue"
+            detail=f"Language '{language}' not supported. Available: {', '.join(SUPPORTED_LANGUAGES.keys())}"
         )
     
     return {
         "status": "success",
-        "language": language,
-        "speakers": speakers,
-        "count": len(speakers)
+        "language_code": language,
+        "language_name": get_language_name(language),
+        "synthesis_method": "zero_shot with reference audio",
+        "note": "Voice characteristics come from reference audio, not predefined speakers"
     }
 
 
 @router.post("/api/voices/resolve")
-async def resolve_voice(speaker: str = None, language: str = "en", gender: str = "female"):
+async def resolve_voice(speaker: str = None, language: str = "en"):
     """
-    Resolve speaker name to CosyVoice2 speaker ID.
+    Resolve voice parameters to language code.
     Supports legacy speaker names for backward compatibility.
+    
+    Args:
+        speaker: Legacy speaker ID (e.g., "英文女") - will be converted to language code
+        language: Target language code (en, zh, jp, ko, yue)
     """
     
-    # Try to resolve legacy speaker name
+    # Try to resolve legacy speaker name (for backward compatibility)
     if speaker:
-        resolved = resolve_legacy_speaker(speaker)
+        resolved_language = convert_legacy_speaker_to_language(speaker)
         return {
             "status": "success",
             "input": {"speaker": speaker},
-            "resolved_speaker_id": resolved,
-            "method": "legacy_mapping" if speaker != resolved else "direct"
+            "resolved_language": resolved_language,
+            "language_name": get_language_name(resolved_language),
+            "method": "legacy_speaker_to_language_conversion",
+            "note": "CosyVoice2 uses language codes. Speaker IDs are converted for compatibility."
         }
     
-    # Get speaker by language and gender
-    speaker_id = get_speaker_id(language, gender)
+    # Validate and return language code
+    validated_language = get_language_code(language)
     
     return {
         "status": "success",
-        "input": {
-            "language": language,
-            "gender": gender
-        },
-        "resolved_speaker_id": speaker_id,
-        "method": "language_gender_mapping"
+        "input": {"language": language},
+        "resolved_language": validated_language,
+        "language_name": get_language_name(validated_language),
+        "method": "language_code_validation"
     }
 
 
 @router.get("/api/voices/info")
 async def get_voice_info():
     """
-    Get information about CosyVoice2 voice system.
+    Get information about CosyVoice2 voice synthesis system.
     """
     return {
         "status": "success",
         "engine": "CosyVoice2-0.5B",
         "version": "2.0",
+        "architecture": "LLM-based streaming TTS",
         "features": {
-            "sft_mode": "Predefined speakers (fastest, most stable)",
-            "zero_shot_mode": "Voice cloning from reference audio",
-            "instruct_mode": "Natural language control",
-            "streaming": "Real-time audio streaming",
-            "multilingual": True,
-            "cross_lingual": True
+            "zero_shot": "Voice cloning from short reference audio (3-10s)",
+            "cross_lingual": "Multilingual synthesis with language tags",
+            "instruct2": "Natural language control of speech characteristics",
+            "streaming": "Real-time audio streaming with <200ms latency",
+            "multilingual": True
         },
-        "supported_languages": {
-            "en": "English",
-            "zh": "Chinese (Mandarin)",
-            "jp": "Japanese",
-            "ko": "Korean",
-            "yue": "Cantonese"
-        },
-        "total_speakers": len(COSYVOICE2_SPEAKERS),
-        "default_speaker": get_default_speaker(),
+        "supported_languages": SUPPORTED_LANGUAGES,
+        "total_languages": len(SUPPORTED_LANGUAGES),
+        "default_language": get_default_language(),
         "sample_rate": "22050 Hz",
-        "latency": "~150ms (first packet)"
+        "typical_latency_ms": {
+            "zero_shot_synthesis": "150-300ms",
+            "first_audio_packet": "<200ms"
+        },
+        "note": "CosyVoice2 does NOT support SFT mode or predefined speaker IDs. Use zero-shot with reference audio."
+    }
+
+
+@router.get("/api/voices/legacy-mapping")
+async def get_legacy_mapping():
+    """
+    Get mapping of legacy speaker IDs to language codes.
+    Useful for migrating from CosyVoice v1 to v2.
+    """
+    from ..voice_registry import LEGACY_SPEAKER_TO_LANGUAGE
+    
+    return {
+        "status": "success",
+        "note": "Legacy speaker IDs from CosyVoice v1 are automatically converted to language codes",
+        "mapping": LEGACY_SPEAKER_TO_LANGUAGE,
+        "supported_languages": SUPPORTED_LANGUAGES
     }
