@@ -69,7 +69,7 @@ EXPOSE 50000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:50000/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Set the entrypoint
-CMD ["python", "main.py", "--port", "50000", "--host", "0.0.0.0", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python", "main.py", "--port", "8000", "--host", "0.0.0.0", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
