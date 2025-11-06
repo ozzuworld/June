@@ -1,4 +1,17 @@
+# June TTS Service Dependencies
+
+# Web Framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 pydantic==2.5.0
+
+# LiveKit Integration
+livekit==0.11.1
+
+
+# HTTP Client (for orchestrator communication)
+httpx==0.27.2
+
+# Note: CosyVoice2 dependencies are installed from the cloned repository
+# Additional dependencies from CosyVoice2/requirements.txt will be installed during Docker build

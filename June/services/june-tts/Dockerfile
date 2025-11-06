@@ -33,12 +33,17 @@ WORKDIR /opt/CosyVoice
 RUN git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git . && \
     git submodule update --init --recursive
 
-# Install Python dependencies
+# Install CosyVoice Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install FastAPI dependencies
-RUN pip install --no-cache-dir fastapi==0.104.1 uvicorn[standard]==0.24.0 \
-    python-multipart==0.0.6 pydantic==2.5.0
+# Install additional dependencies for our service
+RUN pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    python-multipart==0.0.6 \
+    pydantic==2.5.0 \
+    livekit==0.11.1 \
+    httpx==0.27.2
 
 # Download pretrained models (CosyVoice2-0.5B recommended)
 RUN pip install --no-cache-dir modelscope && \
@@ -52,15 +57,19 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     pip install --no-cache-dir ttsfrd_dependency-0.1-py3-none-any.whl && \
     pip install --no-cache-dir ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl || true
 
-# Copy FastAPI main
+# Copy application files
 COPY main.py /opt/CosyVoice/main.py
+COPY livekit_publisher.py /opt/CosyVoice/livekit_publisher.py
+
+# Create necessary directories
+RUN mkdir -p /opt/CosyVoice/logs /opt/CosyVoice/cache
 
 # Expose port for API
 EXPOSE 50000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:50000/health || exit 1
 
 # Set the entrypoint
-CMD ["python", "main.py", "--port", "50000", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
+CMD ["python", "main.py", "--port", "50000", "--host", "0.0.0.0", "--model_dir", "pretrained_models/CosyVoice2-0.5B"]
