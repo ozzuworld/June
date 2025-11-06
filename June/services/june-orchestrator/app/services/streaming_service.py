@@ -66,3 +66,12 @@ class UltraFastPhraseBuffer:
         self.phrase_count = 0
         self.first_phrase_sent = False
         self.last_token_time = time.time()
+
+
+class StreamingAIService:
+    def __init__(self):
+        pass
+    # ... rest of your AI streaming logic here ...
+
+# Global instance (required by routes and RT engine)
+streaming_ai_service = StreamingAIService()
