@@ -457,7 +457,7 @@ async def instruct_tts(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=50000, help='Server port')
+    parser.add_argument('--port', type=int, default=8000, help='Server port')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Server host')
     parser.add_argument('--model_dir', type=str, 
                        default='pretrained_models/CosyVoice2-0.5B',
