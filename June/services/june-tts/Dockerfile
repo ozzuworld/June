@@ -53,7 +53,7 @@ RUN cd pretrained_models/CosyVoice-ttsfrd/ && \
     pip install --no-cache-dir ttsfrd-0.4.2-cp310-cp310-linux_x86_64.whl || true
 
 # Copy FastAPI server
-COPY server.py /opt/CosyVoice/server.py
+COPY server.py /opt/CosyVoice/main.py
 
 # Expose port for API
 EXPOSE 50000
