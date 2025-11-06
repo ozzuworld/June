@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-CosyVoice2 TTS Service - FIXED v2
-Handles tokenizer path correctly for CosyVoice-BlankEN subdirectory
+CosyVoice2 TTS Service - Clean Implementation
+Based on official CosyVoice2 patterns from FunAudioLLM/CosyVoice
 """
 
 import sys
 import os
+
+# Add CosyVoice paths (REQUIRED)
 sys.path.append('/opt/CosyVoice')
 sys.path.append('/opt/CosyVoice/third_party/Matcha-TTS')
 
@@ -27,98 +29,70 @@ from livekit import rtc
 from config import config
 from livekit_token import connect_room_as_publisher
 
-# Logging setup
+# Logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("tts-service")
+logger = logging.getLogger("cosyvoice2-tts")
 
 # =============================================================================
 # REQUEST/RESPONSE MODELS
 # =============================================================================
 
 class TTSRequest(BaseModel):
-    """TTS synthesis request"""
-    text: str = Field(..., description="Text to synthesize")
-    room_name: str = Field("ozzu-main", description="LiveKit room name")
+    """TTS request"""
+    text: str
+    room_name: str = "ozzu-main"
+    streaming: bool = True
     
-    # Optional fields
-    mode: Optional[str] = Field("sft", description="Mode: sft, cross_lingual, zero_shot")
-    voice: Optional[str] = Field(None, description="Voice (for compatibility)")
-    speaker: Optional[str] = Field(None, description="Speaker name")
-    speaker_id: Optional[str] = Field(None, description="Speaker ID")
-    streaming: bool = Field(True, description="Enable streaming")
-    speed: float = Field(1.0, description="Speech speed")
-    
-    def get_speaker_id(self) -> str:
-        """Get effective speaker ID"""
-        return self.speaker_id or self.speaker or self.voice or "中文女"
-
 class TTSResponse(BaseModel):
     """TTS response"""
     status: str
     message: Optional[str] = None
-    room_name: Optional[str] = None
     duration_ms: Optional[float] = None
-    chunks_sent: Optional[int] = None
 
 class HealthResponse(BaseModel):
-    """Health check response"""
+    """Health check"""
     service: str = "cosyvoice2-tts"
-    version: str = "1.0.1-fixed"
+    version: str = "2.0-official"
     status: str
     model: str
     device: str
-    gpu_available: bool
-    livekit_connected: bool
 
 # =============================================================================
-# TTS ENGINE - FIXED TOKENIZER HANDLING
+# TTS ENGINE - OFFICIAL PATTERN
 # =============================================================================
 
 class TTSEngine:
-    """CosyVoice2 TTS Engine with proper tokenizer path handling"""
+    """CosyVoice2 engine following official patterns"""
     
     def __init__(self):
         self.model = None
         self.device = config.cosyvoice.device
-        self.sample_rate = config.cosyvoice.sample_rate
+        self.sample_rate = 22050  # CosyVoice2 native rate
         
     async def initialize(self):
-        """Initialize the TTS engine with tokenizer path fix"""
+        """Initialize CosyVoice2 - official pattern"""
         model_path = config.cosyvoice.model_path
         
+        # Verify model exists
         if not os.path.exists(model_path):
-            raise RuntimeError(f"Model not found at {model_path}")
-        
-        # Check for tokenizer files
-        blanken_path = os.path.join(model_path, "CosyVoice-BlankEN")
-        if not os.path.exists(blanken_path):
-            logger.error(f"❌ CosyVoice-BlankEN tokenizer not found at {blanken_path}")
-            logger.error("   This directory should exist within the main model")
-            logger.error("   Try re-downloading the model")
-            raise RuntimeError("Tokenizer files missing - model download may be incomplete")
-        
-        # Verify tokenizer files exist
-        required_tokenizer_files = ['vocab.json', 'merges.txt']
-        missing_files = []
-        for file in required_tokenizer_files:
-            if not os.path.exists(os.path.join(blanken_path, file)):
-                missing_files.append(file)
-        
-        if missing_files:
-            logger.warning(f"⚠️ Some tokenizer files missing: {', '.join(missing_files)}")
-            logger.warning("   Attempting to continue anyway...")
-        else:
-            logger.info(f"✅ Tokenizer files found in {blanken_path}")
+            raise RuntimeError(f"Model not found: {model_path}")
+            
+        # Check for config file (REQUIRED)
+        config_file = os.path.join(model_path, "cosyvoice2.yaml")
+        if not os.path.exists(config_file):
+            raise RuntimeError(
+                f"Model config not found: {config_file}\n"
+                f"This model may be incomplete or downloaded incorrectly."
+            )
         
         logger.info(f"📦 Loading CosyVoice2 from {model_path}")
         
-        # Set environment variable for tokenizer path if needed
-        os.environ['COSYVOICE_TOKENIZER_PATH'] = blanken_path
-        
         try:
+            # Official initialization pattern - SIMPLE!
+            # CosyVoice2 handles tokenizer paths internally via cosyvoice2.yaml
             self.model = CosyVoice2(
                 model_path,
                 load_jit=config.cosyvoice.load_jit,
@@ -127,73 +101,55 @@ class TTSEngine:
                 fp16=config.cosyvoice.fp16 and self.device == "cuda"
             )
             
-            logger.info(f"✅ CosyVoice2 loaded on {self.device}")
+            # Get sample rate from model
+            self.sample_rate = self.model.sample_rate
+            
+            logger.info(f"✅ CosyVoice2 loaded successfully")
+            logger.info(f"   Device: {self.device}")
+            logger.info(f"   Sample rate: {self.sample_rate}Hz")
             
         except Exception as e:
             logger.error(f"❌ Failed to load CosyVoice2: {e}")
             logger.error(f"   Model path: {model_path}")
-            logger.error(f"   BlankEN path: {blanken_path}")
-            logger.error(f"   Files in model dir: {os.listdir(model_path) if os.path.exists(model_path) else 'N/A'}")
-            if os.path.exists(blanken_path):
-                logger.error(f"   Files in BlankEN: {os.listdir(blanken_path)}")
+            logger.error(f"   Files in model dir: {os.listdir(model_path)}")
             raise
     
     async def warmup(self):
-        """Warmup the engine"""
+        """Warmup with test synthesis"""
         logger.info("🔥 Warming up CosyVoice2...")
         start = time.time()
         
         try:
-            # Get available speakers
-            speakers = self.model.list_available_spks()
-            if not speakers:
-                logger.warning("⚠️ No speakers found, will use cross_lingual mode")
-                # Warmup with cross_lingual
-                for result in self.model.inference_cross_lingual(
-                    "Hello warmup",
-                    None,
-                    stream=False
-                ):
-                    break
-            else:
-                logger.info(f"✅ Available speakers: {speakers[:5]}...")
-                # Warmup with first speaker
-                for result in self.model.inference_sft(
-                    "Hello warmup",
-                    speakers[0],
-                    stream=False
-                ):
-                    break
+            # Test with zero-shot inference (most common mode)
+            test_text = "Hello, this is a warmup test."
+            
+            for result in self.model.inference_cross_lingual(
+                test_text,
+                None,  # No prompt audio for warmup
+                stream=False
+            ):
+                break  # Just need first result
             
             elapsed = (time.time() - start) * 1000
             logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
             
         except Exception as e:
             logger.warning(f"⚠️ Warmup failed: {e}")
-            logger.info("   Service may still work for synthesis")
     
-    async def synthesize(self, text: str, speaker_id: str = None, stream: bool = True):
-        """Synthesize speech with automatic mode selection"""
+    async def synthesize(self, text: str, stream: bool = True):
+        """Synthesize speech using cross-lingual mode (best for general use)"""
         if not self.model:
             raise RuntimeError("Model not initialized")
         
-        speakers = self.model.list_available_spks()
-        
-        # Choose synthesis mode
-        if speakers and speaker_id and speaker_id in speakers:
-            # Use SFT mode with specified speaker
-            logger.info(f"🎤 SFT synthesis ({speaker_id}): {text[:100]}...")
-            synthesis_func = lambda: self.model.inference_sft(text, speaker_id, stream=stream)
-        else:
-            # Fall back to cross_lingual mode
-            if speaker_id and speaker_id not in speakers:
-                logger.warning(f"⚠️ Speaker '{speaker_id}' not found, using cross_lingual mode")
-            else:
-                logger.info(f"🎤 Cross-lingual synthesis: {text[:100]}...")
-            synthesis_func = lambda: self.model.inference_cross_lingual(text, None, stream=stream)
+        logger.info(f"🎤 Synthesizing: {text[:100]}...")
         
         try:
-            for result in synthesis_func():
+            # Use cross_lingual mode (works without reference audio)
+            for result in self.model.inference_cross_lingual(
+                text,
+                None,  # No reference audio needed
+                stream=stream
+            ):
                 audio = result['tts_speech']
                 
                 if isinstance(audio, torch.Tensor):
@@ -205,15 +161,6 @@ class TTSEngine:
         except Exception as e:
             logger.error(f"❌ Synthesis failed: {e}")
             raise
-    
-    def get_available_speakers(self) -> list:
-        """Get available speakers"""
-        if self.model:
-            try:
-                return self.model.list_available_spks()
-            except:
-                pass
-        return []
 
 # =============================================================================
 # LIVEKIT PUBLISHER
@@ -241,8 +188,8 @@ class LiveKitPublisher:
         return self.rooms[room_name]
     
     async def publish_audio(self, room_name: str, audio_stream, sample_rate: int):
-        """Publish audio stream to LiveKit room"""
-        logger.info(f"🎵 Streaming audio to {room_name}")
+        """Publish audio to LiveKit"""
+        logger.info(f"🎵 Streaming to {room_name}")
         
         room = await self.get_room(room_name)
         
@@ -258,34 +205,27 @@ class LiveKitPublisher:
         logger.info(f"✅ Track published: {publication.sid}")
         
         chunks_sent = 0
-        total_duration = 0.0
         
         try:
             async for audio_chunk in audio_stream:
                 # Convert to int16
                 audio_int16 = (audio_chunk * 32767).astype(np.int16)
                 
-                # Create audio frame
+                # Create frame
                 frame = rtc.AudioFrame.create(sample_rate, 1, len(audio_int16))
                 frame_data = np.frombuffer(frame.data, dtype=np.int16)
                 np.copyto(frame_data, audio_int16)
                 
-                # Publish frame
+                # Publish
                 await source.capture_frame(frame)
-                
                 chunks_sent += 1
-                total_duration += len(audio_chunk) / sample_rate
                 
-            logger.info(f"✅ Stream complete: {chunks_sent} chunks, {total_duration:.1f}s")
+            logger.info(f"✅ Stream complete: {chunks_sent} chunks")
             
         finally:
-            # Unpublish track
             await room.local_participant.unpublish_track(publication.sid)
         
-        return {
-            "chunks_sent": chunks_sent,
-            "duration_seconds": total_duration
-        }
+        return {"chunks_sent": chunks_sent}
 
 # Global instances
 engine: Optional[TTSEngine] = None
@@ -300,7 +240,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan"""
     global engine, publisher
     
-    logger.info("🚀 Starting TTS Service")
+    logger.info("🚀 Starting CosyVoice2 TTS Service")
     
     try:
         # Initialize engine
@@ -328,7 +268,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CosyVoice2 TTS Service",
-    version="1.0.1-fixed",
+    version="2.0-official",
     lifespan=lifespan
 )
 
@@ -353,17 +293,12 @@ async def synthesize(request: TTSRequest):
     
     start_time = time.time()
     
-    speaker_id = request.get_speaker_id()
-    logger.info(f"🎤 TTS request: room={request.room_name}, speaker={speaker_id}")
+    logger.info(f"🎤 TTS request: room={request.room_name}")
     logger.info(f"   Text: {request.text[:200]}...")
     
     try:
-        # Generate audio stream
-        audio_stream = engine.synthesize(
-            request.text,
-            speaker_id,
-            request.streaming
-        )
+        # Generate audio
+        audio_stream = engine.synthesize(request.text, request.streaming)
         
         # Publish to LiveKit
         result = await publisher.publish_audio(
@@ -374,14 +309,12 @@ async def synthesize(request: TTSRequest):
         
         duration_ms = (time.time() - start_time) * 1000
         
-        logger.info(f"✅ Complete: {duration_ms:.0f}ms, {result['chunks_sent']} chunks")
+        logger.info(f"✅ Complete: {duration_ms:.0f}ms")
         
         return TTSResponse(
             status="completed",
             message="Success",
-            room_name=request.room_name,
-            duration_ms=duration_ms,
-            chunks_sent=result["chunks_sent"]
+            duration_ms=duration_ms
         )
         
     except Exception as e:
@@ -395,37 +328,25 @@ async def health_check():
     return HealthResponse(
         status="healthy",
         model=config.cosyvoice.model_name,
-        device=config.cosyvoice.device,
-        gpu_available=torch.cuda.is_available(),
-        livekit_connected=publisher.connected if publisher else False
+        device=config.cosyvoice.device
     )
-
-@app.get("/speakers")
-async def list_speakers():
-    """List available speakers"""
-    speakers = engine.get_available_speakers() if engine else []
-    return {
-        "speakers": speakers,
-        "count": len(speakers),
-        "supports_cross_lingual": True
-    }
 
 @app.get("/")
 async def root():
     """Service info"""
     return {
         "service": "cosyvoice2-tts",
-        "version": "1.0.1-fixed",
+        "version": "2.0-official",
         "status": "healthy"
     }
 
 # =============================================================================
-# MAIN ENTRY POINT
+# MAIN
 # =============================================================================
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
+        "main_fixed:app",
         host=config.service.host,
         port=config.service.port,
         log_level="info"

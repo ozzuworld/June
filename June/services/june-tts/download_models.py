@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-CosyVoice2 Model Download Script - SIMPLIFIED & FIXED
-Downloads CosyVoice2-0.5B model from ModelScope
-Treats BlankEN as optional (not critical)
+CosyVoice2 Model Download - Official Pattern
+Based on FunAudioLLM/CosyVoice official documentation
 """
 
 import os
 import logging
-import shutil
 import sys
 from pathlib import Path
 
@@ -17,58 +15,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("model-download")
 
-MODEL_NAME = "CosyVoice2-0.5B"
-MODEL_ID = f"iic/{MODEL_NAME}"
-CACHE_DIR = "/tmp/modelscope_cache"
-
-
-def check_critical_files(model_path: str) -> tuple[bool, list]:
-    """Check if all critical model files exist"""
-    critical_files = [
-        "cosyvoice2.yaml",
-        "flow.pt",
-        "hift.pt"
-    ]
-    
-    missing = []
-    for file in critical_files:
-        if not os.path.exists(os.path.join(model_path, file)):
-            missing.append(file)
-    
-    return len(missing) == 0, missing
-
-
-def download_cosyvoice2_model():
-    """Download CosyVoice2-0.5B model - SIMPLIFIED"""
+def download_cosyvoice2_official():
+    """
+    Download CosyVoice2-0.5B using official method
+    Reference: https://github.com/FunAudioLLM/CosyVoice
+    """
     
     model_dir = os.getenv("MODEL_DIR", "/app/pretrained_models")
-    local_path = os.path.join(model_dir, MODEL_NAME)
+    model_name = "CosyVoice2-0.5B"
+    local_path = os.path.join(model_dir, model_name)
     
     os.makedirs(model_dir, exist_ok=True)
     
-    logger.info("=" * 60)
-    logger.info("CosyVoice2 Model Download")
-    logger.info("=" * 60)
-    logger.info(f"Model: {MODEL_NAME}")
+    logger.info("=" * 70)
+    logger.info("CosyVoice2-0.5B Model Download (Official Method)")
+    logger.info("=" * 70)
     logger.info(f"Target: {local_path}")
     logger.info("")
     
-    # Check if model already exists and is complete
-    if os.path.isdir(local_path):
-        is_complete, missing = check_critical_files(local_path)
-        if is_complete:
-            file_count = len(os.listdir(local_path))
-            logger.info(f"✅ Model already exists and is complete")
-            logger.info(f"   Location: {local_path}")
-            logger.info(f"   Files: {file_count}")
-            return local_path
-        else:
-            logger.warning(f"⚠️  Model exists but is incomplete")
-            logger.warning(f"   Missing files: {', '.join(missing)}")
-            logger.info("   Will re-download...")
-            shutil.rmtree(local_path)
+    # Check if already exists
+    config_file = os.path.join(local_path, "cosyvoice2.yaml")
+    if os.path.exists(config_file):
+        file_count = len(list(Path(local_path).glob("*")))
+        logger.info(f"✅ Model already exists: {local_path}")
+        logger.info(f"   Files: {file_count}")
+        return local_path
     
-    # Download via ModelScope
+    # Import modelscope
     try:
         from modelscope import snapshot_download
     except ImportError:
@@ -76,139 +49,97 @@ def download_cosyvoice2_model():
         logger.error("   Install with: pip install modelscope")
         sys.exit(1)
     
-    logger.info("=" * 60)
-    logger.info("Downloading via ModelScope SDK")
-    logger.info("=" * 60)
-    logger.info(f"Model ID: {MODEL_ID}")
-    logger.info(f"Target: {local_path}")
-    logger.info("This may take 5-10 minutes depending on your connection...")
+    logger.info("📦 Downloading CosyVoice2-0.5B from ModelScope")
+    logger.info(f"   Model ID: iic/{model_name}")
+    logger.info(f"   Destination: {local_path}")
+    logger.info("")
+    logger.info("This will download ~3.4GB and may take 5-10 minutes...")
     logger.info("")
     
     try:
-        # Try new API (with local_dir)
+        # Official download method from CosyVoice repo
         result = snapshot_download(
-            model_id=MODEL_ID,
-            local_dir=local_path,
-            cache_dir=CACHE_DIR,
+            f'iic/{model_name}',
+            local_dir=local_path
         )
-    except TypeError:
-        # Fallback to legacy API (without local_dir)
-        logger.info("Using legacy ModelScope API...")
-        result = snapshot_download(
-            model_id=MODEL_ID,
-            cache_dir=CACHE_DIR,
-        )
-        # Move to target location
-        if os.path.exists(result) and result != local_path:
-            if os.path.exists(local_path):
-                shutil.rmtree(local_path)
-            shutil.move(result, local_path)
-            result = local_path
+        
+        logger.info("")
+        logger.info("✅ Download completed!")
+        logger.info(f"   Location: {result}")
+        
+        # Verify critical files
+        verify_model(result)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Download failed: {e}")
+        logger.error("")
+        logger.error("Troubleshooting:")
+        logger.error("1. Check your internet connection")
+        logger.error("2. Make sure modelscope is installed: pip install modelscope")
+        logger.error("3. Check ModelScope status: https://modelscope.cn/")
+        sys.exit(1)
+
+
+def verify_model(model_path: str):
+    """Verify downloaded model has all required files"""
+    logger.info("")
+    logger.info("🔍 Verifying model files...")
     
-    # Verify download
-    is_complete, missing = check_critical_files(result)
-    if not is_complete:
-        logger.error(f"❌ Download incomplete. Missing files: {', '.join(missing)}")
+    required_files = [
+        "cosyvoice2.yaml",  # Main config - REQUIRED
+        "flow.pt",          # Flow model - REQUIRED  
+        "hift.pt",          # HiFi-GAN - REQUIRED
+        "llm.pt",           # LLM weights - REQUIRED
+    ]
+    
+    missing = []
+    for file in required_files:
+        file_path = os.path.join(model_path, file)
+        if os.path.exists(file_path):
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            logger.info(f"   ✅ {file} ({size_mb:.1f} MB)")
+        else:
+            logger.error(f"   ❌ {file} MISSING!")
+            missing.append(file)
+    
+    # Check for CosyVoice-BlankEN (tokenizer)
+    blanken_path = os.path.join(model_path, "CosyVoice-BlankEN")
+    if os.path.exists(blanken_path):
+        logger.info(f"   ✅ CosyVoice-BlankEN/ (tokenizer)")
+    else:
+        logger.warning(f"   ⚠️  CosyVoice-BlankEN/ not found")
+        logger.warning("      This directory should contain tokenizer files")
+        logger.warning("      The model may not work properly without it")
+    
+    if missing:
+        logger.error("")
+        logger.error(f"❌ Model verification FAILED!")
+        logger.error(f"   Missing files: {', '.join(missing)}")
+        logger.error("")
+        logger.error("The download may be incomplete. Try:")
+        logger.error("1. Delete the model directory")
+        logger.error("2. Run this script again")
         sys.exit(1)
     
-    file_count = len(os.listdir(result))
-    logger.info("=" * 60)
-    logger.info("✅ Download complete and verified")
-    logger.info(f"   Location: {result}")
-    logger.info(f"   Files: {file_count}")
-    logger.info("=" * 60)
-    
-    return result
-
-
-def try_download_optional_blanken(model_path: str):
-    """Try to download BlankEN - OPTIONAL, doesn't fail if not available"""
-    blank_en_path = os.path.join(model_path, "CosyVoice-BlankEN")
-    
-    # Check if already exists
-    if os.path.exists(os.path.join(blank_en_path, "config.json")):
-        logger.info("✅ CosyVoice-BlankEN already exists")
-        return True
-    
-    try:
-        from modelscope import snapshot_download
-        logger.info("")
-        logger.info("📦 Attempting to download CosyVoice-BlankEN (optional)...")
-        logger.info("   This model may not be available, which is OK")
-        
-        try:
-            snapshot_download(
-                model_id='iic/CosyVoice-BlankEN',
-                local_dir=blank_en_path,
-                cache_dir=CACHE_DIR,
-            )
-        except TypeError:
-            path = snapshot_download(
-                model_id='iic/CosyVoice-BlankEN',
-                cache_dir=CACHE_DIR,
-            )
-            if os.path.exists(path) and path != blank_en_path:
-                shutil.move(path, blank_en_path)
-        
-        logger.info("✅ CosyVoice-BlankEN downloaded")
-        return True
-        
-    except Exception as e:
-        logger.warning(f"⚠️  CosyVoice-BlankEN not available: {e}")
-        logger.info("   This is optional - the model will work without it")
-        return False
-
-
-def try_download_optional_ttsfrd(model_dir: str):
-    """Try to download ttsfrd - OPTIONAL"""
-    ttsfrd_path = os.path.join(model_dir, "CosyVoice-ttsfrd")
-
-    if os.path.exists(ttsfrd_path):
-        logger.info("✅ ttsfrd resource already exists")
-        return ttsfrd_path
-
-    try:
-        from modelscope import snapshot_download
-        logger.info("")
-        logger.info("📦 Attempting to download CosyVoice-ttsfrd (optional)...")
-        
-        try:
-            snapshot_download(
-                model_id='iic/CosyVoice-ttsfrd',
-                local_dir=ttsfrd_path,
-                cache_dir=CACHE_DIR,
-            )
-        except TypeError:
-            path = snapshot_download(
-                model_id='iic/CosyVoice-ttsfrd',
-                cache_dir=CACHE_DIR,
-            )
-            if os.path.exists(path) and path != ttsfrd_path:
-                shutil.move(path, ttsfrd_path)
-                
-        logger.info("✅ ttsfrd resource downloaded")
-        return ttsfrd_path
-        
-    except Exception as e:
-        logger.warning(f"⚠️  ttsfrd not available: {e}")
-        return None
+    logger.info("")
+    logger.info("✅ Model verification passed!")
 
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting model download process")
+    logger.info("🚀 Starting CosyVoice2 model download")
     logger.info("")
     
-    # Download main model (REQUIRED)
-    model_path = download_cosyvoice2_model()
-    
-    # Try optional components (DON'T FAIL if unavailable)
-    blanken_ok = try_download_optional_blanken(model_path)
-    ttsfrd_path = try_download_optional_ttsfrd(os.path.dirname(model_path))
+    model_path = download_cosyvoice2_official()
     
     logger.info("")
-    logger.info("🎉 Setup complete!")
-    logger.info(f"   Main Model: {model_path} ✅")
-    logger.info(f"   BlankEN: {'✅' if blanken_ok else '⚠️  Not available (optional)'}")
-    logger.info(f"   ttsfrd: {'✅' if ttsfrd_path else '⚠️  Not available (optional)'}")
+    logger.info("=" * 70)
+    logger.info("🎉 Setup Complete!")
+    logger.info("=" * 70)
+    logger.info(f"Model ready at: {model_path}")
     logger.info("")
-    logger.info("Ready to start TTS service")
+    logger.info("Next steps:")
+    logger.info("1. Start the TTS service with: python main_fixed.py")
+    logger.info("2. Or use Docker: docker-compose up")
+    logger.info("")
