@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CosyVoice2 TTS Service - Clean and Fixed
-Ultra-low latency streaming TTS with LiveKit integration
+CosyVoice2 TTS Service - SIMPLIFIED & FIXED
+Uses cross_lingual mode - no speaker dependencies needed
 """
 
 import sys
@@ -30,7 +30,7 @@ from livekit_token import connect_room_as_publisher
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("tts-service")
 
@@ -39,26 +39,17 @@ logger = logging.getLogger("tts-service")
 # =============================================================================
 
 class TTSRequest(BaseModel):
-    """TTS synthesis request - compatible with orchestrator"""
+    """TTS synthesis request"""
     text: str = Field(..., description="Text to synthesize")
     room_name: str = Field("ozzu-main", description="LiveKit room name")
-    mode: str = Field("sft", description="Synthesis mode (ignored for CosyVoice2)")
     
-    # All possible speaker field names for compatibility
-    voice: Optional[str] = Field(None, description="Voice/speaker (legacy)")
-    speaker: Optional[str] = Field(None, description="Speaker (legacy)")
-    speaker_id: Optional[str] = Field(None, description="Speaker ID (legacy)")
-    
-    # Optional fields
+    # Optional - ignored for cross_lingual mode
+    mode: Optional[str] = Field("cross_lingual", description="Mode (always cross_lingual)")
+    voice: Optional[str] = Field(None, description="Voice (ignored)")
+    speaker: Optional[str] = Field(None, description="Speaker (ignored)")
+    speaker_id: Optional[str] = Field(None, description="Speaker ID (ignored)")
     streaming: bool = Field(True, description="Enable streaming")
-    speed: float = Field(1.0, description="Speech speed")
-    prompt_audio: Optional[str] = Field(None, description="Reference audio for zero-shot")
-    prompt_text: Optional[str] = Field(None, description="Reference text for zero-shot")
-    instruct: Optional[str] = Field(None, description="Instruction for instruct mode")
-    
-    def get_speaker_id(self) -> str:
-        """Get effective speaker ID from any field for logging only"""
-        return self.speaker_id or self.speaker or self.voice or ""
+    speed: float = Field(1.0, description="Speech speed (ignored)")
 
 class TTSResponse(BaseModel):
     """TTS response"""
@@ -71,26 +62,25 @@ class TTSResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response"""
     service: str = "cosyvoice2-tts"
-    version: str = "1.1.0"
+    version: str = "1.0.0-simplified"
     status: str
     model: str
     device: str
     gpu_available: bool
     livekit_connected: bool
+    mode: str = "cross_lingual"
 
 # =============================================================================
-# TTS ENGINE
+# TTS ENGINE - SIMPLIFIED
 # =============================================================================
 
 class TTSEngine:
-    """CosyVoice2 TTS Engine using cross-lingual path (no SFT speakers)."""
+    """CosyVoice2 TTS Engine using cross_lingual mode only"""
     
     def __init__(self):
         self.model = None
         self.device = config.cosyvoice.device
         self.sample_rate = config.cosyvoice.sample_rate
-        # Optional registry for reusable zero-shot speakers (disabled by default)
-        self.zero_shot_registry = {}
         
     async def initialize(self):
         """Initialize the TTS engine"""
@@ -100,12 +90,13 @@ class TTSEngine:
             raise RuntimeError(f"Model not found at {model_path}")
         
         logger.info(f"📦 Loading CosyVoice2 from {model_path}")
+        logger.info(f"   Mode: cross_lingual (no speaker dependencies)")
         
         self.model = CosyVoice2(
             model_path,
-            load_jit=config.cosyvoice.load_jit,
-            load_trt=config.cosyvoice.load_trt,
-            load_vllm=config.cosyvoice.load_vllm,
+            load_jit=False,  # Keep disabled for stability
+            load_trt=False,
+            load_vllm=False,
             fp16=config.cosyvoice.fp16 and self.device == "cuda"
         )
         
@@ -113,25 +104,39 @@ class TTSEngine:
     
     async def warmup(self):
         """Warmup the engine"""
-        logger.info("🔥 Warming up CosyVoice2 via cross_lingual...")
+        logger.info("🔥 Warming up CosyVoice2...")
         start = time.time()
+        
         try:
-            for result in self.model.inference_cross_lingual("Hello warmup", None, stream=False):
+            # Warmup with cross_lingual mode
+            for result in self.model.inference_cross_lingual(
+                "Hello warmup", 
+                None,  # No prompt audio needed
+                stream=False
+            ):
                 break
+            
+            elapsed = (time.time() - start) * 1000
+            logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
+            
         except Exception as e:
-            logger.warning(f"Warmup cross_lingual failed: {e}")
-        elapsed = (time.time() - start) * 1000
-        logger.info(f"✅ Warmup complete: {elapsed:.0f}ms")
+            logger.warning(f"⚠️ Warmup failed: {e}")
+            logger.info("   Continuing anyway...")
     
     async def synthesize(self, text: str, stream: bool = True):
-        """Synthesize speech using CosyVoice2 cross_lingual (no per-request cloning)."""
+        """Synthesize speech using cross_lingual mode"""
         if not self.model:
             raise RuntimeError("Model not initialized")
         
-        logger.info(f"🎤 Synthesis (cross_lingual): {text[:100]}...")
+        logger.info(f"🎤 Synthesis: {text[:100]}...")
         
         try:
-            for result in self.model.inference_cross_lingual(text, None, stream=stream):
+            # Use cross_lingual mode - no speaker/voice needed
+            for result in self.model.inference_cross_lingual(
+                text, 
+                None,  # No prompt audio
+                stream=stream
+            ):
                 audio = result['tts_speech']
                 
                 if isinstance(audio, torch.Tensor):
@@ -143,10 +148,6 @@ class TTSEngine:
         except Exception as e:
             logger.error(f"❌ Synthesis failed: {e}")
             raise
-    
-    def get_speakers(self) -> list:
-        """Return empty list; CosyVoice2 cross_lingual has no predefined SFT speakers."""
-        return []
 
 # =============================================================================
 # LIVEKIT PUBLISHER
@@ -233,18 +234,23 @@ async def lifespan(app: FastAPI):
     """Application lifespan"""
     global engine, publisher
     
-    logger.info("🚀 Starting TTS Service")
+    logger.info("🚀 Starting TTS Service (Simplified)")
     
-    # Initialize engine
-    engine = TTSEngine()
-    await engine.initialize()
-    await engine.warmup()
-    
-    # Initialize publisher
-    publisher = LiveKitPublisher()
-    await publisher.initialize(config.livekit.default_room)
-    
-    logger.info("✅ Service ready")
+    try:
+        # Initialize engine
+        engine = TTSEngine()
+        await engine.initialize()
+        await engine.warmup()
+        
+        # Initialize publisher
+        publisher = LiveKitPublisher()
+        await publisher.initialize(config.livekit.default_room)
+        
+        logger.info("✅ Service ready")
+        
+    except Exception as e:
+        logger.error(f"❌ Initialization failed: {e}")
+        raise
     
     yield
     
@@ -256,7 +262,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CosyVoice2 TTS Service",
-    version="1.1.0",
+    version="1.0.0-simplified",
     lifespan=lifespan
 )
 
@@ -273,25 +279,28 @@ app.add_middleware(
 # =============================================================================
 
 @app.post("/api/tts/synthesize", response_model=TTSResponse)
+@app.post("/synthesize", response_model=TTSResponse)
 async def synthesize(request: TTSRequest):
-    """Synthesize speech and stream to LiveKit (CosyVoice2 cross_lingual)."""
+    """Synthesize speech and stream to LiveKit (cross_lingual mode)"""
     if not engine or not publisher:
         raise HTTPException(status_code=503, detail="Service not ready")
     
     start_time = time.time()
-    resolved_speaker = request.get_speaker_id()
     
-    logger.info(f"🎤 TTS request: room={request.room_name}, mode={request.mode}")
-    logger.info(f"   Speaker fields: speaker_id={request.speaker_id}, speaker={request.speaker}, voice={request.voice}")
-    logger.info(f"   (CosyVoice2) Ignoring speaker fields; using cross_lingual path.")
+    logger.info(f"🎤 TTS request: room={request.room_name}")
     logger.info(f"   Text: {request.text[:200]}...")
+    logger.info(f"   Mode: cross_lingual (voice/speaker fields ignored)")
     
     try:
-        # Generate audio stream (cross_lingual)
+        # Generate audio stream
         audio_stream = engine.synthesize(request.text, request.streaming)
         
         # Publish to LiveKit
-        result = await publisher.publish_audio(request.room_name, audio_stream, engine.sample_rate)
+        result = await publisher.publish_audio(
+            request.room_name, 
+            audio_stream, 
+            engine.sample_rate
+        )
         
         duration_ms = (time.time() - start_time) * 1000
         
@@ -323,33 +332,26 @@ async def health_check():
 
 @app.get("/speakers")
 async def list_speakers():
-    """List available speakers (none for CosyVoice2 cross_lingual)."""
-    return {"speakers": engine.get_speakers() if engine else []}
+    """List available speakers (none for cross_lingual mode)"""
+    return {
+        "speakers": [],
+        "mode": "cross_lingual",
+        "note": "This service uses cross_lingual mode - no predefined speakers"
+    }
 
 @app.get("/")
 async def root():
     """Service info"""
     return {
         "service": "cosyvoice2-tts",
-        "version": "1.1.0",
-        "status": "healthy"
-    }
-
-@app.get("/debug")
-async def debug_info():
-    """Debug information"""
-    if not engine:
-        return {"error": "Engine not initialized"}
-    
-    return {
-        "engine_initialized": engine is not None,
-        "model_loaded": engine.model is not None if engine else False,
-        "available_speakers": engine.get_speakers() if engine else [],
-        "speaker_count": len(engine.get_speakers()) if engine else 0,
-        "device": engine.device if engine else "unknown",
-        "sample_rate": engine.sample_rate if engine else 0,
-        "model_path": config.cosyvoice.model_path,
-        "livekit_connected": publisher.connected if publisher else False
+        "version": "1.0.0-simplified",
+        "status": "healthy",
+        "mode": "cross_lingual",
+        "features": [
+            "cross_lingual_synthesis",
+            "streaming",
+            "livekit_integration"
+        ]
     }
 
 # =============================================================================
