@@ -1,7 +1,7 @@
 # Dockerfile
 
 # Base: Fish-Speech server image (CUDA + code + tools/api_server.py)
-FROM fishaudio/fish-speech:server-cuda-nightly
+FROM fishaudio/fish-speech:latest-server-cuda
 
 WORKDIR /app
 
