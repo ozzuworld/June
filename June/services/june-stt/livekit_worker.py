@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 async def get_livekit_token(identity: str, room_name: str = "ozzu-main", max_retries: int = 3) -> tuple[str, str]:
-    base = os.getenv("ORCHESTRATOR_URL", "http://api.ozzu.world")
+    base = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
     paths = ["/token"]
 
     last_err: Optional[Exception] = None
