@@ -20,30 +20,19 @@ class TTSPhrase:
     timestamp: datetime
     session_id: str
     language: str = "en"
-    speed: float = 1.0
-    # NOTE: speaker_id removed for CosyVoice2 compatibility
+    # speed field removed for CosyVoice2 API compliance
 
 class SmartTTSQueue:
     """
     Intelligent TTS queue that maintains conversation flow while protecting GPU
-    
-    Key Features:
-    - First phrase priority: Sub-500ms response for natural conversation
-    - Sequential processing: Prevents GPU overload from concurrent requests
-    - Session isolation: Multiple users don't interfere
-    - Interruption handling: Can stop mid-response when user speaks
-    - Natural timing: 50ms gaps between phrases mimic human speech
     """
-    
     def __init__(self, tts_service, max_concurrent: int = 1, phrase_gap_ms: int = 50):
         self.tts_service = tts_service
         self.max_concurrent = max_concurrent
         self.phrase_gap_ms = phrase_gap_ms
-        # Session management
         self.active_sessions: Dict[str, List[TTSPhrase]] = {}
         self.processing_semaphore = asyncio.Semaphore(max_concurrent)
         self.session_locks: Dict[str, asyncio.Lock] = {}
-        # Metrics
         self.metrics = {
             "phrases_queued": 0,
             "phrases_processed": 0,
@@ -61,19 +50,14 @@ class SmartTTSQueue:
         session_id: str,
         is_first_phrase: bool = False,
         is_final: bool = False,
-        language: str = "en",
-        speed: float = 1.0
+        language: str = "en"
     ) -> bool:
-        """
-        Queue phrase with priority for natural conversation flow (no speaker_id)
-        """
         try:
             if not text or len(text.strip()) == 0:
                 return False
             # Initialize session lock if needed
             if session_id not in self.session_locks:
                 self.session_locks[session_id] = asyncio.Lock()
-            # Determine priority (1=urgent, 3=final, 2=sequential)
             priority = 1 if is_first_phrase else (3 if is_final else 2)
             phrase = TTSPhrase(
                 text=text,
@@ -81,16 +65,13 @@ class SmartTTSQueue:
                 priority=priority,
                 timestamp=datetime.utcnow(),
                 session_id=session_id,
-                language=language,
-                speed=speed
+                language=language
             )
-            # Add to session queue
             async with self.session_locks[session_id]:
                 if session_id not in self.active_sessions:
                     self.active_sessions[session_id] = []
                 self.active_sessions[session_id].append(phrase)
             self.metrics["phrases_queued"] += 1
-            # Process immediately for first phrase (maintain responsiveness)
             if is_first_phrase:
                 self.metrics["urgent_phrases"] += 1
                 asyncio.create_task(self._process_phrase_urgent(phrase))
@@ -104,7 +85,6 @@ class SmartTTSQueue:
             return False
 
     async def _process_phrase_urgent(self, phrase: TTSPhrase):
-        """Process first phrase immediately for sub-500ms response"""
         start_time = asyncio.get_event_loop().time()
         try:
             async with self.processing_semaphore:
@@ -113,18 +93,15 @@ class SmartTTSQueue:
                     room_name=phrase.room_name,
                     text=phrase.text,
                     language=phrase.language,
-                    speed=phrase.speed,
                     streaming=True
                 )
                 if success:
                     elapsed_ms = (asyncio.get_event_loop().time() - start_time) * 1000
                     self.metrics["phrases_processed"] += 1
                     logger.info(f"✅ URGENT TTS completed: {elapsed_ms:.0f}ms")
-                    # Update first phrase timing metric
                     if self.metrics["avg_first_phrase_ms"] == 0:
                         self.metrics["avg_first_phrase_ms"] = elapsed_ms
                     else:
-                        # Simple moving average
                         self.metrics["avg_first_phrase_ms"] = (
                             self.metrics["avg_first_phrase_ms"] * 0.8 + elapsed_ms * 0.2
                         )
@@ -136,7 +113,6 @@ class SmartTTSQueue:
             await self._remove_phrase_from_session(phrase)
 
     async def _process_phrase_sequential(self, phrase: TTSPhrase, session_id: str):
-        """Process continuation phrases with natural timing"""
         try:
             await asyncio.sleep(self.phrase_gap_ms / 1000.0)
             async with self.processing_semaphore:
@@ -145,7 +121,6 @@ class SmartTTSQueue:
                     room_name=phrase.room_name,
                     text=phrase.text,
                     language=phrase.language,
-                    speed=phrase.speed,
                     streaming=True
                 )
                 if success:
