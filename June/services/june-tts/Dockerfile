@@ -1,4 +1,6 @@
-# Base: Fish-Speech server image (has CUDA + code)
+# Dockerfile
+
+# Base: Fish-Speech server image (CUDA + code)
 FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
@@ -12,12 +14,13 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       python-multipart \
       pydantic \
       ormsgpack \
-      huggingface_hub
+      huggingface_hub \
+      pyrootutils
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references
 
-# Copy FastAPI app + entrypoint
+# Copy FastAPI app + entrypoint into the image
 COPY app ./app
 COPY entrypoint.sh /app/entrypoint.sh
 
@@ -32,4 +35,6 @@ ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
 
 EXPOSE 8000
 
-ENTRYPOINT ["bash", "/app/entrypoint.sh"]
+# Remove base image entrypoint and run our script instead
+ENTRYPOINT []
+CMD ["bash", "/app/entrypoint.sh"]
