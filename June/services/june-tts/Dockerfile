@@ -3,7 +3,7 @@ FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
 
-# Install extra deps for API + model download
+# Install extra deps for API + runtime model download
 RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
     pip install --no-cache-dir --break-system-packages \
       fastapi \
@@ -14,22 +14,8 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       ormsgpack \
       huggingface_hub
 
-# Download OpenAudio S1 mini into the image at build time
-RUN mkdir -p /app/checkpoints && \
-    python3 - <<'PY'
-from huggingface_hub import snapshot_download
-
-print("Downloading OpenAudio S1 mini checkpoint into /app/checkpoints/openaudio-s1-mini ...")
-snapshot_download(
-    repo_id="fishaudio/openaudio-s1-mini",
-    local_dir="/app/checkpoints/openaudio-s1-mini",
-    local_dir_use_symlinks=False,
-)
-print("Download complete.")
-PY
-
-# Voice-cloning references directory
-RUN mkdir -p /app/references
+# Prepare directories; the actual model will be downloaded at runtime
+RUN mkdir -p /app/checkpoints /app/references
 
 # Copy FastAPI app + entrypoint
 COPY app ./app
