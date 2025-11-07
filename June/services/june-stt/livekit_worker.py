@@ -27,7 +27,7 @@ async def get_livekit_token(
     """
     base = os.getenv(
         "ORCHESTRATOR_URL",
-        "https://api.ozzuw.world",
+        "https://api.ozzu.world",
     )
 
     paths = ["/token"]
