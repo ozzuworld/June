@@ -12,27 +12,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install base Python dependencies (everything EXCEPT faster-whisper)
+# Python deps (everything *except* faster-whisper + av)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# ---------- FAST-WHISPER + AV FIX ----------
-# 1) Install an av version that HAS a prebuilt wheel for cp310 on manylinux
-#    -> no compiling, no FFmpeg headers needed.
-# 2) Install faster-whisper WITHOUT its dependencies (`--no-deps`)
-#    so it doesn't try to pull av==11.* and re-break everything.
+# Install av using a wheel + faster-whisper without pulling its deps again
 RUN pip install --no-cache-dir "av==12.0.0" ctranslate2 huggingface-hub onnxruntime tokenizers tqdm && \
     pip install --no-cache-dir --no-deps "faster-whisper==1.0.3"
-# -------------------------------------------
 
-# Clone whisper_streaming and copy whisper_online.py
+# Get whisper_streaming helper
 RUN git clone https://github.com/ufal/whisper_streaming.git /tmp/whisper_streaming && \
     cp /tmp/whisper_streaming/whisper_online.py /app/ && \
     rm -rf /tmp/whisper_streaming
 
-# Copy service code
+# 🔥 COPY BOTH PY FILES EXPLICITLY
 COPY main.py .
+COPY livekit_worker.py .
 
 EXPOSE 8000
 

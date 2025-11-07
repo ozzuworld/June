@@ -56,8 +56,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Config / Service ------------------------------------------------------------
-
 
 class ASRConfig(BaseModel):
     model: str = "base"
@@ -88,7 +86,6 @@ class ASRService:
             self.config.language,
         )
 
-        # Init backend
         self.asr = FasterWhisperASR(
             lan=self.config.language,
             modelsize=self.config.model,
@@ -96,17 +93,15 @@ class ASRService:
             model_dir=None,
         )
 
-        # Task
         if self.config.task == "translate":
             self.asr.set_translate_task()
 
-        # VAD
         if self.config.use_vac:
             self.asr.use_vad()
 
         logger.info("Model loaded successfully")
 
-        # Warmup: 1s of silence
+        # Warmup
         try:
             logger.info("Warming up ASR model...")
             dummy_audio = np.zeros(SAMPLING_RATE, dtype=np.float32)
@@ -127,7 +122,7 @@ class ASRService:
             list(processor.process_iter())
             processor.finish()
             logger.info("ASR model warmed up successfully")
-        except Exception as e:  # non-fatal
+        except Exception as e:
             logger.warning("Warmup failed (non-critical): %s", e)
 
         self.is_ready = True
@@ -150,10 +145,7 @@ class ASRService:
             )
 
 
-# Single global service used by both WebSocket and LiveKit worker
 asr_service: Optional[ASRService] = None
-
-# Startup / health ------------------------------------------------------------
 
 
 @app.on_event("startup")
@@ -174,8 +166,9 @@ async def startup_event() -> None:
     await asr_service.initialize()
     logger.info("ASR Microservice started successfully")
 
-    # Fire & forget background LiveKit bridge
+    # Start LiveKit worker in the background
     asyncio.create_task(run_livekit_worker(asr_service))
+    logger.info("LiveKit worker started")
 
 
 @app.get("/")
@@ -212,9 +205,6 @@ async def get_config():
     }
 
 
-# WebSocket endpoint ----------------------------------------------------------
-
-
 @app.websocket("/ws/transcribe")
 async def websocket_transcribe(websocket: WebSocket):
     """
@@ -226,10 +216,7 @@ async def websocket_transcribe(websocket: WebSocket):
 
     if asr_service is None or not asr_service.is_ready:
         await websocket.send_json(
-            {
-                "type": "error",
-                "message": "ASR service not initialized",
-            }
+            {"type": "error", "message": "ASR service not initialized"}
         )
         await websocket.close(code=1011)
         return
@@ -249,7 +236,6 @@ async def websocket_transcribe(websocket: WebSocket):
             if not data:
                 continue
 
-            # Decode raw PCM16 -> float32
             try:
                 audio_buffer = io.BytesIO(data)
                 sf = soundfile.SoundFile(
@@ -274,6 +260,7 @@ async def websocket_transcribe(websocket: WebSocket):
                             "end": float(end),
                             "timestamp": datetime.utcnow().isoformat(),
                         }
+                            # send JSON back to client
                         await websocket.send_json(result)
             except Exception as e:
                 logger.error("Error processing audio chunk: %s", e)
@@ -285,7 +272,6 @@ async def websocket_transcribe(websocket: WebSocket):
         except Exception:
             pass
     finally:
-        # Flush final text
         try:
             output = processor.finish()
             if output[0] is not None:
