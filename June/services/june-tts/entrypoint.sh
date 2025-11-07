@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Default paths (can be overridden with env)
+# Defaults (can be overridden with env)
 : "${LLAMA_CHECKPOINT_PATH:=/app/checkpoints/openaudio-s1-mini}"
 : "${DECODER_CHECKPOINT_PATH:=/app/checkpoints/openaudio-s1-mini/codec.pth}"
 : "${DECODER_CONFIG_NAME:=modded_dac_vq}"
 : "${API_SERVER_HOST:=0.0.0.0}"
 : "${API_SERVER_PORT:=8080}"
+
+echo "[entrypoint] Using checkpoint: ${LLAMA_CHECKPOINT_PATH}"
 
 echo "[entrypoint] Starting Fish-Speech API server..."
 python -m tools.api_server \
@@ -18,8 +20,8 @@ python -m tools.api_server \
 
 FISH_PID=$!
 
-# Tiny delay so the model server opens the port
+# Give the model server a moment to boot
 sleep 5
 
-echo "[entrypoint] Starting June TTS FastAPI adapter..."
+echo "[entrypoint] Starting June TTS FastAPI service..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

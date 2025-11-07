@@ -1,10 +1,9 @@
-# Use the official Fish-Speech server image as base.
-# It already contains PyTorch, CUDA, and the fish-speech code. :contentReference[oaicite:5]{index=5}
+# Base: official Fish-Speech server image (has code + deps)
 FROM fishaudio/fish-speech:latest-server-cuda
 
 WORKDIR /app
 
-# Extra Python deps for our FastAPI microservice
+# Install extra deps for API + model download
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
       fastapi \
@@ -12,22 +11,39 @@ RUN pip install --no-cache-dir --upgrade pip && \
       httpx \
       python-multipart \
       pydantic \
-      ormsgpack
+      ormsgpack \
+      huggingface_hub
 
-# Copy our FastAPI app
+# Download model checkpoint into the image at build time
+RUN mkdir -p /app/checkpoints && \
+    python - <<'PY'
+from huggingface_hub import snapshot_download
+
+print("Downloading OpenAudio S1 mini checkpoint into /app/checkpoints/openaudio-s1-mini ...")
+snapshot_download(
+    repo_id="fishaudio/openaudio-s1-mini",
+    local_dir="/app/checkpoints/openaudio-s1-mini",
+    local_dir_use_symlinks=False,
+)
+print("Download complete.")
+PY
+
+# References directory for voice cloning (can still be mounted from host if you want)
+RUN mkdir -p /app/references
+
+# Copy FastAPI app + entrypoint
 COPY app ./app
-
-# Copy entrypoint that runs both tools.api_server (TTS) + uvicorn
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Set defaults for model paths (can be overridden with env)
+# Default env for internal paths
 ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
     DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth \
     DECODER_CONFIG_NAME=modded_dac_vq \
     REFERENCES_DIR=/app/references \
     FISH_SPEECH_BASE_URL=http://127.0.0.1:8080 \
-    FISH_SPEECH_TIMEOUT=180
+    FISH_SPEECH_TIMEOUT=180 \
+    COMPILE=1
 
 EXPOSE 8000
 
