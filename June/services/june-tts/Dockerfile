@@ -4,8 +4,8 @@ FROM fishaudio/fish-speech:server-cuda-nightly
 WORKDIR /app
 
 # Install extra deps for API + model download
-RUN python -m pip install --no-cache-dir --break-system-packages --upgrade pip && \
-    python -m pip install --no-cache-dir --break-system-packages \
+RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
+    pip install --no-cache-dir --break-system-packages \
       fastapi \
       uvicorn[standard] \
       httpx \
@@ -16,7 +16,7 @@ RUN python -m pip install --no-cache-dir --break-system-packages --upgrade pip &
 
 # Download OpenAudio S1 mini into the image at build time
 RUN mkdir -p /app/checkpoints && \
-    python - <<'PY'
+    python3 - <<'PY'
 from huggingface_hub import snapshot_download
 
 print("Downloading OpenAudio S1 mini checkpoint into /app/checkpoints/openaudio-s1-mini ...")
@@ -48,3 +48,4 @@ ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
 EXPOSE 8000
 
 CMD ["/app/entrypoint.sh"]
+1
