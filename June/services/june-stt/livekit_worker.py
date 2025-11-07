@@ -130,6 +130,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
 
     processor = asr_service.create_processor()
     audio_stream = AudioStream(track)
+    
+    # Process counter - only check for transcription periodically
+    chunk_count = 0
+    check_interval = 10  # Check every 10 chunks (~500ms with 50ms chunks)
 
     try:
         async for ev in audio_stream:
@@ -149,19 +153,20 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
             audio = pcm.astype(np.float32) / 32768.0
 
             processor.insert_audio_chunk(audio)
+            chunk_count += 1
 
-            # CRITICAL FIX: process_iter() returns a TUPLE, not a generator
-            # Per whisper_streaming docs, it returns (beg, end, text) directly
-            output = processor.process_iter()
-            if output[0] is not None:
-                beg, end, text = output
-                logger.info(
-                    "[LiveKit partial] %s %.2f–%.2fs: %s",
-                    participant.identity,
-                    beg,
-                    end,
-                    text,
-                )
+            # Only check for transcription periodically, not every chunk
+            if chunk_count % check_interval == 0:
+                output = processor.process_iter()
+                if output[0] is not None:
+                    beg, end, text = output
+                    logger.info(
+                        "[LiveKit partial] %s %.2f–%.2fs: %s",
+                        participant.identity,
+                        beg,
+                        end,
+                        text,
+                    )
 
         # flush final text when track ends
         output = processor.finish()
