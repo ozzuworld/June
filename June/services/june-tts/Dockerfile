@@ -20,7 +20,6 @@ RUN mkdir -p /app/checkpoints /app/references
 # Copy FastAPI app + entrypoint
 COPY app ./app
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
 
 # Default env paths for the internal Fish-Speech API server
 ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
@@ -33,4 +32,5 @@ ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
 
 EXPOSE 8000
 
-CMD ["/app/entrypoint.sh"]
+# Run the entrypoint via bash/sh; no chmod needed
+CMD ["bash", "/app/entrypoint.sh"]
