@@ -25,3 +25,7 @@ torchaudio==2.1.2
 # Utilities
 pydantic==2.5.3
 requests==2.31.0
+
+
+
+av==11.*
