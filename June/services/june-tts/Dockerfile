@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       pyrootutils \
       kui \
       loguru \
-      numpy
+      numpy \
+      torch
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references
