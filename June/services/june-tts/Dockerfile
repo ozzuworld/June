@@ -1,6 +1,6 @@
 # Dockerfile
 
-# Base: Fish-Speech server image (CUDA + code)
+# Base: Fish-Speech server image (CUDA + code + tools/api_server.py)
 FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       pydantic \
       ormsgpack \
       huggingface_hub \
-      pyrootutils
+      pyrootutils \
+      kui
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references

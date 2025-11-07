@@ -151,7 +151,7 @@ async def tts(request: TTSRequest):
 
         content_type = resp.headers.get("content-type", "audio/wav")
         content_disp = resp.headers.get(
-            "content-disposition", f'attachment; filename="audio.{request.format}"'
+            "content-disposition", f'attachment; filename=\"audio.{request.format}\"'
         )
 
         async def single_chunk() -> AsyncIterator[bytes]:
