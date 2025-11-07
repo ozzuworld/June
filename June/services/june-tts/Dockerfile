@@ -1,11 +1,11 @@
-# Base: official Fish-Speech server image (has code + deps)
+# Base: Fish-Speech server image (has CUDA + code)
 FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
 
 # Install extra deps for API + model download
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir --break-system-packages --upgrade pip && \
+    python -m pip install --no-cache-dir --break-system-packages \
       fastapi \
       uvicorn[standard] \
       httpx \
@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
       ormsgpack \
       huggingface_hub
 
-# Download model checkpoint into the image at build time
+# Download OpenAudio S1 mini into the image at build time
 RUN mkdir -p /app/checkpoints && \
     python - <<'PY'
 from huggingface_hub import snapshot_download
@@ -28,7 +28,7 @@ snapshot_download(
 print("Download complete.")
 PY
 
-# References directory for voice cloning (can still be mounted from host if you want)
+# Voice-cloning references directory
 RUN mkdir -p /app/references
 
 # Copy FastAPI app + entrypoint
@@ -36,7 +36,7 @@ COPY app ./app
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Default env for internal paths
+# Default env paths for the internal Fish-Speech API server
 ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
     DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth \
     DECODER_CONFIG_NAME=modded_dac_vq \
