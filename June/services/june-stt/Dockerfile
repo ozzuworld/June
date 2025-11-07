@@ -21,12 +21,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN pip install --no-cache-dir "av==12.0.0" ctranslate2 huggingface-hub onnxruntime tokenizers tqdm && \
     pip install --no-cache-dir --no-deps "faster-whisper==1.0.3"
 
-# Get whisper_streaming helper
+# Get whisper_streaming helper (BOTH files: whisper_online + silero_vad_iterator)
 RUN git clone https://github.com/ufal/whisper_streaming.git /tmp/whisper_streaming && \
     cp /tmp/whisper_streaming/whisper_online.py /app/ && \
+    cp /tmp/whisper_streaming/silero_vad_iterator.py /app/ && \
     rm -rf /tmp/whisper_streaming
 
-# 🔥 COPY BOTH PY FILES EXPLICITLY
+# App code
 COPY main.py .
 COPY livekit_worker.py .
 
