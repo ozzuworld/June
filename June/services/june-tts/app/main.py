@@ -6,6 +6,7 @@ from typing import Optional, Literal, AsyncIterator
 import os
 
 import httpx
+import ormsgpack
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -23,14 +24,18 @@ settings = Settings()
 
 class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1)
-    # Mapped to Fish-Speech "reference_id" (folder under /app/references)
+
+    # Our external API
     voice_id: Optional[str] = Field(
         default=None,
-        description="Voice ID / reference_id used by Fish-Speech (maps to references/<voice_id>)",
+        description="Maps to Fish-Speech reference_id (references/<voice_id>)",
     )
-    format: Literal["wav", "flac", "mp3"] = "wav"
+
+    format: Literal["wav", "pcm", "mp3"] = "wav"
+    mp3_bitrate: Literal[64, 128, 192] = 128
     chunk_length: int = 200
     normalize: bool = True
+    latency: Literal["normal", "balanced"] = "normal"
     streaming: bool = False
     max_new_tokens: int = 1024
     top_p: float = 0.7
@@ -42,7 +47,7 @@ class TTSRequest(BaseModel):
 app = FastAPI(
     title="Fish-Speech FastAPI Adapter",
     version="1.0.0",
-    description="Thin FastAPI microservice on top of OpenAudio / Fish-Speech /v1/tts",
+    description="Thin FastAPI microservice on top of Fish-Speech /v1/tts (msgpack)",
 )
 
 
@@ -53,55 +58,70 @@ async def _new_client() -> httpx.AsyncClient:
 @app.get("/health")
 async def health():
     """
-    Basic health + upstream Fish-Speech health.
+    Health of adapter + upstream Fish-Speech /v1/health.
     """
     try:
         async with _new_client() as client:
+            # upstream /v1/health is a simple JSON POST without body
             r = await client.post("/v1/health")
             upstream = r.json()
     except Exception as exc:
-        # upstream is down or unreachable
         raise HTTPException(status_code=503, detail=f"upstream fish-speech unavailable: {exc}")
 
     return {"status": "ok", "upstream": upstream}
 
 
+def _build_fish_payload(req: TTSRequest) -> dict:
+    """
+    Build the ServeTTSRequest-like payload expected by Fish-Speech.
+    """
+    return {
+        "text": req.text,
+        "chunk_length": req.chunk_length,
+        "format": req.format,
+        "mp3_bitrate": req.mp3_bitrate,
+        "references": [],
+        "reference_id": req.voice_id,
+        "seed": req.seed,
+        "use_memory_cache": "never",
+        "normalize": req.normalize,
+        "latency": req.latency,
+        "streaming": req.streaming,
+        "max_new_tokens": req.max_new_tokens,
+        "top_p": req.top_p,
+        "repetition_penalty": req.repetition_penalty,
+        "temperature": req.temperature,
+    }
+
+
 @app.post("/tts")
 async def tts(request: TTSRequest):
     """
-    TTS endpoint.
+    TTS endpoint for your stack.
 
-    - If voice_id is provided, it is passed as reference_id to Fish-Speech,
-      which expects references/<voice_id>/*.{wav,flac,mp3}+*.lab.
+    - Accepts JSON
+    - Converts to Fish-Speech ServeTTSRequest
+    - Sends as msgpack to /v1/tts
     """
-    # Build Fish-Speech ServeTTSRequest-compatible payload
-    payload = {
-        "text": request.text,
-        "chunk_length": request.chunk_length,
-        "format": request.format,
-        # we let Fish-Speech look up references by reference_id in /app/references
-        "references": [],  # explicit empty list, matches the docs
-        "reference_id": request.voice_id,
-        "seed": request.seed,
-        "use_memory_cache": "off",
-        "normalize": request.normalize,
-        "streaming": request.streaming,
-        "max_new_tokens": request.max_new_tokens,
-        "top_p": request.top_p,
-        "repetition_penalty": request.repetition_penalty,
-        "temperature": request.temperature,
-    }
+    fish_payload = _build_fish_payload(request)
+    body = ormsgpack.packb(fish_payload)
 
     async with _new_client() as client:
+        headers = {"content-type": "application/msgpack"}
+
         if request.streaming:
-            # Streamed proxy
-            upstream = await client.stream("POST", "/v1/tts", json=payload)
+            upstream = await client.stream(
+                "POST",
+                "/v1/tts",
+                content=body,
+                headers=headers,
+            )
 
             if upstream.status_code != 200:
-                body = await upstream.aread()
+                body_bytes = await upstream.aread()
                 raise HTTPException(
                     status_code=upstream.status_code,
-                    detail=body.decode("utf-8", errors="ignore"),
+                    detail=body_bytes.decode("utf-8", errors="ignore"),
                 )
 
             content_type = upstream.headers.get("content-type", "audio/wav")
@@ -120,8 +140,12 @@ async def tts(request: TTSRequest):
                 headers={"Content-Disposition": content_disp},
             )
 
-        # Non-streaming: we wait for the full file
-        resp = await client.post("/v1/tts", json=payload)
+        # non-streaming, full file
+        resp = await client.post(
+            "/v1/tts",
+            content=body,
+            headers=headers,
+        )
         if resp.status_code != 200:
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
@@ -130,7 +154,6 @@ async def tts(request: TTSRequest):
             "content-disposition", f'attachment; filename="audio.{request.format}"'
         )
 
-        # Single-chunk StreamingResponse to avoid loading twice
         async def single_chunk() -> AsyncIterator[bytes]:
             yield resp.content
 
@@ -150,29 +173,24 @@ async def create_or_update_voice(
     """
     Register/update a cloned voice.
 
-    Writes into REFERENCES_DIR / <voice_id>:
-      - sample.<ext> (uploaded audio)
-      - sample.lab   (reference text)
+    Writes:
+    - /app/references/<voice_id>/sample.ext
+    - /app/references/<voice_id>/sample.lab
 
-    Fish-Speech will automatically pick these up when reference_id=voice_id.
+    Fish-Speech will use these when reference_id=<voice_id>.
     """
-    # Where we write references (must be a volume shared with fish-speech server)
     base_dir: Path = settings.references_dir
     voice_dir = base_dir / voice_id
     voice_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine extension; default to .wav
     original_name = reference_audio.filename or "sample.wav"
     suffix = Path(original_name).suffix or ".wav"
 
     audio_path = voice_dir / f"sample{suffix}"
     lab_path = audio_path.with_suffix(".lab")
 
-    # Save audio file
     audio_bytes = await reference_audio.read()
     audio_path.write_bytes(audio_bytes)
-
-    # Save label (reference text)
     lab_path.write_text(reference_text.strip(), encoding="utf-8")
 
     return JSONResponse(
@@ -180,6 +198,6 @@ async def create_or_update_voice(
             "voice_id": voice_id,
             "audio_path": str(audio_path),
             "lab_path": str(lab_path),
-            "message": "voice registered; use this voice_id as reference_id in /tts",
+            "message": "voice registered; use this voice_id in /tts",
         }
     )
