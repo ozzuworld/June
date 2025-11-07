@@ -14,8 +14,8 @@ torch==2.1.2
 torchaudio==2.1.2
 
 # HTTP + LiveKit
-httpx==0.27.0
-livekit-rtc
+httpx>=0.25.0
+livekit==0.11.1
 
 # Utilities
 pydantic==2.5.3
