@@ -9,12 +9,19 @@ librosa==0.10.1
 soundfile==0.12.1
 numpy==1.24.3
 
-# Whisper backend - faster-whisper (recommended)
-faster-whisper==0.10.0
+# Whisper backend - faster-whisper
+# IMPORTANT:
+# We DO NOT install faster-whisper here anymore,
+# it is installed explicitly in the Dockerfile to avoid av compile issues.
 
 # VAD/VAC support
 torch==2.1.2
 torchaudio==2.1.2
+
+# Optional: Sentence segmentation (if using buffer_trimming="sentence")
+# opus-fast-mosestokenizer==0.0.8.5
+# tokenize-uk==0.2.0
+# wtpsplit==2.0.5
 
 # Utilities
 pydantic==2.5.3
