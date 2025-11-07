@@ -1,9 +1,12 @@
-FROM python:3.10-slim
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
     git \
     ffmpeg \
     libsndfile1 \
@@ -12,16 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Python deps (everything *except* faster-whisper + av)
+# Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Install av using a wheel + faster-whisper without pulling its deps again
-RUN pip install --no-cache-dir "av==12.0.0" ctranslate2 huggingface-hub onnxruntime tokenizers tqdm && \
+# Install av + faster-whisper (latest ctranslate2 for CUDA 12 + cuDNN 9)
+RUN pip install --no-cache-dir "av==12.0.0" && \
+    pip install --no-cache-dir ctranslate2 huggingface-hub onnxruntime tokenizers tqdm && \
     pip install --no-cache-dir --no-deps "faster-whisper==1.0.3"
 
-# Get whisper_streaming helper (BOTH files: whisper_online + silero_vad_iterator)
+# Get whisper_streaming
 RUN git clone https://github.com/ufal/whisper_streaming.git /tmp/whisper_streaming && \
     cp /tmp/whisper_streaming/whisper_online.py /app/ && \
     cp /tmp/whisper_streaming/silero_vad_iterator.py /app/ && \
@@ -33,4 +37,4 @@ COPY livekit_worker.py .
 
 EXPOSE 8000
 
-CMD ["python", "main.py"]
+CMD ["python3", "main.py"]
