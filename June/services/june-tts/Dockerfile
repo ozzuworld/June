@@ -32,5 +32,4 @@ ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
 
 EXPOSE 8000
 
-# Run the entrypoint via bash/sh; no chmod needed
-CMD ["bash", "/app/entrypoint.sh"]
+ENTRYPOINT ["bash", "/app/entrypoint.sh"]
