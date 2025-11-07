@@ -19,6 +19,7 @@ librosa
 soundfile
 pyrootutils
 kui
+descript-audiotools
 
 # Config + model utilities (common in Fish-Speech-style projects)
 hydra-core
