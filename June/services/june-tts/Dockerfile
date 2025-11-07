@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       huggingface_hub \
       pyrootutils \
       kui \
-      loguru
+      loguru \
+      numpy
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references
