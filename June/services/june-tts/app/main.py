@@ -1,4 +1,5 @@
 # app/main.py
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Literal, AsyncIterator
@@ -24,6 +25,8 @@ settings = Settings()
 
 class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1)
+
+    # External API field, maps to reference_id internally
     voice_id: Optional[str] = Field(
         default=None,
         description="Maps to Fish-Speech reference_id (references/<voice_id>)",
@@ -43,7 +46,7 @@ class TTSRequest(BaseModel):
 
 
 app = FastAPI(
-    title="June TTS (OpenAudio / Fish-Speech)",
+    title="June TTS (Fish-Speech)",
     version="1.0.0",
     description="All-in-one FastAPI microservice wrapping Fish-Speech /v1/tts (msgpack).",
 )
@@ -55,6 +58,9 @@ async def _new_client() -> httpx.AsyncClient:
 
 @app.get("/health")
 async def health():
+    """
+    Health endpoint; also checks Fish-Speech /v1/health.
+    """
     try:
         async with _new_client() as client:
             r = await client.post("/v1/health")
@@ -66,6 +72,9 @@ async def health():
 
 
 def _build_fish_payload(req: TTSRequest) -> dict:
+    """
+    Build the payload expected by Fish-Speech's /v1/tts.
+    """
     return {
         "text": req.text,
         "chunk_length": req.chunk_length,
@@ -87,6 +96,13 @@ def _build_fish_payload(req: TTSRequest) -> dict:
 
 @app.post("/tts")
 async def tts(request: TTSRequest):
+    """
+    Main TTS endpoint.
+
+    - Accepts JSON
+    - Converts to Fish-Speech payload
+    - Sends as msgpack to /v1/tts on localhost:8080
+    """
     fish_payload = _build_fish_payload(request)
     body = ormsgpack.packb(fish_payload)
 
@@ -124,6 +140,7 @@ async def tts(request: TTSRequest):
                 headers={"Content-Disposition": content_disp},
             )
 
+        # Non-streaming, full file
         resp = await client.post(
             "/v1/tts",
             content=body,
@@ -153,6 +170,15 @@ async def create_or_update_voice(
     reference_audio: UploadFile = File(...),
     reference_text: str = Form(...),
 ):
+    """
+    Register/update a cloned voice.
+
+    Writes:
+    - /app/references/<voice_id>/sample.ext
+    - /app/references/<voice_id>/sample.lab
+
+    Fish-Speech will use these when reference_id=<voice_id>.
+    """
     base_dir: Path = settings.references_dir
     voice_dir = base_dir / voice_id
     voice_dir.mkdir(parents=True, exist_ok=True)
