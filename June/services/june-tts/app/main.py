@@ -14,7 +14,9 @@ from pydantic import BaseModel, Field
 
 @dataclass
 class Settings:
-    fish_base_url: str = os.getenv("FISH_SPEECH_BASE_URL", "http://fish-speech-server:8080")
+    # In the all-in-one container we talk to the Fish-Speech server
+    # running on 127.0.0.1:8080 inside the same container.
+    fish_base_url: str = os.getenv("FISH_SPEECH_BASE_URL", "http://127.0.0.1:8080")
     references_dir: Path = Path(os.getenv("REFERENCES_DIR", "/app/references"))
     timeout: float = float(os.getenv("FISH_SPEECH_TIMEOUT", "120"))
 
@@ -25,13 +27,13 @@ settings = Settings()
 class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
-    # Our external API
+    # External API field, maps to reference_id internally
     voice_id: Optional[str] = Field(
         default=None,
         description="Maps to Fish-Speech reference_id (references/<voice_id>)",
     )
 
-    format: Literal["wav", "pcm", "mp3"] = "wav"
+    format: Literal["wav", "flac", "mp3"] = "wav"
     mp3_bitrate: Literal[64, 128, 192] = 128
     chunk_length: int = 200
     normalize: bool = True
@@ -45,9 +47,9 @@ class TTSRequest(BaseModel):
 
 
 app = FastAPI(
-    title="Fish-Speech FastAPI Adapter",
+    title="June TTS (OpenAudio / Fish-Speech)",
     version="1.0.0",
-    description="Thin FastAPI microservice on top of Fish-Speech /v1/tts (msgpack)",
+    description="All-in-one FastAPI microservice wrapping Fish-Speech /v1/tts (msgpack).",
 )
 
 
@@ -73,13 +75,15 @@ async def health():
 
 def _build_fish_payload(req: TTSRequest) -> dict:
     """
-    Build the ServeTTSRequest-like payload expected by Fish-Speech.
+    Build the ServeTTSRequest-like payload expected by Fish-Speech
+    (see tools.commons.ServeTTSRequest). :contentReference[oaicite:3]{index=3}
     """
     return {
         "text": req.text,
         "chunk_length": req.chunk_length,
         "format": req.format,
         "mp3_bitrate": req.mp3_bitrate,
+        # We use reference_id + filesystem instead of inline references[]
         "references": [],
         "reference_id": req.voice_id,
         "seed": req.seed,
@@ -91,17 +95,18 @@ def _build_fish_payload(req: TTSRequest) -> dict:
         "top_p": req.top_p,
         "repetition_penalty": req.repetition_penalty,
         "temperature": req.temperature,
+        # newer schema has emotion; we omit / leave default
     }
 
 
 @app.post("/tts")
 async def tts(request: TTSRequest):
     """
-    TTS endpoint for your stack.
+    Main TTS endpoint for your stack.
 
     - Accepts JSON
     - Converts to Fish-Speech ServeTTSRequest
-    - Sends as msgpack to /v1/tts
+    - Sends as msgpack to /v1/tts on localhost:8080
     """
     fish_payload = _build_fish_payload(request)
     body = ormsgpack.packb(fish_payload)
@@ -151,7 +156,7 @@ async def tts(request: TTSRequest):
 
         content_type = resp.headers.get("content-type", "audio/wav")
         content_disp = resp.headers.get(
-            "content-disposition", f'attachment; filename="audio.{request.format}"'
+            "content-disposition", f'attachment; filename=\"audio.{request.format}\"'
         )
 
         async def single_chunk() -> AsyncIterator[bytes]:
@@ -177,7 +182,8 @@ async def create_or_update_voice(
     - /app/references/<voice_id>/sample.ext
     - /app/references/<voice_id>/sample.lab
 
-    Fish-Speech will use these when reference_id=<voice_id>.
+    Fish-Speech will use these when reference_id=<voice_id>, matching the official
+    `references/<voice_id>/sample.wav + sample.lab` layout. :contentReference[oaicite:4]{index=4}
     """
     base_dir: Path = settings.references_dir
     voice_dir = base_dir / voice_id
