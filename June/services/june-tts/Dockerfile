@@ -1,5 +1,5 @@
 # Base: official Fish-Speech server image (has code + deps)
-FROM fishaudio/fish-speech:latest-server-cuda
+FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
 
