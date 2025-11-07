@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.0-cudnn8-runtime-ubuntu24.04
 
 # Install build tools and Python
 RUN apt-get update && \
