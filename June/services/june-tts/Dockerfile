@@ -48,4 +48,3 @@ ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
 EXPOSE 8000
 
 CMD ["/app/entrypoint.sh"]
-1
