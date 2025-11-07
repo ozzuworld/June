@@ -5,25 +5,12 @@ FROM fishaudio/fish-speech:server-cuda-nightly
 
 WORKDIR /app
 
-# Install extra deps for API + runtime model download
+# Copy requirements first so this layer can be cached
+COPY requirements.txt /app/requirements.txt
+
+# Install all Python deps from a single requirements file
 RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
-    pip install --no-cache-dir --break-system-packages \
-      fastapi \
-      uvicorn[standard] \
-      httpx \
-      python-multipart \
-      pydantic \
-      ormsgpack \
-      huggingface_hub \
-      pyrootutils \
-      kui \
-      loguru \
-      numpy \
-      torch \
-      torchaudio \
-      librosa \
-      soundfile \
-      tqdm
+    pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references

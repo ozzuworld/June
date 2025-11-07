@@ -1,6 +1,30 @@
+# Core API stack
 fastapi
 uvicorn[standard]
 httpx
 python-multipart
 pydantic
 ormsgpack
+huggingface_hub
+
+# Logging / helper
+loguru
+tqdm
+
+# ML / Fish-Speech runtime stack
+torch
+torchaudio
+numpy
+librosa
+soundfile
+pyrootutils
+kui
+
+# Config + model utilities (common in Fish-Speech-style projects)
+hydra-core
+omegaconf
+einops
+safetensors
+transformers
+accelerate
+sentencepiece
