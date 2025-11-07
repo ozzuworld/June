@@ -109,9 +109,12 @@ class ASRService:
             dummy_audio = np.zeros(SAMPLING_RATE, dtype=np.float32)
 
             if self.config.use_vac:
+                # FIXED: Correct parameter order per whisper_streaming docs
+                # First param: online_chunk_size (number)
+                # Second param: asr (model)
                 processor = VACOnlineASRProcessor(
-                    self.asr,
                     self.config.vac_chunk_size,
+                    self.asr,
                     buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
                 )
             else:
@@ -135,9 +138,12 @@ class ASRService:
             raise RuntimeError("ASR service not initialized yet")
 
         if self.config.use_vac:
+            # FIXED: Correct parameter order per whisper_streaming docs
+            # First param: online_chunk_size (number)
+            # Second param: asr (model)
             return VACOnlineASRProcessor(
-                self.asr,
                 self.config.vac_chunk_size,
+                self.asr,
                 buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
             )
         else:
