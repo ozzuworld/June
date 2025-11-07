@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Token + connection (kept as close as possible to your original snippet)
+# Token + connection
 # ---------------------------------------------------------------------------
 
 async def get_livekit_token(
@@ -22,12 +22,12 @@ async def get_livekit_token(
     """
     Get LiveKit token from orchestrator.
 
-    Uses ORCHESTRATOR_URL if set, otherwise falls back to your cluster default.
+    Uses ORCHESTRATOR_URL if set, otherwise falls back to cluster default.
     Expects /token to return JSON with { token, livekitUrl/ws_url }.
     """
     base = os.getenv(
         "ORCHESTRATOR_URL",
-        "https://api.ozzu.world",
+        "https://api.ozzuw.world",
     )
 
     paths = ["/token"]
@@ -78,7 +78,7 @@ async def connect_room_as_subscriber(
 ) -> None:
     """
     Connect to LiveKit room with retry logic.
-    This mirrors the pattern you already had working.
+    Mirrors the pattern you had working.
     """
     last_err: Optional[Exception] = None
 
@@ -129,7 +129,6 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     )
 
     processor = asr_service.create_processor()
-    # AudioStream will give us int16 PCM frames at the track's sample rate (usually 48000)
     audio_stream = AudioStream(track)
 
     try:
@@ -177,7 +176,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
 
 
 # ---------------------------------------------------------------------------
-# Background worker started from main.py
+# Background worker
 # ---------------------------------------------------------------------------
 
 async def run_livekit_worker(asr_service):
@@ -186,7 +185,7 @@ async def run_livekit_worker(asr_service):
 
     - Connects to LiveKit as a subscriber
     - Listens for remote audio tracks
-    - For each audio track, spawns _handle_audio_track which pushes audio into ASR.
+    - For each audio track, spawns _handle_audio_track.
     """
     identity = os.getenv("LIVEKIT_IDENTITY", "june-stt")
     room_name = os.getenv("LIVEKIT_ROOM", "ozzu-main")
@@ -216,7 +215,7 @@ async def run_livekit_worker(asr_service):
             room_name=room_name,
         )
         logger.info("LiveKit worker connected; waiting for audio tracks...")
-        # Just keep this coroutine alive; LiveKit runs its own internal loops.
+        # Keep alive; LiveKit manages its own reconnects internally
         while True:
             await asyncio.sleep(3600)
     except Exception as e:

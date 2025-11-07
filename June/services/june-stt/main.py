@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 try:
-    # Provided by ufal/whisper_streaming
+    # Provided by ufal/whisper_streaming (copied into /app by Dockerfile)
     from whisper_online import FasterWhisperASR, OnlineASRProcessor, VACOnlineASRProcessor
 except ImportError:  # raised at runtime if missing
     FasterWhisperASR = None  # type: ignore
@@ -56,6 +56,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Config / Service ------------------------------------------------------------
 
 class ASRConfig(BaseModel):
     model: str = "base"
@@ -145,8 +147,11 @@ class ASRService:
             )
 
 
+# Single global service used by both WebSocket and LiveKit worker
 asr_service: Optional[ASRService] = None
 
+
+# Startup / health ------------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event() -> None:
@@ -205,6 +210,8 @@ async def get_config():
     }
 
 
+# WebSocket endpoint ----------------------------------------------------------
+
 @app.websocket("/ws/transcribe")
 async def websocket_transcribe(websocket: WebSocket):
     """
@@ -260,7 +267,6 @@ async def websocket_transcribe(websocket: WebSocket):
                             "end": float(end),
                             "timestamp": datetime.utcnow().isoformat(),
                         }
-                            # send JSON back to client
                         await websocket.send_json(result)
             except Exception as e:
                 logger.error("Error processing audio chunk: %s", e)
