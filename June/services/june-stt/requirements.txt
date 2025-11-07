@@ -1,5 +1,5 @@
-# June STT Service - WhisperX Enhanced Dependencies
-# Updated for cuDNN 9 compatibility - allows latest CTranslate2 versions
+# June STT Service - Whisper-Streaming Real-Time Implementation
+# Migrating from WhisperX (batch) to whisper-streaming (real-time)
 
 # Web Framework
 fastapi==0.104.1
@@ -9,20 +9,21 @@ python-multipart
 # LiveKit Integration
 livekit==0.11.1
 
-# WhisperX - Latest version with cuDNN 9 support
-whisperx==3.7.4
-# CTranslate2 - Now allows latest versions (>=4.5.0) with cuDNN 9
-# No version constraint needed - auto-resolves compatible version
+# Whisper-Streaming Backend (faster-whisper based)
+faster-whisper>=1.0.3
+librosa>=0.10.0
+soundfile>=0.12.1
 
-# Core Dependencies
-transformers>=4.30.0
-faster-whisper>=1.0.0
-pyannote.audio>=3.1.0
+# Voice Activity Detection (Required for whisper-streaming VAC)
+torch>=2.0.0
+torchaudio>=2.0.0
 
 # Audio Processing
-soundfile>=0.12.1
 scipy>=1.11.0
-librosa>=0.10.0
+numpy>=1.24.0
 
 # Service Integration
 httpx>=0.25.0
+
+# Note: whisper-streaming is installed directly from GitHub
+# See Dockerfile for: pip install git+https://github.com/ufal/whisper_streaming
