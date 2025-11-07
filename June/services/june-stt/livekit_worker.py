@@ -134,7 +134,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     try:
         async for ev in audio_stream:
             frame = ev.frame
-            pcm = frame.data  # numpy array, int16
+            pcm = np.frombuffer(frame.data, dtype=np.int16)
             sr = frame.sample_rate
 
             # Downsample to 16k if needed
