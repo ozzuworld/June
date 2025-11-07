@@ -19,7 +19,11 @@ RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
       kui \
       loguru \
       numpy \
-      torch
+      torch \
+      torchaudio \
+      librosa \
+      soundfile \
+      tqdm
 
 # Prepare directories; the actual model will be downloaded at runtime
 RUN mkdir -p /app/checkpoints /app/references
