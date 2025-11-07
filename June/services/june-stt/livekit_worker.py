@@ -131,9 +131,9 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     processor = asr_service.create_processor()
     audio_stream = AudioStream(track)
     
-    # Process counter - only check for transcription periodically
-    chunk_count = 0
-    check_interval = 10  # Check every 10 chunks (~500ms with 50ms chunks)
+    # Buffer to accumulate audio before processing
+    audio_buffer = np.array([], dtype=np.float32)
+    min_buffer_samples = int(16000 * 0.5)  # 500ms buffer before processing
 
     try:
         async for ev in audio_stream:
@@ -152,11 +152,16 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
             # Convert to float32 in [-1, 1]
             audio = pcm.astype(np.float32) / 32768.0
 
-            processor.insert_audio_chunk(audio)
-            chunk_count += 1
+            # Accumulate audio in buffer
+            audio_buffer = np.append(audio_buffer, audio)
 
-            # Only check for transcription periodically, not every chunk
-            if chunk_count % check_interval == 0:
+            # Process when we have enough audio (500ms)
+            if len(audio_buffer) >= min_buffer_samples:
+                # Insert the accumulated audio
+                processor.insert_audio_chunk(audio_buffer)
+                audio_buffer = np.array([], dtype=np.float32)  # Clear buffer
+                
+                # Check for transcription output
                 output = processor.process_iter()
                 if output[0] is not None:
                     beg, end, text = output
@@ -168,6 +173,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                         text,
                     )
 
+        # Process any remaining audio in buffer
+        if len(audio_buffer) > 0:
+            processor.insert_audio_chunk(audio_buffer)
+            
         # flush final text when track ends
         output = processor.finish()
         if output[0] is not None:

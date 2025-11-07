@@ -65,7 +65,6 @@ class ASRConfig(BaseModel):
     task: str = "transcribe"  # or "translate"
     use_vac: bool = True
     min_chunk_size: float = 1.0
-    vac_chunk_size: float = 0.04
     buffer_trimming: str = "segment"
 
 
@@ -109,17 +108,20 @@ class ASRService:
             dummy_audio = np.zeros(SAMPLING_RATE, dtype=np.float32)
 
             if self.config.use_vac:
-                # FIXED: Correct parameter order per whisper_streaming docs
-                # First param: online_chunk_size (number)
-                # Second param: asr (model)
+                # FIXED: Correct parameter order
+                # VACOnlineASRProcessor(online_chunk_size, asr, tokenizer, logfile, buffer_trimming)
                 processor = VACOnlineASRProcessor(
-                    self.config.vac_chunk_size,
-                    self.asr,
+                    self.config.min_chunk_size,  # online_chunk_size - matches min_chunk_size
+                    self.asr,                     # asr model
+                    None,                         # tokenizer (None for segment trimming)
+                    logfile=None,
                     buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
                 )
             else:
                 processor = OnlineASRProcessor(
                     self.asr,
+                    None,  # tokenizer
+                    logfile=None,
                     buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
                 )
 
@@ -138,17 +140,20 @@ class ASRService:
             raise RuntimeError("ASR service not initialized yet")
 
         if self.config.use_vac:
-            # FIXED: Correct parameter order per whisper_streaming docs
-            # First param: online_chunk_size (number)
-            # Second param: asr (model)
+            # FIXED: Correct parameter order
+            # VACOnlineASRProcessor(online_chunk_size, asr, tokenizer, logfile, buffer_trimming)
             return VACOnlineASRProcessor(
-                self.config.vac_chunk_size,
-                self.asr,
+                self.config.min_chunk_size,  # online_chunk_size - NOT vac_chunk_size!
+                self.asr,                     # asr model
+                None,                         # tokenizer (None for segment trimming)
+                logfile=None,
                 buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
             )
         else:
             return OnlineASRProcessor(
                 self.asr,
+                None,  # tokenizer
+                logfile=None,
                 buffer_trimming=(self.config.buffer_trimming, self.config.min_chunk_size),
             )
 
@@ -170,7 +175,6 @@ async def startup_event() -> None:
         task="transcribe",
         use_vac=True,
         min_chunk_size=1.0,
-        vac_chunk_size=0.04,
     )
 
     asr_service = ASRService(config)
@@ -211,7 +215,6 @@ async def get_config():
         "task": asr_service.config.task,
         "use_vac": asr_service.config.use_vac,
         "min_chunk_size": asr_service.config.min_chunk_size,
-        "vac_chunk_size": asr_service.config.vac_chunk_size,
         "sampling_rate": SAMPLING_RATE,
     }
 
