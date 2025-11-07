@@ -18,7 +18,7 @@ if [ ! -d "${LLAMA_CHECKPOINT_PATH}" ]; then
     echo "[entrypoint] HF_TOKEN detected, trying to download fishaudio/openaudio-s1-mini ..."
     python3 - <<'PY'
 import os
-from huggingface_hub import snapshot_download, HfApi, HfHubHTTPError
+from huggingface_hub import snapshot_download
 
 token = os.environ.get("HF_TOKEN")
 if not token:
@@ -35,8 +35,8 @@ try:
         local_dir_use_symlinks=False,
         token=token,
     )
-except HfHubHTTPError as e:
-    print(f"[download] HuggingFace error: {e}")
+except Exception as e:
+    print(f"[download] Error while downloading model: {e}")
     print("[download] Make sure you:")
     print("  1) Are logged into HuggingFace with this token")
     print("  2) Have requested and been granted access to fishaudio/openaudio-s1-mini")
