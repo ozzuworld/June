@@ -1,24 +1,18 @@
-FROM nvidia/cuda:12.6.0-cudnn8-runtime-ubuntu24.04
+# Dockerfile
+FROM python:3.12-slim
 
-# Install build tools and Python
-RUN apt-get update && \
-    apt-get install -y git python3 python3-pip && \
-    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# Clone fish-speech and install dependencies
-RUN git clone --depth=1 https://github.com/fishaudio/fish-speech.git /opt/fish-speech
-WORKDIR /opt/fish-speech
-RUN pip install -r requirements.txt && \
-    pip install -e .
+# You don't really need system audio libs here; all heavy work is upstream.
+RUN pip install --no-cache-dir --upgrade pip
 
-# Copy your FastAPI wrapper if needed (optional)
-COPY main.py /app/main.py
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Default command: launch Fish-Speech’s own API server
-# Expects checkpoints and reference audio mounted into /app/checkpoints and /app/references
-ENV API_SERVER_PORT=8080 API_SERVER_NAME=june-tts-fish
-CMD python -m tools.api_server --listen 0.0.0.0:$API_SERVER_PORT \
-    --llama-checkpoint-path /app/checkpoints/llama \
-    --vq-path /app/checkpoints/vqgan \
-    --codec-checkpoint-path /app/checkpoints/codec \
-    --reference-sample-path /app/references
+COPY app ./app
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
