@@ -134,6 +134,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     try:
         async for ev in audio_stream:
             frame = ev.frame
+            # Convert memoryview to numpy array (per LiveKit docs)
             pcm = np.frombuffer(frame.data, dtype=np.int16)
             sr = frame.sample_rate
 
@@ -149,16 +150,18 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
 
             processor.insert_audio_chunk(audio)
 
-            for output in processor.process_iter():
-                if output[0] is not None:
-                    beg, end, text = output
-                    logger.info(
-                        "[LiveKit partial] %s %.2f–%.2fs: %s",
-                        participant.identity,
-                        beg,
-                        end,
-                        text,
-                    )
+            # CRITICAL FIX: process_iter() returns a TUPLE, not a generator
+            # Per whisper_streaming docs, it returns (beg, end, text) directly
+            output = processor.process_iter()
+            if output[0] is not None:
+                beg, end, text = output
+                logger.info(
+                    "[LiveKit partial] %s %.2f–%.2fs: %s",
+                    participant.identity,
+                    beg,
+                    end,
+                    text,
+                )
 
         # flush final text when track ends
         output = processor.finish()
