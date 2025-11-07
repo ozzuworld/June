@@ -1,41 +1,35 @@
-# Dockerfile
+FROM python:3.10-slim
 
-# Base: Fish-Speech server image (CUDA + code + tools/api_server.py)
-FROM fishaudio/fish-speech:server-cuda-nightly
+ENV PYTHONUNBUFFERED=1
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install extra deps for API + runtime model download
-RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
-    pip install --no-cache-dir --break-system-packages \
-      fastapi \
-      uvicorn[standard] \
-      httpx \
-      python-multipart \
-      pydantic \
-      ormsgpack \
-      huggingface_hub \
-      pyrootutils \
-      kui
+# Python deps (everything *except* faster-whisper + av)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Prepare directories; the actual model will be downloaded at runtime
-RUN mkdir -p /app/checkpoints /app/references
+# Install av using a wheel + faster-whisper without pulling its deps again
+RUN pip install --no-cache-dir "av==12.0.0" ctranslate2 huggingface-hub onnxruntime tokenizers tqdm && \
+    pip install --no-cache-dir --no-deps "faster-whisper==1.0.3"
 
-# Copy FastAPI app + entrypoint into the image
-COPY app ./app
-COPY entrypoint.sh /app/entrypoint.sh
+# Get whisper_streaming helper
+RUN git clone https://github.com/ufal/whisper_streaming.git /tmp/whisper_streaming && \
+    cp /tmp/whisper_streaming/whisper_online.py /app/ && \
+    rm -rf /tmp/whisper_streaming
 
-# Default env paths for the internal Fish-Speech API server
-ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
-    DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth \
-    DECODER_CONFIG_NAME=modded_dac_vq \
-    REFERENCES_DIR=/app/references \
-    FISH_SPEECH_BASE_URL=http://127.0.0.1:8080 \
-    FISH_SPEECH_TIMEOUT=180 \
-    COMPILE=1
+# 🔥 COPY BOTH PY FILES EXPLICITLY
+COPY main.py .
+COPY livekit_worker.py .
 
 EXPOSE 8000
 
-# Remove base image entrypoint and run our script instead
-ENTRYPOINT []
-CMD ["bash", "/app/entrypoint.sh"]
+CMD ["python", "main.py"]
