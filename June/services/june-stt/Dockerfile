@@ -6,11 +6,20 @@ ENV PYTHONUNBUFFERED=1
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies, including PyAV build deps
 RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
     libsndfile1 \
+    pkg-config \
+    build-essential \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
