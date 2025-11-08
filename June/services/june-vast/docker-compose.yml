@@ -1,0 +1,124 @@
+version: "3.9"
+
+services:
+  # ==========================================
+  # STT Service (Speech-to-Text)
+  # ==========================================
+  june-stt:
+    image: ozzuworld/june-stt:latest
+    container_name: june-stt
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+              device_ids: ["0"]  # Use first GPU
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LIVEKIT_IDENTITY=june-stt
+      - LIVEKIT_ROOM=ozzu-main
+      - ORCHESTRATOR_URL=https://api.ozzu.world
+      - CUDA_VISIBLE_DEVICES=0
+    ports:
+      - "8001:8001"
+    volumes:
+      - stt-cache:/root/.cache
+    networks:
+      - june-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================
+  # TTS Service (Text-to-Speech) - Fish Speech Server
+  # ==========================================
+  fish-speech-server:
+    image: fishaudio/fish-speech:latest-server-cuda
+    container_name: fish-speech-server
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+              device_ids: ["1"]  # Use second GPU (adjust if needed)
+    environment:
+      - COMPILE=1
+      - LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini
+      - DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth
+      - DECODER_CONFIG_NAME=modded_dac_vq
+      - CUDA_VISIBLE_DEVICES=1
+      - HF_TOKEN=${HF_TOKEN:-}  # Optional: Set via .env file
+    volumes:
+      - ./services/june-tts/checkpoints:/app/checkpoints
+      - ./services/june-tts/references:/app/references
+      - tts-cache:/root/.cache
+    ports:
+      - "8080:8080"
+    networks:
+      - june-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ==========================================
+  # TTS Service - FastAPI Adapter
+  # ==========================================
+  june-tts:
+    image: ozzuworld/june-tts:latest
+    container_name: june-tts
+    restart: unless-stopped
+    environment:
+      - FISH_SPEECH_BASE_URL=http://fish-speech-server:8080
+      - REFERENCES_DIR=/app/references
+      - FISH_SPEECH_TIMEOUT=180
+    volumes:
+      - ./services/june-tts/references:/app/references
+    ports:
+      - "8000:8000"
+    networks:
+      - june-network
+    depends_on:
+      fish-speech-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  june-network:
+    driver: bridge
+    name: june-network
+
+volumes:
+  stt-cache:
+    name: june-stt-cache
+  tts-cache:
+    name: june-tts-cache
