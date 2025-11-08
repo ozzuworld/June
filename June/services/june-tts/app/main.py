@@ -52,7 +52,7 @@ class SynthesizeRequest(BaseModel):
 
 app = FastAPI(
     title="June TTS (Fish-Speech)",
-    version="1.3.2",
+    version="1.3.3",
     description="FastAPI wrapper around Fish-Speech /v1/tts with persistent LiveKit publisher integration.",
 )
 
@@ -133,7 +133,6 @@ async def publish_audio_to_livekit(pcm_audio: np.ndarray, sample_rate: int = 160
         frame = rtc.AudioFrame.create(sample_rate, 1, frame_size)
         np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
         await livekit_audio_source.capture_frame(frame)
-        await asyncio.sleep(0.02)
     logger.info(f"[LiveKit] Audio published ({len(pcm_audio)} samples)")
 
 @app.on_event("startup")
