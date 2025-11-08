@@ -69,7 +69,7 @@ git pull
 docker build -f June/services/june-vast/Dockerfile -t ozzuworld/june-vast:latest .
 docker push ozzuworld/june-vast:latest
 
-kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://209.226.130.26:52696"}]}]}}}}'
+kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://209.226.130.26:31492"}]}]}}}}'
 kubectl get pods -n june-services -w
 
 
@@ -82,6 +82,8 @@ docker push ozzuworld/june-orchestrator:latest
 kubectl rollout restart deployment/june-orchestrator -n june-services
 kubectl get pods -n june-services -w
 
+git reset --hard f688ca3a95aac6736b699c795130a27675178357
+git push origin master --force
 
 
 kubectl patch secret june-secrets -n june-services --patch='{"data":{"gemini-api-key":"'$(echo -n "AIzaSyA6MEa_m2h_-N-ywU7rDwTagd0bTx3Mpeo" | base64)'"}}'
