@@ -20,6 +20,9 @@ RUN mkdir -p /app/checkpoints /app/references
 
 COPY app/ /app/app/
 
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
 ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
     DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth \
     DECODER_CONFIG_NAME=modded_dac_vq \
