@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-Optimized for <500ms first chunk latency
+Fixed tensor dimensions for built-in speakers
 """
 import asyncio
 import logging
@@ -47,9 +47,8 @@ LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 REFERENCE_AUDIO_PATH = os.getenv("REFERENCE_AUDIO", "/app/references/default_voice.wav")
 
-# XTTS v2 streaming parameters (optimized for low latency)
-STREAM_CHUNK_SIZE = 20  # Tokens per chunk - lower = faster first chunk, higher = smoother
-ENABLE_DEEPSPEED = True  # Significantly speeds up inference
+# XTTS v2 streaming parameters
+STREAM_CHUNK_SIZE = 20
 
 app = FastAPI(
     title="June TTS (XTTS v2)",
@@ -79,10 +78,10 @@ async def load_xtts_model():
     try:
         logger.info("🔊 Loading XTTS v2 model...")
         
-        # Load TTS API (for easy loading)
+        # Load TTS API
         tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
         
-        # Get direct access to underlying XTTS model for streaming
+        # Get direct access to underlying XTTS model
         xtts_model = tts_api.synthesizer.tts_model
         
         # Move to GPU if available
@@ -92,7 +91,7 @@ async def load_xtts_model():
         else:
             logger.warning("⚠️ XTTS v2 loaded on CPU (will be slow)")
         
-        # Load or generate speaker embeddings
+        # Load speaker embeddings - use reference audio if available
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -100,14 +99,26 @@ async def load_xtts_model():
             )
             logger.info("✅ Custom speaker embeddings loaded")
         else:
-            # Use built-in "Ana Florence" speaker
-            logger.info("✅ Using built-in XTTS v2 speaker (Ana Florence)")
-            # For built-in speakers, we need to use the speaker manager
-            if hasattr(xtts_model, 'speaker_manager') and xtts_model.speaker_manager is not None:
-                speaker_name = "Ana Florence"
-                gpt_cond_latent = xtts_model.speaker_manager.speakers[speaker_name]["gpt_cond_latent"].cpu().squeeze().half()
-                speaker_embedding = xtts_model.speaker_manager.speakers[speaker_name]["speaker_embedding"].cpu().squeeze().half()
-                logger.info(f"✅ Loaded built-in speaker: {speaker_name}")
+            # For built-in speaker: use TTS API's tts() once to initialize
+            # This properly sets up the conditioning latents
+            logger.info("✅ Initializing built-in XTTS v2 speaker...")
+            
+            # Use TTS API to synthesize a short test phrase with built-in speaker
+            # This caches the proper conditioning latents in the correct format
+            _ = tts_api.tts(
+                text="Test",
+                speaker="Ana Florence",
+                language="en"
+            )
+            
+            # Now extract the properly formatted conditioning latents
+            # They're stored in the synthesizer after first use
+            if hasattr(tts_api.synthesizer, 'gpt_cond_latent') and hasattr(tts_api.synthesizer, 'speaker_embedding'):
+                gpt_cond_latent = tts_api.synthesizer.gpt_cond_latent
+                speaker_embedding = tts_api.synthesizer.speaker_embedding
+                logger.info("✅ Built-in speaker embeddings extracted")
+            else:
+                raise RuntimeError("Failed to extract built-in speaker embeddings")
         
         return True
     except Exception as e:
@@ -154,7 +165,6 @@ async def connect_livekit():
 async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 24000):
     """
     TRUE streaming: Publish audio chunks to LiveKit as they're generated
-    This achieves <500ms first audio latency
     """
     global livekit_audio_source, livekit_connected
     
@@ -177,6 +187,10 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             # Convert to numpy if needed
             if torch.is_tensor(chunk):
                 chunk = chunk.cpu().numpy()
+            
+            # Ensure it's 1D
+            if len(chunk.shape) > 1:
+                chunk = chunk.squeeze()
             
             # Resample to 16kHz if needed (LiveKit standard)
             if sample_rate != 16000:
@@ -226,10 +240,8 @@ async def health():
 async def synthesize_speech(request: SynthesizeRequest):
     """
     Synthesize speech with TRUE streaming using inference_stream()
-    Achieves <500ms first chunk latency
     """
     start_time = time.time()
-    first_chunk_time = None
     
     try:
         if xtts_model is None:
@@ -240,19 +252,14 @@ async def synthesize_speech(request: SynthesizeRequest):
         
         logger.info(f"🔊 Synthesizing (streaming): '{request.text[:50]}...'")
         
-        # Move embeddings to GPU if available
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        gpt_cond_latent_gpu = gpt_cond_latent.to(device) if torch.is_tensor(gpt_cond_latent) else torch.tensor(gpt_cond_latent).to(device)
-        speaker_embedding_gpu = speaker_embedding.to(device) if torch.is_tensor(speaker_embedding) else torch.tensor(speaker_embedding).to(device)
-        
         # TRUE STREAMING: Use inference_stream() for chunk-by-chunk generation
         audio_chunk_generator = xtts_model.inference_stream(
             text=request.text,
             language=request.language,
-            gpt_cond_latent=gpt_cond_latent_gpu,
-            speaker_embedding=speaker_embedding_gpu,
-            stream_chunk_size=STREAM_CHUNK_SIZE,  # 20 tokens = ~200-500ms first chunk
-            enable_text_splitting=True  # Allows infinite length input
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            stream_chunk_size=STREAM_CHUNK_SIZE,
+            enable_text_splitting=True
         )
         
         # Stream audio chunks to LiveKit as they're generated
