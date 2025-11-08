@@ -1,26 +1,2 @@
 # Add to requirements.txt for LiveKit support
-fastapi
-uvicorn[standard]
-httpx
-python-multipart
-pydantic
-ormsgpack
-huggingface_hub
-loguru
-tqdm
-torch
-torchaudio
-numpy
-librosa
-soundfile
-pyrootutils
-kui
-descript-audiotools
-hydra-core
-omegaconf
-einops
-safetensors
-transformers
-accelerate
-sentencepiece
 livekit==0.11.1
