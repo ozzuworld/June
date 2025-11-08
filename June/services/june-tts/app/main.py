@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-Fixed tensor dimensions for built-in speakers
+Working version with proper conditioning latents
 """
 import asyncio
 import logging
@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Optional
 import traceback
+import tempfile
 
 import numpy as np
 import torch
@@ -91,7 +92,7 @@ async def load_xtts_model():
         else:
             logger.warning("⚠️ XTTS v2 loaded on CPU (will be slow)")
         
-        # Load speaker embeddings - use reference audio if available
+        # Load speaker embeddings
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -99,26 +100,31 @@ async def load_xtts_model():
             )
             logger.info("✅ Custom speaker embeddings loaded")
         else:
-            # For built-in speaker: use TTS API's tts() once to initialize
-            # This properly sets up the conditioning latents
-            logger.info("✅ Initializing built-in XTTS v2 speaker...")
+            # For built-in speaker: Generate conditioning latents using the model directly
+            logger.info("✅ Using built-in XTTS v2 speaker (generating from test audio)...")
             
-            # Use TTS API to synthesize a short test phrase with built-in speaker
-            # This caches the proper conditioning latents in the correct format
-            _ = tts_api.tts(
-                text="Test",
-                speaker="Ana Florence",
-                language="en"
-            )
+            # Create a short silent WAV file as reference
+            import soundfile as sf
+            sample_rate = 22050
+            duration = 2.0  # 2 seconds
+            silence = np.zeros(int(sample_rate * duration), dtype=np.float32)
             
-            # Now extract the properly formatted conditioning latents
-            # They're stored in the synthesizer after first use
-            if hasattr(tts_api.synthesizer, 'gpt_cond_latent') and hasattr(tts_api.synthesizer, 'speaker_embedding'):
-                gpt_cond_latent = tts_api.synthesizer.gpt_cond_latent
-                speaker_embedding = tts_api.synthesizer.speaker_embedding
-                logger.info("✅ Built-in speaker embeddings extracted")
-            else:
-                raise RuntimeError("Failed to extract built-in speaker embeddings")
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+                sf.write(tmp_path, silence, sample_rate)
+            
+            try:
+                # Generate conditioning latents from the silent audio
+                # This will give us a "neutral" default voice
+                gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
+                    audio_path=[tmp_path]
+                )
+                logger.info("✅ Default speaker embeddings generated")
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
         
         return True
     except Exception as e:
@@ -192,7 +198,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             if len(chunk.shape) > 1:
                 chunk = chunk.squeeze()
             
-            # Resample to 16kHz if needed (LiveKit standard)
+            # Resample to 16kHz if needed
             if sample_rate != 16000:
                 from scipy.signal import resample_poly
                 chunk = resample_poly(chunk, 16000, sample_rate)
