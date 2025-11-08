@@ -81,7 +81,7 @@ def _build_fish_payload(req: TTSRequest) -> dict:
         "references": [],
         "reference_id": req.voice_id,
         "seed": req.seed,
-        "use_memory_cache": "never",
+        "use_memory_cache": "off",  # CHANGED FROM "never"
         "normalize": req.normalize,
         "latency": req.latency,
         "streaming": req.streaming,
@@ -90,6 +90,7 @@ def _build_fish_payload(req: TTSRequest) -> dict:
         "repetition_penalty": req.repetition_penalty,
         "temperature": req.temperature,
     }
+
 
 
 @app.post("/api/tts/synthesize")
