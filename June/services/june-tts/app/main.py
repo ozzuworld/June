@@ -10,11 +10,9 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 import numpy as np
 from io import BytesIO
-
-# New: LiveKit imports
-from livekit import rtc
 import asyncio
 import soundfile as sf
+from livekit import rtc
 
 @dataclass
 class Settings:
@@ -26,10 +24,7 @@ settings = Settings()
 
 class TTSRequest(BaseModel):
     text: str = Field(..., min_length=1)
-    voice_id: Optional[str] = Field(
-        default=None,
-        description="Maps to Fish-Speech reference_id (references/<voice_id>)",
-    )
+    voice_id: Optional[str] = Field(default=None)
     format: Literal["wav", "flac", "mp3"] = "wav"
     mp3_bitrate: Literal[64, 128, 192] = 128
     chunk_length: int = 200
@@ -44,15 +39,24 @@ class TTSRequest(BaseModel):
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
-    room_name: str = Field(..., description="LiveKit room name to publish audio to")
-    language: str = Field(default="en", description="Language code (en, zh, jp, ko, yue)")
-    stream: bool = Field(default=True, description="Enable streaming synthesis")
+    room_name: str = Field(...)
+    language: str = Field(default="en")
+    stream: bool = Field(default=True)
 
 app = FastAPI(
     title="June TTS (Fish-Speech)",
-    version="1.2.0",
-    description="FastAPI wrapper around Fish-Speech /v1/tts with LiveKit publishing integration.",
+    version="1.3.0",
+    description="FastAPI wrapper around Fish-Speech /v1/tts with persistent LiveKit publisher integration.",
 )
+
+# Global publisher state
+livekit_room = None
+livekit_audio_track = None
+livekit_connected = False
+LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
+LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
+
+# Utilities
 
 def _new_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.fish_base_url, timeout=settings.timeout)
@@ -90,24 +94,49 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
             raise RuntimeError(f"Orchestrator response missing livekitUrl/ws_url: {data}")
         return ws_url, token
 
-async def publish_audio_to_livekit(room_name: str, pcm_audio: np.ndarray, sample_rate: int = 16000, identity: str = "june-tts"):
-    ws_url, token = await get_livekit_token(identity, room_name)
-    room = rtc.Room()
-    await room.connect(ws_url, token)
-    # 20ms frames at 16kHz = 320 samples
+async def connect_livekit_publisher():
+    global livekit_room, livekit_audio_track, livekit_connected
+    try:
+        ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
+        room = rtc.Room()
+        await room.connect(ws_url, token)
+        audio_track = rtc.LocalAudioTrack("TTS Audio", 16000, 1)
+        await room.publish_track(audio_track)
+        livekit_room = room
+        livekit_audio_track = audio_track
+        livekit_connected = True
+        print(f"[LiveKit] Connected as {LIVEKIT_IDENTITY} in {LIVEKIT_ROOM_NAME}")
+    except Exception as e:
+        print(f"[LiveKit] Failed to connect: {e}")
+
+async def publish_audio_to_livekit(pcm_audio: np.ndarray, sample_rate: int = 16000):
+    global livekit_audio_track, livekit_connected
+    if not livekit_connected or livekit_audio_track is None:
+        print("[LiveKit] Not connected. Cannot publish!")
+        return
     frame_size = int(sample_rate * 0.02)
-    audio_track = rtc.LocalAudioTrack("TTS Audio", sample_rate, 1)
-    await room.publish_track(audio_track)
     for offset in range(0, len(pcm_audio), frame_size):
         frame_data = pcm_audio[offset:offset+frame_size]
         if len(frame_data) < frame_size:
             frame_data = np.pad(frame_data, (0, frame_size-len(frame_data)), 'constant')
-        # Convert to int16 PCM
         pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
-        audio_track.send_frame(pcm_int16.tobytes())
+        livekit_audio_track.send_frame(pcm_int16.tobytes())
         await asyncio.sleep(0.02)
-    await audio_track.stop()
-    await room.disconnect()
+    print(f"[LiveKit] Audio published.")
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(connect_livekit_publisher())
+
+@app.get("/health")
+async def health():
+    try:
+        async with _new_client() as client:
+            r = await client.post("/v1/health")
+            upstream = r.json()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"upstream fish-speech unavailable: {exc}")
+    return {"status": "ok", "upstream": upstream}
 
 @app.post("/api/tts/synthesize")
 async def api_synthesize_speech(request: SynthesizeRequest):
@@ -144,13 +173,12 @@ async def api_synthesize_speech(request: SynthesizeRequest):
                 wav_data, sr = sf.read(bio, dtype='float32')
                 if len(wav_data.shape) > 1:
                     wav_data = wav_data[:, 0]
-                # Up/downsample if needed
                 if sr != 16000:
                     from scipy.signal import resample_poly
                     wav_data = resample_poly(wav_data, 16000, sr)
                     sr = 16000
-            # Publish to LiveKit (background)
-            asyncio.create_task(publish_audio_to_livekit(request.room_name, wav_data, sr))
+            # Publish to LiveKit
+            await publish_audio_to_livekit(wav_data, sr)
             chunks_sent = max(1, audio_size // 1024)
             return JSONResponse({
                 "status": "success",
