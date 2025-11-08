@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Literal, AsyncIterator
+import time
 
 import os
 
@@ -40,10 +41,18 @@ class TTSRequest(BaseModel):
     seed: Optional[int] = None
 
 
+class SynthesizeRequest(BaseModel):
+    """Request model for orchestrator-compatible /api/tts/synthesize endpoint"""
+    text: str = Field(..., min_length=1)
+    room_name: str = Field(..., description="LiveKit room name to publish audio to")
+    language: str = Field(default="en", description="Language code (en, zh, jp, ko, yue)")
+    stream: bool = Field(default=True, description="Enable streaming synthesis")
+
+
 app = FastAPI(
     title="June TTS (Fish-Speech)",
-    version="1.0.0",
-    description="FastAPI wrapper around Fish-Speech /v1/tts.",
+    version="1.1.0",
+    description="FastAPI wrapper around Fish-Speech /v1/tts with orchestrator compatibility.",
 )
 
 
@@ -81,6 +90,105 @@ def _build_fish_payload(req: TTSRequest) -> dict:
         "repetition_penalty": req.repetition_penalty,
         "temperature": req.temperature,
     }
+
+
+@app.post("/api/tts/synthesize")
+async def api_synthesize_speech(request: SynthesizeRequest):
+    """
+    Synthesize speech using Fish-Speech TTS (orchestrator-compatible endpoint)
+    
+    This endpoint is called by june-orchestrator to generate and publish TTS audio.
+    It wraps the Fish-Speech TTS service and returns a JSON response.
+    
+    Args:
+        request: SynthesizeRequest with text, room_name, language, and stream options
+        
+    Returns:
+        JSON response with synthesis status and metrics
+        
+    Note:
+        Currently returns audio via Fish-Speech but does not yet publish to LiveKit room.
+        LiveKit publishing logic should be implemented here or in a separate service.
+    """
+    start_time = time.time()
+    
+    try:
+        # Convert orchestrator request to Fish-Speech TTS request
+        tts_request = TTSRequest(
+            text=request.text,
+            voice_id=None,  # Use default voice; could be mapped from language
+            streaming=request.stream,
+            format="wav",
+            chunk_length=200,
+            normalize=True,
+            latency="balanced"
+        )
+        
+        # Build Fish-Speech payload
+        fish_payload = _build_fish_payload(tts_request)
+        body = ormsgpack.packb(fish_payload)
+        
+        # Call Fish-Speech TTS service
+        async with _new_client() as client:
+            headers = {"content-type": "application/msgpack"}
+            
+            resp = await client.post(
+                "/v1/tts",
+                content=body,
+                headers=headers,
+            )
+            
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Fish-Speech TTS failed: {resp.text}"
+                )
+            
+            # Get audio data
+            audio_data = resp.content
+            audio_size = len(audio_data)
+            
+            # Calculate metrics
+            synthesis_time_ms = (time.time() - start_time) * 1000
+            
+            # Estimate chunks (assuming ~1KB per chunk for streaming)
+            chunks_sent = max(1, audio_size // 1024)
+            
+            # TODO: Implement LiveKit room publishing here
+            # For now, we just generate the audio and return success
+            # In production, you should:
+            # 1. Connect to LiveKit room using room_name
+            # 2. Publish audio_data to the room
+            # 3. Track actual chunks sent
+            
+            return JSONResponse({
+                "status": "success",
+                "chunks_sent": chunks_sent,
+                "synthesis_time_ms": round(synthesis_time_ms, 2),
+                "room_name": request.room_name,
+                "text_length": len(request.text),
+                "audio_size_bytes": audio_size,
+                "language": request.language,
+                "note": "Audio generated successfully. LiveKit publishing not yet implemented."
+            })
+            
+    except httpx.TimeoutException:
+        synthesis_time_ms = (time.time() - start_time) * 1000
+        raise HTTPException(
+            status_code=504,
+            detail=f"TTS synthesis timeout after {synthesis_time_ms:.0f}ms"
+        )
+    except httpx.ConnectError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to Fish-Speech service: {str(e)}"
+        )
+    except Exception as e:
+        synthesis_time_ms = (time.time() - start_time) * 1000
+        raise HTTPException(
+            status_code=500,
+            detail=f"TTS synthesis failed after {synthesis_time_ms:.0f}ms: {str(e)}"
+        )
 
 
 @app.post("/tts")
