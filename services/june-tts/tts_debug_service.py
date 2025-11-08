@@ -185,6 +185,7 @@ async def root():
         "endpoints": {
             "health": "/health",
             "healthz": "/healthz", 
+            "api_tts_synthesize": "/api/tts/synthesize",
             "synthesize": "/synthesize",
             "v1_tts": "/v1/tts",
             "voices": "/v1/voices"
@@ -207,6 +208,7 @@ async def health_check():
         "debug_enabled": True
     }
 
+@app.post("/api/tts/synthesize")
 @app.post("/synthesize")
 @app.post("/v1/tts")
 async def synthesize_speech(request: Request):
