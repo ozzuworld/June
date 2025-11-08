@@ -1,5 +1,5 @@
-# Dockerfile for XTTS v2 TTS Service with GPU Support (CUDA 11.8)
-# Based on official Coqui XTTS streaming server
+# Dockerfile for XTTS v2 TTS Service with GPU Support
+# Fixed version compatibility: PyTorch 2.0.1 + Transformers 4.33.0 + TTS 0.22.0
 
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
@@ -24,10 +24,13 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN python3 -m pip install --upgrade pip
 
-# Install PyTorch 2.1.0 with CUDA 11.8 support
-RUN pip3 install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+# FIXED: Install PyTorch 2.0.1 (more stable than 2.1.0 with transformers)
+RUN pip3 install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
 
-# Install TTS and XTTS v2 dependencies
+# FIXED: Install transformers with compatible version BEFORE TTS
+RUN pip3 install transformers==4.33.0
+
+# Install TTS 0.22.0
 RUN pip3 install TTS==0.22.0
 
 # Install FastAPI and server dependencies
@@ -42,7 +45,7 @@ RUN pip3 install \
     librosa==0.10.1 \
     ormsgpack==1.4.0
 
-# Install LiveKit Python SDK for audio publishing
+# Install LiveKit Python SDK
 RUN pip3 install livekit==0.11.0
 
 # Create app directory
@@ -54,8 +57,7 @@ COPY app/ /app/
 # Create directories for models and references
 RUN mkdir -p /app/models /app/references
 
-# Pre-download XTTS v2 model WITHOUT GPU (CPU mode for build)
-# This caches the model so it doesn't need to download at runtime
+# Pre-download XTTS v2 model (CPU mode for build, GPU at runtime)
 RUN python3 -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2', gpu=False)"
 
 # Expose port
