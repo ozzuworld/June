@@ -43,7 +43,7 @@ services:
   # TTS Service (Text-to-Speech) - Fish Speech Server
   # ==========================================
   fish-speech-server:
-    image: fishaudio/fish-speech:latest-server-cuda
+    image: ozzuworld/june-tts:latest
     container_name: fish-speech-server
     restart: unless-stopped
     deploy:
