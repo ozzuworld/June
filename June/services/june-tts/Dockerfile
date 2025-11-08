@@ -1,5 +1,5 @@
 # Dockerfile for XTTS v2 TTS Service with GPU Support
-# Fixed version compatibility: PyTorch 2.0.1 + Transformers 4.33.0 + TTS 0.22.0
+# FINAL FIX: Skip model download during build, download at runtime instead
 
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
@@ -24,10 +24,14 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN python3 -m pip install --upgrade pip
 
-# FIXED: Install PyTorch 2.0.1 (more stable than 2.1.0 with transformers)
-RUN pip3 install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+# Install PyTorch 2.0.1 with CUDA 11.8 (avoid 2.6+ which has weights_only issues)
+RUN pip3 install \
+    torch==2.0.1+cu118 \
+    torchvision==0.15.2+cu118 \
+    torchaudio==2.0.2+cu118 \
+    --index-url https://download.pytorch.org/whl/cu118
 
-# FIXED: Install transformers with compatible version BEFORE TTS
+# Install transformers first (compatible version)
 RUN pip3 install transformers==4.33.0
 
 # Install TTS 0.22.0
@@ -57,15 +61,15 @@ COPY app/ /app/
 # Create directories for models and references
 RUN mkdir -p /app/models /app/references
 
-# Pre-download XTTS v2 model (CPU mode for build, GPU at runtime)
-RUN python3 -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2', gpu=False)"
+# REMOVED: Model download during build (causes PyTorch 2.6 weights_only issues)
+# Model will auto-download on first inference at runtime instead
 
 # Expose port
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "main:app",
