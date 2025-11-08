@@ -182,7 +182,7 @@ async def api_synthesize_speech(request: SynthesizeRequest):
             text=request.text,
             voice_id=None,
             streaming=request.stream,
-            format="wav",
+            format="wav",  # Always use WAV for consistency
             chunk_length=200,
             normalize=True,
             latency="balanced"
@@ -191,25 +191,35 @@ async def api_synthesize_speech(request: SynthesizeRequest):
         body = ormsgpack.packb(fish_payload)
         async with _new_client() as client:
             headers = {"content-type": "application/msgpack"}
-            resp = await client.post(
-                "/v1/tts",
-                content=body,
-                headers=headers,
-            )
+            resp = await client.post("/v1/tts", content=body, headers=headers)
+            
             if resp.status_code != 200:
                 raise HTTPException(
                     status_code=resp.status_code,
                     detail=f"Fish-Speech TTS failed: {resp.text}"
                 )
+            
             audio_data = resp.content
             audio_size = len(audio_data)
             synthesis_time_ms = (time.time() - start_time) * 1000
             
-            # Decode WAV to PCM
+            # Decode WAV to PCM - FIXED: explicitly specify format
             with BytesIO(audio_data) as bio:
-                wav_data, sr = sf.read(bio, dtype='float32')
+                try:
+                    wav_data, sr = sf.read(bio, dtype='float32', format='WAV')
+                except Exception as read_error:
+                    logger.error(f"Failed to read audio: {read_error}")
+                    logger.error(f"Audio data size: {len(audio_data)}, first 20 bytes: {audio_data[:20].hex()}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to decode audio from Fish-Speech: {str(read_error)}"
+                    )
+                
+                # Ensure mono
                 if len(wav_data.shape) > 1:
                     wav_data = wav_data[:, 0]
+                
+                # Resample to 16kHz if needed
                 if sr != 16000:
                     from scipy.signal import resample_poly
                     wav_data = resample_poly(wav_data, 16000, sr)
@@ -229,12 +239,16 @@ async def api_synthesize_speech(request: SynthesizeRequest):
                 "language": request.language,
                 "note": "Audio generated and published to LiveKit."
             })
+            
     except Exception as e:
         synthesis_time_ms = (time.time() - start_time) * 1000
+        import traceback
+        logger.error(f"TTS synthesis error: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"TTS synthesis failed after {synthesis_time_ms:.0f}ms: {str(e)}"
         )
+
 
 
 @app.post("/tts")
