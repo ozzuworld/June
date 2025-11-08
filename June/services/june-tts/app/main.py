@@ -12,11 +12,9 @@ from pydantic import BaseModel, Field
 import numpy as np
 from io import BytesIO
 import asyncio
-import soundfile as sf
 from livekit import rtc
 import traceback
 
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -54,11 +52,10 @@ class SynthesizeRequest(BaseModel):
 
 app = FastAPI(
     title="June TTS (Fish-Speech)",
-    version="1.3.1",
+    version="1.3.2",
     description="FastAPI wrapper around Fish-Speech /v1/tts with persistent LiveKit publisher integration.",
 )
 
-# Global publisher state
 livekit_room = None
 livekit_audio_source = None
 livekit_audio_track = None
@@ -66,7 +63,6 @@ livekit_connected = False
 LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 
-# Utilities
 def _new_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.fish_base_url, timeout=settings.timeout)
 
@@ -109,10 +105,8 @@ async def connect_livekit_publisher():
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
         room = rtc.Room()
         await room.connect(ws_url, token)
-        # Create audio source and track (CORRECT API)
         source = rtc.AudioSource(16000, 1)
         track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
-        # Publish track using local_participant (CORRECT API)
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, options)
@@ -130,15 +124,12 @@ async def publish_audio_to_livekit(pcm_audio: np.ndarray, sample_rate: int = 160
     if not livekit_connected or livekit_audio_source is None:
         logger.warning("[LiveKit] Not connected. Cannot publish!")
         return
-    # Send audio frames using AudioSource.capture_frame (CORRECT API)
-    frame_size = int(sample_rate * 0.02)  # 20ms frames = 320 samples at 16kHz
+    frame_size = int(sample_rate * 0.02)
     for offset in range(0, len(pcm_audio), frame_size):
         chunk = pcm_audio[offset:offset+frame_size]
         if len(chunk) < frame_size:
             chunk = np.pad(chunk, (0, frame_size-len(chunk)), 'constant')
-        # Convert float32 to int16
         pcm_int16 = (np.clip(chunk, -1, 1) * 32767).astype(np.int16)
-        # Create AudioFrame and capture it
         frame = rtc.AudioFrame.create(sample_rate, 1, frame_size)
         np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
         await livekit_audio_source.capture_frame(frame)
@@ -161,20 +152,13 @@ async def health():
 
 @app.post("/api/tts/synthesize")
 async def api_synthesize_speech(request: SynthesizeRequest):
-    """
-    Synthesize speech from text and publish to LiveKit room.
-    This endpoint:
-    1. Calls Fish-Speech TTS service to generate audio
-    2. Decodes the WAV audio data
-    3. Publishes audio frames to LiveKit room
-    """
     start_time = time.time()
     try:
         tts_request = TTSRequest(
             text=request.text,
             voice_id=None,
             streaming=request.stream,
-            format="wav",  # Always use WAV for consistency
+            format="wav",
             chunk_length=200,
             normalize=True,
             latency="balanced"
@@ -189,62 +173,56 @@ async def api_synthesize_speech(request: SynthesizeRequest):
                 error_msg = f"Fish-Speech TTS failed with status {resp.status_code}: {resp.text}"
                 logger.error(error_msg)
                 raise HTTPException(status_code=resp.status_code, detail=error_msg)
-            audio_data = resp.content
-            audio_size = len(audio_data)
-            synthesis_time_ms = (time.time() - start_time) * 1000
-            logger.info(f"Received {audio_size} bytes of audio data from Fish-Speech")
-            # Decode WAV to PCM (FIXED: DO NOT PASS format=...)
-            with BytesIO(audio_data) as bio:
-                try:
-                    wav_data, sr = sf.read(bio, dtype='float32')
-                    logger.info(f"Successfully decoded audio: {len(wav_data)} samples at {sr}Hz")
-                except Exception as read_error:
-                    logger.error(f"Failed to read audio: {read_error}")
-                    logger.error(f"Audio data size: {len(audio_data)}")
-                    if len(audio_data) > 0:
-                        logger.error(f"First 20 bytes (hex): {audio_data[:20].hex()}")
-                        logger.error(f"First 4 bytes (ASCII): {audio_data[:4]}")
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to decode audio from Fish-Speech: {str(read_error)}"
-                    )
-                # Ensure mono
-                if len(wav_data.shape) > 1:
-                    logger.info(f"Converting stereo to mono (original shape: {wav_data.shape})")
-                    wav_data = wav_data[:, 0]
-                # Resample to 16kHz if needed
-                if sr != 16000:
-                    logger.info(f"Resampling from {sr}Hz to 16000Hz")
-                    from scipy.signal import resample_poly
-                    wav_data = resample_poly(wav_data, 16000, sr)
-                    sr = 16000
-            # Publish to LiveKit
+            audio_bytes = resp.content
+            logger.info(f"Received {len(audio_bytes)} bytes of PCM audio from Fish-Speech")
+            try:
+                # Fish-Speech returns RAW PCM int16 (no WAV header)
+                pcm_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+                wav_data = pcm_int16.astype(np.float32) / 32768.0
+                sr = 44100  # Default, check your Fish-Speech config
+                logger.info(f"Decoded PCM audio: {len(wav_data)} samples at {sr}Hz")
+            except Exception as read_error:
+                logger.error(f"Failed to decode PCM audio: {read_error}")
+                logger.error(f"Audio data size: {len(audio_bytes)}")
+                if len(audio_bytes) > 0:
+                    logger.error(f"First 20 bytes (hex): {audio_bytes[:20].hex()}")
+                    logger.error(f"First 4 bytes (ASCII): {audio_bytes[:4]}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to decode PCM audio from Fish-Speech: {str(read_error)}"
+                )
+            if len(wav_data.shape) > 1:
+                wav_data = wav_data[:, 0]
+            if sr != 16000:
+                logger.info(f"Resampling from {sr}Hz to 16000Hz")
+                from scipy.signal import resample_poly
+                wav_data = resample_poly(wav_data, 16000, sr)
+                sr = 16000
             logger.info(f"Publishing audio to LiveKit room '{request.room_name}'")
             await publish_audio_to_livekit(wav_data, sr)
             total_time_ms = (time.time() - start_time) * 1000
-            chunks_sent = max(1, audio_size // 1024)
+            chunks_sent = max(1, len(audio_bytes) // 1024)
             logger.info(f"✅ TTS synthesis completed in {total_time_ms:.0f}ms")
             return JSONResponse({
                 "status": "success",
                 "chunks_sent": chunks_sent,
-                "synthesis_time_ms": round(synthesis_time_ms, 2),
                 "total_time_ms": round(total_time_ms, 2),
                 "room_name": request.room_name,
                 "text_length": len(request.text),
-                "audio_size_bytes": audio_size,
+                "audio_size_bytes": len(audio_bytes),
                 "audio_duration_seconds": round(len(wav_data) / sr, 2),
                 "language": request.language,
-                "note": "Audio generated and published to LiveKit."
+                "note": "PCM audio generated and published to LiveKit."
             })
     except HTTPException:
         raise
     except Exception as e:
-        synthesis_time_ms = (time.time() - start_time) * 1000
-        logger.error(f"❌ TTS synthesis error after {synthesis_time_ms:.0f}ms: {str(e)}")
+        total_time_ms = (time.time() - start_time) * 1000
+        logger.error(f"❌ TTS synthesis error after {total_time_ms:.0f}ms: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=500,
-            detail=f"TTS synthesis failed after {synthesis_time_ms:.0f}ms: {str(e)}"
+            detail=f"TTS synthesis failed after {total_time_ms:.0f}ms: {str(e)}"
         )
 
 @app.post("/tts")
