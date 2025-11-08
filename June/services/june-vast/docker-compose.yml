@@ -14,7 +14,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: ["gpu"]
-              device_ids: ["0"]  # Use first GPU
+              device_ids: ["0"]  # single GPU 0
     environment:
       - PYTHONUNBUFFERED=1
       - LIVEKIT_IDENTITY=june-stt
@@ -40,72 +40,39 @@ services:
         max-file: "3"
 
   # ==========================================
-  # TTS Service (Text-to-Speech) - Fish Speech Server
-  # ==========================================
-  fish-speech-server:
-    image: ozzuworld/june-tts:latest
-    container_name: fish-speech-server
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: ["gpu"]
-              device_ids: ["0"]  # Use second GPU (adjust if needed)
-    environment:
-      - COMPILE=1
-      - LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini
-      - DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth
-      - DECODER_CONFIG_NAME=modded_dac_vq
-      - CUDA_VISIBLE_DEVICES=1
-      - HF_TOKEN=${HF_TOKEN:-}  # Optional: Set via .env file
-    volumes:
-      - ./services/june-tts/checkpoints:/app/checkpoints
-      - ./services/june-tts/references:/app/references
-      - tts-cache:/root/.cache
-    ports:
-      - "8080:8080"
-    networks:
-      - june-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ==========================================
-  # TTS Service - FastAPI Adapter
+  # TTS Service (Text-to-Speech)
   # ==========================================
   june-tts:
     image: ozzuworld/june-tts:latest
     container_name: june-tts
     restart: unless-stopped
+    # uncomment this block ONLY if june-tts image really needs GPU
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           capabilities: ["gpu"]
+    #           device_ids: ["0"]  # share GPU 0
     environment:
-      - FISH_SPEECH_BASE_URL=http://fish-speech-server:8080
+      # set whatever your TTS image actually uses; example:
+      - HF_TOKEN=${HF_TOKEN:-}
       - REFERENCES_DIR=/app/references
       - FISH_SPEECH_TIMEOUT=180
     volumes:
       - ./services/june-tts/references:/app/references
+      - ./services/june-tts/checkpoints:/app/checkpoints
+      - tts-cache:/root/.cache
     ports:
       - "8000:8000"
     networks:
       - june-network
-    depends_on:
-      fish-speech-server:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
