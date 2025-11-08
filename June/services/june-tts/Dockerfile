@@ -54,9 +54,9 @@ COPY app/ /app/
 # Create directories for models and references
 RUN mkdir -p /app/models /app/references
 
-# Download XTTS v2 model (will be cached on first run)
-# Model will be auto-downloaded to ~/.local/share/tts/ on first inference
-RUN python3 -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2', gpu=True)"
+# Pre-download XTTS v2 model WITHOUT GPU (CPU mode for build)
+# This caches the model so it doesn't need to download at runtime
+RUN python3 -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2', gpu=False)"
 
 # Expose port
 EXPOSE 8000
