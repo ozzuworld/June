@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-FINAL VERSION - Correct audio tensor shape (2D)
+June TTS Service - XTTS v2 Optimized for Smooth Streaming
+Production-ready with optimal chunk sizes and buffering
 """
 import asyncio
 import logging
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 import traceback
 import tempfile
+from collections import deque
 
 import numpy as np
 import torch
@@ -49,13 +50,14 @@ LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 REFERENCE_AUDIO_PATH = os.getenv("REFERENCE_AUDIO", "/app/references/default_voice.wav")
 
-# XTTS v2 streaming parameters
-STREAM_CHUNK_SIZE = 20
+# XTTS v2 streaming parameters (OPTIMIZED FOR SMOOTH PLAYBACK)
+STREAM_CHUNK_SIZE = 150  # Increased from 20 to 150 for smoother audio (Baseten recommendation)
+LIVEKIT_FRAME_SIZE = 960  # 60ms frames (increased from 320/20ms) for fewer network packets
 
 app = FastAPI(
     title="June TTS (XTTS v2)",
-    version="2.0.0",
-    description="Real-time streaming TTS with Coqui XTTS v2 and LiveKit integration"
+    version="2.1.0",
+    description="Real-time streaming TTS with Coqui XTTS v2 - Optimized for smooth playback"
 )
 
 # Global state
@@ -74,13 +76,9 @@ class SynthesizeRequest(BaseModel):
     stream: bool = Field(default=True)
 
 def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
-    """
-    Load audio using soundfile and return as 2D torch tensor (1, samples) compatible with XTTS
-    XTTS expects shape: (channels, samples) for slicing with audio[:, ...]
-    """
+    """Load audio using soundfile and return as 2D torch tensor (1, samples)"""
     audio, sr = sf.read(audio_path)
     
-    # Convert to float32 and normalize
     if audio.dtype == np.int16:
         audio = audio.astype(np.float32) / 32767.0
     elif audio.dtype == np.int32:
@@ -88,63 +86,47 @@ def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
     else:
         audio = audio.astype(np.float32)
     
-    # Ensure mono
     if len(audio.shape) > 1:
         audio = audio.mean(axis=1)
     
-    # Convert to torch tensor
     audio_tensor = torch.FloatTensor(audio)
     
-    # Resample if needed
     if sampling_rate is not None and sr != sampling_rate:
         import torchaudio.transforms as T
         resampler = T.Resample(sr, sampling_rate)
         audio_tensor = resampler(audio_tensor)
     
-    # CRITICAL: Add channel dimension to make it 2D (1, samples)
-    # XTTS code does: audio[:, : load_sr * max_ref_length]
-    # This requires shape (channels, samples), not (samples,)
-    audio_tensor = audio_tensor.unsqueeze(0)  # Shape: (1, samples)
-    
+    audio_tensor = audio_tensor.unsqueeze(0)
     return audio_tensor
 
-# Monkey-patch the load_audio function in XTTS
+# Monkey-patch load_audio
 import TTS.tts.models.xtts as xtts_module
 original_load_audio = xtts_module.load_audio
 
 def patched_load_audio(audiopath, sampling_rate=None):
-    """Patched version that uses soundfile and returns 2D tensor"""
     try:
-        audio_tensor = load_audio_with_soundfile(audiopath, sampling_rate)
-        return audio_tensor
+        return load_audio_with_soundfile(audiopath, sampling_rate)
     except Exception as e:
-        logger.warning(f"Soundfile load failed, trying original method: {e}")
+        logger.warning(f"Soundfile load failed, trying original: {e}")
         return original_load_audio(audiopath, sampling_rate)
 
-# Apply the monkey patch
 xtts_module.load_audio = patched_load_audio
 
 async def load_xtts_model():
-    """Load XTTS v2 model for streaming inference"""
+    """Load XTTS v2 model"""
     global xtts_model, tts_api, gpt_cond_latent, speaker_embedding
     
     try:
         logger.info("🔊 Loading XTTS v2 model...")
-        
-        # Load TTS API
         tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
-        
-        # Get direct access to underlying XTTS model
         xtts_model = tts_api.synthesizer.tts_model
         
-        # Move to GPU if available
         if torch.cuda.is_available():
             xtts_model.cuda()
             logger.info("✅ XTTS v2 loaded on GPU")
         else:
-            logger.warning("⚠️ XTTS v2 loaded on CPU (will be slow)")
+            logger.warning("⚠️ XTTS v2 loaded on CPU")
         
-        # Load speaker embeddings
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -152,27 +134,21 @@ async def load_xtts_model():
             )
             logger.info("✅ Custom speaker embeddings loaded")
         else:
-            # For built-in speaker: Generate conditioning latents from silent audio
-            logger.info("✅ Using built-in XTTS v2 speaker (generating from test audio)...")
-            
-            # Create a short silent WAV file
+            logger.info("✅ Using default speaker (generating from silent audio)...")
             sample_rate = 22050
             duration = 2.0
             silence = np.zeros(int(sample_rate * duration), dtype=np.float32)
             
-            # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
                 tmp_path = tmp_file.name
                 sf.write(tmp_path, silence, sample_rate)
             
             try:
-                # Generate conditioning latents (now using our patched soundfile loader)
                 gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
                     audio_path=[tmp_path]
                 )
                 logger.info("✅ Default speaker embeddings generated")
             finally:
-                # Clean up temp file
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
         
@@ -183,7 +159,6 @@ async def load_xtts_model():
         return False
 
 async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
-    """Get LiveKit token from orchestrator"""
     import httpx
     url = f"{ORCHESTRATOR_URL}/token"
     payload = {"roomName": room_name, "participantName": identity}
@@ -198,7 +173,6 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
         return ws_url, token
 
 async def connect_livekit():
-    """Connect to LiveKit and create audio source"""
     global livekit_room, livekit_audio_source, livekit_connected
     try:
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
@@ -220,7 +194,7 @@ async def connect_livekit():
 
 async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 24000):
     """
-    TRUE streaming: Publish audio chunks to LiveKit as they're generated
+    Optimized streaming with larger frames and overlap handling for smooth playback
     """
     global livekit_audio_source, livekit_connected
     
@@ -231,8 +205,10 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
     first_chunk_time = None
     chunk_count = 0
     
+    # Buffer to handle overlap between chunks for smoother transitions
+    overlap_buffer = deque(maxlen=int(sample_rate * 0.02))  # 20ms overlap buffer
+    
     try:
-        # Process each audio chunk as it arrives from XTTS
         for chunk in audio_chunk_generator:
             if first_chunk_time is None:
                 first_chunk_time = time.time()
@@ -240,11 +216,9 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             
             chunk_count += 1
             
-            # Convert to numpy if needed
             if torch.is_tensor(chunk):
                 chunk = chunk.cpu().numpy()
             
-            # Ensure it's 1D
             if len(chunk.shape) > 1:
                 chunk = chunk.squeeze()
             
@@ -253,27 +227,41 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
                 from scipy.signal import resample_poly
                 chunk = resample_poly(chunk, 16000, sample_rate)
             
-            # Publish in 20ms frames (320 samples at 16kHz)
-            frame_size = 320
-            for offset in range(0, len(chunk), frame_size):
-                frame_data = chunk[offset:offset+frame_size]
-                if len(frame_data) < frame_size:
-                    frame_data = np.pad(frame_data, (0, frame_size-len(frame_data)), 'constant')
+            # Apply crossfade with overlap buffer for smooth transitions
+            if len(overlap_buffer) > 0:
+                overlap_len = min(len(overlap_buffer), len(chunk))
+                fade_out = np.linspace(1.0, 0.0, overlap_len)
+                fade_in = np.linspace(0.0, 1.0, overlap_len)
+                
+                # Crossfade
+                chunk[:overlap_len] = (
+                    np.array(list(overlap_buffer))[:overlap_len] * fade_out +
+                    chunk[:overlap_len] * fade_in
+                )
+            
+            # Publish in larger 60ms frames (960 samples at 16kHz) for fewer packets
+            for offset in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
+                frame_data = chunk[offset:offset+LIVEKIT_FRAME_SIZE]
+                if len(frame_data) < LIVEKIT_FRAME_SIZE:
+                    frame_data = np.pad(frame_data, (0, LIVEKIT_FRAME_SIZE-len(frame_data)), 'constant')
+                
+                # Store last frame samples for next chunk overlap
+                if offset + LIVEKIT_FRAME_SIZE >= len(chunk):
+                    overlap_buffer.extend(frame_data[-int(sample_rate * 0.02):])
                 
                 pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
-                frame = rtc.AudioFrame.create(16000, 1, frame_size)
+                frame = rtc.AudioFrame.create(16000, 1, LIVEKIT_FRAME_SIZE)
                 np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
                 await livekit_audio_source.capture_frame(frame)
         
-        logger.info(f"✅ Streamed {chunk_count} chunks to LiveKit")
+        logger.info(f"✅ Streamed {chunk_count} chunks to LiveKit (smooth mode)")
     except Exception as e:
         logger.error(f"❌ Error streaming audio: {e}")
         logger.error(traceback.format_exc())
 
 @app.on_event("startup")
 async def on_startup():
-    """Initialize model and LiveKit on startup"""
-    logger.info("🚀 Starting XTTS v2 TTS Service...")
+    logger.info("🚀 Starting XTTS v2 TTS Service (Optimized)...")
     model_loaded = await load_xtts_model()
     if not model_loaded:
         logger.error("Failed to load XTTS model")
@@ -283,20 +271,19 @@ async def on_startup():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     return {
         "status": "ok",
         "model_loaded": xtts_model is not None,
         "livekit_connected": livekit_connected,
         "gpu_available": torch.cuda.is_available(),
-        "streaming_enabled": True
+        "streaming_enabled": True,
+        "stream_chunk_size": STREAM_CHUNK_SIZE,
+        "frame_size_ms": (LIVEKIT_FRAME_SIZE / 16000) * 1000
     }
 
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    """
-    Synthesize speech with TRUE streaming using inference_stream()
-    """
+    """Synthesize speech with optimized smooth streaming"""
     start_time = time.time()
     
     try:
@@ -306,23 +293,22 @@ async def synthesize_speech(request: SynthesizeRequest):
         if gpt_cond_latent is None or speaker_embedding is None:
             raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
         
-        logger.info(f"🔊 Synthesizing (streaming): '{request.text[:50]}...'")
+        logger.info(f"🔊 Synthesizing (smooth streaming): '{request.text[:50]}...'")
         
-        # TRUE STREAMING: Use inference_stream() for chunk-by-chunk generation
+        # OPTIMIZED: stream_chunk_size=150 for smooth playback
         audio_chunk_generator = xtts_model.inference_stream(
             text=request.text,
             language=request.language,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
-            stream_chunk_size=STREAM_CHUNK_SIZE,
+            stream_chunk_size=STREAM_CHUNK_SIZE,  # 150 for production quality
             enable_text_splitting=True
         )
         
-        # Stream audio chunks to LiveKit as they're generated
         await stream_audio_to_livekit(audio_chunk_generator, sample_rate=24000)
         
         total_time_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Streaming synthesis completed in {total_time_ms:.0f}ms")
+        logger.info(f"✅ Smooth streaming synthesis completed in {total_time_ms:.0f}ms")
         
         return JSONResponse({
             "status": "success",
@@ -330,8 +316,9 @@ async def synthesize_speech(request: SynthesizeRequest):
             "room_name": request.room_name,
             "text_length": len(request.text),
             "language": request.language,
-            "note": "Audio streamed in real-time to LiveKit",
-            "streaming": True
+            "note": "Audio streamed with optimized smoothness",
+            "streaming": True,
+            "chunk_size": STREAM_CHUNK_SIZE
         })
     
     except Exception as e:
