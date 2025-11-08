@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-Working version with proper conditioning latents
+Working version - bypasses torchcodec issue
 """
 import asyncio
 import logging
@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from livekit import rtc
+import soundfile as sf
 
 # COMPREHENSIVE PATCH: Add all TTS classes to PyTorch 2.6 safe globals
 if hasattr(torch.serialization, 'add_safe_globals'):
@@ -72,6 +73,48 @@ class SynthesizeRequest(BaseModel):
     language: str = Field(default="en")
     stream: bool = Field(default=True)
 
+def load_audio_with_soundfile(audio_path: str):
+    """
+    Load audio using soundfile instead of torchaudio to avoid torchcodec issue
+    Returns audio tensor and sample rate compatible with XTTS
+    """
+    audio, sr = sf.read(audio_path)
+    # Convert to float32 and normalize
+    if audio.dtype == np.int16:
+        audio = audio.astype(np.float32) / 32767.0
+    elif audio.dtype == np.int32:
+        audio = audio.astype(np.float32) / 2147483647.0
+    
+    # Ensure mono
+    if len(audio.shape) > 1:
+        audio = audio.mean(axis=1)
+    
+    return torch.FloatTensor(audio), sr
+
+# Monkey-patch the load_audio function in XTTS to use soundfile
+import TTS.tts.models.xtts as xtts_module
+original_load_audio = xtts_module.load_audio
+
+def patched_load_audio(audiopath, sampling_rate=None):
+    """Patched version that uses soundfile instead of torchaudio"""
+    try:
+        audio, sr = load_audio_with_soundfile(audiopath)
+        
+        # Resample if needed
+        if sampling_rate is not None and sr != sampling_rate:
+            import torchaudio.transforms as T
+            resampler = T.Resample(sr, sampling_rate)
+            audio = resampler(audio)
+            sr = sampling_rate
+        
+        return audio, sr
+    except Exception as e:
+        logger.warning(f"Soundfile load failed, trying original method: {e}")
+        return original_load_audio(audiopath, sampling_rate)
+
+# Apply the monkey patch
+xtts_module.load_audio = patched_load_audio
+
 async def load_xtts_model():
     """Load XTTS v2 model for streaming inference"""
     global xtts_model, tts_api, gpt_cond_latent, speaker_embedding
@@ -100,13 +143,12 @@ async def load_xtts_model():
             )
             logger.info("✅ Custom speaker embeddings loaded")
         else:
-            # For built-in speaker: Generate conditioning latents using the model directly
+            # For built-in speaker: Generate conditioning latents from silent audio
             logger.info("✅ Using built-in XTTS v2 speaker (generating from test audio)...")
             
-            # Create a short silent WAV file as reference
-            import soundfile as sf
+            # Create a short silent WAV file
             sample_rate = 22050
-            duration = 2.0  # 2 seconds
+            duration = 2.0
             silence = np.zeros(int(sample_rate * duration), dtype=np.float32)
             
             # Save to temporary file
@@ -115,8 +157,7 @@ async def load_xtts_model():
                 sf.write(tmp_path, silence, sample_rate)
             
             try:
-                # Generate conditioning latents from the silent audio
-                # This will give us a "neutral" default voice
+                # Generate conditioning latents (now using soundfile)
                 gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
                     audio_path=[tmp_path]
                 )
