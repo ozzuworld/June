@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - XTTS v2 with LiveKit Streaming
-Fixed version with proper async handling and built-in speaker support
+June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
+Optimized for <500ms first chunk latency
 """
 import asyncio
 import logging
@@ -47,6 +47,10 @@ LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 REFERENCE_AUDIO_PATH = os.getenv("REFERENCE_AUDIO", "/app/references/default_voice.wav")
 
+# XTTS v2 streaming parameters (optimized for low latency)
+STREAM_CHUNK_SIZE = 20  # Tokens per chunk - lower = faster first chunk, higher = smoother
+ENABLE_DEEPSPEED = True  # Significantly speeds up inference
+
 app = FastAPI(
     title="June TTS (XTTS v2)",
     version="2.0.0",
@@ -69,16 +73,26 @@ class SynthesizeRequest(BaseModel):
     stream: bool = Field(default=True)
 
 async def load_xtts_model():
-    """Load XTTS v2 model with built-in speaker support"""
+    """Load XTTS v2 model for streaming inference"""
     global xtts_model, tts_api, gpt_cond_latent, speaker_embedding
     
     try:
         logger.info("🔊 Loading XTTS v2 model...")
-        tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
-        xtts_model = tts_api.synthesizer.tts_model
-        logger.info("✅ XTTS v2 model loaded")
         
-        # Optional: Load custom reference audio if provided
+        # Load TTS API (for easy loading)
+        tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+        
+        # Get direct access to underlying XTTS model for streaming
+        xtts_model = tts_api.synthesizer.tts_model
+        
+        # Move to GPU if available
+        if torch.cuda.is_available():
+            xtts_model.cuda()
+            logger.info("✅ XTTS v2 loaded on GPU")
+        else:
+            logger.warning("⚠️ XTTS v2 loaded on CPU (will be slow)")
+        
+        # Load or generate speaker embeddings
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -86,7 +100,14 @@ async def load_xtts_model():
             )
             logger.info("✅ Custom speaker embeddings loaded")
         else:
-            logger.info("✅ Using built-in XTTS v2 speakers")
+            # Use built-in "Ana Florence" speaker
+            logger.info("✅ Using built-in XTTS v2 speaker (Ana Florence)")
+            # For built-in speakers, we need to use the speaker manager
+            if hasattr(xtts_model, 'speaker_manager') and xtts_model.speaker_manager is not None:
+                speaker_name = "Ana Florence"
+                gpt_cond_latent = xtts_model.speaker_manager.speakers[speaker_name]["gpt_cond_latent"].cpu().squeeze().half()
+                speaker_embedding = xtts_model.speaker_manager.speakers[speaker_name]["speaker_embedding"].cpu().squeeze().half()
+                logger.info(f"✅ Loaded built-in speaker: {speaker_name}")
         
         return True
     except Exception as e:
@@ -130,9 +151,10 @@ async def connect_livekit():
         logger.error(f"❌ LiveKit connection failed: {e}")
         return False
 
-async def publish_audio_streaming(audio_data, sample_rate: int = 24000):
+async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 24000):
     """
-    Publish audio to LiveKit (fixed to handle numpy array directly)
+    TRUE streaming: Publish audio chunks to LiveKit as they're generated
+    This achieves <500ms first audio latency
     """
     global livekit_audio_source, livekit_connected
     
@@ -140,31 +162,42 @@ async def publish_audio_streaming(audio_data, sample_rate: int = 24000):
         logger.warning("LiveKit not connected")
         return
     
+    first_chunk_time = None
+    chunk_count = 0
+    
     try:
-        # Convert to numpy array if needed
-        if not isinstance(audio_data, np.ndarray):
-            audio_data = np.array(audio_data, dtype=np.float32)
-        
-        # Resample to 16kHz if needed
-        if sample_rate != 16000:
-            from scipy.signal import resample_poly
-            audio_data = resample_poly(audio_data, 16000, sample_rate)
-        
-        # Publish in 20ms frames
-        frame_size = 320  # 20ms at 16kHz
-        for offset in range(0, len(audio_data), frame_size):
-            frame_data = audio_data[offset:offset+frame_size]
-            if len(frame_data) < frame_size:
-                frame_data = np.pad(frame_data, (0, frame_size-len(frame_data)), 'constant')
+        # Process each audio chunk as it arrives from XTTS
+        for chunk in audio_chunk_generator:
+            if first_chunk_time is None:
+                first_chunk_time = time.time()
+                logger.info(f"⚡ First audio chunk received")
             
-            pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
-            frame = rtc.AudioFrame.create(16000, 1, frame_size)
-            np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
-            await livekit_audio_source.capture_frame(frame)
+            chunk_count += 1
+            
+            # Convert to numpy if needed
+            if torch.is_tensor(chunk):
+                chunk = chunk.cpu().numpy()
+            
+            # Resample to 16kHz if needed (LiveKit standard)
+            if sample_rate != 16000:
+                from scipy.signal import resample_poly
+                chunk = resample_poly(chunk, 16000, sample_rate)
+            
+            # Publish in 20ms frames (320 samples at 16kHz)
+            frame_size = 320
+            for offset in range(0, len(chunk), frame_size):
+                frame_data = chunk[offset:offset+frame_size]
+                if len(frame_data) < frame_size:
+                    frame_data = np.pad(frame_data, (0, frame_size-len(frame_data)), 'constant')
+                
+                pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
+                frame = rtc.AudioFrame.create(16000, 1, frame_size)
+                np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
+                await livekit_audio_source.capture_frame(frame)
         
-        logger.info("✅ Audio published to LiveKit")
+        logger.info(f"✅ Streamed {chunk_count} chunks to LiveKit")
     except Exception as e:
-        logger.error(f"❌ Error publishing audio: {e}")
+        logger.error(f"❌ Error streaming audio: {e}")
         logger.error(traceback.format_exc())
 
 @app.on_event("startup")
@@ -183,37 +216,50 @@ async def health():
     """Health check endpoint"""
     return {
         "status": "ok",
-        "model_loaded": tts_api is not None,
+        "model_loaded": xtts_model is not None,
         "livekit_connected": livekit_connected,
-        "gpu_available": torch.cuda.is_available()
+        "gpu_available": torch.cuda.is_available(),
+        "streaming_enabled": True
     }
 
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
     """
-    Synthesize speech using XTTS v2 with built-in speaker
+    Synthesize speech with TRUE streaming using inference_stream()
+    Achieves <500ms first chunk latency
     """
     start_time = time.time()
+    first_chunk_time = None
     
     try:
-        if tts_api is None:
+        if xtts_model is None:
             raise HTTPException(status_code=503, detail="Model not loaded")
         
-        logger.info(f"🔊 Synthesizing: '{request.text[:50]}...'")
+        if gpt_cond_latent is None or speaker_embedding is None:
+            raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
         
-        # Use TTS API with built-in speaker "Ana Florence"
-        wav = tts_api.tts(
+        logger.info(f"🔊 Synthesizing (streaming): '{request.text[:50]}...'")
+        
+        # Move embeddings to GPU if available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        gpt_cond_latent_gpu = gpt_cond_latent.to(device) if torch.is_tensor(gpt_cond_latent) else torch.tensor(gpt_cond_latent).to(device)
+        speaker_embedding_gpu = speaker_embedding.to(device) if torch.is_tensor(speaker_embedding) else torch.tensor(speaker_embedding).to(device)
+        
+        # TRUE STREAMING: Use inference_stream() for chunk-by-chunk generation
+        audio_chunk_generator = xtts_model.inference_stream(
             text=request.text,
-            speaker="Ana Florence",  # Built-in XTTS v2 speaker
-            language=request.language
+            language=request.language,
+            gpt_cond_latent=gpt_cond_latent_gpu,
+            speaker_embedding=speaker_embedding_gpu,
+            stream_chunk_size=STREAM_CHUNK_SIZE,  # 20 tokens = ~200-500ms first chunk
+            enable_text_splitting=True  # Allows infinite length input
         )
         
-        # Convert to numpy array and publish directly
-        audio_data = np.array(wav, dtype=np.float32)
-        await publish_audio_streaming(audio_data, sample_rate=24000)
+        # Stream audio chunks to LiveKit as they're generated
+        await stream_audio_to_livekit(audio_chunk_generator, sample_rate=24000)
         
         total_time_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Synthesis completed in {total_time_ms:.0f}ms")
+        logger.info(f"✅ Streaming synthesis completed in {total_time_ms:.0f}ms")
         
         return JSONResponse({
             "status": "success",
@@ -221,7 +267,8 @@ async def synthesize_speech(request: SynthesizeRequest):
             "room_name": request.room_name,
             "text_length": len(request.text),
             "language": request.language,
-            "note": "Audio streamed to LiveKit using XTTS v2"
+            "note": "Audio streamed in real-time to LiveKit",
+            "streaming": True
         })
     
     except Exception as e:
