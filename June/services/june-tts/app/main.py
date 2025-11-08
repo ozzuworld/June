@@ -61,24 +61,14 @@ async def load_xtts_model():
     try:
         logger.info("🔊 Loading XTTS v2 model...")
         
-        # Initialize XTTS model
-        config = XttsConfig()
-        model_path = "tts_models/multilingual/multi-dataset/xtts_v2"
-        xtts_model = Xtts.init_from_config(config)
+        # Use TTS API to load model (will auto-download if not cached)
+        from TTS.api import TTS
+        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
         
-        # Load checkpoint
-        xtts_model.load_checkpoint(
-            config,
-            checkpoint_dir=str(Path.home() / ".local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2"),
-            use_deepspeed=False
-        )
+        # Access the underlying model
+        xtts_model = tts.synthesizer.tts_model
         
-        # Move to GPU if available
-        if torch.cuda.is_available():
-            xtts_model.cuda()
-            logger.info("✅ XTTS v2 loaded on GPU")
-        else:
-            logger.warning("⚠️ XTTS v2 loaded on CPU (slow)")
+        logger.info("✅ XTTS v2 model loaded")
         
         # Load default speaker embeddings
         if os.path.exists(REFERENCE_AUDIO_PATH):
@@ -95,6 +85,7 @@ async def load_xtts_model():
         logger.error(f"❌ Failed to load XTTS v2: {e}")
         logger.error(traceback.format_exc())
         return False
+
 
 
 async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
