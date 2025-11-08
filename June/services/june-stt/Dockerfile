@@ -35,6 +35,6 @@ RUN git clone https://github.com/ufal/whisper_streaming.git /tmp/whisper_streami
 COPY main.py .
 COPY livekit_worker.py .
 
-EXPOSE 8000
+EXPOSE 8001
 
 CMD ["python3", "main.py"]
