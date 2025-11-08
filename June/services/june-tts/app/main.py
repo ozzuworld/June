@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-Working version - bypasses torchcodec issue
+Final working version with correct audio loader return type
 """
 import asyncio
 import logging
@@ -73,41 +73,46 @@ class SynthesizeRequest(BaseModel):
     language: str = Field(default="en")
     stream: bool = Field(default=True)
 
-def load_audio_with_soundfile(audio_path: str):
+def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
     """
-    Load audio using soundfile instead of torchaudio to avoid torchcodec issue
-    Returns audio tensor and sample rate compatible with XTTS
+    Load audio using soundfile and return as torch tensor compatible with XTTS
+    Returns only the audio tensor (not a tuple)
     """
     audio, sr = sf.read(audio_path)
+    
     # Convert to float32 and normalize
     if audio.dtype == np.int16:
         audio = audio.astype(np.float32) / 32767.0
     elif audio.dtype == np.int32:
         audio = audio.astype(np.float32) / 2147483647.0
+    else:
+        audio = audio.astype(np.float32)
     
     # Ensure mono
     if len(audio.shape) > 1:
         audio = audio.mean(axis=1)
     
-    return torch.FloatTensor(audio), sr
+    # Convert to torch tensor
+    audio_tensor = torch.FloatTensor(audio)
+    
+    # Resample if needed
+    if sampling_rate is not None and sr != sampling_rate:
+        import torchaudio.transforms as T
+        resampler = T.Resample(sr, sampling_rate)
+        audio_tensor = resampler(audio_tensor)
+    
+    # Return just the audio tensor (XTTS expects this, not a tuple)
+    return audio_tensor
 
-# Monkey-patch the load_audio function in XTTS to use soundfile
+# Monkey-patch the load_audio function in XTTS
 import TTS.tts.models.xtts as xtts_module
 original_load_audio = xtts_module.load_audio
 
 def patched_load_audio(audiopath, sampling_rate=None):
-    """Patched version that uses soundfile instead of torchaudio"""
+    """Patched version that uses soundfile and returns just audio tensor"""
     try:
-        audio, sr = load_audio_with_soundfile(audiopath)
-        
-        # Resample if needed
-        if sampling_rate is not None and sr != sampling_rate:
-            import torchaudio.transforms as T
-            resampler = T.Resample(sr, sampling_rate)
-            audio = resampler(audio)
-            sr = sampling_rate
-        
-        return audio, sr
+        audio_tensor = load_audio_with_soundfile(audiopath, sampling_rate)
+        return audio_tensor
     except Exception as e:
         logger.warning(f"Soundfile load failed, trying original method: {e}")
         return original_load_audio(audiopath, sampling_rate)
@@ -157,7 +162,7 @@ async def load_xtts_model():
                 sf.write(tmp_path, silence, sample_rate)
             
             try:
-                # Generate conditioning latents (now using soundfile)
+                # Generate conditioning latents (now using our patched soundfile loader)
                 gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
                     audio_path=[tmp_path]
                 )
