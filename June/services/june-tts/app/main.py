@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-June TTS Service - XTTS v2 with Detailed Streaming Diagnostics
-Debug version to measure timing between chunks and identify bottlenecks
+June TTS Service - XTTS v2 PRODUCTION OPTIMIZED (chunk_size=150 hardcoded)
 """
 import asyncio
 import logging
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 import traceback
 import tempfile
-from collections import deque
 
 import numpy as np
 import torch
@@ -50,14 +48,14 @@ LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 REFERENCE_AUDIO_PATH = os.getenv("REFERENCE_AUDIO", "/app/references/default_voice.wav")
 
-# XTTS v2 streaming parameters - can be adjusted via env vars for testing
-STREAM_CHUNK_SIZE = int(os.getenv("STREAM_CHUNK_SIZE", "20"))  # Default 20, try 150 for smooth
-LIVEKIT_FRAME_SIZE = int(os.getenv("LIVEKIT_FRAME_SIZE", "320"))  # Default 20ms, try 960 for 60ms
+# PRODUCTION OPTIMIZED SETTINGS (HARDCODED FOR SMOOTH AUDIO)
+STREAM_CHUNK_SIZE = 150  # Production-tested optimal value for smooth playback
+LIVEKIT_FRAME_SIZE = 960  # 60ms frames for fewer network packets
 
 app = FastAPI(
-    title="June TTS (XTTS v2) - Debug",
-    version="2.1.0-debug",
-    description="Real-time streaming TTS with detailed timing diagnostics"
+    title="June TTS (XTTS v2) - Production Optimized",
+    version="2.1.0",
+    description="Real-time streaming TTS optimized for smooth playback"
 )
 
 # Global state
@@ -76,7 +74,7 @@ class SynthesizeRequest(BaseModel):
     stream: bool = Field(default=True)
 
 def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
-    """Load audio using soundfile and return as 2D torch tensor (1, samples)"""
+    """Load audio using soundfile and return as 2D torch tensor"""
     audio, sr = sf.read(audio_path)
     
     if audio.dtype == np.int16:
@@ -107,7 +105,7 @@ def patched_load_audio(audiopath, sampling_rate=None):
     try:
         return load_audio_with_soundfile(audiopath, sampling_rate)
     except Exception as e:
-        logger.warning(f"Soundfile load failed, trying original: {e}")
+        logger.warning(f"Soundfile load failed: {e}")
         return original_load_audio(audiopath, sampling_rate)
 
 xtts_module.load_audio = patched_load_audio
@@ -193,9 +191,7 @@ async def connect_livekit():
         return False
 
 async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 24000):
-    """
-    Stream audio with DETAILED TIMING DIAGNOSTICS
-    """
+    """Stream audio with diagnostics (production-optimized settings)"""
     global livekit_audio_source, livekit_connected
     
     if not livekit_connected or livekit_audio_source is None:
@@ -209,10 +205,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
     total_audio_duration = 0.0
     chunk_timings = []
     
-    logger.info("=" * 80)
-    logger.info("🎯 STREAMING DIAGNOSTICS START")
-    logger.info(f"📊 Configuration: chunk_size={STREAM_CHUNK_SIZE}, frame_size={LIVEKIT_FRAME_SIZE}samples ({LIVEKIT_FRAME_SIZE/16:.1f}ms)")
-    logger.info("=" * 80)
+    logger.info(f"🎯 Streaming with chunk_size={STREAM_CHUNK_SIZE}, frame_size={LIVEKIT_FRAME_SIZE}samples")
     
     try:
         for chunk in audio_chunk_generator:
@@ -220,21 +213,17 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             
             if first_chunk_time is None:
                 first_chunk_time = current_time
-                time_to_first_chunk = (first_chunk_time - start_time) * 1000
-                logger.info(f"⚡ FIRST CHUNK: {time_to_first_chunk:.1f}ms from start")
+                logger.info(f"⚡ First chunk: {(first_chunk_time - start_time) * 1000:.0f}ms")
             
             chunk_count += 1
             
-            # Calculate time between chunks
             if last_chunk_time is not None:
                 gap_ms = (current_time - last_chunk_time) * 1000
                 chunk_timings.append(gap_ms)
-                
-                # Log warning if gap is too large (indicates stutter)
-                if gap_ms > 100:
-                    logger.warning(f"⚠️  LARGE GAP: Chunk #{chunk_count} arrived {gap_ms:.1f}ms after previous chunk")
+                if gap_ms > 200:
+                    logger.warning(f"⚠️  Chunk #{chunk_count}: {gap_ms:.0f}ms gap")
                 else:
-                    logger.info(f"✅ Chunk #{chunk_count}: {gap_ms:.1f}ms gap (good)")
+                    logger.info(f"✅ Chunk #{chunk_count}: {gap_ms:.0f}ms gap")
             
             last_chunk_time = current_time
             
@@ -244,18 +233,14 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             if len(chunk.shape) > 1:
                 chunk = chunk.squeeze()
             
-            # Calculate audio duration
             chunk_duration = len(chunk) / sample_rate
             total_audio_duration += chunk_duration
-            logger.info(f"   📏 Chunk #{chunk_count} contains {chunk_duration*1000:.1f}ms of audio ({len(chunk)} samples @ {sample_rate}Hz)")
             
-            # Resample to 16kHz
             if sample_rate != 16000:
                 from scipy.signal import resample_poly
                 chunk = resample_poly(chunk, 16000, sample_rate)
             
-            # Count frames published
-            frame_count = 0
+            # Publish in optimized 60ms frames
             for offset in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
                 frame_data = chunk[offset:offset+LIVEKIT_FRAME_SIZE]
                 if len(frame_data) < LIVEKIT_FRAME_SIZE:
@@ -265,52 +250,31 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
                 frame = rtc.AudioFrame.create(16000, 1, LIVEKIT_FRAME_SIZE)
                 np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
                 await livekit_audio_source.capture_frame(frame)
-                frame_count += 1
-            
-            logger.info(f"   📤 Published {frame_count} frames to LiveKit")
         
         total_time = (time.time() - start_time) * 1000
         
-        logger.info("=" * 80)
-        logger.info("📊 STREAMING DIAGNOSTICS SUMMARY")
-        logger.info("=" * 80)
-        logger.info(f"Total chunks: {chunk_count}")
-        logger.info(f"Total audio duration: {total_audio_duration:.2f}s ({total_audio_duration*1000:.0f}ms)")
-        logger.info(f"Total time elapsed: {total_time:.0f}ms")
-        logger.info(f"Real-time factor: {total_time / (total_audio_duration * 1000):.2f}x")
-        
+        logger.info(f"📊 Summary: {chunk_count} chunks, {total_audio_duration:.2f}s audio, {total_time:.0f}ms total")
         if chunk_timings:
             avg_gap = np.mean(chunk_timings)
             max_gap = np.max(chunk_timings)
-            min_gap = np.min(chunk_timings)
-            logger.info(f"Chunk gaps: avg={avg_gap:.1f}ms, min={min_gap:.1f}ms, max={max_gap:.1f}ms")
-            
-            # Identify if gaps are the problem
-            if max_gap > 500:
-                logger.error(f"❌ ISSUE DETECTED: Large gap of {max_gap:.1f}ms between chunks!")
-                logger.error("   This will cause audible stutters. Problem is in TTS generation.")
-            elif avg_gap > 200:
-                logger.warning(f"⚠️  POTENTIAL ISSUE: Average gap of {avg_gap:.1f}ms is high")
-                logger.warning("   Consider increasing stream_chunk_size for smoother audio")
-            else:
-                logger.info(f"✅ Chunk timing looks good! Gaps are acceptable.")
-        
-        logger.info("=" * 80)
+            logger.info(f"   Gaps: avg={avg_gap:.0f}ms, max={max_gap:.0f}ms")
+            if max_gap < 300:
+                logger.info("✅ Smooth streaming achieved!")
         
     except Exception as e:
-        logger.error(f"❌ Error streaming audio: {e}")
+        logger.error(f"❌ Error streaming: {e}")
         logger.error(traceback.format_exc())
 
 @app.on_event("startup")
 async def on_startup():
-    logger.info("🚀 Starting XTTS v2 TTS Service (Debug Mode)...")
-    logger.info(f"📊 Config: STREAM_CHUNK_SIZE={STREAM_CHUNK_SIZE}, LIVEKIT_FRAME_SIZE={LIVEKIT_FRAME_SIZE}")
+    logger.info("🚀 Starting XTTS v2 TTS Service (Production Optimized)")
+    logger.info(f"📊 Settings: chunk_size={STREAM_CHUNK_SIZE}, frame_size={LIVEKIT_FRAME_SIZE}")
     model_loaded = await load_xtts_model()
     if not model_loaded:
         logger.error("Failed to load XTTS model")
         return
     asyncio.create_task(connect_livekit())
-    logger.info("✅ XTTS v2 TTS Service ready")
+    logger.info("✅ Service ready")
 
 @app.get("/health")
 async def health():
@@ -319,15 +283,14 @@ async def health():
         "model_loaded": xtts_model is not None,
         "livekit_connected": livekit_connected,
         "gpu_available": torch.cuda.is_available(),
-        "streaming_enabled": True,
         "stream_chunk_size": STREAM_CHUNK_SIZE,
         "frame_size_ms": (LIVEKIT_FRAME_SIZE / 16000) * 1000,
-        "debug_mode": True
+        "optimized": True
     }
 
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    """Synthesize speech with detailed diagnostics"""
+    """Synthesize with production-optimized streaming"""
     start_time = time.time()
     
     try:
@@ -337,9 +300,9 @@ async def synthesize_speech(request: SynthesizeRequest):
         if gpt_cond_latent is None or speaker_embedding is None:
             raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
         
-        logger.info(f"🔊 Synthesizing: '{request.text}'")
-        logger.info(f"   Text length: {len(request.text)} chars")
+        logger.info(f"🔊 '{request.text[:40]}...' ({len(request.text)} chars)")
         
+        # PRODUCTION OPTIMIZED: chunk_size=150
         audio_chunk_generator = xtts_model.inference_stream(
             text=request.text,
             language=request.language,
@@ -352,7 +315,7 @@ async def synthesize_speech(request: SynthesizeRequest):
         await stream_audio_to_livekit(audio_chunk_generator, sample_rate=24000)
         
         total_time_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Total request time: {total_time_ms:.0f}ms")
+        logger.info(f"✅ Completed in {total_time_ms:.0f}ms")
         
         return JSONResponse({
             "status": "success",
@@ -361,8 +324,7 @@ async def synthesize_speech(request: SynthesizeRequest):
             "text_length": len(request.text),
             "language": request.language,
             "stream_chunk_size": STREAM_CHUNK_SIZE,
-            "frame_size_ms": (LIVEKIT_FRAME_SIZE / 16000) * 1000,
-            "debug_mode": True
+            "optimized": True
         })
     
     except Exception as e:
