@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -e . && \
     pip install --no-cache-dir uvicorn fastapi httpx ormsgpack pydantic
 
+WORKDIR /app
 RUN mkdir -p /app/checkpoints /app/references
 
 COPY app/ /app/app/
