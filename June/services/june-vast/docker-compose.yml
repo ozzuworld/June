@@ -52,7 +52,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: ["gpu"]
-              device_ids: ["1"]  # Use second GPU (adjust if needed)
+              device_ids: ["0"]  # Use second GPU (adjust if needed)
     environment:
       - COMPILE=1
       - LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini
