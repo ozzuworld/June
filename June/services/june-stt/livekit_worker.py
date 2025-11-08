@@ -349,12 +349,20 @@ async def run_livekit_worker(asr_service):
         from livekit.rtc import TrackKind
 
         if track.kind == TrackKind.KIND_AUDIO:
+            # FILTER OUT june-tts to prevent feedback loop
+            if participant.identity == "june-tts":
+                logger.info(
+                    "Ignoring audio track from june-tts (sid=%s) to prevent feedback loop",
+                    track.sid,
+                )
+                return
             logger.info(
                 "Audio track subscribed from %s (sid=%s)",
                 participant.identity,
                 track.sid,
             )
             asyncio.create_task(_handle_audio_track(asr_service, track, participant))
+
 
     try:
         await connect_room_as_subscriber(
