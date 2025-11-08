@@ -14,12 +14,20 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from livekit import rtc
 
-# PATCH: Fix PyTorch 2.6 weights_only issue for TTS
-import sys
+# COMPREHENSIVE PATCH: Add all TTS classes to PyTorch 2.6 safe globals
 if hasattr(torch.serialization, 'add_safe_globals'):
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.configs.shared_configs import BaseDatasetConfig
-    torch.serialization.add_safe_globals([XttsConfig, BaseDatasetConfig])
+    from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
+    from TTS.config.shared_configs import BaseAudioConfig
+    
+    torch.serialization.add_safe_globals([
+        XttsConfig,
+        BaseDatasetConfig,
+        XttsArgs,
+        XttsAudioConfig,
+        BaseAudioConfig
+    ])
 
 from TTS.api import TTS
 
@@ -55,19 +63,14 @@ class SynthesizeRequest(BaseModel):
     stream: bool = Field(default=True)
 
 async def load_xtts_model():
-    """Load XTTS v2 model with PyTorch 2.6 compatibility fix"""
     global xtts_model, tts_api, gpt_cond_latent, speaker_embedding
     
     try:
         logger.info("🔊 Loading XTTS v2 model...")
-        
-        # Load model using TTS API (handles download)
         tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
         xtts_model = tts_api.synthesizer.tts_model
-        
         logger.info("✅ XTTS v2 model loaded")
         
-        # Load speaker embeddings if reference audio exists
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -94,23 +97,20 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
         ws_url = data.get("livekitUrl") or data.get("ws_url")
         token = data["token"]
         if not ws_url:
-            raise RuntimeError(f"Missing livekitUrl in response: {data}")
+            raise RuntimeError(f"Missing livekitUrl: {data}")
         return ws_url, token
 
 async def connect_livekit():
     global livekit_room, livekit_audio_source, livekit_connected
-    
     try:
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
         room = rtc.Room()
         await room.connect(ws_url, token)
-        
         source = rtc.AudioSource(16000, 1)
         track = rtc.LocalAudioTrack.create_audio_track("xtts-audio", source)
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, options)
-        
         livekit_room = room
         livekit_audio_source = source
         livekit_connected = True
@@ -122,29 +122,23 @@ async def connect_livekit():
 
 async def publish_audio_streaming(audio_generator, sample_rate: int = 24000):
     global livekit_audio_source, livekit_connected
-    
     if not livekit_connected or livekit_audio_source is None:
         logger.warning("LiveKit not connected")
         return
-    
     frame_size = int(sample_rate * 0.02)
-    
     try:
         for audio_chunk in audio_generator:
             if sample_rate != 16000:
                 from scipy.signal import resample_poly
                 audio_chunk = resample_poly(audio_chunk, 16000, sample_rate)
-            
             for offset in range(0, len(audio_chunk), frame_size):
                 frame_data = audio_chunk[offset:offset+frame_size]
                 if len(frame_data) < frame_size:
                     frame_data = np.pad(frame_data, (0, frame_size-len(frame_data)), 'constant')
-                
                 pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
                 frame = rtc.AudioFrame.create(16000, 1, frame_size)
                 np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
                 await livekit_audio_source.capture_frame(frame)
-        
         logger.info("✅ Streaming audio published to LiveKit")
     except Exception as e:
         logger.error(f"❌ Error publishing audio: {e}")
@@ -152,12 +146,10 @@ async def publish_audio_streaming(audio_generator, sample_rate: int = 24000):
 @app.on_event("startup")
 async def on_startup():
     logger.info("🚀 Starting XTTS v2 TTS Service...")
-    
     model_loaded = await load_xtts_model()
     if not model_loaded:
         logger.error("Failed to load XTTS model")
         return
-    
     asyncio.create_task(connect_livekit())
     logger.info("✅ XTTS v2 TTS Service ready")
 
@@ -173,16 +165,12 @@ async def health():
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
     start_time = time.time()
-    
     try:
         if xtts_model is None:
             raise HTTPException(status_code=503, detail="Model not loaded")
-        
         if gpt_cond_latent is None or speaker_embedding is None:
             raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
-        
         logger.info(f"🔊 Synthesizing: '{request.text[:50]}...'")
-        
         audio_generator = xtts_model.inference_stream(
             text=request.text,
             language=request.language,
@@ -191,12 +179,9 @@ async def synthesize_speech(request: SynthesizeRequest):
             stream_chunk_size=20,
             enable_text_splitting=True
         )
-        
         await publish_audio_streaming(audio_generator, sample_rate=24000)
-        
         total_time_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Synthesis completed in {total_time_ms:.0f}ms (streaming)")
-        
+        logger.info(f"✅ Synthesis completed in {total_time_ms:.0f}ms")
         return JSONResponse({
             "status": "success",
             "total_time_ms": round(total_time_ms, 2),
@@ -205,7 +190,6 @@ async def synthesize_speech(request: SynthesizeRequest):
             "language": request.language,
             "note": "Audio streamed to LiveKit in real-time"
         })
-    
     except Exception as e:
         logger.error(f"❌ Synthesis error: {e}")
         logger.error(traceback.format_exc())
