@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with TRUE Streaming to LiveKit
-Final working version with correct audio loader return type
+FINAL VERSION - Correct audio tensor shape (2D)
 """
 import asyncio
 import logging
@@ -75,8 +75,8 @@ class SynthesizeRequest(BaseModel):
 
 def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
     """
-    Load audio using soundfile and return as torch tensor compatible with XTTS
-    Returns only the audio tensor (not a tuple)
+    Load audio using soundfile and return as 2D torch tensor (1, samples) compatible with XTTS
+    XTTS expects shape: (channels, samples) for slicing with audio[:, ...]
     """
     audio, sr = sf.read(audio_path)
     
@@ -101,7 +101,11 @@ def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
         resampler = T.Resample(sr, sampling_rate)
         audio_tensor = resampler(audio_tensor)
     
-    # Return just the audio tensor (XTTS expects this, not a tuple)
+    # CRITICAL: Add channel dimension to make it 2D (1, samples)
+    # XTTS code does: audio[:, : load_sr * max_ref_length]
+    # This requires shape (channels, samples), not (samples,)
+    audio_tensor = audio_tensor.unsqueeze(0)  # Shape: (1, samples)
+    
     return audio_tensor
 
 # Monkey-patch the load_audio function in XTTS
@@ -109,7 +113,7 @@ import TTS.tts.models.xtts as xtts_module
 original_load_audio = xtts_module.load_audio
 
 def patched_load_audio(audiopath, sampling_rate=None):
-    """Patched version that uses soundfile and returns just audio tensor"""
+    """Patched version that uses soundfile and returns 2D tensor"""
     try:
         audio_tensor = load_audio_with_soundfile(audiopath, sampling_rate)
         return audio_tensor
