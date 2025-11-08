@@ -7,8 +7,11 @@ Reference: https://github.com/FunAudioLLM/CosyVoice
 """
 import logging
 import os
+import socket
+import time
 import httpx
 from typing import Optional, Dict, Any, List
+import json
 
 from ..config import config
 
@@ -36,6 +39,56 @@ class TTSService:
         self.base_url = config.services.tts_base_url
         self.timeout = 60.0
         logger.info(f"✅ TTS service initialized: {self.base_url}")
+        
+        # Debug: Log DNS resolution and network info at startup
+        self._log_network_debug()
+
+    def _log_network_debug(self):
+        """Log network and DNS information for debugging"""
+        try:
+            logger.info("="*80)
+            logger.info("🔍 TTS SERVICE NETWORK DEBUG INFORMATION")
+            logger.info("="*80)
+            
+            # Parse the base URL
+            from urllib.parse import urlparse
+            parsed = urlparse(self.base_url)
+            hostname = parsed.hostname or parsed.netloc
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            
+            logger.info(f"📋 Configuration:")
+            logger.info(f"   Base URL: {self.base_url}")
+            logger.info(f"   Scheme: {parsed.scheme}")
+            logger.info(f"   Hostname: {hostname}")
+            logger.info(f"   Port: {port}")
+            logger.info(f"   Path: {parsed.path}")
+            
+            # Try to resolve DNS
+            if hostname:
+                try:
+                    logger.info(f"\n🌐 DNS Resolution for '{hostname}':")
+                    ip_addresses = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                    for family, socktype, proto, canonname, sockaddr in ip_addresses:
+                        logger.info(f"   ✅ Resolved to: {sockaddr[0]}:{sockaddr[1]} (Family: {family})")
+                except socket.gaierror as dns_error:
+                    logger.error(f"   ❌ DNS resolution failed: {dns_error}")
+                except Exception as e:
+                    logger.error(f"   ❌ DNS lookup error: {e}")
+            
+            # Get local network info
+            try:
+                local_hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(local_hostname)
+                logger.info(f"\n🏠 Local Network Info:")
+                logger.info(f"   Local Hostname: {local_hostname}")
+                logger.info(f"   Local IP: {local_ip}")
+            except Exception as e:
+                logger.error(f"   ❌ Local network info error: {e}")
+            
+            logger.info("="*80)
+            
+        except Exception as e:
+            logger.error(f"❌ Network debug logging failed: {e}")
 
     def _headers(self) -> Dict[str, str]:
         """Build request headers with optional authentication"""
@@ -81,6 +134,8 @@ class TTSService:
                 language="zh"
             )
         """
+        request_start_time = time.time()
+        
         try:
             # Validate input
             if not text or len(text.strip()) == 0:
@@ -103,42 +158,160 @@ class TTSService:
             }
 
             logger.info(f"🎤 Language: {language}, streaming: {streaming}")
+            
+            # Construct full URL
+            full_url = f"{self.base_url}/api/tts/synthesize"
+            
+            # DEBUG: Log complete request details
+            logger.info("="*80)
+            logger.info("🚀 TTS REQUEST DEBUG")
+            logger.info("="*80)
+            logger.info(f"📍 Full URL: {full_url}")
+            logger.info(f"🔗 Base URL: {self.base_url}")
+            logger.info(f"📝 Endpoint: /api/tts/synthesize")
+            logger.info(f"⏱️  Timeout: {self.timeout}s")
+            logger.info(f"\n📦 Request Headers:")
+            headers = self._headers()
+            for key, value in headers.items():
+                if key.lower() == 'authorization':
+                    logger.info(f"   {key}: Bearer ****** (hidden)")
+                else:
+                    logger.info(f"   {key}: {value}")
+            logger.info(f"\n📋 Request Payload:")
+            logger.info(json.dumps(payload, indent=2))
+            logger.info(f"\n🔌 Attempting connection...")
+            
+            # Try to resolve the hostname before making request
+            from urllib.parse import urlparse
+            parsed = urlparse(self.base_url)
+            hostname = parsed.hostname or parsed.netloc
+            if hostname:
+                try:
+                    resolved_ip = socket.gethostbyname(hostname)
+                    logger.info(f"✅ DNS resolved '{hostname}' to: {resolved_ip}")
+                except Exception as dns_err:
+                    logger.error(f"❌ DNS resolution failed for '{hostname}': {dns_err}")
+            
+            connection_start = time.time()
 
             # Send request to TTS service
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                logger.info(f"🔄 Sending POST request...")
+                
                 response = await client.post(
-                    f"{self.base_url}/api/tts/synthesize",
+                    full_url,
                     json=payload,
-                    headers=self._headers(),
+                    headers=headers,
                 )
-
+                
+                connection_time = (time.time() - connection_start) * 1000
+                logger.info(f"⏱️  Connection time: {connection_time:.2f}ms")
+                
+                # Log response details
+                logger.info(f"\n📨 RESPONSE RECEIVED:")
+                logger.info(f"   Status Code: {response.status_code}")
+                logger.info(f"   Reason: {response.reason_phrase}")
+                logger.info(f"\n📋 Response Headers:")
+                for key, value in response.headers.items():
+                    logger.info(f"   {key}: {value}")
+                
+                logger.info(f"\n📄 Response Body (first 500 chars):")
+                response_text = response.text[:500]
+                logger.info(f"   {response_text}")
+                
                 if response.status_code == 200:
                     result = response.json()
                     chunks = result.get('chunks_sent', 0)
                     duration = result.get('synthesis_time_ms', 0)
-                    logger.info(f"✅ TTS published: {chunks} chunks, {duration:.0f}ms")
+                    total_time = (time.time() - request_start_time) * 1000
+                    logger.info(f"\n✅ TTS SUCCESS:")
+                    logger.info(f"   Chunks sent: {chunks}")
+                    logger.info(f"   Synthesis time: {duration:.0f}ms")
+                    logger.info(f"   Total request time: {total_time:.0f}ms")
+                    logger.info("="*80)
                     return True
                 elif response.status_code == 503:
-                    logger.error("❌ TTS service unavailable (503) - may be loading models")
+                    logger.error(f"\n❌ TTS service unavailable (503) - may be loading models")
+                    logger.error("="*80)
                     return False
                 else:
                     error_detail = response.text[:200]
-                    logger.error(f"❌ TTS service error: {response.status_code} - {error_detail}")
+                    logger.error(f"\n❌ TTS service error: {response.status_code}")
+                    logger.error(f"   Detail: {error_detail}")
+                    logger.error("="*80)
                     return False
                     
-        except httpx.TimeoutException:
-            logger.error(
-                f"❌ TTS timeout after {self.timeout}s - "
-                "CosyVoice2 may be loading models or processing queue is full"
-            )
+        except httpx.TimeoutException as timeout_err:
+            total_time = (time.time() - request_start_time) * 1000
+            logger.error("="*80)
+            logger.error(f"⏱️  TIMEOUT ERROR after {total_time:.0f}ms")
+            logger.error(f"   Configured timeout: {self.timeout}s")
+            logger.error(f"   Target URL: {self.base_url}/api/tts/synthesize")
+            logger.error(f"   Error: {timeout_err}")
+            logger.error("   Possible causes:")
+            logger.error("   - TTS service is not responding")
+            logger.error("   - TTS service is overloaded")
+            logger.error("   - Network connectivity issues")
+            logger.error("   - Firewall blocking the connection")
+            logger.error("="*80)
             return False
             
-        except httpx.ConnectError as e:
-            logger.error(f"❌ Cannot connect to TTS service at {self.base_url}: {e}")
+        except httpx.ConnectError as conn_err:
+            total_time = (time.time() - request_start_time) * 1000
+            logger.error("="*80)
+            logger.error(f"🔌 CONNECTION ERROR after {total_time:.0f}ms")
+            logger.error(f"   Target URL: {self.base_url}/api/tts/synthesize")
+            logger.error(f"   Error type: {type(conn_err).__name__}")
+            logger.error(f"   Error message: {conn_err}")
+            logger.error("   Possible causes:")
+            logger.error("   - TTS service is not running")
+            logger.error("   - Wrong hostname or port")
+            logger.error("   - Network routing issues")
+            logger.error("   - Service not listening on expected port")
+            
+            # Try to ping the host
+            from urllib.parse import urlparse
+            parsed = urlparse(self.base_url)
+            hostname = parsed.hostname or parsed.netloc
+            port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+            
+            if hostname:
+                logger.error(f"\n🔍 Connection diagnostics for {hostname}:{port}:")
+                try:
+                    # Try DNS resolution
+                    ip = socket.gethostbyname(hostname)
+                    logger.error(f"   ✅ DNS resolves to: {ip}")
+                    
+                    # Try to connect to the port
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    result = sock.connect_ex((hostname, port))
+                    sock.close()
+                    
+                    if result == 0:
+                        logger.error(f"   ✅ Port {port} is open")
+                        logger.error(f"   ⚠️  Port is open but HTTP request failed - check if service is running correctly")
+                    else:
+                        logger.error(f"   ❌ Port {port} is closed or unreachable")
+                        logger.error(f"   ⚠️  Service may not be listening on this port")
+                        
+                except socket.gaierror:
+                    logger.error(f"   ❌ DNS resolution failed for {hostname}")
+                except Exception as diag_err:
+                    logger.error(f"   ❌ Diagnostics failed: {diag_err}")
+            
+            logger.error("="*80)
             return False
             
         except Exception as e:
-            logger.error(f"❌ TTS error: {e}", exc_info=True)
+            total_time = (time.time() - request_start_time) * 1000
+            logger.error("="*80)
+            logger.error(f"❌ UNEXPECTED ERROR after {total_time:.0f}ms")
+            logger.error(f"   Error type: {type(e).__name__}")
+            logger.error(f"   Error message: {e}")
+            logger.error(f"   Target URL: {self.base_url}/api/tts/synthesize")
+            logger.error("="*80)
+            logger.error(f"Full traceback:", exc_info=True)
             return False
 
     async def health_check(self) -> Dict[str, Any]:
@@ -148,11 +321,14 @@ class TTSService:
             Dictionary with health status and service info
         """
         try:
+            logger.info(f"🏥 Health check: {self.base_url}/health")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     f"{self.base_url}/health",
                     headers=self._headers()
                 )
+                
+                logger.info(f"   Status: {response.status_code}")
                 
                 if response.status_code == 200:
                     return {
@@ -168,6 +344,7 @@ class TTSService:
                     }
                     
         except Exception as e:
+            logger.error(f"❌ Health check failed: {e}")
             return {
                 "healthy": False,
                 "service": "cosyvoice2",
