@@ -1,9 +1,8 @@
-# Build from scratch - no base image available
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system deps
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
@@ -20,33 +19,25 @@ RUN apt-get update && apt-get install -y \
 # Clone fish-speech
 RUN git clone https://github.com/fishaudio/fish-speech.git /app/fish-speech
 
-# Install fish-speech deps
+# Install fish-speech dependencies with CORRECT torchaudio version
 WORKDIR /app/fish-speech
-RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
-    pip install --no-cache-dir --break-system-packages -e .
-
-# Copy your wrapper code
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --break-system-packages -r /app/requirements.txt
-
-COPY app /app/app
-COPY entrypoint.sh /app/entrypoint.sh
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118 && \
+    pip install --no-cache-dir -e .
 
 RUN mkdir -p /app/checkpoints /app/references
 
-# Set fish-speech in PATH  
-ENV PATH="/app/fish-speech:${PATH}" \
-    PYTHONPATH="/app/fish-speech:${PYTHONPATH}" \
-    LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
+ENV LLAMA_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini \
     DECODER_CHECKPOINT_PATH=/app/checkpoints/openaudio-s1-mini/codec.pth \
     DECODER_CONFIG_NAME=modded_dac_vq \
     REFERENCES_DIR=/app/references \
-    FISH_SPEECH_BASE_URL=http://127.0.0.1:8080 \
-    FISH_SPEECH_TIMEOUT=180 \
     COMPILE=1
 
-WORKDIR /app
+WORKDIR /app/fish-speech
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["bash", "/app/entrypoint.sh"]
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+CMD ["/app/entrypoint.sh"]
