@@ -8,7 +8,7 @@ REMOVED:
 """
 import logging
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from ..models.requests import STTWebhookPayload
 from ..models.responses import WebhookResponse
@@ -37,12 +37,25 @@ def get_rt_engine() -> RealTimeConversationEngine:
 
 @router.post("/api/webhooks/stt", response_model=WebhookResponse)
 async def handle_stt_webhook(
-    payload: STTWebhookPayload,
+    request: Request,
     sessions = Depends(session_service_dependency)
 ) -> WebhookResponse:
     """Single entry point - all STT goes through RT engine only"""
     
+    # Get raw payload for debugging
+    raw_body = await request.json()
+    logger.info(f"📥 RAW WEBHOOK PAYLOAD: {raw_body}")
+    
+    # Parse into model
+    try:
+        payload = STTWebhookPayload(**raw_body)
+    except Exception as e:
+        logger.error(f"❌ Failed to parse payload: {e}")
+        logger.error(f"Raw payload keys: {raw_body.keys()}")
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+    
     logger.info(f"🎤️ STT webhook: {payload.participant} -> {payload.room_name}")
+    logger.info(f"📝 Payload fields: text={payload.text}, event={payload.event}, partial={payload.partial}")
     
     # Extract text from various possible fields
     text = (
@@ -52,6 +65,8 @@ async def handle_stt_webhook(
         ''
     ).strip()
     
+    logger.info(f"📝 EXTRACTED TEXT: '{text}' (length: {len(text)})")
+    
     # Determine if partial
     is_partial = (
         getattr(payload, 'partial', False) or
@@ -59,16 +74,24 @@ async def handle_stt_webhook(
         payload.event in ['partial', 'interim']
     )
     
-    # Skip empty/meaningless input
-    if not text or len(text) < 2:
+    logger.info(f"🔍 IS_PARTIAL: {is_partial}, EVENT: {payload.event}")
+    
+    # Skip ONLY completely empty input
+    if not text:
+        logger.warning(f"⚠️ SKIPPING: Empty text")
         return WebhookResponse(
             status="skipped", 
             message="Empty input",
             success=True
         )
     
+    # CHANGED: Allow short text - let RT engine decide what to do with it
+    if len(text) < 2:
+        logger.info(f"⚠️ Very short text ({len(text)} chars): '{text}' - processing anyway")
+    
     # Route EVERYTHING through RT engine
     try:
+        logger.info(f"🚀 CALLING RT ENGINE with text: '{text}'")
         rt_engine = get_rt_engine()
         result = await rt_engine.handle_user_input(
             session_id=payload.participant,
@@ -77,6 +100,8 @@ async def handle_stt_webhook(
             audio_data=getattr(payload, 'audio_data', None),
             is_partial=is_partial
         )
+        
+        logger.info(f"✅ RT ENGINE RESULT: {result}")
         
         status = "partial_processed" if is_partial else "response_generated"
         

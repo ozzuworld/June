@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 from typing import Optional
+from datetime import datetime
 
 import numpy as np
 import httpx
@@ -133,17 +134,23 @@ async def send_to_orchestrator(
         webhook_url = f"{orchestrator_url}/api/webhooks/stt"
         
         # Build payload matching orchestrator's STTWebhookPayload model
+        # FIXED: Add proper timestamp and make sure text is present
         payload = {
             "event": "partial" if is_partial else "final",
             "room_name": room_name,
             "participant": participant,
-            "text": text,
+            "text": text,  # This is the key field!
             "language": "en",
             "confidence": 1.0,
-            "timestamp": "",
+            "timestamp": datetime.utcnow().isoformat(),  # FIXED: was empty string
             "partial": is_partial,
             "segments": []
         }
+        
+        logger.info(
+            f"📤 Sending to orchestrator: text='{text[:50]}...', "
+            f"partial={is_partial}, len={len(text)}"
+        )
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -153,13 +160,16 @@ async def send_to_orchestrator(
             )
             
             if response.status_code == 200:
+                logger.info(f"✅ Orchestrator accepted transcription")
                 return True
             else:
-                logger.error(f"Orchestrator webhook error: {response.status_code}")
+                logger.error(
+                    f"❌ Orchestrator webhook error: {response.status_code} - {response.text}"
+                )
                 return False
                 
     except Exception as e:
-        logger.error(f"Failed to send to orchestrator: {e}")
+        logger.error(f"❌ Failed to send to orchestrator: {e}")
         return False
 
 
@@ -189,6 +199,9 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     
     # Track room name for orchestrator
     room_name = os.getenv("LIVEKIT_ROOM", "ozzu-main")
+    
+    # Track last sent text to avoid duplicates
+    last_sent_text = ""
 
     try:
         async for ev in audio_stream:
@@ -230,9 +243,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                         text,
                     )
                     
-                    # Send to orchestrator (don't send partials to avoid overwhelming it)
-                    # Only send when we have a meaningful chunk
-                    if len(text.strip()) > 5:
+                    # CHANGED: Send ALL partials (remove length filter)
+                    # CHANGED: Avoid sending exact duplicates
+                    if text.strip() and text.strip() != last_sent_text:
+                        last_sent_text = text.strip()
                         asyncio.create_task(
                             send_to_orchestrator(
                                 room_name=room_name,

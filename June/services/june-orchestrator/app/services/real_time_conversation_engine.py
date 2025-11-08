@@ -2,6 +2,8 @@
 
 PROBLEM FOUND: Session history lookup was blocking for 2+ seconds
 SOLUTION: Remove session service dependency, use in-memory only
+
+ALSO FIXED: Process partials progressively instead of skipping them
 """
 import asyncio
 import logging
@@ -17,10 +19,13 @@ class RealTimeConversationEngine:
         self.streaming_ai = streaming_ai_service
         # Ultra-simple in-memory history (no external calls)
         self.session_history: Dict[str, List[Dict]] = {}
+        # Track partial transcriptions per session
+        self.session_partials: Dict[str, str] = {}
         # Initialize SmartTTSQueue
         self.smart_tts = None
         self._initialize_smart_tts_queue()
         logger.info("✅ RT engine initialized (ULTRA FAST mode)")
+    
     def _initialize_smart_tts_queue(self):
         """Initialize SmartTTSQueue"""
         try:
@@ -34,6 +39,7 @@ class RealTimeConversationEngine:
                 logger.info("🎵 SmartTTSQueue ready")
         except Exception as e:
             logger.error(f"❌ SmartTTSQueue init failed: {e}")
+    
     async def handle_user_input(
         self,
         session_id: str,
@@ -43,32 +49,58 @@ class RealTimeConversationEngine:
         is_partial: bool = False
     ) -> Dict[str, Any]:
         start = time.time()
-        # Skip partials
+        
+        # CHANGED: Process partials progressively
         if is_partial:
-            return {"processed": "partial_skipped"}
-        logger.info(f"🚀 Processing '{text[:30]}...' for {session_id}")
+            # Update partial buffer
+            self.session_partials[session_id] = text
+            logger.info(f"📝 Partial update: '{text[:30]}...' ({len(text)} chars)")
+            
+            # Only process if we have a substantial partial (>20 chars)
+            # This reduces API calls while still being responsive
+            if len(text.strip()) < 20:
+                return {
+                    "processed": "partial_buffered",
+                    "partial_length": len(text),
+                    "waiting_for_more": True
+                }
+            
+            # For longer partials, we can start processing
+            logger.info(f"🚀 Processing substantial partial: '{text[:30]}...'")
+        else:
+            # Clear partial buffer on final
+            self.session_partials.pop(session_id, None)
+            logger.info(f"🚀 Processing FINAL: '{text[:30]}...' for {session_id}")
+        
         # ULTRA FAST: Get history from memory (no I/O)
         if session_id not in self.session_history:
             self.session_history[session_id] = []
         history = self.session_history[session_id]
+        
         # Add user message (instant)
         history.append({"role": "user", "content": text})
+        
         # Keep only last 6 messages (3 exchanges)
         if len(history) > 6:
             self.session_history[session_id] = history[-6:]
             history = self.session_history[session_id]
+        
         logger.info(f"📝 History: {len(history)} messages (instant)")
+        
         # Track phrases
         phrase_count = 0
         first_phrase_sent = False
         first_phrase_time = None
+        
         async def smart_tts_callback(phrase: str):
             nonlocal phrase_count, first_phrase_sent, first_phrase_time
             phrase_count += 1
+            
             if not first_phrase_sent:
                 first_phrase_sent = True
                 first_phrase_time = (time.time() - start) * 1000
                 logger.info(f"⚡ FIRST PHRASE at {first_phrase_time:.0f}ms")
+            
             try:
                 if self.smart_tts:
                     await self.smart_tts.queue_phrase(
@@ -88,9 +120,11 @@ class RealTimeConversationEngine:
                     )
             except Exception as e:
                 logger.warning(f"TTS callback error: {e}")
+        
         # Generate AI response
         try:
             logger.info(f"🧠 Starting AI stream (elapsed: {(time.time() - start) * 1000:.0f}ms)")
+            
             tokens = []
             async for token in self.streaming_ai.generate_streaming_response(
                 text=text,
@@ -100,24 +134,36 @@ class RealTimeConversationEngine:
                 tts_callback=smart_tts_callback
             ):
                 tokens.append(token)
+            
             response_text = "".join(tokens)
             total = (time.time() - start) * 1000
-            history.append({"role": "assistant", "content": response_text})
-            logger.info(f"✅ Complete: {total:.0f}ms, {phrase_count} phrases")
+            
+            # Only add to history if this was a final transcription
+            if not is_partial:
+                history.append({"role": "assistant", "content": response_text})
+            
+            logger.info(f"✅ Complete: {total:.0f}ms, {phrase_count} phrases, partial={is_partial}")
+            
             return {
                 "response": response_text,
                 "phrases_sent": phrase_count,
                 "total_time_ms": total,
                 "first_phrase_time_ms": first_phrase_time or total,
-                "smart_tts_enabled": self.smart_tts is not None
+                "smart_tts_enabled": self.smart_tts is not None,
+                "was_partial": is_partial
             }
+            
         except Exception as e:
             logger.error(f"RT engine error: {e}")
             fallback = "I'm sorry, I had a technical issue."
             await smart_tts_callback(fallback)
             return {"error": str(e), "response": fallback}
+    
     async def handle_voice_onset(self, session_id: str, room_name: str) -> Dict[str, Any]:
         try:
+            # Clear partial buffer on interruption
+            self.session_partials.pop(session_id, None)
+            
             if self.smart_tts:
                 result = await self.smart_tts.interrupt_session(session_id)
                 logger.info(f"🛑 Interrupted {session_id}")
@@ -126,25 +172,36 @@ class RealTimeConversationEngine:
         except Exception as e:
             logger.error(f"Interrupt failed: {e}")
             return {"handled": False, "error": str(e)}
+    
     def get_conversation_stats(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.session_history:
             return {"active": False}
+        
         stats = {
             "active": True,
-            "message_count": len(self.session_history[session_id])
+            "message_count": len(self.session_history[session_id]),
+            "has_partial": session_id in self.session_partials
         }
+        
         if self.smart_tts:
             stats["tts_queue"] = self.smart_tts.get_session_stats(session_id)
+        
         return stats
+    
     def get_global_stats(self) -> Dict[str, Any]:
         stats = {
             "active_sessions": len(self.session_history),
+            "sessions_with_partials": len(self.session_partials),
             "engine": "ultra_fast_rt",
-            "in_memory_only": True
+            "in_memory_only": True,
+            "partial_processing": "enabled"
         }
+        
         if self.smart_tts:
             stats["smart_tts"] = self.smart_tts.get_global_stats()
+        
         return stats
+    
     async def health_check(self) -> Dict[str, Any]:
         return {
             "engine_healthy": True,
@@ -152,5 +209,6 @@ class RealTimeConversationEngine:
             "tts_available": self.tts is not None,
             "streaming_ai_available": self.streaming_ai is not None,
             "smart_tts_enabled": self.smart_tts is not None,
-            "mode": "ultra_fast_in_memory"
+            "mode": "ultra_fast_in_memory",
+            "partial_processing": "enabled"
         }
