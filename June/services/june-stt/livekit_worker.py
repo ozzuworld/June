@@ -127,7 +127,7 @@ async def send_to_orchestrator(
     try:
         orchestrator_url = os.getenv(
             "ORCHESTRATOR_URL",
-            "http://june-orchestrator.june-services.svc.cluster.local:8080"
+            "https://api.ozzu.world"
         )
         
         webhook_url = f"{orchestrator_url}/api/webhooks/stt"
