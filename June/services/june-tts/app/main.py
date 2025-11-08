@@ -100,7 +100,8 @@ async def connect_livekit_publisher():
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
         room = rtc.Room()
         await room.connect(ws_url, token)
-        audio_track = rtc.LocalAudioTrack("TTS Audio", 16000, 1)
+        source = rtc.AudioSource(16000, 1)
+        audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
         await room.publish_track(audio_track)
         livekit_room = room
         livekit_audio_track = audio_track
