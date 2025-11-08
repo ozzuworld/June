@@ -166,38 +166,26 @@ async def health():
 async def synthesize_speech(request: SynthesizeRequest):
     start_time = time.time()
     try:
-        if xtts_model is None:
+        if tts_api is None:
             raise HTTPException(status_code=503, detail="Model not loaded")
         
         logger.info(f"🔊 Synthesizing: '{request.text[:50]}...'")
         
-        # Use XTTS's compute_style_mel for default voice if no reference
-        if gpt_cond_latent is None or speaker_embedding is None:
-            logger.warning("No reference audio, using default XTTS voice")
-            # Generate with default latents
-            outputs = xtts_model.synthesize(
-                text=request.text,
-                config=xtts_model.config,
-                speaker_wav=None,
-                language=request.language
-            )
-            # Convert outputs to generator for streaming
-            audio_data = outputs["wav"]
-            # Fake generator
-            async def audio_gen():
-                yield audio_data
-            await publish_audio_streaming(audio_gen(), sample_rate=24000)
-        else:
-            # Use provided speaker embeddings
-            audio_generator = xtts_model.inference_stream(
-                text=request.text,
-                language=request.language,
-                gpt_cond_latent=gpt_cond_latent,
-                speaker_embedding=speaker_embedding,
-                stream_chunk_size=20,
-                enable_text_splitting=True
-            )
-            await publish_audio_streaming(audio_generator, sample_rate=24000)
+        # Use TTS API with built-in speaker
+        wav = tts_api.tts(
+            text=request.text,
+            speaker="Ana Florence",  # Built-in speaker
+            language=request.language
+        )
+        
+        # Convert to numpy array and publish
+        audio_data = np.array(wav, dtype=np.float32)
+        
+        # Create generator for streaming
+        async def audio_gen():
+            yield audio_data
+        
+        await publish_audio_streaming(audio_gen(), sample_rate=24000)
         
         total_time_ms = (time.time() - start_time) * 1000
         logger.info(f"✅ Synthesis completed in {total_time_ms:.0f}ms")
@@ -207,13 +195,13 @@ async def synthesize_speech(request: SynthesizeRequest):
             "total_time_ms": round(total_time_ms, 2),
             "room_name": request.room_name,
             "text_length": len(request.text),
-            "language": request.language,
-            "note": "Audio streamed to LiveKit"
+            "language": request.language
         })
     except Exception as e:
         logger.error(f"❌ Synthesis error: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 if __name__ == "__main__":
