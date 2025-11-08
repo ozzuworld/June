@@ -317,7 +317,7 @@ async def run_livekit_worker(asr_service):
         try:
             orchestrator_url = os.getenv(
                 "ORCHESTRATOR_URL",
-                "https://api.ozzuw.world"
+                "https://api.ozzu.world"
             )
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{orchestrator_url}/healthz")
