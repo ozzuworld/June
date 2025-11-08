@@ -56,7 +56,7 @@ app = FastAPI(
 )
 
 
-async def _new_client() -> httpx.AsyncClient:
+def _new_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.fish_base_url, timeout=settings.timeout)
 
 
