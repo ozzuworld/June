@@ -1,4 +1,4 @@
-# Core API stack
+# Add to requirements.txt for LiveKit support
 fastapi
 uvicorn[standard]
 httpx
@@ -6,12 +6,8 @@ python-multipart
 pydantic
 ormsgpack
 huggingface_hub
-
-# Logging / helper
 loguru
 tqdm
-
-# ML / Fish-Speech runtime stack
 torch
 torchaudio
 numpy
@@ -20,8 +16,6 @@ soundfile
 pyrootutils
 kui
 descript-audiotools
-
-# Config + model utilities (common in Fish-Speech-style projects)
 hydra-core
 omegaconf
 einops
@@ -29,3 +23,4 @@ safetensors
 transformers
 accelerate
 sentencepiece
+livekit-server-sdk-python
