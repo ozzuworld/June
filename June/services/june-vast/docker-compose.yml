@@ -46,14 +46,14 @@ services:
     image: ozzuworld/june-tts:latest
     container_name: june-tts
     restart: unless-stopped
-    # uncomment this block ONLY if june-tts image really needs GPU
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           capabilities: ["gpu"]
-    #           device_ids: ["0"]  # share GPU 0
+     #uncomment this block ONLY if june-tts image really needs GPU
+    deploy:
+       resources:
+         reservations:
+           devices:
+             - driver: nvidia
+               capabilities: ["gpu"]
+               device_ids: ["0"]  # share GPU 0
     environment:
       # set whatever your TTS image actually uses; example:
       - HF_TOKEN=${HF_TOKEN:-}
