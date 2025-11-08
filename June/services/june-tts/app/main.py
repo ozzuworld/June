@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-XTTS v2 TTS Service - Streaming Real-Time Voice Synthesis
-FastAPI server for Coqui XTTS v2 with LiveKit integration
-"""
 import asyncio
 import logging
 import os
@@ -16,9 +12,16 @@ import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import Xtts
 from livekit import rtc
+
+# PATCH: Fix PyTorch 2.6 weights_only issue for TTS
+import sys
+if hasattr(torch.serialization, 'add_safe_globals'):
+    from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.configs.shared_configs import BaseDatasetConfig
+    torch.serialization.add_safe_globals([XttsConfig, BaseDatasetConfig])
+
+from TTS.api import TTS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration
 LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts-xtts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
@@ -38,14 +40,13 @@ app = FastAPI(
     description="Real-time streaming TTS with Coqui XTTS v2 and LiveKit integration"
 )
 
-# Global model and LiveKit connection
-xtts_model: Optional[Xtts] = None
+xtts_model = None
+tts_api = None
 gpt_cond_latent = None
 speaker_embedding = None
 livekit_room = None
 livekit_audio_source = None
 livekit_connected = False
-
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
@@ -53,24 +54,20 @@ class SynthesizeRequest(BaseModel):
     language: str = Field(default="en")
     stream: bool = Field(default=True)
 
-
 async def load_xtts_model():
-    """Load XTTS v2 model and prepare speaker embeddings"""
-    global xtts_model, gpt_cond_latent, speaker_embedding
+    """Load XTTS v2 model with PyTorch 2.6 compatibility fix"""
+    global xtts_model, tts_api, gpt_cond_latent, speaker_embedding
     
     try:
         logger.info("🔊 Loading XTTS v2 model...")
         
-        # Use TTS API to load model (will auto-download if not cached)
-        from TTS.api import TTS
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
-        
-        # Access the underlying model
-        xtts_model = tts.synthesizer.tts_model
+        # Load model using TTS API (handles download)
+        tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+        xtts_model = tts_api.synthesizer.tts_model
         
         logger.info("✅ XTTS v2 model loaded")
         
-        # Load default speaker embeddings
+        # Load speaker embeddings if reference audio exists
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"Loading reference voice from {REFERENCE_AUDIO_PATH}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
@@ -86,10 +83,7 @@ async def load_xtts_model():
         logger.error(traceback.format_exc())
         return False
 
-
-
 async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
-    """Get LiveKit token from orchestrator"""
     import httpx
     url = f"{ORCHESTRATOR_URL}/token"
     payload = {"roomName": room_name, "participantName": identity}
@@ -103,9 +97,7 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
             raise RuntimeError(f"Missing livekitUrl in response: {data}")
         return ws_url, token
 
-
 async def connect_livekit():
-    """Connect to LiveKit and create audio source"""
     global livekit_room, livekit_audio_source, livekit_connected
     
     try:
@@ -128,27 +120,21 @@ async def connect_livekit():
         logger.error(f"❌ LiveKit connection failed: {e}")
         return False
 
-
 async def publish_audio_streaming(audio_generator, sample_rate: int = 24000):
-    """
-    Publish audio chunks to LiveKit as they're generated (streaming)
-    """
     global livekit_audio_source, livekit_connected
     
     if not livekit_connected or livekit_audio_source is None:
         logger.warning("LiveKit not connected")
         return
     
-    frame_size = int(sample_rate * 0.02)  # 20ms frames
+    frame_size = int(sample_rate * 0.02)
     
     try:
         for audio_chunk in audio_generator:
-            # Convert to 16kHz if needed
             if sample_rate != 16000:
                 from scipy.signal import resample_poly
                 audio_chunk = resample_poly(audio_chunk, 16000, sample_rate)
             
-            # Publish in 20ms frames
             for offset in range(0, len(audio_chunk), frame_size):
                 frame_data = audio_chunk[offset:offset+frame_size]
                 if len(frame_data) < frame_size:
@@ -163,27 +149,20 @@ async def publish_audio_streaming(audio_generator, sample_rate: int = 24000):
     except Exception as e:
         logger.error(f"❌ Error publishing audio: {e}")
 
-
 @app.on_event("startup")
 async def on_startup():
-    """Initialize model and LiveKit on startup"""
     logger.info("🚀 Starting XTTS v2 TTS Service...")
     
-    # Load XTTS model
     model_loaded = await load_xtts_model()
     if not model_loaded:
         logger.error("Failed to load XTTS model")
         return
     
-    # Connect to LiveKit
     asyncio.create_task(connect_livekit())
-    
     logger.info("✅ XTTS v2 TTS Service ready")
-
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     return {
         "status": "ok",
         "model_loaded": xtts_model is not None,
@@ -191,12 +170,8 @@ async def health():
         "gpu_available": torch.cuda.is_available()
     }
 
-
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    """
-    Synthesize speech using XTTS v2 with streaming
-    """
     start_time = time.time()
     
     try:
@@ -208,17 +183,15 @@ async def synthesize_speech(request: SynthesizeRequest):
         
         logger.info(f"🔊 Synthesizing: '{request.text[:50]}...'")
         
-        # Generate audio with streaming
         audio_generator = xtts_model.inference_stream(
             text=request.text,
             language=request.language,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
-            stream_chunk_size=20,  # Stream in 20-token chunks
+            stream_chunk_size=20,
             enable_text_splitting=True
         )
         
-        # Publish audio chunks as they're generated
         await publish_audio_streaming(audio_generator, sample_rate=24000)
         
         total_time_ms = (time.time() - start_time) * 1000
@@ -237,7 +210,6 @@ async def synthesize_speech(request: SynthesizeRequest):
         logger.error(f"❌ Synthesis error: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn
