@@ -133,14 +133,31 @@ async def send_to_orchestrator(
         
         webhook_url = f"{orchestrator_url}/api/webhooks/stt"
         
+        # Simple language detection based on character ranges
+        def detect_language(text: str) -> str:
+            """Basic language detection"""
+            # Check for Chinese characters
+            if any('\u4e00' <= char <= '\u9fff' for char in text):
+                return "zh"
+            # Check for Japanese characters
+            elif any('\u3040' <= char <= '\u309f' for char in text) or any('\u30a0' <= char <= '\u30ff' for char in text):
+                return "jp"
+            # Check for Korean characters  
+            elif any('\uac00' <= char <= '\ud7af' for char in text):
+                return "ko"
+            # Default to English
+            return "en"
+        
+        detected_lang = detect_language(text)
+        
         # Build payload matching orchestrator's STTWebhookPayload model
-        # FIXED: Add proper timestamp and make sure text is present
+        # FIXED: Add proper timestamp and auto-detect language
         payload = {
             "event": "partial" if is_partial else "final",
             "room_name": room_name,
             "participant": participant,
             "text": text,  # This is the key field!
-            "language": "en",
+            "language": detected_lang,  # FIXED: Auto-detect language
             "confidence": 1.0,
             "timestamp": datetime.utcnow().isoformat(),  # FIXED: was empty string
             "partial": is_partial,
@@ -202,6 +219,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     
     # Track last sent text to avoid duplicates
     last_sent_text = ""
+    last_partial_text = ""
 
     try:
         async for ev in audio_stream:
@@ -233,6 +251,13 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 output = processor.process_iter()
                 if output[0] is not None:
                     beg, end, text = output
+                    text = text.strip()
+                    
+                    # Skip if empty or duplicate
+                    if not text or text == last_partial_text:
+                        continue
+                    
+                    last_partial_text = text
                     
                     # Log locally
                     logger.info(
@@ -243,42 +268,54 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                         text,
                     )
                     
-                    # CHANGED: Send ALL partials (remove length filter)
-                    # CHANGED: Avoid sending exact duplicates
-                    if text.strip() and text.strip() != last_sent_text:
-                        last_sent_text = text.strip()
-                        asyncio.create_task(
-                            send_to_orchestrator(
-                                room_name=room_name,
-                                participant=participant.identity,
-                                text=text,
-                                is_partial=True
-                            )
+                    # Send partial transcription
+                    asyncio.create_task(
+                        send_to_orchestrator(
+                            room_name=room_name,
+                            participant=participant.identity,
+                            text=text,
+                            is_partial=True
                         )
+                    )
 
         # Process any remaining audio in buffer
         if len(audio_buffer) > 0:
             processor.insert_audio_chunk(audio_buffer)
             
-        # Flush final text when track ends
+        # CRITICAL: Flush final text when track ends
         output = processor.finish()
         if output[0] is not None:
             beg, end, text = output
+            text = text.strip()
             
-            logger.info(
-                "[LiveKit final] %s %.2f–%.2fs: %s",
-                participant.identity,
-                beg,
-                end,
-                text,
-            )
-            
-            # Send final transcription to orchestrator
-            if len(text.strip()) > 0:
+            if text:  # Only send if non-empty
+                logger.info(
+                    "[LiveKit FINAL] %s %.2f–%.2fs: %s",
+                    participant.identity,
+                    beg,
+                    end,
+                    text,
+                )
+                
+                # Send FINAL transcription - CRITICAL for completing the conversation
                 await send_to_orchestrator(
                     room_name=room_name,
                     participant=participant.identity,
                     text=text,
+                    is_partial=False
+                )
+        else:
+            # Even if finish() returns None, send the last partial as final
+            if last_partial_text:
+                logger.info(
+                    "[LiveKit FINAL from last partial] %s: %s",
+                    participant.identity,
+                    last_partial_text,
+                )
+                await send_to_orchestrator(
+                    room_name=room_name,
+                    participant=participant.identity,
+                    text=last_partial_text,
                     is_partial=False
                 )
                 

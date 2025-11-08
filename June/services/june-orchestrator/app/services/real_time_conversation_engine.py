@@ -50,23 +50,28 @@ class RealTimeConversationEngine:
     ) -> Dict[str, Any]:
         start = time.time()
         
-        # CHANGED: Process partials progressively
+        # CHANGED: Process partials more aggressively
         if is_partial:
             # Update partial buffer
             self.session_partials[session_id] = text
             logger.info(f"📝 Partial update: '{text[:30]}...' ({len(text)} chars)")
             
-            # Only process if we have a substantial partial (>20 chars)
-            # This reduces API calls while still being responsive
-            if len(text.strip()) < 20:
+            # LOWERED THRESHOLD: Process if we have >3 words OR >8 chars
+            # This is more responsive while still reducing spam
+            word_count = len(text.strip().split())
+            char_count = len(text.strip())
+            
+            if word_count < 3 and char_count < 8:
+                logger.info(f"⏳ Buffering: {word_count} words, {char_count} chars - waiting for more")
                 return {
                     "processed": "partial_buffered",
-                    "partial_length": len(text),
+                    "partial_length": char_count,
+                    "word_count": word_count,
                     "waiting_for_more": True
                 }
             
-            # For longer partials, we can start processing
-            logger.info(f"🚀 Processing substantial partial: '{text[:30]}...'")
+            # For substantial partials, process immediately
+            logger.info(f"🚀 Processing partial: {word_count} words, {char_count} chars - '{text[:30]}...'")
         else:
             # Clear partial buffer on final
             self.session_partials.pop(session_id, None)
