@@ -92,6 +92,9 @@ kubectl exec -n headscale deployment/headscale -- \
 kubectl exec -n headscale deployment/headscale -- headscale nodes list
 
 
+curl -X POST "http://100.64.0.2:8000/api/voices/upload?voice_id=june" \pload?voice_id=june" \
+  -F "file=@app/references/June.wav"
+
 
 kubectl exec -it -n headscale deployment/headscale -- /bin/sh
 
