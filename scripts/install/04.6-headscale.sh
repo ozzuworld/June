@@ -22,6 +22,8 @@ HEADSCALE_DATA_SIZE="${HEADSCALE_DATA_SIZE:-1Gi}"
 HEADSCALE_IPV4_PREFIX="${HEADSCALE_IPV4_PREFIX:-100.64.0.0/10}"
 HEADSCALE_IPV6_PREFIX="${HEADSCALE_IPV6_PREFIX:-fd7a:115c:a1e0::/48}"
 HEADSCALE_DERP_ENABLED="${HEADSCALE_DERP_ENABLED:-true}"
+WILDCARD_CERT_SECRET="${WILDCARD_CERT_SECRET:-ozzu-world-wildcard-tls}"
+WILDCARD_CERT_NAMESPACE="${WILDCARD_CERT_NAMESPACE:-june-services}"
 
 header "Installing Headscale VPN Server"
 
@@ -34,6 +36,22 @@ create_namespace() {
     log "Creating namespace: $HEADSCALE_NAMESPACE"
     kubectl create namespace "$HEADSCALE_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
     success "Namespace created"
+}
+
+copy_wildcard_certificate() {
+    log "Copying wildcard certificate to Headscale namespace..."
+    
+    # Check if wildcard cert exists in source namespace
+    if kubectl get secret "$WILDCARD_CERT_SECRET" -n "$WILDCARD_CERT_NAMESPACE" &>/dev/null; then
+        # Copy the certificate to headscale namespace
+        kubectl get secret "$WILDCARD_CERT_SECRET" -n "$WILDCARD_CERT_NAMESPACE" -o yaml | \
+            sed "s/namespace: $WILDCARD_CERT_NAMESPACE/namespace: $HEADSCALE_NAMESPACE/" | \
+            kubectl apply -f -
+        success "Wildcard certificate copied to $HEADSCALE_NAMESPACE namespace"
+    else
+        warn "Wildcard certificate not found in $WILDCARD_CERT_NAMESPACE namespace"
+        warn "Will use cert-manager to create a new certificate"
+    fi
 }
 
 create_persistent_volume() {
@@ -97,7 +115,7 @@ metadata:
 data:
   config.yaml: |
     # Headscale Configuration
-    server_url: https://tail.${DOMAIN}
+    server_url: https://headscale.${DOMAIN}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 127.0.0.1:9090
     
@@ -136,20 +154,16 @@ data:
         path: /var/lib/headscale/db.sqlite
         write_ahead_log: true
     
-    # DNS settings
+    # DNS settings - magic_dns disabled to avoid conflict with server_url
     dns:
       nameservers:
         global:
           - 1.1.1.1
           - 1.0.0.1
         split:
-          ${DOMAIN}:
-            - 10.96.0.10
           svc.cluster.local:
             - 10.96.0.10
-      magic_dns: true
-      base_domain: ${DOMAIN}
-      search_domains: []
+      magic_dns: false
     
     # Logging
     log:
@@ -314,7 +328,7 @@ spec:
   tls:
   - hosts:
     - headscale.${DOMAIN}
-    secretName: headscale-tls
+    secretName: ${WILDCARD_CERT_SECRET}
   rules:
   - host: headscale.${DOMAIN}
     http:
@@ -400,16 +414,14 @@ show_summary() {
     echo "📊 Status & Logs"
     echo "  Check pods:      kubectl get pods -n ${HEADSCALE_NAMESPACE}"
     echo "  View logs:       kubectl logs -n ${HEADSCALE_NAMESPACE} deployment/headscale -f"
-    echo "  Test health:     curl -k https://headscale.${DOMAIN}/health"
-    echo ""
-    echo "🔒 DNS Records Required"
-    echo "  headscale.${DOMAIN}  A  ${EXTERNAL_IP}"
+    echo "  Test health:     curl https://headscale.${DOMAIN}/health"
     echo ""
 }
 
 # Main installation flow
 main() {
     create_namespace
+    copy_wildcard_certificate
     create_persistent_volume
     create_config
     deploy_headscale
