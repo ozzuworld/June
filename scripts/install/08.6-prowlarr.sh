@@ -62,7 +62,6 @@ cat > /mnt/media/configs/prowlarr/config.xml <<EOF
   <AuthenticationRequired>Enabled</AuthenticationRequired>
   <Username>$MEDIA_STACK_USERNAME</Username>
   <Password>$MEDIA_STACK_PASSWORD</Password>
-  <PasswordConfirmation>$MEDIA_STACK_PASSWORD</PasswordConfirmation>
   <AnalyticsEnabled>False</AnalyticsEnabled>
   <UrlBase></UrlBase>
   <InstanceName>Prowlarr</InstanceName>
@@ -202,4 +201,5 @@ echo "  Username: $MEDIA_STACK_USERNAME"
 echo "  Password: $MEDIA_STACK_PASSWORD"
 echo "  API Key: $PROWLARR_API_KEY"
 echo ""
-echo "📝 Next Step: Add indexers at https://prowlarr.${DOMAIN}/settings/indexers"
+echo "Credentials saved to: /root/.media-stack-credentials"
+echo "$PROWLARR_API_KEY" > /root/.prowlarr-api-key

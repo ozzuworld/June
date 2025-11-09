@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Sonarr Installation Phase
-# Installs Sonarr TV show manager
+# Installs Sonarr TV show manager with pre-configured authentication
 
 set -e
 
@@ -30,11 +30,51 @@ fi
 
 [ -z "$DOMAIN" ] && error "DOMAIN variable is not set."
 
+# Default credentials
+MEDIA_STACK_USERNAME="${MEDIA_STACK_USERNAME:-admin}"
+MEDIA_STACK_PASSWORD="${MEDIA_STACK_PASSWORD:-Pokemon123!}"
+
 log "Installing Sonarr for domain: $DOMAIN"
 
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
+# Create config directory and media folders
+mkdir -p /mnt/media/configs/sonarr
+mkdir -p /mnt/jellyfin/media/tv
+mkdir -p /mnt/jellyfin/media/downloads
+chown -R 1000:1000 /mnt/jellyfin/media/tv /mnt/jellyfin/media/downloads
+
+# Generate API key
+SONARR_API_KEY=$(openssl rand -hex 16)
+
+# Pre-create config.xml with authentication
+log "Creating Sonarr config with pre-configured authentication..."
+cat > /mnt/media/configs/sonarr/config.xml <<EOF
+<Config>
+  <LogLevel>info</LogLevel>
+  <UpdateMechanism>Docker</UpdateMechanism>
+  <Branch>main</Branch>
+  <BindAddress>*</BindAddress>
+  <Port>8989</Port>
+  <SslPort>8989</SslPort>
+  <EnableSsl>False</EnableSsl>
+  <LaunchBrowser>True</LaunchBrowser>
+  <ApiKey>$SONARR_API_KEY</ApiKey>
+  <AuthenticationMethod>Forms</AuthenticationMethod>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <Username>$MEDIA_STACK_USERNAME</Username>
+  <Password>$MEDIA_STACK_PASSWORD</Password>
+  <AnalyticsEnabled>False</AnalyticsEnabled>
+  <UrlBase></UrlBase>
+  <InstanceName>Sonarr</InstanceName>
+</Config>
+EOF
+
+# Set proper ownership
+chown -R 1000:1000 /mnt/media/configs/sonarr
+
+# Create PV for Sonarr config
 log "Creating Sonarr storage..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -66,6 +106,7 @@ spec:
       storage: 2Gi
 EOF
 
+# Deploy Sonarr
 log "Deploying Sonarr..."
 cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
@@ -166,12 +207,12 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=sonarr -n june-services --timeout=300s || warn "Sonarr not ready yet"
 
-success "Sonarr installed successfully!"
+success "Sonarr installed with authentication pre-configured!"
 echo ""
 echo "📺 Sonarr Access:"
 echo "  URL: https://sonarr.${DOMAIN}"
+echo "  Username: $MEDIA_STACK_USERNAME"
+echo "  Password: $MEDIA_STACK_PASSWORD"
+echo "  API Key: $SONARR_API_KEY"
 echo ""
-echo "📝 Next Steps:"
-echo "  1. Add Prowlarr connection (Settings > Indexers > Add)"
-echo "  2. Add download client (Settings > Download Clients)"
-echo "  3. Configure root folder: /tv"
+echo "$SONARR_API_KEY" > /root/.sonarr-api-key

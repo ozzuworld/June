@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - Radarr Installation Phase
-# Installs Radarr movie manager
+# Installs Radarr movie manager with pre-configured authentication
 
 set -e
 
@@ -30,11 +30,51 @@ fi
 
 [ -z "$DOMAIN" ] && error "DOMAIN variable is not set."
 
+# Default credentials
+MEDIA_STACK_USERNAME="${MEDIA_STACK_USERNAME:-admin}"
+MEDIA_STACK_PASSWORD="${MEDIA_STACK_PASSWORD:-Pokemon123!}"
+
 log "Installing Radarr for domain: $DOMAIN"
 
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
+# Create config directory and media folders
+mkdir -p /mnt/media/configs/radarr
+mkdir -p /mnt/jellyfin/media/movies
+mkdir -p /mnt/jellyfin/media/downloads
+chown -R 1000:1000 /mnt/jellyfin/media/movies /mnt/jellyfin/media/downloads
+
+# Generate API key
+RADARR_API_KEY=$(openssl rand -hex 16)
+
+# Pre-create config.xml with authentication
+log "Creating Radarr config with pre-configured authentication..."
+cat > /mnt/media/configs/radarr/config.xml <<EOF
+<Config>
+  <LogLevel>info</LogLevel>
+  <UpdateMechanism>Docker</UpdateMechanism>
+  <Branch>master</Branch>
+  <BindAddress>*</BindAddress>
+  <Port>7878</Port>
+  <SslPort>7878</SslPort>
+  <EnableSsl>False</EnableSsl>
+  <LaunchBrowser>True</LaunchBrowser>
+  <ApiKey>$RADARR_API_KEY</ApiKey>
+  <AuthenticationMethod>Forms</AuthenticationMethod>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <Username>$MEDIA_STACK_USERNAME</Username>
+  <Password>$MEDIA_STACK_PASSWORD</Password>
+  <AnalyticsEnabled>False</AnalyticsEnabled>
+  <UrlBase></UrlBase>
+  <InstanceName>Radarr</InstanceName>
+</Config>
+EOF
+
+# Set proper ownership
+chown -R 1000:1000 /mnt/media/configs/radarr
+
+# Create PV for Radarr config
 log "Creating Radarr storage..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
@@ -66,6 +106,7 @@ spec:
       storage: 2Gi
 EOF
 
+# Deploy Radarr
 log "Deploying Radarr..."
 cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
@@ -166,12 +207,12 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=radarr -n june-services --timeout=300s || warn "Radarr not ready yet"
 
-success "Radarr installed successfully!"
+success "Radarr installed with authentication pre-configured!"
 echo ""
 echo "🎬 Radarr Access:"
 echo "  URL: https://radarr.${DOMAIN}"
+echo "  Username: $MEDIA_STACK_USERNAME"
+echo "  Password: $MEDIA_STACK_PASSWORD"
+echo "  API Key: $RADARR_API_KEY"
 echo ""
-echo "📝 Next Steps:"
-echo "  1. Add Prowlarr connection (Settings > Indexers > Add)"
-echo "  2. Add download client (Settings > Download Clients)"
-echo "  3. Configure root folder: /movies"
+echo "$RADARR_API_KEY" > /root/.radarr-api-key
