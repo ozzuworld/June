@@ -1,4 +1,13 @@
-"""Pydantic models for the June Orchestrator"""
+"""Pydantic models for the June Orchestrator (XTTS-focused runtime set).
+
+This only exposes the models that are actually used by the live routes:
+- Domain models (sessions/messages)
+- Request models for webhooks / TTS
+- Response models for webhooks / streaming status
+
+Legacy models (SessionCreate, AIRequest, etc.) are intentionally NOT imported
+here so that the legacy module can be removed without breaking imports.
+"""
 
 # Domain models
 from .domain import (
@@ -6,37 +15,28 @@ from .domain import (
     Session,
     SessionStats,
     SkillSession,
-    UtteranceState
+    UtteranceState,
 )
 
-# Request/Response models
+# Request models
 from .requests import (
     STTWebhookPayload,
     TTSPublishRequest,
     SessionCreateRequest,
-    MessageAddRequest
+    MessageAddRequest,
 )
 
+# Response models
 from .responses import (
     WebhookResponse,
     SessionResponse,
-    StreamingStatus
-)
-
-# Legacy models from original models.py (for backward compatibility)
-from .legacy import (
-    SessionCreate,
-    LiveKitWebhook,
-    GuestTokenRequest,
-    GuestTokenResponse,
-    AIRequest,
-    AIResponse
+    StreamingStatus,
 )
 
 __all__ = [
     # Domain models
     "Message",
-    "Session", 
+    "Session",
     "SessionStats",
     "SkillSession",
     "UtteranceState",
@@ -49,11 +49,4 @@ __all__ = [
     "WebhookResponse",
     "SessionResponse",
     "StreamingStatus",
-    # Legacy models (backward compatibility)
-    "SessionCreate",
-    "LiveKitWebhook",
-    "GuestTokenRequest",
-    "GuestTokenResponse",
-    "AIRequest",
-    "AIResponse"
 ]

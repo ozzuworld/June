@@ -1,11 +1,8 @@
-"""Service layer exports - Simplified"""
-from .ai_service import generate_response
-from .livekit_service import livekit_service
-from .smart_tts_queue import get_smart_tts_queue, initialize_smart_tts_queue
+"""Service layer exports - XTTS-focused only.
 
-__all__ = [
-    "generate_response",
-    "livekit_service",
-    "get_smart_tts_queue",
-    "initialize_smart_tts_queue",
-]
+We deliberately do NOT import legacy or unused services here (like the old
+livekit_service or synchronous AI helpers), so that deleting those files
+doesn't break app startup.
+"""
+
+__all__ = []
