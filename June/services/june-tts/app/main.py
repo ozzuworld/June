@@ -13,7 +13,7 @@ import io
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from livekit import rtc
@@ -61,8 +61,8 @@ LIVEKIT_FRAME_SIZE = 960
 
 app = FastAPI(
     title="June TTS (XTTS v2) - PostgreSQL Voice",
-    version="2.3.0",
-    description="Real-time streaming TTS with PostgreSQL voice storage"
+    version="2.4.0",
+    description="Real-time streaming TTS with PostgreSQL voice storage and voice cloning"
 )
 
 # Global state
@@ -436,9 +436,142 @@ async def health():
         "current_voice": current_voice_id
     }
 
+# ============================================================================
+# VOICE MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.post("/api/voices/clone")
+async def clone_voice(
+    voice_id: str = Form(...),
+    voice_name: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """
+    Clone a voice from uploaded audio and store it in the database
+    
+    Requirements:
+    - Audio: 6-30 seconds recommended (3-60s accepted)
+    - Format: WAV, MP3, or FLAC
+    - Sample rate: 22kHz minimum recommended
+    - Quality: Clean speech, no background noise
+    
+    Returns voice_id and embedding information
+    """
+    global db_pool, xtts_model
+    
+    try:
+        # Validate file type
+        if not file.filename.endswith(('.wav', '.mp3', '.flac')):
+            raise HTTPException(
+                status_code=400,
+                detail="Only WAV, MP3, and FLAC audio files are supported"
+            )
+        
+        # Read audio file
+        audio_bytes = await file.read()
+        
+        # Validate audio duration
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(audio_bytes)
+        
+        try:
+            # Load audio to check duration
+            audio, sr = sf.read(tmp_path)
+            duration = len(audio) / sr
+            
+            logger.info(f"Audio duration: {duration:.2f}s, sample rate: {sr}Hz")
+            
+            # Validate duration
+            if duration < 3:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio too short ({duration:.1f}s). Minimum 3 seconds required."
+                )
+            
+            if duration > 60:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio too long ({duration:.1f}s). Maximum 60 seconds allowed."
+                )
+            
+            # Warn if not optimal
+            if duration < 6:
+                logger.warning(f"Audio duration {duration:.1f}s is below optimal (6-10s recommended)")
+            elif duration > 30:
+                logger.warning(f"Audio duration {duration:.1f}s is above optimal (6-10s recommended)")
+            
+            # Generate embeddings
+            logger.info(f"Generating embeddings for voice '{voice_id}'...")
+            gpt_cond, speaker_emb = xtts_model.get_conditioning_latents(
+                audio_path=[tmp_path]
+            )
+            
+            # Compute hashes for verification
+            gpt_hash = compute_tensor_hash(gpt_cond)
+            speaker_hash = compute_tensor_hash(speaker_emb)
+            
+            logger.info(f"Embeddings generated: GPT={gpt_hash}, Speaker={speaker_hash}")
+            
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        
+        # Store in database
+        async with db_pool.acquire() as conn:
+            # Check if voice_id already exists
+            existing = await conn.fetchval(
+                "SELECT COUNT(*) FROM tts_voices WHERE voice_id = $1",
+                voice_id
+            )
+            
+            if existing > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Voice ID '{voice_id}' already exists. Use a different ID or delete the existing one first."
+                )
+            
+            # Insert new voice
+            await conn.execute("""
+                INSERT INTO tts_voices (voice_id, name, audio_data, created_at, updated_at)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, voice_id, voice_name, audio_bytes)
+        
+        logger.info(f"✅ Voice '{voice_id}' cloned and saved ({len(audio_bytes)} bytes)")
+        
+        return JSONResponse({
+            "status": "success",
+            "voice_id": voice_id,
+            "voice_name": voice_name,
+            "audio_duration_seconds": round(duration, 2),
+            "audio_size_bytes": len(audio_bytes),
+            "audio_size_kb": round(len(audio_bytes) / 1024, 2),
+            "sample_rate": sr,
+            "embeddings": {
+                "gpt_hash": gpt_hash,
+                "speaker_hash": speaker_hash
+            },
+            "quality_notes": {
+                "duration_optimal": 6 <= duration <= 10,
+                "duration_acceptable": 3 <= duration <= 60
+            },
+            "message": f"Voice '{voice_id}' cloned successfully. You can now use this voice_id for synthesis."
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Voice cloning failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/voices/upload")
 async def upload_voice(voice_id: str, file: UploadFile = File(...)):
-    """Upload a new voice to PostgreSQL"""
+    """
+    Upload a voice audio file to PostgreSQL (legacy endpoint)
+    Use /api/voices/clone for better validation and feedback
+    """
     global db_pool
     
     try:
@@ -461,23 +594,119 @@ async def upload_voice(voice_id: str, file: UploadFile = File(...)):
 
 @app.get("/api/voices")
 async def list_voices():
-    """List all available voices"""
+    """List all available voices in the database"""
     global db_pool
     
     try:
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT voice_id, name, created_at FROM tts_voices")
-            voices = [{"voice_id": row['voice_id'], "name": row['name'], "created_at": str(row['created_at'])} for row in rows]
+            rows = await conn.fetch("""
+                SELECT voice_id, name, 
+                       length(audio_data) as size_bytes,
+                       created_at, updated_at 
+                FROM tts_voices
+                ORDER BY created_at DESC
+            """)
+            
+            voices = [{
+                "voice_id": row['voice_id'],
+                "name": row['name'],
+                "size_bytes": row['size_bytes'],
+                "size_kb": round(row['size_bytes'] / 1024, 2),
+                "created_at": str(row['created_at']),
+                "updated_at": str(row['updated_at'])
+            } for row in rows]
         
-        return {"voices": voices}
+        return {
+            "total": len(voices),
+            "voices": voices
+        }
         
     except Exception as e:
         logger.error(f"❌ Failed to list voices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/voices/{voice_id}")
+async def get_voice_info(voice_id: str):
+    """Get detailed information about a specific voice"""
+    global db_pool
+    
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT voice_id, name, 
+                       length(audio_data) as size_bytes,
+                       created_at, updated_at
+                FROM tts_voices 
+                WHERE voice_id = $1
+            """, voice_id)
+            
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Voice '{voice_id}' not found"
+                )
+        
+        return {
+            "voice_id": row['voice_id'],
+            "name": row['name'],
+            "size_bytes": row['size_bytes'],
+            "size_kb": round(row['size_bytes'] / 1024, 2),
+            "size_mb": round(row['size_bytes'] / (1024 * 1024), 2),
+            "created_at": str(row['created_at']),
+            "updated_at": str(row['updated_at']),
+            "is_loaded": voice_id == current_voice_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to get voice info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/voices/{voice_id}")
+async def delete_voice(voice_id: str):
+    """Delete a voice from the database"""
+    global db_pool, current_voice_id
+    
+    try:
+        # Prevent deleting currently loaded voice
+        if voice_id == current_voice_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete currently loaded voice '{voice_id}'. Load a different voice first."
+            )
+        
+        async with db_pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM tts_voices WHERE voice_id = $1",
+                voice_id
+            )
+            
+            if result == "DELETE 0":
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Voice '{voice_id}' not found"
+                )
+        
+        logger.info(f"✅ Voice '{voice_id}' deleted")
+        return {
+            "status": "success",
+            "message": f"Voice '{voice_id}' deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Failed to delete voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# TTS SYNTHESIS ENDPOINT
+# ============================================================================
+
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    """Synthesize speech with specified voice"""
+    """Synthesize speech with specified voice and language"""
     global gpt_cond_latent, speaker_embedding
     
     start_time = time.time()
@@ -492,7 +721,7 @@ async def synthesize_speech(request: SynthesizeRequest):
         if gpt_cond_latent is None or speaker_embedding is None:
             raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
         
-        logger.info(f"🔊 Synthesizing: '{request.text[:50]}...' with voice '{request.voice_id}'")
+        logger.info(f"🔊 Synthesizing: '{request.text[:50]}...' [lang={request.language}, voice={request.voice_id}]")
         
         audio_chunk_generator = xtts_model.inference_stream(
             text=request.text,
@@ -512,6 +741,7 @@ async def synthesize_speech(request: SynthesizeRequest):
             "status": "success",
             "total_time_ms": round(total_time_ms, 2),
             "voice_id": request.voice_id,
+            "language": request.language,
             "text_length": len(request.text)
         })
     
