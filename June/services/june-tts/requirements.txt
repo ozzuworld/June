@@ -4,3 +4,4 @@ protobuf>=4.21.0
 scipy
 asyncpg
 python-multipart
+unidic
