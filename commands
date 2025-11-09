@@ -85,6 +85,14 @@ kubectl get pods -n june-services -w
 git reset --hard f688ca3a95aac6736b699c795130a27675178357
 git push origin master --force
 
+
+kubectl exec -n headscale deployment/headscale -- headscale users create hadmin
+kubectl exec -n headscale deployment/headscale -- \
+  headscale --user hadmin preauthkeys create --reusable --expiration 24h
+kubectl exec -n headscale deployment/headscale -- headscale nodes list
+
+
+
 kubectl exec -it -n headscale deployment/headscale -- /bin/sh
 
 

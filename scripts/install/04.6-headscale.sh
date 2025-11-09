@@ -97,7 +97,7 @@ metadata:
 data:
   config.yaml: |
     # Headscale Configuration
-    server_url: https://headscale.${DOMAIN}
+    server_url: https://tail.${DOMAIN}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 127.0.0.1:9090
     
