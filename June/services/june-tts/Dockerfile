@@ -48,7 +48,8 @@ RUN pip3 install \
     ormsgpack==1.4.0 \
     asyncpg \
     python-multipart \
-    unidic
+    unidic \
+    cutlet
 
 # Install LiveKit Python SDK
 RUN pip3 install livekit==0.11.0
