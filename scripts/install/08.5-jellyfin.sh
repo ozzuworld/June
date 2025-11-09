@@ -116,14 +116,14 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
-    - host: jellyfin.${DOMAIN}
+    - host: tv.${DOMAIN}
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: ${WILDCARD_SECRET_NAME}
       hosts:
-        - jellyfin.${DOMAIN}
+        - tv.${DOMAIN}
 
 resources:
   requests:
@@ -136,7 +136,7 @@ EOF
 
 # Show the generated values for verification
 log "Generated Jellyfin configuration:"
-log "  Hostname: jellyfin.${DOMAIN}"
+log "  Hostname: tv.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
 
 # Verify wildcard certificate exists
@@ -173,7 +173,7 @@ kubectl get ingress -n june-services | grep jellyfin || warn "No Jellyfin ingres
 success "Jellyfin installed successfully!"
 echo ""
 echo "📺 Jellyfin Access:"
-echo "  URL: https://jellyfin.${DOMAIN}"
+echo "  URL: https://tv.${DOMAIN}"
 echo "  First-time setup: Navigate to URL and complete setup wizard"
 echo ""
 echo "📁 Storage Locations:"
