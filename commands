@@ -102,13 +102,9 @@ kubectl exec -it -n headscale deployment/headscale -- /bin/sh
 
 kubectl patch secret june-secrets -n june-services --patch='{"data":{"gemini-api-key":"'$(echo -n "AIzaSyA6MEa_m2h_-N-ywU7rDwTagd0bTx3Mpeo" | base64)'"}}'
 kubectl patch secret june-secrets -n june-services --patch='{"data":{"gemini-api-key":"'$(echo -n "AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM" | base64)'"}}'
-# Copy the file to the PostgreSQL pod
-kubectl cp June/services/june-tts/app/references/June.wav \
-  june-services/postgresql-0:/tmp/June.wav
 
-# Insert it as 'default'
-kubectl exec -it postgresql-0 -n june-services -- psql -U keycloak -d june <<EOF
-INSERT INTO tts_voices (voice_id, name, audio_data)
+
+
 VALUES (
     'default',
     'June Default',
@@ -125,3 +121,34 @@ kubectl exec -it postgresql-0 -n june-services -- rm /tmp/June.wav
 
 # Restart the service to pick up the new voice
 kubectl rollout restart deployment/june-tts -n june-services
+
+
+
+# Load your config.env first
+source config.env
+
+# Then upgrade with values
+helm upgrade --install june-platform ./helm/june-platform \
+  --namespace june-services \
+  --values ./helm/june-platform/values.yaml \
+  --set secrets.geminiApiKey="$GEMINI_API_KEY" \
+  --set secrets.postgresqlPassword="$POSTGRESQL_PASSWORD"
+
+
+
+
+
+
+
+
+# Allow port 30432 through UFW (if you're using UFW)
+sudo ufw allow 30432/tcp
+sudo ufw status
+
+# OR if using firewalld
+sudo firewall-cmd --add-port=30432/tcp --permanent
+sudo firewall-cmd --reload
+
+# OR if using iptables directly
+sudo iptables -A INPUT -p tcp --dport 30432 -j ACCEPT
+sudo iptables-save

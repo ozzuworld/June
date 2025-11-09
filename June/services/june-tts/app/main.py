@@ -49,7 +49,7 @@ LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 
 # PostgreSQL Configuration
-DB_HOST = os.getenv("DB_HOST", "100.64.0.2")
+DB_HOST = os.getenv("DB_HOST", "100.64.0.1")
 DB_PORT = int(os.getenv("DB_PORT", "30432"))
 DB_NAME = os.getenv("DB_NAME", "june")
 DB_USER = os.getenv("DB_USER", "keycloak")
