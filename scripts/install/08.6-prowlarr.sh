@@ -1,10 +1,9 @@
 #!/bin/bash
 # June Platform - Prowlarr Installation Phase
-# Installs Prowlarr indexer manager
+# Installs Prowlarr indexer manager with pre-configured authentication
 
 set -e
 
-# Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
@@ -18,34 +17,63 @@ error() { echo -e "${RED}❌${NC} $1"; exit 1; }
 
 ROOT_DIR="$1"
 
-# Load configuration
 if [ -z "$DOMAIN" ]; then
     if [ -z "$ROOT_DIR" ]; then
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
     fi
-    
     CONFIG_FILE="${ROOT_DIR}/config.env"
-    
-    if [ ! -f "$CONFIG_FILE" ]; then
-        error "Configuration file not found: $CONFIG_FILE"
-    fi
-    
+    [ ! -f "$CONFIG_FILE" ] && error "Configuration file not found: $CONFIG_FILE"
     log "Loading configuration from: $CONFIG_FILE"
     source "$CONFIG_FILE"
 fi
 
-if [ -z "$DOMAIN" ]; then
-    error "DOMAIN variable is not set. Please check your config.env file."
-fi
+[ -z "$DOMAIN" ] && error "DOMAIN variable is not set."
+
+# Default credentials
+MEDIA_STACK_USERNAME="${MEDIA_STACK_USERNAME:-admin}"
+MEDIA_STACK_PASSWORD="${MEDIA_STACK_PASSWORD:-Pokemon123!}"
 
 log "Installing Prowlarr for domain: $DOMAIN"
 
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
+# Create config directory
+mkdir -p /mnt/media/configs/prowlarr
+
+# Generate API key
+PROWLARR_API_KEY=$(openssl rand -hex 16)
+
+# Pre-create config.xml with authentication
+log "Creating Prowlarr config with pre-configured authentication..."
+cat > /mnt/media/configs/prowlarr/config.xml <<EOF
+<Config>
+  <LogLevel>info</LogLevel>
+  <UpdateMechanism>Docker</UpdateMechanism>
+  <Branch>master</Branch>
+  <BindAddress>*</BindAddress>
+  <Port>9696</Port>
+  <SslPort>9696</SslPort>
+  <EnableSsl>False</EnableSsl>
+  <LaunchBrowser>True</LaunchBrowser>
+  <ApiKey>$PROWLARR_API_KEY</ApiKey>
+  <AuthenticationMethod>Forms</AuthenticationMethod>
+  <AuthenticationRequired>Enabled</AuthenticationRequired>
+  <Username>$MEDIA_STACK_USERNAME</Username>
+  <Password>$MEDIA_STACK_PASSWORD</Password>
+  <PasswordConfirmation>$MEDIA_STACK_PASSWORD</PasswordConfirmation>
+  <AnalyticsEnabled>False</AnalyticsEnabled>
+  <UrlBase></UrlBase>
+  <InstanceName>Prowlarr</InstanceName>
+</Config>
+EOF
+
+# Set proper ownership
+chown -R 1000:1000 /mnt/media/configs/prowlarr
+
 # Create PV for Prowlarr config
-log "Creating Prowlarr configuration storage..."
+log "Creating Prowlarr storage..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -166,12 +194,12 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=prowlarr -n june-services --timeout=300s || warn "Prowlarr not ready yet"
 
-success "Prowlarr installed successfully!"
+success "Prowlarr installed with authentication pre-configured!"
 echo ""
 echo "🔍 Prowlarr Access:"
 echo "  URL: https://prowlarr.${DOMAIN}"
+echo "  Username: $MEDIA_STACK_USERNAME"
+echo "  Password: $MEDIA_STACK_PASSWORD"
+echo "  API Key: $PROWLARR_API_KEY"
 echo ""
-echo "📝 Next Steps:"
-echo "  1. Configure indexers (torrent/usenet sites)"
-echo "  2. Get API key from Settings > General"
-echo "  3. Add to Sonarr and Radarr"
+echo "📝 Next Step: Add indexers at https://prowlarr.${DOMAIN}/settings/indexers"
