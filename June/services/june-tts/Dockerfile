@@ -46,7 +46,8 @@ RUN pip3 install \
     soundfile==0.12.1 \
     librosa==0.10.1 \
     ormsgpack==1.4.0 \
-    asyncpg
+    asyncpg \
+    python-multipart
 
 # Install LiveKit Python SDK
 RUN pip3 install livekit==0.11.0
