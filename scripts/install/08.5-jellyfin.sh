@@ -18,7 +18,29 @@ error() { echo -e "${RED}❌${NC} $1"; exit 1; }
 
 ROOT_DIR="$1"
 
-log "Installing Jellyfin Media Server..."
+# Load configuration if not already loaded
+if [ -z "$DOMAIN" ]; then
+    if [ -z "$ROOT_DIR" ]; then
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+    fi
+    
+    CONFIG_FILE="${ROOT_DIR}/config.env"
+    
+    if [ ! -f "$CONFIG_FILE" ]; then
+        error "Configuration file not found: $CONFIG_FILE"
+    fi
+    
+    log "Loading configuration from: $CONFIG_FILE"
+    source "$CONFIG_FILE"
+fi
+
+# Validate DOMAIN is set
+if [ -z "$DOMAIN" ]; then
+    error "DOMAIN variable is not set. Please check your config.env file."
+fi
+
+log "Installing Jellyfin Media Server for domain: $DOMAIN"
 
 # Ensure june-services namespace exists
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
@@ -104,6 +126,9 @@ resources:
     cpu: 2000m
 EOF
 
+# Show the generated values for verification
+log "Generated Jellyfin configuration for: jellyfin.${DOMAIN}"
+
 # Install Jellyfin via Helm
 log "Installing Jellyfin with Helm..."
 helm upgrade --install jellyfin jellyfin/jellyfin \
@@ -133,3 +158,4 @@ echo "📁 Storage Locations:"
 echo "  Config: /mnt/jellyfin/config"
 echo "  Media: /mnt/jellyfin/media"
 echo ""
+echo "🔐 Note: Update DNS to point jellyfin.${DOMAIN} to your server IP"
