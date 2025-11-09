@@ -61,7 +61,7 @@ LIVEKIT_FRAME_SIZE = 960
 
 app = FastAPI(
     title="June TTS (XTTS v2) - PostgreSQL Voice",
-    version="2.2.0",
+    version="2.3.0",
     description="Real-time streaming TTS with PostgreSQL voice storage"
 )
 
@@ -84,7 +84,7 @@ class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
     room_name: str = Field(...)
     language: str = Field(default="en")
-    voice_id: str = Field(default="default")  # NEW: Which voice to use
+    voice_id: str = Field(default="default")
 
 def compute_tensor_hash(tensor):
     """Compute hash of tensor to track if it changes"""
@@ -269,6 +269,29 @@ async def load_voice_embeddings(voice_id: str = "default"):
     logger.info(f"🔑 Voice '{voice_id}' loaded: GPT={gpt_cond_hash}, Speaker={speaker_embedding_hash}")
     return True
 
+async def warmup_model():
+    """Warm up the model with a dummy inference to initialize CUDA kernels"""
+    global xtts_model, gpt_cond_latent, speaker_embedding
+    
+    try:
+        warmup_start = time.time()
+        warmup_text = "Initializing speech synthesis."
+        
+        # Run a dummy inference to warm up CUDA kernels
+        _ = list(xtts_model.inference_stream(
+            text=warmup_text,
+            language="en",
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            stream_chunk_size=20,
+            enable_text_splitting=False
+        ))
+        
+        warmup_time = (time.time() - warmup_start) * 1000
+        logger.info(f"✅ Model warmup completed in {warmup_time:.0f}ms")
+    except Exception as e:
+        logger.warning(f"⚠️ Warmup failed (non-critical): {e}")
+
 async def load_xtts_model():
     """Load XTTS v2 model"""
     global xtts_model, tts_api
@@ -286,6 +309,10 @@ async def load_xtts_model():
         
         # Load default voice
         await load_voice_embeddings("default")
+        
+        # Warm up model to eliminate first-inference latency
+        logger.info("🔥 Warming up XTTS model...")
+        await warmup_model()
         
         return True
     except Exception as e:
