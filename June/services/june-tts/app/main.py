@@ -270,25 +270,48 @@ async def load_voice_embeddings(voice_id: str = "default"):
     return True
 
 async def warmup_model():
-    """Warm up the model with a dummy inference to initialize CUDA kernels"""
+    """Warm up the model with dummy inferences for multiple languages to eliminate cold starts"""
     global xtts_model, gpt_cond_latent, speaker_embedding
     
+    # Languages to warm up - prioritize most commonly used ones
+    # Add or remove languages based on your usage patterns
+    warmup_languages = [
+        ("en", "Initializing speech synthesis."),
+        ("ja", "音声合成を初期化しています。"),
+        ("es", "Inicializando síntesis de voz."),
+        ("fr", "Initialisation de la synthèse vocale."),
+        ("de", "Sprachsynthese wird initialisiert."),
+        ("zh-cn", "正在初始化语音合成。"),
+    ]
+    
     try:
-        warmup_start = time.time()
-        warmup_text = "Initializing speech synthesis."
+        overall_start = time.time()
+        successful_warmups = 0
         
-        # Run a dummy inference to warm up CUDA kernels
-        _ = list(xtts_model.inference_stream(
-            text=warmup_text,
-            language="en",
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            stream_chunk_size=20,
-            enable_text_splitting=False
-        ))
+        for lang_code, warmup_text in warmup_languages:
+            try:
+                lang_start = time.time()
+                
+                # Run dummy inference for this language
+                _ = list(xtts_model.inference_stream(
+                    text=warmup_text,
+                    language=lang_code,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    stream_chunk_size=20,
+                    enable_text_splitting=False
+                ))
+                
+                lang_time = (time.time() - lang_start) * 1000
+                logger.info(f"✅ Warmed up {lang_code}: {lang_time:.0f}ms")
+                successful_warmups += 1
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Warmup failed for {lang_code}: {e}")
         
-        warmup_time = (time.time() - warmup_start) * 1000
-        logger.info(f"✅ Model warmup completed in {warmup_time:.0f}ms")
+        total_time = (time.time() - overall_start) * 1000
+        logger.info(f"✅ Multi-language warmup completed: {successful_warmups}/{len(warmup_languages)} languages in {total_time:.0f}ms")
+        
     except Exception as e:
         logger.warning(f"⚠️ Warmup failed (non-critical): {e}")
 
@@ -310,8 +333,8 @@ async def load_xtts_model():
         # Load default voice
         await load_voice_embeddings("default")
         
-        # Warm up model to eliminate first-inference latency
-        logger.info("🔥 Warming up XTTS model...")
+        # Warm up model for multiple languages to eliminate first-request latency
+        logger.info("🔥 Warming up XTTS model for multiple languages...")
         await warmup_model()
         
         return True
