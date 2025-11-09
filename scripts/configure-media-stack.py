@@ -8,6 +8,8 @@ import requests
 import time
 import json
 import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 # Suppress SSL warnings for internal services
@@ -21,6 +23,11 @@ class MediaStackConfigurator:
         self.radarr_url = f"https://radarr.{domain}"
         self.jellyseerr_url = f"https://requests.{domain}"
         self.jellyfin_url = f"https://tv.{domain}"
+        
+        # Config file paths
+        self.prowlarr_config = "/mnt/media/configs/prowlarr/config.xml"
+        self.sonarr_config = "/mnt/media/configs/sonarr/config.xml"
+        self.radarr_config = "/mnt/media/configs/radarr/config.xml"
         
         self.prowlarr_api_key = None
         self.sonarr_api_key = None
@@ -54,27 +61,30 @@ class MediaStackConfigurator:
         self.error(f"{service_name} not ready after {timeout}s")
         return False
     
-    def get_api_key(self, url: str, service_name: str) -> Optional[str]:
-        """Extract API key from service config.xml"""
-        self.log(f"Retrieving {service_name} API key...")
+    def get_api_key_from_config(self, config_path: str, service_name: str) -> Optional[str]:
+        """Extract API key from config.xml file"""
+        self.log(f"Reading {service_name} config from: {config_path}")
+        
         try:
-            # Try to get it from the API endpoint
-            response = self.session.get(f"{url}/api/v3/system/status", timeout=10)
-            if response.status_code == 401:
-                self.log(f"{service_name} requires authentication - API key needed")
+            if not Path(config_path).exists():
+                self.error(f"Config file not found: {config_path}")
                 return None
             
-            # For initial setup without auth, we can get the key from config endpoint
-            config_response = self.session.get(f"{url}/api/v3/config/host", timeout=10)
-            if config_response.status_code == 200:
-                data = config_response.json()
-                api_key = data.get('apiKey')
-                if api_key:
-                    self.success(f"Retrieved {service_name} API key: {api_key[:8]}...")
-                    return api_key
+            tree = ET.parse(config_path)
+            root = tree.getroot()
+            
+            api_key_element = root.find('.//ApiKey')
+            if api_key_element is not None and api_key_element.text:
+                api_key = api_key_element.text
+                self.success(f"Retrieved {service_name} API key: {api_key[:8]}...")
+                return api_key
+            else:
+                self.error(f"No API key found in {config_path}")
+                return None
+                
         except Exception as e:
-            self.error(f"Could not retrieve {service_name} API key: {e}")
-        return None
+            self.error(f"Could not read {service_name} config: {e}")
+            return None
     
     def configure_authentication(self, url: str, api_key: str, service_name: str, 
                                 username: str, password: str):
@@ -107,6 +117,8 @@ class MediaStackConfigurator:
                 if update_response.status_code == 202:
                     self.success(f"Authentication enabled for {service_name}")
                     return True
+                else:
+                    self.log(f"Response: {update_response.status_code} - {update_response.text}")
                     
         except Exception as e:
             self.error(f"Failed to configure auth for {service_name}: {e}")
@@ -146,7 +158,7 @@ class MediaStackConfigurator:
             )
             
             if test_response.status_code != 200:
-                self.error(f"Connection test failed for {app_name}")
+                self.error(f"Connection test failed for {app_name}: {test_response.text}")
                 return False
             
             # Add the application
@@ -209,12 +221,9 @@ class MediaStackConfigurator:
     
     def configure_jellyseerr(self, jellyfin_username: str, jellyfin_password: str) -> bool:
         """Configure Jellyseerr with Jellyfin, Sonarr, and Radarr"""
-        self.log("Configuring Jellyseerr...")
+        self.log("Preparing Jellyseerr configuration...")
         
         try:
-            # Note: Jellyseerr initial setup requires manual intervention
-            # This function provides the configuration data needed
-            
             config = {
                 "jellyfin": {
                     "url": self.jellyfin_url,
@@ -241,9 +250,9 @@ class MediaStackConfigurator:
                 }
             }
             
-            self.log("Jellyseerr configuration:")
+            print()
+            self.log("Jellyseerr configuration data:")
             print(json.dumps(config, indent=2))
-            self.log(f"Please complete Jellyseerr setup manually at: {self.jellyseerr_url}")
             
             return True
             
@@ -274,11 +283,11 @@ class MediaStackConfigurator:
         
         print()
         
-        # Step 2: Get API keys
-        self.log("Retrieving API keys from services...")
-        self.prowlarr_api_key = self.get_api_key(self.prowlarr_url, "Prowlarr")
-        self.sonarr_api_key = self.get_api_key(self.sonarr_url, "Sonarr")
-        self.radarr_api_key = self.get_api_key(self.radarr_url, "Radarr")
+        # Step 2: Get API keys from config files
+        self.log("Retrieving API keys from config files...")
+        self.prowlarr_api_key = self.get_api_key_from_config(self.prowlarr_config, "Prowlarr")
+        self.sonarr_api_key = self.get_api_key_from_config(self.sonarr_config, "Sonarr")
+        self.radarr_api_key = self.get_api_key_from_config(self.radarr_config, "Radarr")
         
         if not all([self.prowlarr_api_key, self.sonarr_api_key, self.radarr_api_key]):
             self.error("Could not retrieve all API keys")
@@ -288,10 +297,10 @@ class MediaStackConfigurator:
             print(f"  Sonarr: {self.sonarr_api_key or 'NOT FOUND'}")
             print(f"  Radarr: {self.radarr_api_key or 'NOT FOUND'}")
             print()
-            print("Please retrieve API keys manually from:")
-            print(f"  Prowlarr: {self.prowlarr_url}/settings/general")
-            print(f"  Sonarr: {self.sonarr_url}/settings/general")
-            print(f"  Radarr: {self.radarr_url}/settings/general")
+            print("Please check that config files exist and services have started:")
+            print(f"  {self.prowlarr_config}")
+            print(f"  {self.sonarr_config}")
+            print(f"  {self.radarr_config}")
             return False
         
         print()
@@ -349,6 +358,7 @@ class MediaStackConfigurator:
         print()
         print("  2. Complete Jellyseerr setup:")
         print(f"     {self.jellyseerr_url}")
+        print("     Use the configuration data printed above")
         print()
         print("  3. Install and configure a download client (qBittorrent)")
         print()
