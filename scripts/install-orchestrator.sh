@@ -86,6 +86,7 @@ PHASES=(
     "04.4-local-pv-redis"     # New: pre-create local PVs with storageClassName: ""
     "04.5-redis"              # Redis Helm install
     "04.6-headscale"   
+    "04.7-headscale-client"
     "03.5-gpu-operator"       # After Helm is installed
     "06-certificates"
     "07-stunner"
