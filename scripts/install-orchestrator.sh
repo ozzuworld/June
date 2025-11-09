@@ -92,9 +92,7 @@ PHASES=(
     "07-stunner"
     "08-livekit"
     "09-june-platform"
-    "08.1-voice-db.sh"
-    "08.5-jellyfin"
-    "08.10-qbittorrent.sh"
+    "08.11-configure-media-stack.sh"
     "10-final-setup"
 )
 
