@@ -47,7 +47,8 @@ RUN pip3 install \
     librosa==0.10.1 \
     ormsgpack==1.4.0 \
     asyncpg \
-    python-multipart
+    python-multipart \
+    unidic
 
 # Install LiveKit Python SDK
 RUN pip3 install livekit==0.11.0
