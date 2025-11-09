@@ -94,6 +94,7 @@ PHASES=(
     "09-june-platform"
     "08.1-voice-db.sh"
     "08.5-jellyfin"
+    "08.10-qbittorrent.sh"
     "10-final-setup"
 )
 
