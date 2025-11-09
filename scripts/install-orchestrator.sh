@@ -93,6 +93,7 @@ PHASES=(
     "08-livekit"
     "09-june-platform"
     "08.1-voice-db.sh"
+    "08.5-jellyfin"
     "10-final-setup"
 )
 
