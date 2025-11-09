@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - qBittorrent Installation Phase
-# Installs qBittorrent download client with pre-configured authentication
+# Installs qBittorrent download client
 
 set -e
 
@@ -30,44 +30,16 @@ fi
 
 [ -z "$DOMAIN" ] && error "DOMAIN variable is not set."
 
-# Default credentials
-MEDIA_STACK_USERNAME="${MEDIA_STACK_USERNAME:-admin}"
-MEDIA_STACK_PASSWORD="${MEDIA_STACK_PASSWORD:-Pokemon123!}"
-
 log "Installing qBittorrent for domain: $DOMAIN"
 
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
 # Create config directory and downloads folder
-mkdir -p /mnt/media/configs/qbittorrent
+mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
 mkdir -p /mnt/jellyfin/media/downloads/incomplete
 mkdir -p /mnt/jellyfin/media/downloads/complete
 chown -R 1000:1000 /mnt/jellyfin/media/downloads
-
-# Pre-create qBittorrent.conf with authentication
-log "Creating qBittorrent config with pre-configured settings..."
-cat > /mnt/media/configs/qbittorrent/qBittorrent.conf <<EOF
-[LegalNotice]
-Accepted=true
-
-[Preferences]
-WebUI\Address=*
-WebUI\Port=8080
-WebUI\Username=$MEDIA_STACK_USERNAME
-WebUI\Password_PBKDF2="@ByteArray(ARQ77eY1NUZaQsuDHbIMCA==:0WMRkYTUWVT9wVvdDtHAjU9b3b7uB8NR1Gur2hmQCvCDpm39Q+PsJRJPaCU51dEiz+dTzh8qbPsL8WkFljQYFQ==)"
-WebUI\LocalHostAuth=false
-WebUI\CSRFProtection=false
-General\Locale=en
-Downloads\SavePath=/downloads/complete
-Downloads\TempPath=/downloads/incomplete
-Downloads\TempPathEnabled=true
-BitTorrent\Session\DefaultSavePath=/downloads/complete
-BitTorrent\Session\TempPath=/downloads/incomplete
-BitTorrent\Session\TempPathEnabled=true
-EOF
-
-# Set proper ownership
 chown -R 1000:1000 /mnt/media/configs/qbittorrent
 
 # Create PV for qBittorrent config
@@ -214,12 +186,15 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=qbittorrent -n june-services --timeout=300s || warn "qBittorrent not ready yet"
 
-success "qBittorrent installed with authentication pre-configured!"
+success "qBittorrent installed!"
 echo ""
 echo "📥 qBittorrent Access:"
 echo "  URL: https://qbittorrent.${DOMAIN}"
-echo "  Username: $MEDIA_STACK_USERNAME"
-echo "  Password: $MEDIA_STACK_PASSWORD"
+echo "  Default Username: admin"
+echo "  Default Password: (will be shown on first login)"
 echo ""
-echo "📝 Next Step: Connect to Sonarr and Radarr"
-echo "  This will be automated in the next script..."
+echo "📝 Setup Instructions:"
+echo "  1. Go to https://qbittorrent.${DOMAIN}"
+echo "  2. Login with default credentials"
+echo "  3. Change password in Tools > Options > Web UI"
+echo "  4. Use these credentials to connect Sonarr/Radarr"
