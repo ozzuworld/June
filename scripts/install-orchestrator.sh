@@ -92,6 +92,7 @@ PHASES=(
     "07-stunner"
     "08-livekit"
     "09-june-platform"
+    "08.1-voice-db.sh"
     "10-final-setup"
 )
 
