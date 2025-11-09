@@ -91,15 +91,15 @@ PHASES=(
     "04.7-headscale-client"
     "07-stunner"
     "08-livekit"
-    "08.5-jellyfin.sh"           # NEW
-    "08.6-prowlarr.sh"           # NEW
-    "08.7-sonarr.sh"             # NEW
-    "08.8-radarr.sh"             # NEW
-    "08.9-jellyseerr.sh"         # NEW
-    "08.10-qbittorrent.sh"       # NEW
-    "08.11-configure-media.sh"   # NEW - Auto-configures everything
-    "09-june-platform.sh"
-    "10-final-setup.sh"
+    "08.5-jellyfin"           # NEW
+    "08.6-prowlarr"           # NEW
+    "08.7-sonarr"             # NEW
+    "08.8-radarr"             # NEW
+    "08.9-jellyseerr"         # NEW
+    "08.10-qbittorrent"       # NEW
+    "08.11-configure-media"   # NEW - Auto-configures everything
+    "09-june-platform"
+    "10-final-setup"
 )
 
 # Function to run a phase
