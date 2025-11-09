@@ -85,6 +85,9 @@ kubectl get pods -n june-services -w
 git reset --hard f688ca3a95aac6736b699c795130a27675178357
 git push origin master --force
 
+kubectl exec -it -n headscale deployment/headscale -- /bin/sh
+
+
 
 kubectl patch secret june-secrets -n june-services --patch='{"data":{"gemini-api-key":"'$(echo -n "AIzaSyA6MEa_m2h_-N-ywU7rDwTagd0bTx3Mpeo" | base64)'"}}'
 kubectl patch secret june-secrets -n june-services --patch='{"data":{"gemini-api-key":"'$(echo -n "AIzaSyA20vz_9eC0Un6lRrkOKUK5vS-u_zNW1uM" | base64)'"}}'
