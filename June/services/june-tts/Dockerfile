@@ -52,6 +52,12 @@ RUN pip3 install \
 # Install LiveKit Python SDK
 RUN pip3 install livekit==0.11.0
 
+# Install unidic for Japanese support
+RUN pip3 install unidic
+
+# Download unidic dictionary data (770MB)
+RUN python3 -m unidic download
+
 # Create app directory
 WORKDIR /app
 
