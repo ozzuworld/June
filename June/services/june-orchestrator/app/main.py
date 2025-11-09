@@ -1,4 +1,4 @@
-"""Simplified main.py - Essential services only (CosyVoice2 language-based voices)"""
+"""Simplified main.py - XTTS Voice System"""
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,9 +9,8 @@ from starlette.requests import Request
 
 from .core.dependencies import get_session_service, get_config
 from .routes.webhooks import router as webhooks_router
-from .routes.voices import router as voices_router
+from .routes.xtts_voices import router as voices_router  # ✅ CHANGED: XTTS voices
 from .routes.livekit_token import router as livekit_router
-from .voice_registry import list_available_languages, SUPPORTED_LANGUAGES
 
 config = get_config()
 
@@ -61,9 +60,9 @@ async def cleanup_sessions_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan - simplified"""
+    """Application lifespan - XTTS version"""
     logger.info("=" * 80)
-    logger.info("🚀 June Orchestrator - STREAMLINED VERSION")
+    logger.info("🚀 June Orchestrator - XTTS VOICE SYSTEM")
     logger.info("=" * 80)
     
     # Initialize core services
@@ -74,14 +73,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"  STT: {config.services.stt_base_url}")
     logger.info(f"  LiveKit: {config.livekit.ws_url}")
     logger.info(f"  AI Model: {config.ai.model}")
+    logger.info(f"  Default Voice: {config.ai.default_voice_id}")  # ✅ CHANGED
     
-    voices = list_available_languages()
-    logger.info(f"🎭 Languages: {len(voices)} supported - {list(SUPPORTED_LANGUAGES.keys())}")
-    
-    logger.info("✨ STREAMLINED:")
+    logger.info("✨ XTTS FEATURES:")
+    logger.info("  ✅ Voice cloning from reference audio")
+    logger.info("  ✅ PostgreSQL voice storage")
     logger.info("  ✅ Single RT engine (no duplication)")
-    logger.info("  ✅ No Redis preprocessing (no failures)")
-    logger.info("  ✅ Direct STT → AI → TTS flow")
+    logger.info("  ✅ Direct STT → AI → XTTS flow")
     logger.info("  ✅ SmartTTSQueue for natural timing")
     logger.info("=" * 80)
     
@@ -100,8 +98,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June Orchestrator",
-    version="8.0.0-STREAMLINED",
-    description="Simplified AI Voice Assistant",
+    version="9.0.0-XTTS",
+    description="AI Voice Assistant with XTTS Voice Cloning",
     lifespan=lifespan
 )
 
@@ -117,7 +115,7 @@ app.add_middleware(
 
 # Register routes
 app.include_router(webhooks_router, tags=["Webhooks"])
-app.include_router(voices_router, tags=["Voices"])
+app.include_router(voices_router, tags=["XTTS Voices"])  # ✅ CHANGED
 app.include_router(livekit_router, tags=["LiveKit"])
 
 
@@ -128,12 +126,14 @@ async def root():
     
     return {
         "service": "june-orchestrator",
-        "version": "8.0.0-STREAMLINED",
-        "description": "Simplified AI Voice Assistant",
-        "streamlined": True,
+        "version": "9.0.0-XTTS",
+        "description": "AI Voice Assistant with XTTS Voice Cloning",
+        "tts_engine": "XTTS-v2",
+        "voice_storage": "PostgreSQL",
         "features": {
+            "voice_cloning": True,
+            "custom_voices": True,
             "single_rt_engine": True,
-            "no_redis_preprocessing": True,
             "smart_tts_queue": True,
             "natural_conversation": True
         },
@@ -150,5 +150,6 @@ async def healthz():
     return {
         "status": "healthy",
         "service": "june-orchestrator",
-        "version": "8.0.0-STREAMLINED"
+        "version": "9.0.0-XTTS",
+        "tts_engine": "XTTS-v2"
     }

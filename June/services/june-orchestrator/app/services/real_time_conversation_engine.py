@@ -1,10 +1,4 @@
-"""Real-Time Engine - ULTRA FAST - Remove ALL blocking operations
-
-PROBLEM FOUND: Session history lookup was blocking for 2+ seconds
-SOLUTION: Remove session service dependency, use in-memory only
-
-ALSO FIXED: Process partials progressively instead of skipping them
-"""
+"""Real-Time Engine - XTTS Voice Integration"""
 import asyncio
 import logging
 import time
@@ -17,14 +11,11 @@ class RealTimeConversationEngine:
     def __init__(self, redis_client=None, tts_service=None, streaming_ai_service=None):
         self.tts = tts_service
         self.streaming_ai = streaming_ai_service
-        # Ultra-simple in-memory history (no external calls)
         self.session_history: Dict[str, List[Dict]] = {}
-        # Track partial transcriptions per session
         self.session_partials: Dict[str, str] = {}
-        # Initialize SmartTTSQueue
         self.smart_tts = None
         self._initialize_smart_tts_queue()
-        logger.info("✅ RT engine initialized (ULTRA FAST mode)")
+        logger.info("✅ RT engine initialized (XTTS mode)")
     
     def _initialize_smart_tts_queue(self):
         """Initialize SmartTTSQueue"""
@@ -50,19 +41,15 @@ class RealTimeConversationEngine:
     ) -> Dict[str, Any]:
         start = time.time()
         
-        # CHANGED: Process partials more aggressively
         if is_partial:
-            # Update partial buffer
             self.session_partials[session_id] = text
             logger.info(f"📝 Partial update: '{text[:30]}...' ({len(text)} chars)")
             
-            # LOWERED THRESHOLD: Process if we have >3 words OR >8 chars
-            # This is more responsive while still reducing spam
             word_count = len(text.strip().split())
             char_count = len(text.strip())
             
             if word_count < 3 and char_count < 8:
-                logger.info(f"⏳ Buffering: {word_count} words, {char_count} chars - waiting for more")
+                logger.info(f"⏳ Buffering: {word_count} words, {char_count} chars")
                 return {
                     "processed": "partial_buffered",
                     "partial_length": char_count,
@@ -70,29 +57,23 @@ class RealTimeConversationEngine:
                     "waiting_for_more": True
                 }
             
-            # For substantial partials, process immediately
-            logger.info(f"🚀 Processing partial: {word_count} words, {char_count} chars - '{text[:30]}...'")
+            logger.info(f"🚀 Processing partial: {word_count} words")
         else:
-            # Clear partial buffer on final
             self.session_partials.pop(session_id, None)
-            logger.info(f"🚀 Processing FINAL: '{text[:30]}...' for {session_id}")
+            logger.info(f"🚀 Processing FINAL: '{text[:30]}...'")
         
-        # ULTRA FAST: Get history from memory (no I/O)
         if session_id not in self.session_history:
             self.session_history[session_id] = []
         history = self.session_history[session_id]
         
-        # Add user message (instant)
         history.append({"role": "user", "content": text})
         
-        # Keep only last 6 messages (3 exchanges)
         if len(history) > 6:
             self.session_history[session_id] = history[-6:]
             history = self.session_history[session_id]
         
-        logger.info(f"📝 History: {len(history)} messages (instant)")
+        logger.info(f"📝 History: {len(history)} messages")
         
-        # Track phrases
         phrase_count = 0
         first_phrase_sent = False
         first_phrase_time = None
@@ -114,19 +95,18 @@ class RealTimeConversationEngine:
                         session_id=session_id,
                         is_first_phrase=(phrase_count == 1),
                         is_final=(phrase_count >= 3),
-                        language="en"
+                        voice_id="default"  # ✅ CHANGED: voice_id instead of language
                     )
                 else:
                     await self.tts.publish_to_room(
                         room_name=room_name,
                         text=phrase,
-                        language="en",
+                        voice_id="default",  # ✅ CHANGED
                         streaming=True
                     )
             except Exception as e:
                 logger.warning(f"TTS callback error: {e}")
         
-        # Generate AI response
         try:
             logger.info(f"🧠 Starting AI stream (elapsed: {(time.time() - start) * 1000:.0f}ms)")
             
@@ -143,11 +123,10 @@ class RealTimeConversationEngine:
             response_text = "".join(tokens)
             total = (time.time() - start) * 1000
             
-            # Only add to history if this was a final transcription
             if not is_partial:
                 history.append({"role": "assistant", "content": response_text})
             
-            logger.info(f"✅ Complete: {total:.0f}ms, {phrase_count} phrases, partial={is_partial}")
+            logger.info(f"✅ Complete: {total:.0f}ms, {phrase_count} phrases")
             
             return {
                 "response": response_text,
@@ -166,7 +145,6 @@ class RealTimeConversationEngine:
     
     async def handle_voice_onset(self, session_id: str, room_name: str) -> Dict[str, Any]:
         try:
-            # Clear partial buffer on interruption
             self.session_partials.pop(session_id, None)
             
             if self.smart_tts:
@@ -197,7 +175,7 @@ class RealTimeConversationEngine:
         stats = {
             "active_sessions": len(self.session_history),
             "sessions_with_partials": len(self.session_partials),
-            "engine": "ultra_fast_rt",
+            "engine": "xtts_rt",
             "in_memory_only": True,
             "partial_processing": "enabled"
         }
@@ -214,6 +192,6 @@ class RealTimeConversationEngine:
             "tts_available": self.tts is not None,
             "streaming_ai_available": self.streaming_ai is not None,
             "smart_tts_enabled": self.smart_tts is not None,
-            "mode": "ultra_fast_in_memory",
+            "mode": "xtts",
             "partial_processing": "enabled"
         }

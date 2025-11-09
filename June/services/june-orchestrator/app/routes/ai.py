@@ -1,4 +1,4 @@
-"""AI processing routes - updated to use SessionService instead of legacy session_manager"""
+"""AI processing routes - XTTS voice integration"""
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 
@@ -13,7 +13,7 @@ router = APIRouter()
 @router.post("/process", response_model=AIResponse)
 async def process_with_ai(request: AIRequest, session_service = Depends(get_session_service)):
     """
-    Process text with AI and generate TTS (streaming via Chatterbox)
+    Process text with AI and generate XTTS audio
     - Called by STT service after transcription
     - Or direct API calls
     """
@@ -45,27 +45,25 @@ async def process_with_ai(request: AIRequest, session_service = Depends(get_sess
             content=ai_text
         )
 
-        # Stream TTS to LiveKit room using canonical endpoint
+        # ✅ CHANGED: Use voice_id instead of language
+        # Get voice_id from request or use default
+        voice_id = getattr(request, 'voice_id', 'default')
+        
+        # Stream XTTS to LiveKit room
         ok = await tts_service.publish_to_room(
             room_name=session.room_name,
             text=ai_text,
-            language=request.language,
-            predefined_voice_id=None,   # set if you want a specific built-in voice
-            voice_reference=None,       # set if you want cloning
-            speed=1.0,
-            emotion_level=0.5,
-            temperature=0.9,
-            cfg_weight=0.3,
-            seed=None
+            voice_id=voice_id,  # ✅ CHANGED: voice_id parameter
+            streaming=True
         )
 
         if not ok:
-            logger.warning("TTS publish_to_room returned False")
+            logger.warning("XTTS publish_to_room returned False")
 
         return AIResponse(
             session_id=request.session_id,
             text=ai_text,
-            audio_url=None,              # Streaming; no file URL
+            audio_url=None,  # Streaming; no file URL
             processing_time_ms=processing_time
         )
 

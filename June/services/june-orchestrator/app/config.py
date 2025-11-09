@@ -1,4 +1,4 @@
-"""Configuration with enhanced AI and session settings"""
+"""Configuration with XTTS voice settings"""
 import os
 import logging
 from typing import List
@@ -12,7 +12,7 @@ class ServiceConfig(BaseModel):
     tts_base_url: str
     stt_base_url: str
     gemini_api_key: str = ""
-    stt_service_token: str = ""  # For webhook authentication
+    stt_service_token: str = ""
 
 
 class LiveKitConfig(BaseModel):
@@ -28,7 +28,7 @@ class RedisConfig(BaseModel):
     port: int = 6379
     db: int = 1
     password: str = ""
-    
+
 
 class ConversationalAIConfig(BaseModel):
     """Conversational AI configuration"""
@@ -36,7 +36,7 @@ class ConversationalAIConfig(BaseModel):
     context_ttl_days: int = 7
     history_ttl_days: int = 30
     summary_ttl_days: int = 90
-    max_conversation_length: int = 200  # Max messages per conversation
+    max_conversation_length: int = 200
     topic_extraction_enabled: bool = True
     intent_recognition_enabled: bool = True
     learning_adaptation_enabled: bool = True
@@ -44,48 +44,29 @@ class ConversationalAIConfig(BaseModel):
 
 class SessionConfig(BaseModel):
     """Session management configuration"""
-    max_history_messages: int = 20  # Keep recent N messages
-    session_timeout_hours: int = 24  # Auto-cleanup after N hours
-    cleanup_interval_minutes: int = 60  # Run cleanup every N minutes
-    max_context_tokens: int = 8000  # Max tokens for context
+    max_history_messages: int = 20
+    session_timeout_hours: int = 24
+    cleanup_interval_minutes: int = 60
+    max_context_tokens: int = 8000
 
 
 class AIConfig(BaseModel):
-    """AI service configuration"""
+    """AI service configuration with XTTS voice support"""
     model: str = "gemini-2.0-flash-exp"
     temperature: float = 0.7
-    max_output_tokens: int = 1000  # Increased for conversational AI
-    max_input_length: int = 1000  # Character limit for user input
-    enable_summarization: bool = True  # Auto-summarize long conversations
-    voice_response_mode: bool = True  # Optimize for voice (brief responses)
-    default_speaker: str = "Alexandra Hisakawa"  # Default XTTS V2 speaker for June's voice
+    max_output_tokens: int = 1000
+    max_input_length: int = 1000
+    enable_summarization: bool = True
+    voice_response_mode: bool = True
+    default_voice_id: str = "default"  # ✅ CHANGED: voice_id instead of speaker
     
-    @field_validator('default_speaker')
+    @field_validator('default_voice_id')
     @classmethod
-    def validate_speaker(cls, v):
-        # List of valid XTTS V2 speakers for validation
-        valid_speakers = {
-            "Alexandra Hisakawa", "Claribel Dervla", "Daisy Studious", "Gracie Wise", 
-            "Tammie Ema", "Alison Dietlinde", "Ana Florence", "Annmarie Nele", 
-            "Asya Anara", "Brenda Stern", "Gitta Nikolina", "Henriette Usha",
-            "Sofia Hellen", "Tammy Grit", "Tanja Adelina", "Vjollca Johnnie",
-            "Nova Hogarth", "Maja Ruoho", "Uta Obando", "Lidiya Szekeres",
-            "Chandra MacFarland", "Szofi Granger", "Camilla Holmström", 
-            "Lilya Stainthorpe", "Zofija Kendrick", "Narelle Moon", "Barbora MacLean",
-            "Alma María", "Rosemary Okafor", "Andrew Chipper", "Badr Odhiambo",
-            "Dionisio Schuyler", "Royston Min", "Viktor Eka", "Abrahan Mack",
-            "Adde Michal", "Baldur Sanjin", "Craig Gutsy", "Damien Black",
-            "Gilberto Mathias", "Ilkin Urbano", "Kazuhiko Atallah", "Ludvig Milivoj",
-            "Suad Qasim", "Torcull Diarmuid", "Viktor Menelaos", "Zacharie Aimilios",
-            "Ige Behringer", "Filip Traverse", "Damjan Chapman", "Wulf Carlevaro",
-            "Aaron Dreschner", "Kumar Dahl", "Eugenio Mataracı", "Ferran Simen",
-            "Xavier Hayasaka", "Luis Moray", "Marcos Rudaski"
-        }
-        
-        if v not in valid_speakers:
-            logger.warning(f"Invalid speaker '{v}', falling back to 'Alexandra Hisakawa'")
-            return "Alexandra Hisakawa"
-        
+    def validate_voice_id(cls, v):
+        """Validate voice_id - can be any string for XTTS custom voices"""
+        if not v or len(v.strip()) == 0:
+            logger.warning(f"Empty voice_id, falling back to 'default'")
+            return "default"
         return v
 
 
@@ -192,7 +173,7 @@ class AppConfig:
             max_input_length=int(os.getenv("AI_MAX_INPUT_LENGTH", "1000")),
             enable_summarization=os.getenv("AI_ENABLE_SUMMARIZATION", "true").lower() == "true",
             voice_response_mode=os.getenv("AI_VOICE_MODE", "true").lower() == "true",
-            default_speaker=os.getenv("AI_DEFAULT_SPEAKER", "Alexandra Hisakawa")
+            default_voice_id=os.getenv("AI_DEFAULT_VOICE_ID", "default")  # ✅ CHANGED
         )
     
     def _load_rate_limit_config(self) -> RateLimitConfig:
