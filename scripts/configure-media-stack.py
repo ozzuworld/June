@@ -102,10 +102,11 @@ class MediaStackConfigurator:
             if response.status_code == 200:
                 config = response.json()
                 
-                # Enable authentication
+                # Enable authentication with password confirmation
                 config['authenticationMethod'] = 'basic'
                 config['username'] = username
                 config['password'] = password
+                config['passwordConfirmation'] = password  # Add confirmation field
                 
                 # Update config
                 update_response = self.session.put(
@@ -219,6 +220,30 @@ class MediaStackConfigurator:
             self.error(f"Error configuring root folder: {e}")
             return False
     
+    def fix_permissions(self):
+        """Fix permissions for media folders"""
+        self.log("Fixing permissions for media folders...")
+        import subprocess
+        
+        folders = [
+            "/mnt/jellyfin/media/tv",
+            "/mnt/jellyfin/media/movies",
+            "/mnt/jellyfin/media/downloads"
+        ]
+        
+        for folder in folders:
+            try:
+                # Create folder if it doesn't exist
+                Path(folder).mkdir(parents=True, exist_ok=True)
+                
+                # Change ownership to UID 1000 (the container user)
+                subprocess.run(["chown", "-R", "1000:1000", folder], check=True)
+                subprocess.run(["chmod", "-R", "775", folder], check=True)
+                
+                self.success(f"Fixed permissions for {folder}")
+            except Exception as e:
+                self.error(f"Failed to fix permissions for {folder}: {e}")
+    
     def configure_jellyseerr(self, jellyfin_username: str, jellyfin_password: str) -> bool:
         """Configure Jellyseerr with Jellyfin, Sonarr, and Radarr"""
         self.log("Preparing Jellyseerr configuration...")
@@ -269,6 +294,10 @@ class MediaStackConfigurator:
         print("=" * 60)
         print()
         
+        # Step 0: Fix permissions first
+        self.fix_permissions()
+        print()
+        
         # Step 1: Wait for all services
         services = [
             (self.prowlarr_url, "Prowlarr"),
@@ -291,16 +320,6 @@ class MediaStackConfigurator:
         
         if not all([self.prowlarr_api_key, self.sonarr_api_key, self.radarr_api_key]):
             self.error("Could not retrieve all API keys")
-            print()
-            print("API Keys found:")
-            print(f"  Prowlarr: {self.prowlarr_api_key or 'NOT FOUND'}")
-            print(f"  Sonarr: {self.sonarr_api_key or 'NOT FOUND'}")
-            print(f"  Radarr: {self.radarr_api_key or 'NOT FOUND'}")
-            print()
-            print("Please check that config files exist and services have started:")
-            print(f"  {self.prowlarr_config}")
-            print(f"  {self.sonarr_config}")
-            print(f"  {self.radarr_config}")
             return False
         
         print()
@@ -338,6 +357,7 @@ class MediaStackConfigurator:
         print("Configuration Summary")
         print("=" * 60)
         print()
+        print("✅ Permissions fixed for media folders")
         print("✅ Prowlarr configured")
         print("✅ Sonarr configured with root folder: /tv")
         print("✅ Radarr configured with root folder: /movies")
