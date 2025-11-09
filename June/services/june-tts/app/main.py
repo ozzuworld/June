@@ -166,13 +166,32 @@ async def load_xtts_model():
         else:
             logger.warning("⚠️ XTTS v2 loaded on CPU")
         
+        # DETAILED FILE CHECKING
+        logger.info(f"🔍 Checking for reference audio at: {REFERENCE_AUDIO_PATH}")
+        logger.info(f"🔍 File exists: {os.path.exists(REFERENCE_AUDIO_PATH)}")
+        
+        # Check if directory exists
+        ref_dir = os.path.dirname(REFERENCE_AUDIO_PATH)
+        logger.info(f"🔍 Directory '{ref_dir}' exists: {os.path.exists(ref_dir)}")
+        
+        # List contents of directory
+        if os.path.exists(ref_dir):
+            files = os.listdir(ref_dir)
+            logger.info(f"🔍 Files in {ref_dir}: {files}")
+        else:
+            logger.error(f"❌ Directory {ref_dir} does NOT exist!")
+        
         if os.path.exists(REFERENCE_AUDIO_PATH):
             logger.info(f"📁 Loading reference voice from {REFERENCE_AUDIO_PATH}")
+            file_size = os.path.getsize(REFERENCE_AUDIO_PATH)
+            logger.info(f"📁 File size: {file_size} bytes")
+            
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
                 audio_path=[REFERENCE_AUDIO_PATH]
             )
-            logger.info("✅ Custom speaker embeddings loaded")
+            logger.info("✅ Custom speaker embeddings loaded from June.wav!")
         else:
+            logger.warning(f"⚠️ Reference audio NOT FOUND at {REFERENCE_AUDIO_PATH}")
             logger.info("✅ Using default speaker (generating from silent audio)...")
             sample_rate = 22050
             duration = 2.0
@@ -205,6 +224,8 @@ async def load_xtts_model():
         logger.error(f"❌ Failed to load XTTS v2: {e}")
         logger.error(traceback.format_exc())
         return False
+
+
 
 async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
     import httpx
