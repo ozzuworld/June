@@ -114,7 +114,6 @@ metadata:
   namespace: ${HEADSCALE_NAMESPACE}
 data:
   config.yaml: |
-    # Headscale Configuration
     server_url: https://headscale.${DOMAIN}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 127.0.0.1:9090
@@ -122,17 +121,14 @@ data:
     grpc_listen_addr: 0.0.0.0:50443
     grpc_allow_insecure: false
     
-    # Private keys (will be auto-generated on first run)
     private_key_path: /var/lib/headscale/private.key
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
     
-    # IP address pools for the VPN mesh network
     prefixes:
       v4: ${HEADSCALE_IPV4_PREFIX}
       v6: ${HEADSCALE_IPV6_PREFIX}
     
-    # DERP configuration for NAT traversal
     derp:
       server:
         enabled: ${HEADSCALE_DERP_ENABLED}
@@ -147,14 +143,12 @@ data:
       auto_update_enabled: true
       update_frequency: 24h
     
-    # Database configuration (SQLite for simplicity)
     database:
       type: sqlite3
       sqlite:
         path: /var/lib/headscale/db.sqlite
         write_ahead_log: true
     
-    # DNS settings - magic_dns disabled to avoid conflict with server_url
     dns:
       nameservers:
         global:
@@ -165,19 +159,15 @@ data:
             - 10.96.0.10
       magic_dns: false
     
-    # Logging
     log:
       format: text
       level: info
     
-    # Policy settings
     policy:
       mode: database
     
-    # Disable update checks
     disable_check_updates: true
     
-    # Ephemeral node configuration
     ephemeral_node_inactivity_timeout: 30m
     node_update_check_interval: 10s
 EOF
@@ -310,8 +300,33 @@ EOF
     success "Headscale deployment created"
 }
 
+create_derp_service() {
+    log "Creating DERP relay service..."
+    
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: headscale-derp
+  namespace: ${HEADSCALE_NAMESPACE}
+  labels:
+    app: headscale
+spec:
+  type: ClusterIP
+  ports:
+  - name: derp-https
+    port: 443
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: headscale
+EOF
+
+    success "DERP service created"
+}
+
 create_ingress() {
-    log "Creating Ingress for Headscale..."
+    log "Creating Ingress for Headscale control server..."
     
     cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
@@ -342,7 +357,61 @@ spec:
               number: 8080
 EOF
 
-    success "Ingress created"
+    success "Control server ingress created"
+}
+
+create_derp_ingress() {
+    log "Creating Ingress for DERP relay server..."
+    
+    cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: headscale-derp
+  namespace: ${HEADSCALE_NAMESPACE}
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - tail.${DOMAIN}
+    secretName: ${WILDCARD_CERT_SECRET}
+  rules:
+  - host: tail.${DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: headscale-derp
+            port:
+              number: 443
+EOF
+
+    success "DERP relay ingress created"
+}
+
+configure_firewall() {
+    log "Configuring firewall for STUN port..."
+    
+    # Check if UFW is active
+    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+        log "Allowing STUN port 30478/UDP through UFW..."
+        ufw allow 30478/udp >/dev/null 2>&1 || true
+        success "UFW rule added"
+    elif command -v firewall-cmd &>/dev/null; then
+        log "Allowing STUN port 30478/UDP through firewalld..."
+        firewall-cmd --add-port=30478/udp --permanent >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+        success "Firewalld rule added"
+    else
+        warn "No firewall detected, skipping firewall configuration"
+    fi
 }
 
 wait_for_deployment() {
@@ -392,6 +461,7 @@ show_summary() {
     
     echo "📡 Headscale VPN Server"
     echo "  Control Server:  https://headscale.${DOMAIN}"
+    echo "  DERP Relay:      https://tail.${DOMAIN}"
     echo "  STUN Server:     ${EXTERNAL_IP}:30478 (UDP)"
     echo ""
     echo "👥 User Management"
@@ -425,7 +495,10 @@ main() {
     create_persistent_volume
     create_config
     deploy_headscale
+    create_derp_service
     create_ingress
+    create_derp_ingress
+    configure_firewall
     wait_for_deployment
     create_default_user
     generate_preauth_key
