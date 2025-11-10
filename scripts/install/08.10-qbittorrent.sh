@@ -1,6 +1,42 @@
-# PRECREATE QBITTORRENT.CONFIG WITH DESIRED USERNAME/PASSWORD
-log "Pre-setting qBittorrent Web UI username and password..."
+#!/bin/bash
+# June Platform - qBittorrent Installation Phase
+# Installs qBittorrent download client with fixed admin password
 
+set -e
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log() { echo -e "${BLUE}[$(date +'%H:%M:%S')]${NC} $1"; }
+success() { echo -e "${GREEN}✅${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠️${NC} $1"; }
+error() { echo -e "${RED}❌${NC} $1"; exit 1; }
+
+ROOT_DIR="$1"
+
+if [ -z "$DOMAIN" ]; then
+    if [ -z "$ROOT_DIR" ]; then
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+    fi
+    CONFIG_FILE="${ROOT_DIR}/config.env"
+    [ ! -f "$CONFIG_FILE" ] && error "Configuration file not found: $CONFIG_FILE"
+    log "Loading configuration from: $CONFIG_FILE"
+    source "$CONFIG_FILE"
+fi
+
+[ -z "$DOMAIN" ] && error "DOMAIN variable is not set."
+
+log "Installing qBittorrent for domain: $DOMAIN"
+
+WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
+kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
+
+# Pre-create qBittorrent config with username and password
+log "Pre-setting qBittorrent Web UI credentials..."
 cat > /mnt/media/configs/qbittorrent/qBittorrent.conf <<EOF
 [LegalNotice]
 Accepted=true
@@ -11,4 +47,167 @@ WebUI\\Password_PBKDF2=@ByteArray(ARQ77eY1NUZaQsuDHbIMCA==:0WMRkYTUWVT9wVvdDtHAj
 WebUI\\LocalHostAuth=false
 EOF
 
-chown 1000:1000 /mnt/media/configs/qbittorrent/qBittorrent.conf
+chown -R 1000:1000 /mnt/media/configs/qbittorrent
+
+# Create config directory and downloads folder
+mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
+mkdir -p /mnt/jellyfin/media/downloads/incomplete
+mkdir -p /mnt/jellyfin/media/downloads/complete
+chown -R 1000:1000 /mnt/jellyfin/media/downloads
+
+# Create PV for qBittorrent config
+log "Creating qBittorrent storage..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: qbittorrent-config-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/media/configs/qbittorrent
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qbittorrent-config
+  namespace: june-services
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+# Deploy qBittorrent
+log "Deploying qBittorrent..."
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qbittorrent
+  namespace: june-services
+  labels:
+    app: qbittorrent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qbittorrent
+  template:
+    metadata:
+      labels:
+        app: qbittorrent
+    spec:
+      containers:
+      - name: qbittorrent
+        image: lscr.io/linuxserver/qbittorrent:latest
+        ports:
+        - containerPort: 8080
+          name: webui
+        - containerPort: 6881
+          name: tcp
+          protocol: TCP
+        - containerPort: 6881
+          name: udp
+          protocol: UDP
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "America/New_York"
+        - name: WEBUI_PORT
+          value: "8080"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: downloads
+          mountPath: /downloads
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: qbittorrent-config
+      - name: downloads
+        hostPath:
+          path: /mnt/jellyfin/media/downloads
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qbittorrent
+  namespace: june-services
+spec:
+  selector:
+    app: qbittorrent
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: webui
+  - port: 6881
+    targetPort: 6881
+    name: tcp
+    protocol: TCP
+  - port: 6881
+    targetPort: 6881
+    name: udp
+    protocol: UDP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: qbittorrent-ingress
+  namespace: june-services
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - secretName: ${WILDCARD_SECRET_NAME}
+    hosts:
+    - qbittorrent.${DOMAIN}
+  rules:
+  - host: qbittorrent.${DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: qbittorrent
+            port:
+              number: 8080
+EOF
+
+kubectl wait --for=condition=ready pod -l app=qbittorrent -n june-services --timeout=300s || warn "qBittorrent not ready yet"
+
+success "qBittorrent installed!"
+echo ""
+echo "📥 qBittorrent Access:"
+echo "  URL: https://qbittorrent.${DOMAIN}"
+echo "  Default Username: admin"
+echo "  Default Password: Pokemon123!"
+echo ""
+echo "📝 Setup Instructions:"
+echo " 1. Go to https://qbittorrent.${DOMAIN}"
+echo " 2. Login with the credentials above"
+echo " 3. Change password in Tools > Options > Web UI"
+echo " 4. Use these credentials to connect Sonarr/Radarr"
