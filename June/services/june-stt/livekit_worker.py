@@ -1,3 +1,14 @@
+"""
+FIXED livekit_worker.py - Now sends FINAL transcripts after VAD detects silence
+
+KEY CHANGES:
+1. Added silence_counter to track consecutive silent chunks
+2. After 1.5 seconds of silence (3 x 500ms chunks), sends last partial as FINAL
+3. This allows natural conversation without waiting for track to end
+
+BEFORE: Only sent finals when audio track ended (user disconnects)
+AFTER: Sends finals after each utterance (when user pauses)
+"""
 import os
 import asyncio
 import logging
@@ -151,23 +162,24 @@ async def send_to_orchestrator(
         detected_lang = detect_language(text)
         
         # Build payload matching orchestrator's STTWebhookPayload model
-        # FIXED: Add proper timestamp and auto-detect language
         payload = {
             "event": "partial" if is_partial else "final",
             "room_name": room_name,
             "participant": participant,
-            "text": text,  # This is the key field!
-            "language": detected_lang,  # FIXED: Auto-detect language
+            "text": text,
+            "language": detected_lang,
             "confidence": 1.0,
-            "timestamp": datetime.utcnow().isoformat(),  # FIXED: was empty string
+            "timestamp": datetime.utcnow().isoformat(),
             "partial": is_partial,
             "segments": []
         }
         
-        logger.info(
-            f"📤 Sending to orchestrator: text='{text[:50]}...', "
-            f"partial={is_partial}, len={len(text)}"
-        )
+        # ✅ Only log finals and long partials to reduce noise
+        if not is_partial or len(text) > 20:
+            logger.info(
+                f"📤 Sending to orchestrator: text='{text[:50]}...', "
+                f"partial={is_partial}, len={len(text)}"
+            )
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -177,7 +189,8 @@ async def send_to_orchestrator(
             )
             
             if response.status_code == 200:
-                logger.info(f"✅ Orchestrator accepted transcription")
+                if not is_partial:
+                    logger.info(f"✅ Orchestrator accepted FINAL transcription")
                 return True
             else:
                 logger.error(
@@ -198,6 +211,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     """
     Subscribe to an audio track, feed PCM into WhisperStreaming processor and log transcripts.
     One processor per audio track.
+    
+    ✅ FIXED: Now sends FINAL transcripts after VAD detects silence (end of utterance)
     """
     from livekit.rtc import AudioStream
 
@@ -220,6 +235,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     # Track last sent text to avoid duplicates
     last_sent_text = ""
     last_partial_text = ""
+    
+    # ✅ NEW: Track silence for finalizing utterances
+    silence_counter = 0
+    silence_threshold = 3  # Number of silent chunks before finalizing (500ms * 3 = 1.5s)
 
     try:
         async for ev in audio_stream:
@@ -249,6 +268,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 
                 # Check for transcription output
                 output = processor.process_iter()
+                
                 if output[0] is not None:
                     beg, end, text = output
                     text = text.strip()
@@ -257,6 +277,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if not text or text == last_partial_text:
                         continue
                     
+                    # ✅ NEW: Reset silence counter when we get new text
+                    silence_counter = 0
                     last_partial_text = text
                     
                     # Log locally
@@ -277,6 +299,29 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             is_partial=True
                         )
                     )
+                else:
+                    # ✅ NEW: No output means silence detected by VAD
+                    silence_counter += 1
+                    
+                    # ✅ NEW: After enough silence, finalize the last partial as a final
+                    if silence_counter >= silence_threshold and last_partial_text:
+                        logger.info(
+                            "[LiveKit FINAL after silence] %s: %s",
+                            participant.identity,
+                            last_partial_text,
+                        )
+                        
+                        # Send FINAL transcription
+                        await send_to_orchestrator(
+                            room_name=room_name,
+                            participant=participant.identity,
+                            text=last_partial_text,
+                            is_partial=False
+                        )
+                        
+                        # Reset state
+                        last_partial_text = ""
+                        silence_counter = 0
 
         # Process any remaining audio in buffer
         if len(audio_buffer) > 0:
@@ -290,14 +335,14 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
             
             if text:  # Only send if non-empty
                 logger.info(
-                    "[LiveKit FINAL] %s %.2f–%.2fs: %s",
+                    "[LiveKit FINAL on track end] %s %.2f–%.2fs: %s",
                     participant.identity,
                     beg,
                     end,
                     text,
                 )
                 
-                # Send FINAL transcription - CRITICAL for completing the conversation
+                # Send FINAL transcription
                 await send_to_orchestrator(
                     room_name=room_name,
                     participant=participant.identity,
@@ -308,7 +353,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
             # Even if finish() returns None, send the last partial as final
             if last_partial_text:
                 logger.info(
-                    "[LiveKit FINAL from last partial] %s: %s",
+                    "[LiveKit FINAL from last partial on track end] %s: %s",
                     participant.identity,
                     last_partial_text,
                 )
