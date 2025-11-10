@@ -1,14 +1,3 @@
-"""
-FIXED livekit_worker.py - Now sends FINAL transcripts after VAD detects silence
-
-KEY CHANGES:
-1. Added silence_counter to track consecutive silent chunks
-2. After 1.5 seconds of silence (3 x 500ms chunks), sends last partial as FINAL
-3. This allows natural conversation without waiting for track to end
-
-BEFORE: Only sent finals when audio track ended (user disconnects)
-AFTER: Sends finals after each utterance (when user pauses)
-"""
 import os
 import asyncio
 import logging
@@ -174,7 +163,7 @@ async def send_to_orchestrator(
             "segments": []
         }
         
-        # ✅ Only log finals and long partials to reduce noise
+        # Only log finals and long partials to reduce noise
         if not is_partial or len(text) > 20:
             logger.info(
                 f"📤 Sending to orchestrator: text='{text[:50]}...', "
@@ -204,7 +193,7 @@ async def send_to_orchestrator(
 
 
 # ---------------------------------------------------------------------------
-# Audio → ASR
+# Audio → ASR with FULL FIX
 # ---------------------------------------------------------------------------
 
 async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.RemoteParticipant):
@@ -212,7 +201,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     Subscribe to an audio track, feed PCM into WhisperStreaming processor and log transcripts.
     One processor per audio track.
     
-    ✅ FIXED: Now sends FINAL transcripts after VAD detects silence (end of utterance)
+    FIXES APPLIED:
+    1. ✅ Sends FINAL transcripts after detecting silence (not just on disconnect)
+    2. ✅ Properly accumulates full text (Whisper gives progressive updates)
+    3. ✅ Avoids duplicate partials
     """
     from livekit.rtc import AudioStream
 
@@ -232,11 +224,11 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     # Track room name for orchestrator
     room_name = os.getenv("LIVEKIT_ROOM", "ozzu-main")
     
-    # Track last sent text to avoid duplicates
-    last_sent_text = ""
-    last_partial_text = ""
+    # ✅ FIX: Track ACCUMULATED full text (Whisper builds up progressively)
+    accumulated_text = ""  # Full utterance text so far
+    last_sent_partial = ""  # Last partial we sent (to avoid duplicates)
     
-    # ✅ NEW: Track silence for finalizing utterances
+    # ✅ FIX: Track silence for finalizing utterances
     silence_counter = 0
     silence_threshold = 3  # Number of silent chunks before finalizing (500ms * 3 = 1.5s)
 
@@ -273,54 +265,64 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     beg, end, text = output
                     text = text.strip()
                     
-                    # Skip if empty or duplicate
-                    if not text or text == last_partial_text:
+                    # Skip if empty
+                    if not text:
                         continue
                     
-                    # ✅ NEW: Reset silence counter when we get new text
+                    # ✅ FIX: ACCUMULATE the full text
+                    # Whisper streaming gives us progressive refinements of the same utterance
+                    # Each update contains the FULL text so far, not just new words
+                    accumulated_text = text
+                    
+                    # ✅ FIX: Reset silence counter when we get new text
                     silence_counter = 0
-                    last_partial_text = text
                     
-                    # Log locally
-                    logger.info(
-                        "[LiveKit partial] %s %.2f–%.2fs: %s",
-                        participant.identity,
-                        beg,
-                        end,
-                        text,
-                    )
-                    
-                    # Send partial transcription
-                    asyncio.create_task(
-                        send_to_orchestrator(
-                            room_name=room_name,
-                            participant=participant.identity,
-                            text=text,
-                            is_partial=True
+                    # Only send partial if it's significantly different from last one
+                    # This avoids sending duplicate partials for tiny changes
+                    if text != last_sent_partial and len(text) > len(last_sent_partial):
+                        last_sent_partial = text
+                        
+                        # Log locally
+                        logger.info(
+                            "[LiveKit partial] %s %.2f–%.2fs: %s",
+                            participant.identity,
+                            beg,
+                            end,
+                            text,
                         )
-                    )
+                        
+                        # Send partial transcription
+                        asyncio.create_task(
+                            send_to_orchestrator(
+                                room_name=room_name,
+                                participant=participant.identity,
+                                text=text,
+                                is_partial=True
+                            )
+                        )
                 else:
-                    # ✅ NEW: No output means silence detected by VAD
+                    # ✅ FIX: No output means silence detected by VAD
                     silence_counter += 1
                     
-                    # ✅ NEW: After enough silence, finalize the last partial as a final
-                    if silence_counter >= silence_threshold and last_partial_text:
+                    # ✅ FIX: After enough silence, finalize with FULL accumulated text
+                    if silence_counter >= silence_threshold and accumulated_text:
                         logger.info(
                             "[LiveKit FINAL after silence] %s: %s",
                             participant.identity,
-                            last_partial_text,
+                            accumulated_text,  # ✅ Send complete utterance!
                         )
                         
-                        # Send FINAL transcription
+                        # Send FINAL transcription with complete accumulated text
                         await send_to_orchestrator(
                             room_name=room_name,
                             participant=participant.identity,
-                            text=last_partial_text,
+                            text=accumulated_text,  # ✅ Complete text!
                             is_partial=False
                         )
                         
-                        # Reset state
-                        last_partial_text = ""
+                        # Reset state for next utterance
+                        accumulated_text = ""
+                        last_sent_partial = ""
                         silence_counter = 0
 
         # Process any remaining audio in buffer
@@ -350,17 +352,17 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     is_partial=False
                 )
         else:
-            # Even if finish() returns None, send the last partial as final
-            if last_partial_text:
+            # Even if finish() returns None, send accumulated text if we have it
+            if accumulated_text:
                 logger.info(
-                    "[LiveKit FINAL from last partial on track end] %s: %s",
+                    "[LiveKit FINAL from accumulated on track end] %s: %s",
                     participant.identity,
-                    last_partial_text,
+                    accumulated_text,
                 )
                 await send_to_orchestrator(
                     room_name=room_name,
                     participant=participant.identity,
-                    text=last_partial_text,
+                    text=accumulated_text,
                     is_partial=False
                 )
                 

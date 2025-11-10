@@ -1,12 +1,15 @@
 """
-Simple Voice Assistant - Natural Conversation v2
-STT → LLM → TTS with IMPROVED CONTEXT AWARENESS
+Simple Voice Assistant - Natural Conversation (Production Ready)
+STT → LLM → TTS with all fixes applied
 
-IMPROVEMENTS OVER v1:
-- Better system prompt that emphasizes conversational context
-- Clearer history formatting for LLM
-- Better handling of unclear transcriptions
-- Stronger intent inference
+FIXES INCLUDED:
+1. ✅ Ignores partial transcripts (processes finals only)
+2. ✅ Deduplication (3-second window)
+3. ✅ Processing locks (one response per session at a time)
+4. ✅ Sequential TTS (await, not create_task)
+5. ✅ TTS timeout (10 seconds max)
+6. ✅ Improved context-aware system prompt
+7. ✅ Better conversational understanding
 """
 import asyncio
 import logging
@@ -70,12 +73,7 @@ class ConversationHistory:
 
 class SimpleVoiceAssistant:
     """
-    Minimal voice assistant with natural conversation flow
-    
-    IMPROVEMENTS v2:
-    - Better system prompt with context awareness
-    - Clearer conversation history formatting
-    - Intent inference for unclear transcriptions
+    Production-ready voice assistant with natural conversation flow
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -105,11 +103,11 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant v2 initialized")
+        logger.info("✅ Simple Voice Assistant (Production) initialized")
         logger.info("   - Mode: Direct STT → LLM → TTS")
         logger.info("   - History: Last 3 exchanges")
-        logger.info("   - Improved: Context-aware prompts")
-        logger.info("   - Improved: Intent inference")
+        logger.info("   - Context-aware prompts")
+        logger.info("   - All fixes applied")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -136,9 +134,9 @@ class SimpleVoiceAssistant:
         return False
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """Build natural conversation prompt with IMPROVED context awareness"""
+        """Build natural conversation prompt with improved context awareness"""
         
-        # ✅ IMPROVED: Much better system prompt
+        # Context-aware system prompt
         system = """You are June, a friendly and intelligent voice assistant. You have natural conversations with users.
 
 CONVERSATION RULES:
@@ -183,7 +181,7 @@ Remember: You're having a CONVERSATION, not answering isolated questions."""
             
             context = "\n".join(context_lines)
             
-            # ✅ IMPROVED: More explicit context handling
+            # More explicit context handling
             prompt = f"""{system}
 
 === Recent Conversation ===
@@ -331,7 +329,7 @@ You (June):"""
                                     self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
                                 )
                         
-                        # Send to TTS with natural pacing (SEQUENTIAL - await!)
+                        # FIX 6: Send to TTS SEQUENTIALLY (await, not create_task!)
                         logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
                         await self._send_to_tts(room_name, sentence, session_id)
                         self.total_sentences_sent += 1
@@ -451,7 +449,7 @@ You (June):"""
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # Add timeout to prevent hanging
+            # FIX 7: Add timeout to prevent hanging
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -488,7 +486,7 @@ You (June):"""
         total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
         
         return {
-            "mode": "simple_voice_assistant_v2",
+            "mode": "simple_voice_assistant_production",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -518,7 +516,7 @@ You (June):"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_v2",
+            "assistant": "simple_voice_assistant_production",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
