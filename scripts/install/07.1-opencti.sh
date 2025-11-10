@@ -135,6 +135,7 @@ OPENCTI_ADMIN_EMAIL="${OPENCTI_ADMIN_EMAIL:-admin@${DOMAIN}}"
 OPENCTI_ADMIN_PASSWORD="${OPENCTI_ADMIN_PASSWORD:-$(openssl rand -base64 16)}"
 REDIS_PASSWORD=$(openssl rand -base64 16)
 RABBITMQ_PASSWORD=$(openssl rand -base64 16)
+RABBITMQ_ERLANG_COOKIE=$(openssl rand -hex 32)
 MINIO_ROOT_USER="opencti"
 MINIO_ROOT_PASSWORD=$(openssl rand -base64 16)
 
@@ -151,9 +152,13 @@ else
     warn "OpenCTI will still deploy, but HTTPS may not work until certificate is ready"
 fi
 
-# Create Helm values file
+# Create Helm values file with CORRECT service name references
 log "Creating OpenCTI Helm values..."
 cat > /tmp/opencti-values.yaml <<EOF
+# Global release name
+nameOverride: "opencti"
+fullnameOverride: "opencti"
+
 # OpenCTI Platform Configuration
 opencti:
   enabled: true
@@ -186,10 +191,40 @@ opencti:
       value: "LocalStrategy"
     - name: APP__TELEMETRY__METRICS__ENABLED
       value: "true"
+    # CRITICAL: Correct service name references
+    - name: ELASTICSEARCH__URL
+      value: "http://opencti-opensearch-cluster-master:9200"
+    - name: REDIS__HOSTNAME
+      value: "opencti-redis-master"
+    - name: REDIS__PORT
+      value: "6379"
+    - name: REDIS__PASSWORD
+      value: "${REDIS_PASSWORD}"
+    - name: RABBITMQ__HOSTNAME
+      value: "opencti-rabbitmq"
+    - name: RABBITMQ__PORT
+      value: "5672"
+    - name: RABBITMQ__PORT_MANAGEMENT
+      value: "15672"
+    - name: RABBITMQ__USERNAME
+      value: "opencti"
+    - name: RABBITMQ__PASSWORD
+      value: "${RABBITMQ_PASSWORD}"
+    - name: MINIO__ENDPOINT
+      value: "opencti-minio:9000"
+    - name: MINIO__PORT
+      value: "9000"
+    - name: MINIO__USE_SSL
+      value: "false"
+    - name: MINIO__ACCESS_KEY
+      value: "${MINIO_ROOT_USER}"
+    - name: MINIO__SECRET_KEY
+      value: "${MINIO_ROOT_PASSWORD}"
   
   service:
     type: ClusterIP
-    port: 4000
+    port: 80
+    targetPort: 4000
   
   resources:
     requests:
@@ -208,6 +243,14 @@ worker:
     repository: opencti/worker
     tag: "6.3.9"
   
+  env:
+    - name: OPENCTI_URL
+      value: "http://opencti-server:80"
+    - name: OPENCTI_TOKEN
+      value: "${OPENCTI_ADMIN_TOKEN}"
+    - name: WORKER_LOG_LEVEL
+      value: "info"
+  
   resources:
     requests:
       memory: 512Mi
@@ -219,6 +262,9 @@ worker:
 # OpenSearch Configuration (replaces Elasticsearch)
 opensearch:
   enabled: true
+  
+  clusterName: "opencti"
+  nodeGroup: "cluster-master"
   
   replicas: 1
   
@@ -306,6 +352,12 @@ minio:
       memory: 2Gi
       cpu: 1000m
   
+  # Create default bucket for OpenCTI
+  buckets:
+    - name: opencti-bucket
+      policy: none
+      purge: false
+  
   # Init container to fix permissions
   extraInitContainers:
     - name: fix-permissions
@@ -358,7 +410,7 @@ rabbitmq:
   auth:
     username: opencti
     password: "${RABBITMQ_PASSWORD}"
-    erlangCookie: "$(openssl rand -hex 32)"
+    erlangCookie: "${RABBITMQ_ERLANG_COOKIE}"
   
   persistence:
     enabled: true
@@ -412,6 +464,11 @@ log "Generated OpenCTI configuration:"
 log "  Hostname: dark.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
 log "  Admin Email: ${OPENCTI_ADMIN_EMAIL}"
+log "  Service URLs:"
+log "    - OpenSearch: http://opencti-opensearch-cluster-master:9200"
+log "    - Redis: opencti-redis-master:6379"
+log "    - RabbitMQ: opencti-rabbitmq:5672"
+log "    - MinIO: opencti-minio:9000"
 
 # Install OpenCTI via Helm
 log "Installing OpenCTI with Helm (this may take 10-15 minutes)..."
@@ -444,6 +501,12 @@ kubectl wait --for=condition=ready pod \
   -n june-services \
   --timeout=300s || warn "RabbitMQ not ready yet"
 
+log "Waiting for Redis to be ready..."
+kubectl wait --for=condition=ready pod \
+  -l app.kubernetes.io/name=redis \
+  -n june-services \
+  --timeout=300s || warn "Redis not ready yet"
+
 log "Waiting for OpenCTI platform to be ready..."
 kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/name=opencti,opencti.component=server \
@@ -453,6 +516,10 @@ kubectl wait --for=condition=ready pod \
 # Get deployment status
 log "OpenCTI deployment status:"
 kubectl get pods -n june-services | grep -E "(opencti|opensearch|minio|rabbitmq|redis)" || true
+
+# Verify services
+log "OpenCTI services:"
+kubectl get svc -n june-services | grep -E "(opencti|opensearch|minio|rabbitmq|redis)" || true
 
 # Verify ingress
 log "OpenCTI ingress status:"
@@ -468,6 +535,12 @@ Admin Email: ${OPENCTI_ADMIN_EMAIL}
 Admin Password: ${OPENCTI_ADMIN_PASSWORD}
 Admin Token: ${OPENCTI_ADMIN_TOKEN}
 
+Service Endpoints (Internal):
+  OpenSearch: http://opencti-opensearch-cluster-master:9200
+  Redis: opencti-redis-master:6379
+  RabbitMQ: opencti-rabbitmq:5672
+  MinIO: opencti-minio:9000
+
 MinIO (S3 Storage):
   Root User: ${MINIO_ROOT_USER}
   Root Password: ${MINIO_ROOT_PASSWORD}
@@ -475,6 +548,7 @@ MinIO (S3 Storage):
 Redis Password: ${REDIS_PASSWORD}
 RabbitMQ Username: opencti
 RabbitMQ Password: ${RABBITMQ_PASSWORD}
+RabbitMQ Erlang Cookie: ${RABBITMQ_ERLANG_COOKIE}
 
 Generated: $(date)
 EOF
@@ -501,6 +575,7 @@ echo "  Using shared wildcard certificate: ${WILDCARD_SECRET_NAME}"
 echo ""
 echo "🔍 Verify deployment:"
 echo "  kubectl get pods -n june-services | grep opencti"
+echo "  kubectl get svc -n june-services | grep opencti"
 echo "  kubectl logs -f deployment/opencti-server -n june-services"
 echo ""
 echo "⚠️  Note: First login may take 2-3 minutes after pods are ready"
