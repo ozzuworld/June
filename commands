@@ -88,6 +88,10 @@ git push origin master --force
 kubectl exec -n headscale deployment/headscale -- headscale users create gpu-worker
 kubectl exec -n headscale deployment/headscale -- headscale users create hadmin
 kubectl exec -n headscale deployment/headscale -- \
+  headscale --user gpu-worker preauthkeys create --reusable --expiration 24h
+
+kubectl exec -n headscale deployment/headscale -- headscale users create hadmin
+kubectl exec -n headscale deployment/headscale -- \
   headscale --user hadmin preauthkeys create --reusable --expiration 24h
 kubectl exec -n headscale deployment/headscale -- headscale nodes list
 
@@ -130,10 +134,7 @@ source config.env
 # Then upgrade with values
 helm upgrade --install june-platform ./helm/june-platform \
   --namespace june-services \
-  --values ./helm/june-platform/values.yaml \
-  --set secrets.geminiApiKey="$GEMINI_API_KEY" \
-  --set secrets.postgresqlPassword="$POSTGRESQL_PASSWORD"
-
+  --values ./helm/june-platform/values.yaml
 
 
 
