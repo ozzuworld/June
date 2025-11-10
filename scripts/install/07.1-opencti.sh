@@ -1,5 +1,6 @@
 #!/bin/bash
-# June Platform - OpenCTI Installation Phase (Fixed for devops-ia/helm-opencti chart)
+# June Platform - OpenCTI Installation Phase
+# Installs OpenCTI Cyber Threat Intelligence Platform using Helm chart
 
 set -e
 
@@ -84,7 +85,7 @@ else
     warn "Wildcard certificate not found: $WILDCARD_SECRET_NAME"
 fi
 
-# Create values file with CORRECT structure (env as object, not array!)
+# Create values file - ALL FIXES APPLIED
 log "Creating Helm values with correct structure..."
 cat > /tmp/opencti-values.yaml <<EOF
 # OpenCTI Platform Environment Variables (as KEY: VALUE map, not array!)
@@ -108,8 +109,8 @@ env:
   MINIO__SECRET_KEY: "${MINIO_PASSWORD}"
   MINIO__USE_SSL: false
   
-  # OPENSEARCH (using opensearch instead of elasticsearch)
-  ELASTICSEARCH__URL: "http://opencti-opensearch-cluster-master:9200"
+  # OPENSEARCH - FIXED: Correct service name without opencti- prefix
+  ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
   
   # RABBITMQ
   RABBITMQ__HOSTNAME: "opencti-rabbitmq"
@@ -118,8 +119,8 @@ env:
   RABBITMQ__USERNAME: "opencti"
   RABBITMQ__PASSWORD: "${RABBITMQ_PASSWORD}"
   
-  # REDIS
-  REDIS__HOSTNAME: "opencti-redis-master"
+  # REDIS - FIXED: Correct service name
+  REDIS__HOSTNAME: "opencti-redis"
   REDIS__PORT: 6379
   REDIS__MODE: "single"
 
@@ -132,7 +133,7 @@ resources:
     memory: 8Gi
     cpu: 4000m
 
-# Worker Configuration (env as object!)
+# Worker Configuration
 worker:
   enabled: true
   replicaCount: 2
@@ -149,7 +150,7 @@ worker:
       memory: 2Gi
       cpu: 2000m
 
-# OpenSearch Configuration - FIXED: Removed invalid compatibility setting!
+# OpenSearch Configuration - FIXED: Removed invalid compatibility.override_main_response_version
 opensearch:
   enabled: true
   replicas: 1
@@ -279,6 +280,8 @@ log "Generated OpenCTI configuration:"
 log "  Hostname: dark.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
 log "  Admin Email: ${ADMIN_EMAIL}"
+log "  OpenSearch: http://opensearch-cluster-master:9200"
+log "  Redis: opencti-redis:6379"
 
 # Install OpenCTI via Helm
 log "Installing OpenCTI with Helm (this may take 10-15 minutes)..."
@@ -290,7 +293,7 @@ helm upgrade --install opencti opencti/opencti \
 
 log "Waiting for OpenSearch to be ready..."
 kubectl wait --for=condition=ready pod \
-  -l app.kubernetes.io/component=opensearch-cluster-master \
+  -l app.kubernetes.io/name=opensearch \
   -n june-services \
   --timeout=600s || warn "OpenSearch not ready yet"
 
@@ -328,8 +331,8 @@ Admin Token: ${OPENCTI_TOKEN}
 Health Access Key: ${HEALTH_KEY}
 
 Service Endpoints:
-  OpenSearch: http://opencti-opensearch-cluster-master:9200
-  Redis: opencti-redis-master:6379
+  OpenSearch: http://opensearch-cluster-master:9200
+  Redis: opencti-redis:6379
   RabbitMQ: opencti-rabbitmq:5672
   MinIO: opencti-minio:9000
 
