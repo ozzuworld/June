@@ -338,15 +338,29 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 logger.error(f"❌ Fallback also failed: {fallback_error}")
                 yield "I'm experiencing technical difficulties."
     
+    # At the top of the class, add this attribute:
+def __init__(self, gemini_api_key: str, tts_service):
+    # ... existing code ...
+    self._last_tts_time: Dict[str, float] = {}  # ← ADD THIS LINE
+
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
-        """Send text to TTS service (fire and forget)"""
+        """Send text to TTS service with natural pacing"""
         try:
+            # ✅ ADD: Wait if we just sent TTS recently
+            if session_id in self._last_tts_time:
+                time_since_last = time.time() - self._last_tts_time[session_id]
+                if time_since_last < 1.5:  # Wait at least 1.5 seconds between sentences
+                    delay = 1.5 - time_since_last
+                    logger.info(f"⏸️ Pacing delay: {delay:.1f}s (natural sentence spacing)")
+                    await asyncio.sleep(delay)
+            
             tts_start = time.time()
+            self._last_tts_time[session_id] = tts_start  # ✅ Track when we sent this
             
             await self.tts.publish_to_room(
                 room_name=room_name,
                 text=text,
-                voice_id="default",  # Use default XTTS voice
+                voice_id="default",
                 streaming=True
             )
             
