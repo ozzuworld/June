@@ -73,7 +73,7 @@ kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":
 kubectl get pods -n june-services -w
 
 
-kubectl rollout restart deployment/june-orchestrator -n june-services
+kubectl rollout restart deployment/june-qbittorrent -n june-services
 kubectl get pods -n june-services -w
 
 git pull
