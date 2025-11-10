@@ -1,4 +1,8 @@
-"""Simplified main.py - XTTS Voice System"""
+"""
+Updated main.py - Changes to make
+
+ONLY CHANGE THE LIFESPAN FUNCTION - rest stays the same
+"""
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -9,8 +13,11 @@ from starlette.requests import Request
 
 from .core.dependencies import get_session_service, get_config
 from .routes.webhooks import router as webhooks_router
-from .routes.xtts_voices import router as voices_router  # ✅ CHANGED: XTTS voices
+from .routes.xtts_voices import router as voices_router
 from .routes.livekit_token import router as livekit_router
+
+# ✅ ADD THIS IMPORT
+from .services.simple_assistant import initialize_assistant
 
 config = get_config()
 
@@ -60,9 +67,17 @@ async def cleanup_sessions_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan - XTTS version"""
+    """
+    Application lifespan - UPDATED FOR SIMPLE ASSISTANT
+    
+    CHANGES FROM OLD VERSION:
+    - Removed: RealTimeConversationEngine initialization
+    - Removed: StreamingAIService initialization  
+    - Removed: SmartTTSQueue initialization
+    - Added: SimpleVoiceAssistant initialization
+    """
     logger.info("=" * 80)
-    logger.info("🚀 June Orchestrator - XTTS VOICE SYSTEM")
+    logger.info("🚀 June Orchestrator - SIMPLE VOICE ASSISTANT")
     logger.info("=" * 80)
     
     # Initialize core services
@@ -73,14 +88,22 @@ async def lifespan(app: FastAPI):
     logger.info(f"  STT: {config.services.stt_base_url}")
     logger.info(f"  LiveKit: {config.livekit.ws_url}")
     logger.info(f"  AI Model: {config.ai.model}")
-    logger.info(f"  Default Voice: {config.ai.default_voice_id}")  # ✅ CHANGED
     
-    logger.info("✨ XTTS FEATURES:")
-    logger.info("  ✅ Voice cloning from reference audio")
-    logger.info("  ✅ PostgreSQL voice storage")
-    logger.info("  ✅ Single RT engine (no duplication)")
-    logger.info("  ✅ Direct STT → AI → XTTS flow")
-    logger.info("  ✅ SmartTTSQueue for natural timing")
+    # ✅ NEW: Initialize simple assistant
+    logger.info("\n🎙️ Initializing Simple Voice Assistant...")
+    try:
+        initialize_assistant()
+        logger.info("✅ Simple Voice Assistant ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize assistant: {e}")
+        raise
+    
+    logger.info("\n✨ SIMPLE PIPELINE:")
+    logger.info("  ✅ Direct STT → LLM → TTS flow")
+    logger.info("  ✅ No buffering queues")
+    logger.info("  ✅ No complex state management")
+    logger.info("  ✅ Sentence-based TTS chunking")
+    logger.info("  ✅ In-memory conversation history")
     logger.info("=" * 80)
     
     # Start background cleanup
@@ -98,8 +121,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="June Orchestrator",
-    version="9.0.0-XTTS",
-    description="AI Voice Assistant with XTTS Voice Cloning",
+    version="10.0.0-SIMPLE",
+    description="AI Voice Assistant with Simple Architecture",
     lifespan=lifespan
 )
 
@@ -115,41 +138,54 @@ app.add_middleware(
 
 # Register routes
 app.include_router(webhooks_router, tags=["Webhooks"])
-app.include_router(voices_router, tags=["XTTS Voices"])  # ✅ CHANGED
+app.include_router(voices_router, tags=["XTTS Voices"])
 app.include_router(livekit_router, tags=["LiveKit"])
 
 
 @app.get("/")
 async def root():
-    session_service = get_session_service()
-    stats = session_service.get_stats()
+    """Root endpoint with system info"""
+    from .services.simple_assistant import get_assistant
+    
+    assistant = get_assistant()
+    stats = assistant.get_stats()
     
     return {
         "service": "june-orchestrator",
-        "version": "9.0.0-XTTS",
-        "description": "AI Voice Assistant with XTTS Voice Cloning",
-        "tts_engine": "XTTS-v2",
-        "voice_storage": "PostgreSQL",
+        "version": "10.0.0-SIMPLE",
+        "description": "AI Voice Assistant with Simple Architecture",
+        "architecture": "simple",
+        "pipeline": "STT → LLM → TTS",
         "features": {
-            "voice_cloning": True,
-            "custom_voices": True,
-            "single_rt_engine": True,
-            "smart_tts_queue": True,
-            "natural_conversation": True
+            "direct_flow": True,
+            "sentence_chunking": True,
+            "conversation_memory": True,
+            "low_latency": True,
+            "simple_codebase": True
         },
-        "stats": {
-            "active_sessions": stats.active_sessions,
-            "total_sessions": stats.total_sessions_created,
-            "total_messages": stats.total_messages
-        }
+        "stats": stats
     }
 
 
 @app.get("/healthz")
 async def healthz():
-    return {
-        "status": "healthy",
-        "service": "june-orchestrator",
-        "version": "9.0.0-XTTS",
-        "tts_engine": "XTTS-v2"
-    }
+    """Health check endpoint"""
+    try:
+        from .services.simple_assistant import get_assistant
+        
+        assistant = get_assistant()
+        health = await assistant.health_check()
+        
+        return {
+            "status": "healthy",
+            "service": "june-orchestrator",
+            "version": "10.0.0-SIMPLE",
+            "assistant": health
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "june-orchestrator",
+            "error": str(e)
+        }

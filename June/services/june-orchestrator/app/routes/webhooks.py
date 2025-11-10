@@ -1,161 +1,196 @@
-"""Streamlined webhook routes - Single path, no duplication
+"""
+SIMPLIFIED Webhook Handler
+Replaces the complex RealTimeConversationEngine pipeline
 
-REMOVED:
-- Conversation processor (redundant with RT engine)
-- Preprocessing (causing Redis errors)
-- Complex routing logic
-- Natural flow detection (RT engine handles this)
+Simple flow: STT → SimpleVoiceAssistant → TTS
 """
 import logging
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Request
+from typing import Dict, Any
 
-from ..models.requests import STTWebhookPayload
-from ..models.responses import WebhookResponse
-from ..core.dependencies import session_service_dependency
-from ..services.real_time_conversation_engine import RealTimeConversationEngine
-from ..services.streaming_service import streaming_ai_service
-from ..services.tts_service import tts_service
+from ..services.simple_assistant import get_assistant
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Single global RT engine instance
-_rt_engine: RealTimeConversationEngine | None = None
 
-def get_rt_engine() -> RealTimeConversationEngine:
-    global _rt_engine
-    if _rt_engine is None:
-        _rt_engine = RealTimeConversationEngine(
-            redis_client=None,  # Disable Redis preprocessing
-            tts_service=tts_service,
-            streaming_ai_service=streaming_ai_service
-        )
-        logger.info("✅ RT engine initialized (Redis disabled)")
-    return _rt_engine
-
-
-@router.post("/api/webhooks/stt", response_model=WebhookResponse)
-async def handle_stt_webhook(
-    request: Request,
-    sessions = Depends(session_service_dependency)
-) -> WebhookResponse:
-    """Single entry point - all STT goes through RT engine only"""
+@router.post("/api/webhooks/stt")
+async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
+    """
+    Main STT webhook endpoint
     
-    # Get raw payload for debugging
-    raw_body = await request.json()
-    logger.info(f"📥 RAW WEBHOOK PAYLOAD: {raw_body}")
+    Handles both partial and final transcripts with simple buffering
+    """
     
-    # Parse into model
     try:
-        payload = STTWebhookPayload(**raw_body)
-    except Exception as e:
-        logger.error(f"❌ Failed to parse payload: {e}")
-        logger.error(f"Raw payload keys: {raw_body.keys()}")
-        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
-    
-    logger.info(f"🎤️ STT webhook: {payload.participant} -> {payload.room_name}")
-    logger.info(f"📝 Payload fields: text={payload.text}, event={payload.event}, partial={payload.partial}")
-    
-    # Extract text from various possible fields
-    text = (
-        getattr(payload, 'text', '') or
-        getattr(payload, 'transcript', '') or
-        getattr(payload, 'final_text', '') or
-        ''
-    ).strip()
-    
-    logger.info(f"📝 EXTRACTED TEXT: '{text}' (length: {len(text)})")
-    
-    # Determine if partial
-    is_partial = (
-        getattr(payload, 'partial', False) or
-        getattr(payload, 'is_partial', False) or
-        payload.event in ['partial', 'interim']
-    )
-    
-    logger.info(f"🔍 IS_PARTIAL: {is_partial}, EVENT: {payload.event}")
-    
-    # Skip ONLY completely empty input
-    if not text:
-        logger.warning(f"⚠️ SKIPPING: Empty text")
-        return WebhookResponse(
-            status="skipped", 
-            message="Empty input",
-            success=True
+        # Parse payload
+        payload = await request.json()
+        
+        # Log incoming payload
+        logger.debug(f"📥 Received payload: {payload}")
+        
+        # Extract fields (handles various STT formats)
+        session_id = payload.get("participant") or payload.get("session_id") or "unknown"
+        room_name = payload.get("room_name") or payload.get("roomName") or "unknown"
+        
+        # Get text from various possible fields
+        text = (
+            payload.get("text") or 
+            payload.get("transcript") or 
+            payload.get("final_text") or 
+            payload.get("content") or
+            ""
+        ).strip()
+        
+        # Determine if partial
+        is_partial = (
+            payload.get("partial", False) or
+            payload.get("is_partial", False) or
+            payload.get("event") == "partial" or
+            payload.get("type") == "partial"
         )
-    
-    # CHANGED: Allow short text - let RT engine decide what to do with it
-    if len(text) < 2:
-        logger.info(f"⚠️ Very short text ({len(text)} chars): '{text}' - processing anyway")
-    
-    # Route EVERYTHING through RT engine
-    try:
-        logger.info(f"🚀 CALLING RT ENGINE with text: '{text}'")
-        rt_engine = get_rt_engine()
-        result = await rt_engine.handle_user_input(
-            session_id=payload.participant,
-            room_name=payload.room_name,
+        
+        # Validate input
+        if not text:
+            logger.warning("⚠️ Empty text received, skipping")
+            return {
+                "status": "skipped",
+                "reason": "empty_text",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        if not room_name or room_name == "unknown":
+            logger.error(f"❌ Invalid room_name: {room_name}")
+            raise HTTPException(status_code=400, detail="room_name is required")
+        
+        # Log incoming request
+        status_label = "PARTIAL" if is_partial else "FINAL"
+        logger.info(
+            f"📥 [{status_label}] "
+            f"Session: {session_id[:8]}... "
+            f"Room: {room_name} "
+            f"Text: '{text[:50]}...'"
+        )
+        
+        # Get assistant and process
+        assistant = get_assistant()
+        
+        result = await assistant.handle_transcript(
+            session_id=session_id,
+            room_name=room_name,
             text=text,
-            audio_data=getattr(payload, 'audio_data', None),
             is_partial=is_partial
         )
         
-        logger.info(f"✅ RT ENGINE RESULT: {result}")
+        # Add metadata to response
+        result["timestamp"] = datetime.utcnow().isoformat()
+        result["session_id"] = session_id
+        result["room_name"] = room_name
         
-        status = "partial_processed" if is_partial else "response_generated"
+        return result
         
-        return WebhookResponse(
-            status=status,
-            message=f"Processed in {result.get('first_phrase_time_ms', 0):.0f}ms",
-            success='error' not in result,
-            processing_time=result.get('total_time_ms', 0),
-            metadata={
-                "engine": "real_time_only",
-                "phrases_sent": result.get('phrases_sent', 0)
-            }
-        )
-        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"❌ STT webhook failed: {e}")
-        raise HTTPException(status_code=500, detail="Processing failed")
+        logger.error(f"❌ Webhook error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error: {str(e)}"
+        )
 
 
 @router.post("/api/webhooks/voice_onset")
-async def handle_voice_onset(payload: dict):
-    """Handle interruptions"""
+async def handle_voice_onset(request: Request):
+    """
+    Handle user interruptions (voice onset detection)
+    
+    Called when user starts speaking while assistant is talking
+    """
     try:
-        session_id = payload.get("session_id")
-        room_name = payload.get("room_name")
+        payload = await request.json()
+        
+        session_id = payload.get("session_id") or payload.get("participant")
+        room_name = payload.get("room_name") or payload.get("roomName")
         
         if not session_id or not room_name:
-            raise HTTPException(400, "session_id and room_name required")
+            raise HTTPException(
+                status_code=400,
+                detail="session_id and room_name are required"
+            )
         
-        rt_engine = get_rt_engine()
-        result = await rt_engine.handle_voice_onset(session_id, room_name)
+        logger.info(f"🛑 Voice onset detected: {session_id[:8]}... in room {room_name}")
         
-        return {
-            "status": "interrupted",
-            "session_id": session_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "result": result
-        }
+        # Handle interruption
+        assistant = get_assistant()
+        result = await assistant.handle_interruption(session_id, room_name)
         
+        result["timestamp"] = datetime.utcnow().isoformat()
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Voice onset failed: {e}")
-        raise HTTPException(500, "Interrupt failed")
+        logger.error(f"❌ Voice onset error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/streaming/status")
 async def get_streaming_status():
-    """Simple status endpoint"""
+    """
+    Get assistant status and statistics
+    """
     try:
-        rt_engine = get_rt_engine()
+        assistant = get_assistant()
+        stats = assistant.get_stats()
+        
         return {
-            "engine": "real_time_only",
-            "stats": rt_engine.get_global_stats(),
-            "simplified": True
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "mode": "simple_pipeline",
+            "description": "Direct STT → LLM → TTS flow",
+            "stats": stats
         }
     except Exception as e:
-        logger.error(f"❌ Status error: {e}")
-        raise HTTPException(500, "Status unavailable")
+        logger.error(f"❌ Status error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/api/sessions/{session_id}/history")
+async def clear_session_history(session_id: str):
+    """
+    Clear conversation history for a session
+    """
+    try:
+        assistant = get_assistant()
+        assistant.clear_session(session_id)
+        
+        return {
+            "status": "success",
+            "message": f"History cleared for session {session_id}",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"❌ Clear history error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/sessions/{session_id}/history")
+async def get_session_history(session_id: str):
+    """
+    Get conversation history for a session
+    """
+    try:
+        assistant = get_assistant()
+        history = assistant.history.get_history(session_id)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "message_count": len(history),
+            "history": history,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"❌ Get history error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
