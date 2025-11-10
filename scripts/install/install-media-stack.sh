@@ -23,7 +23,7 @@ PHASES=(
     "08.8-radarr.sh"
     "08.9-jellyseerr.sh"
     "08.10-qbittorrent.sh"
-    "08.11-configure-media-stack.sh"
+    "08.11-configure-media.sh"
 )
 
 for phase in "${PHASES[@]}"; do
