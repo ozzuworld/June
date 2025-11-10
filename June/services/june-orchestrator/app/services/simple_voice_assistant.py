@@ -1,13 +1,6 @@
 """
 Simple Voice Assistant - Natural Conversation
 STT → LLM → TTS with minimal overhead
-
-This replaces:
-- RealTimeConversationEngine
-- StreamingAIService  
-- UltraFastPhraseBuffer
-- SmartTTSQueue
-- ai_service.py
 """
 import asyncio
 import logging
@@ -33,7 +26,7 @@ class ConversationHistory:
     
     def __init__(self, max_turns: int = 3):
         self.sessions: Dict[str, List[Message]] = {}
-        self.max_turns = max_turns  # Keep last N exchanges (2N messages)
+        self.max_turns = max_turns
         logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
     
     def add_message(self, session_id: str, role: str, content: str):
@@ -72,12 +65,6 @@ class ConversationHistory:
 class SimpleVoiceAssistant:
     """
     Minimal voice assistant with natural conversation flow
-    
-    Key principles:
-    1. Only process FINAL transcripts (buffer short partials)
-    2. Stream LLM response in sentence chunks
-    3. Send to TTS immediately when sentence completes
-    4. Keep conversation history small (last 3 exchanges)
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -85,7 +72,7 @@ class SimpleVoiceAssistant:
         self.tts = tts_service
         self.history = ConversationHistory(max_turns=3)
         
-        # Simple sentence detection - matches . ! ? and their variants
+        # Simple sentence detection
         self.sentence_end = re.compile(r'[.!?。！？]+\s*')
         
         # Metrics
@@ -93,12 +80,15 @@ class SimpleVoiceAssistant:
         self.total_sentences_sent = 0
         self.avg_first_sentence_ms = 0
         
+        # ✅ TTS pacing tracker
+        self._last_tts_time: Dict[str, float] = {}
+        
         logger.info("=" * 80)
         logger.info("✅ Simple Voice Assistant initialized")
         logger.info("   - Mode: Direct STT → LLM → TTS")
         logger.info("   - History: Last 3 exchanges")
         logger.info("   - Sentence chunking: Regex-based")
-        logger.info("   - No buffering queues")
+        logger.info("   - Natural TTS pacing: 1.5s between sentences")
         logger.info("=" * 80)
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
@@ -146,21 +136,16 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         text: str,
         is_partial: bool = False
     ) -> Dict:
-        """
-        Main entry point for STT transcripts
-        
-        Returns metrics dict for monitoring
-        """
+        """Main entry point for STT transcripts"""
         start_time = time.time()
         self.total_requests += 1
         
-        # Skip tiny partials (less than 2 words or 8 characters)
+        # Skip tiny partials
         word_count = len(text.strip().split())
         char_count = len(text.strip())
         
         if is_partial:
-            # NEW CODE - More strict buffering:
-            if word_count < 5 or char_count < 20:  # ← CHANGED from 2 words/8 chars to 5 words/20 chars
+            if word_count < 5 or char_count < 20:
                 logger.debug(f"⏸️ Buffering partial: '{text}' ({word_count} words, {char_count} chars)")
                 return {
                     "status": "buffering",
@@ -203,11 +188,10 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 # Check if we have a complete sentence
                 match = self.sentence_end.search(sentence_buffer)
                 if match:
-                    # Extract sentence up to and including punctuation
                     sentence = sentence_buffer[:match.end()].strip()
                     sentence_buffer = sentence_buffer[match.end():]
                     
-                    if sentence:  # Non-empty sentence
+                    if sentence:
                         sentence_count += 1
                         
                         # Track first sentence timing
@@ -223,14 +207,14 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                                     self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
                                 )
                         
-                        # Send to TTS immediately (fire and forget)
+                        # Send to TTS with natural pacing
                         logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
                         asyncio.create_task(
                             self._send_to_tts(room_name, sentence, session_id)
                         )
                         self.total_sentences_sent += 1
             
-            # Send any remaining text as final fragment
+            # Send any remaining text
             if sentence_buffer.strip():
                 sentence_count += 1
                 logger.info(f"🔊 Final fragment: '{sentence_buffer[:50]}...'")
@@ -287,26 +271,20 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             }
     
     async def _stream_gemini(self, prompt: str) -> AsyncIterator[str]:
-        """
-        Stream tokens from Gemini
-        
-        Uses gemini-2.0-flash-exp for best latency
-        Falls back to gemini-2.0-flash if needed
-        """
+        """Stream tokens from Gemini"""
         try:
             from google import genai
             
             client = genai.Client(api_key=self.gemini_api_key)
-            
             logger.debug("🌐 Connecting to Gemini API...")
             
             # Stream with optimized settings for voice
             for chunk in client.models.generate_content_stream(
-                model='gemini-2.0-flash-exp',  # Fastest model
+                model='gemini-2.0-flash-exp',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
-                    temperature=0.7,           # Natural but consistent
-                    max_output_tokens=250,     # ~50 words (2-3 sentences)
+                    temperature=0.7,
+                    max_output_tokens=250,
                     top_p=0.9,
                     top_k=40,
                 ),
@@ -316,8 +294,6 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                     
         except Exception as e:
             logger.error(f"❌ Gemini streaming error: {e}")
-            
-            # Fallback to stable model
             logger.info("🔄 Falling back to gemini-2.0-flash...")
             
             try:
@@ -338,15 +314,10 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 logger.error(f"❌ Fallback also failed: {fallback_error}")
                 yield "I'm experiencing technical difficulties."
     
-    # At the top of the class, add this attribute:
-def __init__(self, gemini_api_key: str, tts_service):
-    # ... existing code ...
-    self._last_tts_time: Dict[str, float] = {}  # ← ADD THIS LINE
-
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
         """Send text to TTS service with natural pacing"""
         try:
-            # ✅ ADD: Wait if we just sent TTS recently
+            # ✅ Wait if we just sent TTS recently (natural sentence spacing)
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
                 if time_since_last < 1.5:  # Wait at least 1.5 seconds between sentences
@@ -355,7 +326,7 @@ def __init__(self, gemini_api_key: str, tts_service):
                     await asyncio.sleep(delay)
             
             tts_start = time.time()
-            self._last_tts_time[session_id] = tts_start  # ✅ Track when we sent this
+            self._last_tts_time[session_id] = tts_start
             
             await self.tts.publish_to_room(
                 room_name=room_name,
@@ -371,20 +342,8 @@ def __init__(self, gemini_api_key: str, tts_service):
             logger.error(f"❌ TTS error for session {session_id}: {e}")
     
     async def handle_interruption(self, session_id: str, room_name: str):
-        """
-        Handle user interruption (voice onset detection)
-        
-        In this simple version, we don't need complex logic since:
-        1. TTS is already streaming (fast)
-        2. LLM streaming will complete naturally
-        3. Next user input will override in LiveKit
-        """
+        """Handle user interruption"""
         logger.info(f"🛑 User interrupted session {session_id}")
-        
-        # Could add logic here to:
-        # - Cancel pending TTS tasks (if we tracked them)
-        # - Stop LLM streaming (if we tracked it)
-        # - Clear queues (we don't have any)
         
         return {
             "status": "interrupted",
@@ -414,7 +373,6 @@ def __init__(self, gemini_api_key: str, tts_service):
         """Clear conversation history for a session"""
         self.history.clear_session(session_id)
     
-    # ✅ ADD THIS METHOD HERE:
     async def health_check(self) -> Dict:
         """Health check endpoint"""
         return {
@@ -424,5 +382,3 @@ def __init__(self, gemini_api_key: str, tts_service):
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
         }
-    
-    
