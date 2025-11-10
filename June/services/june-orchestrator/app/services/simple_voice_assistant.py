@@ -1,6 +1,12 @@
 """
 Simple Voice Assistant - Natural Conversation
 STT → LLM → TTS with minimal overhead
+
+FIXES APPLIED:
+- Deduplication to prevent processing same transcript twice
+- Processing locks to prevent concurrent responses
+- Option to ignore all partials (recommended)
+- Better TTS timeout handling
 """
 import asyncio
 import logging
@@ -65,6 +71,12 @@ class ConversationHistory:
 class SimpleVoiceAssistant:
     """
     Minimal voice assistant with natural conversation flow
+    
+    IMPROVEMENTS:
+    - Deduplication prevents processing same text twice
+    - Processing locks prevent concurrent responses per session
+    - Optional partial transcript ignoring
+    - Better error handling
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -83,13 +95,49 @@ class SimpleVoiceAssistant:
         # ✅ TTS pacing tracker
         self._last_tts_time: Dict[str, float] = {}
         
+        # ✅ NEW: Deduplication
+        self._recent_transcripts: Dict[str, tuple[str, float]] = {}  # session_id -> (text, timestamp)
+        self._duplicate_window = 3.0  # seconds to consider duplicates
+        
+        # ✅ NEW: Processing locks per session
+        self._processing_lock: Dict[str, asyncio.Lock] = {}
+        
+        # ✅ NEW: Configuration
+        self.ignore_partials = True  # Set to False to process partials
+        
         logger.info("=" * 80)
         logger.info("✅ Simple Voice Assistant initialized")
         logger.info("   - Mode: Direct STT → LLM → TTS")
         logger.info("   - History: Last 3 exchanges")
         logger.info("   - Sentence chunking: Regex-based")
         logger.info("   - Natural TTS pacing: 1.5s between sentences")
+        logger.info(f"   - Ignore partials: {self.ignore_partials}")
+        logger.info("   - Deduplication: 3 second window")
+        logger.info("   - Processing locks: Per-session")
         logger.info("=" * 80)
+    
+    def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
+        """Check if this transcript is a duplicate of a recent one"""
+        current_time = time.time()
+        
+        # Clean up old entries
+        expired = [
+            sid for sid, (_, ts) in self._recent_transcripts.items()
+            if current_time - ts > self._duplicate_window
+        ]
+        for sid in expired:
+            del self._recent_transcripts[sid]
+        
+        # Check for duplicate
+        if session_id in self._recent_transcripts:
+            recent_text, recent_time = self._recent_transcripts[session_id]
+            if recent_text == text and current_time - recent_time < self._duplicate_window:
+                logger.warning(f"⚠️ Duplicate detected: '{text[:30]}...' (within {current_time - recent_time:.1f}s)")
+                return True
+        
+        # Update tracker
+        self._recent_transcripts[session_id] = (text, current_time)
+        return False
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
         """Build natural conversation prompt"""
@@ -140,21 +188,69 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         start_time = time.time()
         self.total_requests += 1
         
-        # Skip tiny partials
+        # ✅ FIX 1: Ignore all partials (recommended for natural conversation)
+        if is_partial and self.ignore_partials:
+            logger.debug(f"⏸️ Ignoring partial: '{text[:50]}...'")
+            return {
+                "status": "skipped",
+                "reason": "partial_ignored",
+                "text": text[:100]
+            }
+        
+        # ✅ FIX 2: Check for duplicates
+        if self._is_duplicate_transcript(session_id, text):
+            return {
+                "status": "skipped",
+                "reason": "duplicate_transcript",
+                "text": text[:100]
+            }
+        
+        # ✅ FIX 3: Get or create processing lock for this session
+        if session_id not in self._processing_lock:
+            self._processing_lock[session_id] = asyncio.Lock()
+        
+        lock = self._processing_lock[session_id]
+        
+        # ✅ FIX 4: Check if already processing for this session
+        if lock.locked():
+            logger.warning(f"⚠️ Already processing for session {session_id[:8]}..., skipping")
+            return {
+                "status": "skipped",
+                "reason": "already_processing",
+                "text": text[:100]
+            }
+        
+        # ✅ FIX 5: Process with lock to prevent concurrent responses
+        async with lock:
+            return await self._process_transcript(
+                session_id=session_id,
+                room_name=room_name,
+                text=text,
+                is_partial=is_partial,
+                start_time=start_time
+            )
+    
+    async def _process_transcript(
+        self,
+        session_id: str,
+        room_name: str,
+        text: str,
+        is_partial: bool,
+        start_time: float
+    ) -> Dict:
+        """Internal method to process transcript (called within lock)"""
+        
+        # Skip tiny inputs
         word_count = len(text.strip().split())
         char_count = len(text.strip())
         
-        if is_partial:
-            if word_count < 5 or char_count < 20:
-                logger.debug(f"⏸️ Buffering partial: '{text}' ({word_count} words, {char_count} chars)")
-                return {
-                    "status": "buffering",
-                    "reason": "partial_too_short",
-                    "word_count": word_count,
-                    "char_count": char_count
-                }
-            else:
-                logger.info(f"🚀 Processing long partial: '{text[:30]}...' ({word_count} words)")
+        if word_count < 2:
+            logger.debug(f"⏸️ Text too short: '{text}' ({word_count} words)")
+            return {
+                "status": "skipped",
+                "reason": "too_short",
+                "word_count": word_count
+            }
         
         # Log what we're processing
         status = "PARTIAL" if is_partial else "FINAL"
@@ -209,18 +305,15 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                         
                         # Send to TTS with natural pacing
                         logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
-                        asyncio.create_task(
-                            self._send_to_tts(room_name, sentence, session_id)
-                        )
+                        # ✅ Wait for TTS to complete to maintain order
+                        await self._send_to_tts(room_name, sentence, session_id)
                         self.total_sentences_sent += 1
             
             # Send any remaining text
             if sentence_buffer.strip():
                 sentence_count += 1
                 logger.info(f"🔊 Final fragment: '{sentence_buffer[:50]}...'")
-                asyncio.create_task(
-                    self._send_to_tts(room_name, sentence_buffer.strip(), session_id)
-                )
+                await self._send_to_tts(room_name, sentence_buffer.strip(), session_id)
                 self.total_sentences_sent += 1
             
             llm_time = (time.time() - llm_start) * 1000
@@ -262,7 +355,10 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             
             # Send error message to user
             error_msg = "Sorry, I'm having trouble right now. Can you repeat that?"
-            asyncio.create_task(self._send_to_tts(room_name, error_msg, session_id))
+            try:
+                await self._send_to_tts(room_name, error_msg, session_id)
+            except:
+                pass  # Don't let TTS errors cascade
             
             return {
                 "status": "error",
@@ -315,7 +411,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 yield "I'm experiencing technical difficulties."
     
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
-        """Send text to TTS service with natural pacing"""
+        """Send text to TTS service with natural pacing and timeout"""
         try:
             # ✅ Wait if we just sent TTS recently (natural sentence spacing)
             if session_id in self._last_tts_time:
@@ -328,12 +424,20 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            await self.tts.publish_to_room(
-                room_name=room_name,
-                text=text,
-                voice_id="default",
-                streaming=True
-            )
+            # ✅ Add timeout to prevent hanging
+            try:
+                await asyncio.wait_for(
+                    self.tts.publish_to_room(
+                        room_name=room_name,
+                        text=text,
+                        voice_id="default",
+                        streaming=True
+                    ),
+                    timeout=10.0  # 10 second timeout (increase if needed)
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"❌ TTS timeout (>10s) for: '{text[:50]}...'")
+                return
             
             tts_time = (time.time() - tts_start) * 1000
             logger.debug(f"   TTS completed in {tts_time:.0f}ms")
@@ -344,6 +448,9 @@ Remember: This is VOICE, not text. Be brief and natural!"""
     async def handle_interruption(self, session_id: str, room_name: str):
         """Handle user interruption"""
         logger.info(f"🛑 User interrupted session {session_id}")
+        
+        # Cancel any pending TTS for this session
+        # (Note: In production, you'd want to track and cancel ongoing TTS requests)
         
         return {
             "status": "interrupted",
@@ -363,6 +470,8 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             "total_requests": self.total_requests,
             "total_sentences_sent": self.total_sentences_sent,
             "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
+            "ignore_partials": self.ignore_partials,
+            "duplicate_window_seconds": self._duplicate_window,
             "sessions": {
                 session_id: len(msgs)
                 for session_id, msgs in self.history.sessions.items()
@@ -372,6 +481,14 @@ Remember: This is VOICE, not text. Be brief and natural!"""
     def clear_session(self, session_id: str):
         """Clear conversation history for a session"""
         self.history.clear_session(session_id)
+        
+        # Clean up tracking data
+        if session_id in self._recent_transcripts:
+            del self._recent_transcripts[session_id]
+        if session_id in self._last_tts_time:
+            del self._last_tts_time[session_id]
+        if session_id in self._processing_lock:
+            del self._processing_lock[session_id]
     
     async def health_check(self) -> Dict:
         """Health check endpoint"""
