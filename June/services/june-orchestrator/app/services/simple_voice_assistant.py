@@ -159,7 +159,8 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         char_count = len(text.strip())
         
         if is_partial:
-            if word_count < 2 or char_count < 8:
+            # NEW CODE - More strict buffering:
+            if word_count < 5 or char_count < 20:  # ← CHANGED from 2 words/8 chars to 5 words/20 chars
                 logger.debug(f"⏸️ Buffering partial: '{text}' ({word_count} words, {char_count} chars)")
                 return {
                     "status": "buffering",
