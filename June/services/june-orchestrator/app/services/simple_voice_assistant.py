@@ -414,6 +414,7 @@ def __init__(self, gemini_api_key: str, tts_service):
         """Clear conversation history for a session"""
         self.history.clear_session(session_id)
     
+    # ✅ ADD THIS METHOD HERE:
     async def health_check(self) -> Dict:
         """Health check endpoint"""
         return {
@@ -423,3 +424,5 @@ def __init__(self, gemini_api_key: str, tts_service):
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
         }
+    
+    
