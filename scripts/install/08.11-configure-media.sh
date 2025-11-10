@@ -68,7 +68,7 @@ echo ""
 
 # Step 3: Configure connections (Prowlarr → Sonarr/Radarr)
 log "Step 3: Connecting Sonarr and Radarr to Prowlarr..."
-python3 "${AUTOMATION_DIR}/configure-media-stack-complete.py" \
+python3 "${AUTOMATION_DIR}/configure-media-stack.py" \
   --domain "${DOMAIN}" || \
   warn "Failed to configure service connections"
 
