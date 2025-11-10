@@ -1,12 +1,12 @@
 """
-Simple Voice Assistant - Natural Conversation
-STT → LLM → TTS with minimal overhead
+Simple Voice Assistant - Natural Conversation v2
+STT → LLM → TTS with IMPROVED CONTEXT AWARENESS
 
-FIXES APPLIED:
-- Deduplication to prevent processing same transcript twice
-- Processing locks to prevent concurrent responses
-- Option to ignore all partials (recommended)
-- Better TTS timeout handling
+IMPROVEMENTS OVER v1:
+- Better system prompt that emphasizes conversational context
+- Clearer history formatting for LLM
+- Better handling of unclear transcriptions
+- Stronger intent inference
 """
 import asyncio
 import logging
@@ -72,11 +72,10 @@ class SimpleVoiceAssistant:
     """
     Minimal voice assistant with natural conversation flow
     
-    IMPROVEMENTS:
-    - Deduplication prevents processing same text twice
-    - Processing locks prevent concurrent responses per session
-    - Optional partial transcript ignoring
-    - Better error handling
+    IMPROVEMENTS v2:
+    - Better system prompt with context awareness
+    - Clearer conversation history formatting
+    - Intent inference for unclear transcriptions
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -92,28 +91,25 @@ class SimpleVoiceAssistant:
         self.total_sentences_sent = 0
         self.avg_first_sentence_ms = 0
         
-        # ✅ TTS pacing tracker
+        # TTS pacing tracker
         self._last_tts_time: Dict[str, float] = {}
         
-        # ✅ NEW: Deduplication
-        self._recent_transcripts: Dict[str, tuple[str, float]] = {}  # session_id -> (text, timestamp)
-        self._duplicate_window = 3.0  # seconds to consider duplicates
+        # Deduplication
+        self._recent_transcripts: Dict[str, tuple[str, float]] = {}
+        self._duplicate_window = 3.0
         
-        # ✅ NEW: Processing locks per session
+        # Processing locks per session
         self._processing_lock: Dict[str, asyncio.Lock] = {}
         
-        # ✅ NEW: Configuration
-        self.ignore_partials = True  # Set to False to process partials
+        # Configuration
+        self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant initialized")
+        logger.info("✅ Simple Voice Assistant v2 initialized")
         logger.info("   - Mode: Direct STT → LLM → TTS")
         logger.info("   - History: Last 3 exchanges")
-        logger.info("   - Sentence chunking: Regex-based")
-        logger.info("   - Natural TTS pacing: 1.5s between sentences")
-        logger.info(f"   - Ignore partials: {self.ignore_partials}")
-        logger.info("   - Deduplication: 3 second window")
-        logger.info("   - Processing locks: Per-session")
+        logger.info("   - Improved: Context-aware prompts")
+        logger.info("   - Improved: Intent inference")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -140,40 +136,72 @@ class SimpleVoiceAssistant:
         return False
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """Build natural conversation prompt"""
+        """Build natural conversation prompt with IMPROVED context awareness"""
         
-        system = """You are June, a helpful voice assistant.
+        # ✅ IMPROVED: Much better system prompt
+        system = """You are June, a friendly and intelligent voice assistant. You have natural conversations with users.
 
-CRITICAL RULES FOR VOICE:
-1. Keep responses SHORT (1-3 sentences max)
-2. Use natural, conversational language
-3. Never repeat what you just said
-4. If you already answered something, acknowledge briefly: "As I mentioned..." or "Like I said..."
-5. Don't use lists or bullet points - speak naturally
+CONVERSATION RULES:
+1. **Pay attention to context**: Remember what you just said and what the user is responding to
+2. **Infer intent**: If the user's words are unclear, figure out what they probably mean based on context
+3. **Be brief**: Keep responses to 1-3 sentences for natural voice conversation
+4. **Be natural**: Speak like a helpful friend, not a robot
+5. **Follow through**: If you asked a question, treat the next message as the answer
 
-Examples:
-User: "What's the weather?"
-You: "It's sunny and 72 degrees today."
+HANDLING UNCLEAR INPUT:
+- If transcription seems garbled, infer the likely meaning from context
+- Focus on keywords and intent, not exact words
+- If you just asked "what topic?", assume next message is the topic
 
-User: "What about tomorrow?"
-You: "Tomorrow should be partly cloudy with a high of 68."
+EXAMPLES:
 
-User: "Thanks!"
-You: "You're welcome! Anything else?"
+Bad (ignoring context):
+You: "What would you like a story about?"
+User: "pokemons or they happy"
+You: "Would you like Pokemon or happiness?" ❌ (treating as new question)
 
-Remember: This is VOICE, not text. Be brief and natural!"""
+Good (using context):
+You: "What would you like a story about?"
+User: "pokemons or they happy"  
+You: "Great! Here's a story about happy Pokemon..." ✅ (inferring they chose Pokemon)
+
+Bad (too long):
+"I can tell you many different types of stories. I could tell you about Pokemon, or about happiness, or about adventures. What would you prefer?" ❌
+
+Good (brief):
+"Sure! What should the story be about?" ✅
+
+Remember: You're having a CONVERSATION, not answering isolated questions."""
         
-        # Format conversation history
+        # Format conversation history with better context
         if history:
             context_lines = []
             for msg in history:
-                role = "User" if msg['role'] == 'user' else "You"
-                context_lines.append(f"{role}: {msg['content']}")
+                role = "User" if msg['role'] == 'user' else "You (June)"
+                content = msg['content']
+                context_lines.append(f"{role}: {content}")
             
             context = "\n".join(context_lines)
-            prompt = f"{system}\n\nConversation:\n{context}\n\nUser: {user_message}\nYou:"
+            
+            # ✅ IMPROVED: More explicit context handling
+            prompt = f"""{system}
+
+=== Recent Conversation ===
+{context}
+
+=== User's Latest Message ===
+User: {user_message}
+
+Remember: Look at the conversation above. If you just asked the user something, they're probably answering it now. Respond naturally and helpfully.
+
+You (June):"""
         else:
-            prompt = f"{system}\n\nUser: {user_message}\nYou:"
+            # No history - fresh conversation
+            prompt = f"""{system}
+
+User: {user_message}
+
+You (June):"""
         
         return prompt
     
@@ -188,7 +216,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         start_time = time.time()
         self.total_requests += 1
         
-        # ✅ FIX 1: Ignore all partials (recommended for natural conversation)
+        # FIX 1: Ignore all partials
         if is_partial and self.ignore_partials:
             logger.debug(f"⏸️ Ignoring partial: '{text[:50]}...'")
             return {
@@ -197,7 +225,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 "text": text[:100]
             }
         
-        # ✅ FIX 2: Check for duplicates
+        # FIX 2: Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
             return {
                 "status": "skipped",
@@ -205,13 +233,13 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 "text": text[:100]
             }
         
-        # ✅ FIX 3: Get or create processing lock for this session
+        # FIX 3: Get or create processing lock
         if session_id not in self._processing_lock:
             self._processing_lock[session_id] = asyncio.Lock()
         
         lock = self._processing_lock[session_id]
         
-        # ✅ FIX 4: Check if already processing for this session
+        # FIX 4: Check if already processing
         if lock.locked():
             logger.warning(f"⚠️ Already processing for session {session_id[:8]}..., skipping")
             return {
@@ -220,7 +248,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                 "text": text[:100]
             }
         
-        # ✅ FIX 5: Process with lock to prevent concurrent responses
+        # FIX 5: Process with lock
         async with lock:
             return await self._process_transcript(
                 session_id=session_id,
@@ -264,7 +292,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             history = self.history.get_history(session_id)
             logger.info(f"📚 History: {len(history)} messages")
             
-            # Build prompt
+            # Build prompt with improved context
             prompt = self._build_prompt(text, history)
             logger.debug(f"🔧 Prompt length: {len(prompt)} chars")
             
@@ -303,9 +331,8 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                                     self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
                                 )
                         
-                        # Send to TTS with natural pacing
+                        # Send to TTS with natural pacing (SEQUENTIAL - await!)
                         logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
-                        # ✅ Wait for TTS to complete to maintain order
                         await self._send_to_tts(room_name, sentence, session_id)
                         self.total_sentences_sent += 1
             
@@ -318,7 +345,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             
             llm_time = (time.time() - llm_start) * 1000
             
-            # Add to history (ONLY for finals, not partials)
+            # Add to history (ONLY for finals)
             if not is_partial:
                 self.history.add_message(session_id, "user", text)
                 self.history.add_message(session_id, "assistant", full_response)
@@ -358,7 +385,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             try:
                 await self._send_to_tts(room_name, error_msg, session_id)
             except:
-                pass  # Don't let TTS errors cascade
+                pass
             
             return {
                 "status": "error",
@@ -413,10 +440,10 @@ Remember: This is VOICE, not text. Be brief and natural!"""
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
         """Send text to TTS service with natural pacing and timeout"""
         try:
-            # ✅ Wait if we just sent TTS recently (natural sentence spacing)
+            # Wait if we just sent TTS recently (natural sentence spacing)
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
-                if time_since_last < 1.5:  # Wait at least 1.5 seconds between sentences
+                if time_since_last < 1.5:
                     delay = 1.5 - time_since_last
                     logger.info(f"⏸️ Pacing delay: {delay:.1f}s (natural sentence spacing)")
                     await asyncio.sleep(delay)
@@ -424,7 +451,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # ✅ Add timeout to prevent hanging
+            # Add timeout to prevent hanging
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -433,7 +460,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
                         voice_id="default",
                         streaming=True
                     ),
-                    timeout=10.0  # 10 second timeout (increase if needed)
+                    timeout=10.0
                 )
             except asyncio.TimeoutError:
                 logger.error(f"❌ TTS timeout (>10s) for: '{text[:50]}...'")
@@ -449,9 +476,6 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         """Handle user interruption"""
         logger.info(f"🛑 User interrupted session {session_id}")
         
-        # Cancel any pending TTS for this session
-        # (Note: In production, you'd want to track and cancel ongoing TTS requests)
-        
         return {
             "status": "interrupted",
             "session_id": session_id,
@@ -464,7 +488,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
         
         return {
-            "mode": "simple_voice_assistant",
+            "mode": "simple_voice_assistant_v2",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -494,7 +518,7 @@ Remember: This is VOICE, not text. Be brief and natural!"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant",
+            "assistant": "simple_voice_assistant_v2",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()

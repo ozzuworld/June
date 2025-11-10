@@ -60,7 +60,7 @@ app.add_middleware(
 # Config / Service ------------------------------------------------------------
 
 class ASRConfig(BaseModel):
-    model: str = "base"
+    model: str = "medium"
     language: str = "en"
     task: str = "transcribe"  # or "translate"
     use_vac: bool = True
