@@ -90,6 +90,7 @@ PHASES=(
     "04.6-headscale"   
     "04.7-headscale-client"
     "07-stunner"
+    "07.1-opencti" 
     "08-livekit"
     "08.5-jellyfin"           # NEW
     "08.6-prowlarr"           # NEW
