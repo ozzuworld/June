@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with PostgreSQL Voice Storage
-OPTIMIZED FOR LOW LATENCY
-- Native 24 kHz XTTS output
-- GPU-based 24k→48k resampling for LiveKit
-- Optimal chunk sizes
-- Minimal warmup
+OPTIMIZED FOR LOW LATENCY + SMOOTH STREAMING
+- XTTS native 24 kHz output
+- GPU 24k → 48k resampling for LiveKit (torchaudio)
+- 10 ms frame pacing at 48 kHz to avoid stutter
+- Small crossfade between chunk boundaries
+- STREAM_CHUNK_SIZE = 20 for snappy first-audio
+- Minimal warmup (English)
 """
 import asyncio
 import logging
@@ -14,6 +16,7 @@ import time
 import tempfile
 import hashlib
 import io
+from typing import Optional
 
 import numpy as np
 import torch
@@ -24,18 +27,18 @@ from livekit import rtc
 import soundfile as sf
 import asyncpg
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Logging
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("june-tts")
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
@@ -47,30 +50,30 @@ DB_NAME = os.getenv("DB_NAME", "june")
 DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
-# Audio + streaming (optimized)
-XTTS_SAMPLE_RATE = 24000          # XTTS native
-LIVEKIT_SAMPLE_RATE = 48000       # LiveKit native
-STREAM_CHUNK_SIZE = 20            # Small chunk for fast first audio
-LIVEKIT_FRAME_SIZE = 960          # 20ms @ 48k
+# Audio / streaming (optimized)
+XTTS_SAMPLE_RATE = 24000           # XTTS native
+LIVEKIT_SAMPLE_RATE = 48000        # LiveKit native
+STREAM_CHUNK_SIZE = 20             # Small chunk for fast first audio
+LIVEKIT_FRAME_SIZE = 480           # 10 ms @ 48 kHz (WebRTC-native)
+FRAME_PERIOD_S = 0.01              # 10 ms pacing
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # FastAPI app
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 app = FastAPI(
     title="June TTS (XTTS v2) - Optimized",
-    version="3.0.0",
-    description="Low-latency streaming TTS with PostgreSQL voice storage"
+    version="3.1.0",
+    description="Low-latency, smooth streaming TTS with PostgreSQL voice storage"
 )
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # PyTorch 2.6 safe globals (XTTS pickles)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 if hasattr(torch.serialization, "add_safe_globals"):
     from TTS.tts.configs.xtts_config import XttsConfig
     from TTS.tts.configs.shared_configs import BaseDatasetConfig
     from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
     from TTS.config.shared_configs import BaseAudioConfig
-
     torch.serialization.add_safe_globals([
         XttsConfig,
         BaseDatasetConfig,
@@ -81,9 +84,9 @@ if hasattr(torch.serialization, "add_safe_globals"):
 
 from TTS.api import TTS  # after safe-globals
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Global state
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 xtts_model = None
 tts_api = None
 gpt_cond_latent = None
@@ -96,25 +99,25 @@ livekit_connected = False
 db_pool = None
 
 # Speaker diagnostics
-speaker_embedding_hash = None
-gpt_cond_hash = None
-current_voice_id = None
+speaker_embedding_hash: Optional[str] = None
+gpt_cond_hash: Optional[str] = None
+current_voice_id: Optional[str] = None
 
 # GPU resampler cache
-_gpu_resampler = None
+_gpu_resampler = None  # torchaudio.transforms.Resample
 
-# ---------------------------------------------------------------------------
-# Models / Schemas
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Schemas
+# -----------------------------------------------------------------------------
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
     room_name: str = Field(..., description="LiveKit room name")
     language: str = Field(default="en")
     voice_id: str = Field(default="default")
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def compute_tensor_hash(tensor):
     if tensor is None:
         return "None"
@@ -132,7 +135,7 @@ def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
         audio = audio.astype(np.float32) / 2147483647.0
     else:
         audio = audio.astype(np.float32)
-    if len(audio.shape) > 1:
+    if audio.ndim > 1:
         audio = audio.mean(axis=1)
     audio_tensor = torch.FloatTensor(audio)
     if sampling_rate is not None and sr != sampling_rate:
@@ -149,7 +152,7 @@ def load_audio_from_bytes(audio_bytes: bytes, sampling_rate: int = None):
         audio = audio.astype(np.float32) / 2147483647.0
     else:
         audio = audio.astype(np.float32)
-    if len(audio.shape) > 1:
+    if audio.ndim > 1:
         audio = audio.mean(axis=1)
     audio_tensor = torch.FloatTensor(audio)
     if sampling_rate is not None and sr != sampling_rate:
@@ -169,9 +172,9 @@ def _patched_load_audio(audiopath, sampling_rate=None):
         return _original_load_audio(audiopath, sampling_rate)
 xtts_module.load_audio = _patched_load_audio
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Database
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 async def init_db_pool():
     global db_pool
     db_pool = await asyncpg.create_pool(
@@ -193,7 +196,7 @@ async def init_db_pool():
         """)
     logger.info("✅ Voices table ready")
 
-async def get_voice_from_db(voice_id: str) -> bytes | None:
+async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT audio_data FROM tts_voices WHERE voice_id = $1", voice_id
@@ -204,9 +207,9 @@ async def get_voice_from_db(voice_id: str) -> bytes | None:
     logger.warning(f"⚠️ Voice '{voice_id}' not found in DB")
     return None
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Voice embeddings
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 async def load_voice_embeddings(voice_id: str = "default"):
     global gpt_cond_latent, speaker_embedding, speaker_embedding_hash, gpt_cond_hash, current_voice_id
 
@@ -226,11 +229,13 @@ async def load_voice_embeddings(voice_id: str = "default"):
                 audio_path=[tmp_path]
             )
         finally:
-            try: os.unlink(tmp_path)
-            except FileNotFoundError: pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
         logger.info(f"✅ Embeddings generated for '{voice_id}'")
     else:
-        # Fallback: 2s silence to produce "neutral" embeddings
+        # Fallback: 2s silence to produce neutral embeddings
         sample_rate = 22050
         silence = np.zeros(int(sample_rate * 2.0), dtype=np.float32)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -241,8 +246,10 @@ async def load_voice_embeddings(voice_id: str = "default"):
                 audio_path=[tmp_path]
             )
         finally:
-            try: os.unlink(tmp_path)
-            except FileNotFoundError: pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
         logger.info("✅ Default silent embeddings generated")
 
     if torch.cuda.is_available():
@@ -255,11 +262,11 @@ async def load_voice_embeddings(voice_id: str = "default"):
     logger.info(f"🔑 Voice '{voice_id}' loaded: GPT={gpt_cond_hash}, Speaker={speaker_embedding_hash}")
     return True
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Model load + warmup
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 async def warmup_model():
-    """Minimal warmup (English only by default)"""
+    """Minimal warmup (English only)."""
     try:
         start = time.time()
         _ = list(xtts_model.inference_stream(
@@ -295,10 +302,10 @@ async def load_xtts_model():
     await warmup_model()
     return True
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # LiveKit
-# ---------------------------------------------------------------------------
-async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
+# -----------------------------------------------------------------------------
+async def get_livekit_token(identity: str, room_name: str):
     import httpx
     url = f"{ORCHESTRATOR_URL}/token"
     payload = {"roomName": room_name, "participantName": identity}
@@ -313,7 +320,7 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
         return ws_url, token
 
 async def connect_livekit():
-    """Connect using 48 kHz native source to avoid extra resampling."""
+    """Connect using 48 kHz native source to avoid extra resampling in LiveKit."""
     global livekit_room, livekit_audio_source, livekit_connected
     try:
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
@@ -336,7 +343,7 @@ async def connect_livekit():
         return False
 
 def resample_audio_fast(chunk: np.ndarray, input_sr: int, output_sr: int) -> np.ndarray:
-    """Prefer GPU torchaudio; fallback to scipy."""
+    """Prefer GPU torchaudio; fallback to scipy on error."""
     global _gpu_resampler
     if input_sr == output_sr:
         return chunk
@@ -358,17 +365,38 @@ def resample_audio_fast(chunk: np.ndarray, input_sr: int, output_sr: int) -> np.
         from scipy.signal import resample_poly
         return resample_poly(chunk, output_sr, input_sr)
 
+# -----------------------------------------------------------------------------
+# Streaming with 10 ms pacing and small crossfade
+# -----------------------------------------------------------------------------
 async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS_SAMPLE_RATE):
+    """
+    Stream audio to LiveKit using a paced 10 ms frame clock at 48 kHz.
+    - Producer: pulls/resamples XTTS chunks and appends to a buffer
+    - Consumer: drains buffer at a steady 10 ms cadence
+    - Crossfade a few ms between chunks to soften boundaries
+    """
     global livekit_audio_source, livekit_connected
     if not livekit_connected or livekit_audio_source is None:
         logger.warning("LiveKit not connected")
         return
 
+    buffer = np.zeros(0, dtype=np.float32)
     t0 = time.time()
     first = True
-    count = 0
+    frames_sent = 0
 
-    try:
+    FRAME_SAMPLES = LIVEKIT_FRAME_SIZE  # 480
+    FRAME_PERIOD = FRAME_PERIOD_S       # 0.01
+
+    async def send_frame(frame_f32: np.ndarray):
+        pcm_int16 = (np.clip(frame_f32, -1.0, 1.0) * 32767).astype(np.int16)
+        frame = rtc.AudioFrame.create(LIVEKIT_SAMPLE_RATE, 1, FRAME_SAMPLES)
+        np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
+        await livekit_audio_source.capture_frame(frame)
+
+    async def producer():
+        nonlocal buffer, first
+        # Pull from generator, resample, append, crossfade edges
         for chunk in audio_chunk_generator:
             if torch.is_tensor(chunk):
                 chunk = chunk.detach().cpu().numpy()
@@ -382,31 +410,63 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
                 logger.info(f"⚡ First audio in {(time.time()-t0)*1000:.0f}ms")
                 first = False
 
-            # Frame and send @ 48kHz, 20ms (960 samples)
-            for off in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
-                frame_data = chunk[off:off + LIVEKIT_FRAME_SIZE]
-                if len(frame_data) < LIVEKIT_FRAME_SIZE:
-                    frame_data = np.pad(frame_data, (0, LIVEKIT_FRAME_SIZE - len(frame_data)))
-                pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
-                frame = rtc.AudioFrame.create(LIVEKIT_SAMPLE_RATE, 1, LIVEKIT_FRAME_SIZE)
-                np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
-                await livekit_audio_source.capture_frame(frame)
+            # Append with tiny crossfade to hide discontinuities
+            if buffer.size == 0:
+                buffer = chunk.astype(np.float32, copy=False)
+            else:
+                cross = 240  # 5 ms at 48 kHz
+                if buffer.size >= cross and chunk.size >= cross:
+                    fade_out = np.linspace(1.0, 0.0, cross, dtype=np.float32)
+                    fade_in = np.linspace(0.0, 1.0, cross, dtype=np.float32)
+                    buffer[-cross:] = buffer[-cross:] * fade_out + chunk[:cross] * fade_in
+                    buffer = np.concatenate([buffer, chunk[cross:].astype(np.float32, copy=False)])
+                else:
+                    buffer = np.concatenate([buffer, chunk.astype(np.float32, copy=False)])
+        # Producer ends; consumer will drain remaining buffer
 
-            count += 1
+    async def consumer(prod_task: asyncio.Task):
+        nonlocal buffer, frames_sent
+        next_deadline = time.perf_counter()
+        while True:
+            # Stop when producer finished AND buffer empty
+            if prod_task.done() and buffer.size < FRAME_SAMPLES:
+                break
 
-        logger.info(f"✅ Streamed {count} chunks")
-    except Exception as e:
-        logger.error(f"❌ Streaming error: {e}", exc_info=True)
+            if buffer.size >= FRAME_SAMPLES:
+                frame = buffer[:FRAME_SAMPLES]
+                buffer = buffer[FRAME_SAMPLES:]
+            else:
+                # Keep the clock stable with silence if needed
+                frame = np.zeros(FRAME_SAMPLES, dtype=np.float32)
 
-# ---------------------------------------------------------------------------
+            await send_frame(frame)
+            frames_sent += 1
+
+            # Real-time 10 ms pacing
+            next_deadline += FRAME_PERIOD
+            now = time.perf_counter()
+            delay = next_deadline - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                # Running behind; catch up next tick
+                next_deadline = now
+
+    prod_task = asyncio.create_task(producer())
+    await consumer(prod_task)
+    await prod_task
+
+    logger.info(f"✅ Streamed {frames_sent} frames (~{frames_sent * 10} ms)")
+
+# -----------------------------------------------------------------------------
 # Lifecycle
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
     logger.info("=" * 80)
     logger.info("🚀 Starting XTTS v2 TTS Service (OPTIMIZED)")
     logger.info(f"XTTS: {XTTS_SAMPLE_RATE} Hz | LiveKit: {LIVEKIT_SAMPLE_RATE} Hz")
-    logger.info(f"Chunk size: {STREAM_CHUNK_SIZE} | Frame size: {LIVEKIT_FRAME_SIZE}")
+    logger.info(f"Chunk size: {STREAM_CHUNK_SIZE} | Frame size: {LIVEKIT_FRAME_SIZE} samples (10 ms)")
     logger.info("=" * 80)
 
     await init_db_pool()
@@ -423,9 +483,9 @@ async def on_shutdown():
         await db_pool.close()
         logger.info("✅ Database pool closed")
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Health
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 @app.get("/health")
 async def health():
     return {
@@ -444,9 +504,9 @@ async def health():
         }
     }
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Voice management
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 @app.post("/api/voices/clone")
 async def clone_voice(
     voice_id: str = Form(...),
@@ -476,8 +536,10 @@ async def clone_voice(
             gpt_hash = compute_tensor_hash(gpt_cond)
             speaker_hash = compute_tensor_hash(speaker_emb)
         finally:
-            try: os.unlink(tmp_path)
-            except FileNotFoundError: pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
 
         async with db_pool.acquire() as conn:
             exists = await conn.fetchval(
@@ -560,9 +622,9 @@ async def delete_voice(voice_id: str):
         raise HTTPException(404, f"Voice '{voice_id}' not found")
     return {"status": "success", "message": f"Voice '{voice_id}' deleted successfully"}
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # TTS synthesis
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
     global gpt_cond_latent, speaker_embedding, current_voice_id
@@ -604,9 +666,14 @@ async def synthesize_speech(request: SynthesizeRequest):
         logger.error(f"❌ Synthesis error: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Entrypoint
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
+    # Optional: reduce CPU thread jitter if scipy fallback is used anywhere
+    try:
+        torch.set_num_threads(1)
+    except Exception:
+        pass
     uvicorn.run(app, host="0.0.0.0", port=8000)
