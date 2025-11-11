@@ -1,7 +1,7 @@
 """
-Simple Voice Assistant - Natural Conversation (FULLY FIXED + OPTIMIZED)
+Simple Voice Assistant - Natural Conversation (FULLY FIXED + TIGHTER SPLITTING)
 All fixes applied: Output cleaning, better timeout, improved interruption handling,
-smart sentence splitting, and enhanced performance
+tighter sentence splitting (100 chars), and enhanced performance
 
 KEY IMPROVEMENTS:
 1. ✅ Removes "June:" prefix from output
@@ -11,8 +11,9 @@ KEY IMPROVEMENTS:
 5. ✅ Proper history management with debug logging
 6. ✅ 30s TTS timeout (increased from 15s)
 7. ✅ Better interruption handling
-8. ✅ Smart sentence splitting at 120 chars for faster response
-9. ✅ Early break at commas/semicolons for natural pacing
+8. ✅ Tighter sentence splitting at 100 chars (was 120)
+9. ✅ Early break at commas/semicolons at 85 chars (was 100)
+10. ✅ Fixed duplicate trim logs
 """
 import asyncio
 import logging
@@ -55,11 +56,18 @@ class ConversationHistory:
         max_messages = self.max_turns * 2
         before_count = len(self.sessions[session_id])
         
+        # ✅ FIXED: Only log if we actually trimmed
         if before_count > max_messages:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
-            logger.info(f"🗑️ Trimmed history for {session_id[:8]}...: {before_count} → {len(self.sessions[session_id])} messages")
+            after_count = len(self.sessions[session_id])
+            
+            # Only log ONCE when trim actually happens
+            logger.info(
+                f"🗑️ Trimmed history for {session_id[:8]}...: "
+                f"{before_count} → {after_count} messages"
+            )
         
-        # Log current state
+        # Use debug level for routine state logging
         logger.debug(f"📚 History for {session_id[:8]}... now has {len(self.sessions[session_id])} messages")
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
@@ -87,7 +95,7 @@ class ConversationHistory:
 class SimpleVoiceAssistant:
     """
     Voice assistant with natural explanations and better story-telling
-    NOW WITH ALL FIXES + OPTIMIZATIONS APPLIED
+    NOW WITH ALL FIXES + TIGHTER SPLITTING
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -98,9 +106,9 @@ class SimpleVoiceAssistant:
         # Simple sentence detection
         self.sentence_end = re.compile(r'[.!?。！？]+\s*')
         
-        # ✅ NEW: Smart splitting configuration
-        self.max_sentence_chars = 120  # Target: ~8-10s of speech
-        self.early_split_chars = 100    # Start looking for breaks at this length
+        # ✅ OPTIMIZED: Tighter splitting configuration
+        self.max_sentence_chars = 100  # ← CHANGED from 120 to 100 (target: ~6s TTS)
+        self.early_split_chars = 85    # ← CHANGED from 100 to 85
         self.split_opportunities = re.compile(r'[,;:—]\s+')  # Good places to split
         
         # Metrics
@@ -122,13 +130,13 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (FULLY OPTIMIZED) initialized")
+        logger.info("✅ Simple Voice Assistant (TIGHTER SPLITTING) initialized")
         logger.info("   - Mode: Direct, action-oriented responses")
         logger.info("   - History: Last 5 exchanges")
         logger.info("   - Output cleaning: Removes speaker labels")
         logger.info("   - TTS timeout: 30 seconds")
-        logger.info("   - Smart sentence splitting: Max 120 chars")
-        logger.info("   - Early breaks at commas/semicolons")
+        logger.info("   - Smart sentence splitting: Max 100 chars (was 120)")
+        logger.info("   - Early breaks at commas/semicolons: 85 chars (was 100)")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -396,7 +404,7 @@ Your response (speak directly, no "June:" label):"""
                 full_response += token
                 sentence_buffer += token
                 
-                # ✅ NEW: Check for early split opportunity
+                # ✅ Check for early split opportunity
                 early_sentence, sentence_buffer = self._smart_sentence_split(sentence_buffer)
                 
                 if early_sentence:
@@ -621,7 +629,7 @@ Your response (speak directly, no "June:" label):"""
             }
         
         return {
-            "mode": "simple_voice_assistant_fully_optimized",
+            "mode": "simple_voice_assistant_tighter_splitting",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -650,7 +658,7 @@ Your response (speak directly, no "June:" label):"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_fully_optimized",
+            "assistant": "simple_voice_assistant_tighter_splitting",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()

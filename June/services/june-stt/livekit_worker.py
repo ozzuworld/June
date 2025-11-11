@@ -1,5 +1,5 @@
 """
-LiveKit Worker with STT Integration (OPTIMIZED)
+LiveKit Worker with STT Integration (OPTIMIZED + FIXED ERROR HANDLING)
 
 KEY IMPROVEMENTS:
 1. ✅ Proper segment concatenation (different time ranges)
@@ -7,6 +7,7 @@ KEY IMPROVEMENTS:
 3. ✅ 3-second cooldown after FINAL to prevent late partials
 4. ✅ Duplicate partial deduplication
 5. ✅ Better logging with timestamps
+6. ✅ FIXED: Don't log expected rejections as errors
 """
 import os
 import asyncio
@@ -123,7 +124,7 @@ async def connect_room_as_subscriber(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator Integration
+# Orchestrator Integration (FIXED ERROR HANDLING)
 # ---------------------------------------------------------------------------
 
 async def send_to_orchestrator(
@@ -134,6 +135,9 @@ async def send_to_orchestrator(
 ) -> bool:
     """
     Send transcription to orchestrator webhook
+    
+    ✅ FIXED: Don't log expected rejections as errors
+    When orchestrator is busy or in cooldown, rejections are NORMAL
     """
     try:
         orchestrator_url = os.getenv(
@@ -191,14 +195,34 @@ async def send_to_orchestrator(
                 if not is_partial:
                     logger.info(f"✅ Orchestrator accepted FINAL transcription")
                 return True
+            elif response.status_code in (400, 409, 429):
+                # ✅ FIXED: These are EXPECTED responses, not errors
+                # 400 = Bad request (duplicate/invalid)
+                # 409 = Conflict (session busy)
+                # 429 = Too many requests (rate limited)
+                logger.debug(
+                    f"⏸️ Orchestrator skipped transcript ({response.status_code}): "
+                    f"This is normal (duplicate/busy/cooldown)"
+                )
+                return False
             else:
+                # Actual errors (500, 503, etc.)
                 logger.error(
-                    f"❌ Orchestrator webhook error: {response.status_code} - {response.text}"
+                    f"❌ Orchestrator webhook error: {response.status_code} - {response.text[:100]}"
                 )
                 return False
                 
+    except httpx.TimeoutError:
+        # ✅ FIXED: Timeout is also expected when orchestrator is busy
+        logger.debug(f"⏸️ Orchestrator timeout (busy processing, this is normal)")
+        return False
+    except httpx.ConnectError as e:
+        # Connection errors are real problems
+        logger.error(f"❌ Connection error to orchestrator: {e}")
+        return False
     except Exception as e:
-        logger.error(f"❌ Failed to send to orchestrator: {e}")
+        # Only log truly unexpected exceptions
+        logger.error(f"❌ Unexpected error sending to orchestrator: {e}", exc_info=True)
         return False
 
 
@@ -243,7 +267,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     silence_counter = 0
     silence_threshold = 5  # Number of silent chunks before finalizing (500ms * 5 = 2.5s)
 
-    # ✅ NEW: Cooldown tracking
+    # ✅ Cooldown tracking
     last_final_time = 0.0
     FINAL_COOLDOWN_SECONDS = 3.0  # Ignore partials for 3s after FINAL
     last_partial_text = ""  # For deduplication
@@ -286,7 +310,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if not text:
                         continue
                     
-                    # ✅ NEW: Check cooldown period after FINAL
+                    # ✅ Check cooldown period after FINAL
                     time_since_final = current_time - last_final_time
                     if time_since_final < FINAL_COOLDOWN_SECONDS:
                         logger.debug(
@@ -295,7 +319,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                         )
                         continue
                     
-                    # ✅ NEW: Deduplicate identical partials
+                    # ✅ Deduplicate identical partials
                     if text == last_partial_text:
                         logger.debug(f"⏸️ Duplicate partial ignored: '{text[:30]}...'")
                         continue
@@ -374,7 +398,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             is_partial=False
                         )
                         
-                        # ✅ NEW: Set cooldown timestamp
+                        # ✅ Set cooldown timestamp
                         last_final_time = time.time()
                         
                         # Reset state for next utterance
