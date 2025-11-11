@@ -86,7 +86,7 @@ else
 fi
 
 # Create values file - ALL FIXES APPLIED
-log "Creating Helm values with correct structure..."
+log "Creating Helm values..."
 cat > /tmp/opencti-values.yaml <<EOF
 # OpenCTI Platform Environment Variables (as KEY: VALUE map, not array!)
 env:
@@ -109,7 +109,7 @@ env:
   MINIO__SECRET_KEY: "${MINIO_PASSWORD}"
   MINIO__USE_SSL: false
   
-  # OPENSEARCH - FIXED: Correct service name without opencti- prefix
+  # OPENSEARCH - CORRECT SERVICE NAME (without opencti- prefix)
   ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
   
   # RABBITMQ
@@ -119,7 +119,7 @@ env:
   RABBITMQ__USERNAME: "opencti"
   RABBITMQ__PASSWORD: "${RABBITMQ_PASSWORD}"
   
-  # REDIS - FIXED: Correct service name
+  # REDIS - CORRECT SERVICE NAME
   REDIS__HOSTNAME: "opencti-redis"
   REDIS__PORT: 6379
   REDIS__MODE: "single"
@@ -150,7 +150,7 @@ worker:
       memory: 2Gi
       cpu: 2000m
 
-# OpenSearch Configuration - FIXED: Removed invalid compatibility.override_main_response_version
+# OpenSearch Configuration - REMOVED INVALID SETTING
 opensearch:
   enabled: true
   replicas: 1
@@ -319,6 +319,10 @@ kubectl wait --for=condition=ready pod \
 log "OpenCTI deployment status:"
 kubectl get pods -n june-services | grep -E "(opencti|opensearch|minio|rabbitmq)" || true
 
+# Get ingress status
+log "OpenCTI ingress status:"
+kubectl get ingress -n june-services | grep opencti || warn "No OpenCTI ingress found"
+
 # Save credentials
 CREDS_FILE="/root/.opencti-credentials"
 cat > "$CREDS_FILE" <<EOFCREDS
@@ -357,3 +361,6 @@ echo ""
 echo "🔍 Verify:"
 echo "  kubectl get pods -n june-services | grep opencti"
 echo "  kubectl logs -f deployment/opencti-server -n june-services"
+echo ""
+echo "⚠️  Note: First startup takes 3-5 minutes for all dependencies to initialize"
+echo "  Monitor: kubectl get pods -n june-services -w"
