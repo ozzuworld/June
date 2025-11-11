@@ -35,6 +35,12 @@ log "Installing qBittorrent for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
+# FIXED: Create directories FIRST, before writing config
+log "Creating directory structure..."
+mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
+mkdir -p /mnt/jellyfin/media/downloads/incomplete
+mkdir -p /mnt/jellyfin/media/downloads/complete
+
 # Pre-create qBittorrent config with username and password
 log "Pre-setting qBittorrent Web UI credentials..."
 cat > /mnt/media/configs/qbittorrent/qBittorrent.conf <<EOF
@@ -47,12 +53,8 @@ WebUI\\Password_PBKDF2=@ByteArray(ARQ77eY1NUZaQsuDHbIMCA==:0WMRkYTUWVT9wVvdDtHAj
 WebUI\\LocalHostAuth=false
 EOF
 
+# Set ownership
 chown -R 1000:1000 /mnt/media/configs/qbittorrent
-
-# Create config directory and downloads folder
-mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
-mkdir -p /mnt/jellyfin/media/downloads/incomplete
-mkdir -p /mnt/jellyfin/media/downloads/complete
 chown -R 1000:1000 /mnt/jellyfin/media/downloads
 
 # Create PV for qBittorrent config
