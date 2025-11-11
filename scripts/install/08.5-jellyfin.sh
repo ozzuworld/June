@@ -49,6 +49,19 @@ log "Using existing wildcard certificate: $WILDCARD_SECRET_NAME"
 # Ensure june-services namespace exists
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
+# Create directory structure on host
+log "Creating media directory structure..."
+mkdir -p /mnt/jellyfin/config
+mkdir -p /mnt/jellyfin/media/movies
+mkdir -p /mnt/jellyfin/media/tv
+mkdir -p /mnt/jellyfin/media/downloads/complete
+mkdir -p /mnt/jellyfin/media/downloads/incomplete
+
+# Set proper ownership (UID 1000 matches Jellyfin container user)
+chown -R 1000:1000 /mnt/jellyfin/config
+chown -R 1000:1000 /mnt/jellyfin/media
+chmod -R 755 /mnt/jellyfin/media
+
 # Add Jellyfin Helm repository
 log "Adding Jellyfin Helm repository..."
 helm repo add jellyfin https://jellyfin.github.io/jellyfin-helm 2>/dev/null || true
@@ -71,24 +84,9 @@ spec:
   hostPath:
     path: /mnt/jellyfin/config
     type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: jellyfin-media-pv
-spec:
-  capacity:
-    storage: 500Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  hostPath:
-    path: /mnt/jellyfin/media
-    type: DirectoryOrCreate
 EOF
 
-# Create values file for Jellyfin with wildcard cert
+# Create values file for Jellyfin with proper volume mounts
 log "Creating Jellyfin Helm values..."
 cat > /tmp/jellyfin-values.yaml <<EOF
 persistence:
@@ -96,10 +94,35 @@ persistence:
     enabled: true
     storageClass: ""
     size: 5Gi
-  media:
-    enabled: true
-    storageClass: ""
-    size: 500Gi
+
+# Additional volumes for media directories
+extraVolumes:
+  - name: media-movies
+    hostPath:
+      path: /mnt/jellyfin/media/movies
+      type: DirectoryOrCreate
+  - name: media-tv
+    hostPath:
+      path: /mnt/jellyfin/media/tv
+      type: DirectoryOrCreate
+  - name: media-downloads
+    hostPath:
+      path: /mnt/jellyfin/media/downloads
+      type: DirectoryOrCreate
+
+extraVolumeMounts:
+  - name: media-movies
+    mountPath: /media/movies
+  - name: media-tv
+    mountPath: /media/tv
+  - name: media-downloads
+    mountPath: /media/downloads
+
+# Set correct user ID
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
 
 service:
   type: ClusterIP
@@ -138,6 +161,10 @@ EOF
 log "Generated Jellyfin configuration:"
 log "  Hostname: tv.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
+log "  Media Mounts:"
+log "    - /media/movies → /mnt/jellyfin/media/movies"
+log "    - /media/tv → /mnt/jellyfin/media/tv"
+log "    - /media/downloads → /mnt/jellyfin/media/downloads"
 
 # Verify wildcard certificate exists
 if kubectl get secret "$WILDCARD_SECRET_NAME" -n june-services &>/dev/null; then
@@ -176,9 +203,22 @@ echo "📺 Jellyfin Access:"
 echo "  URL: https://tv.${DOMAIN}"
 echo "  First-time setup: Navigate to URL and complete setup wizard"
 echo ""
-echo "📁 Storage Locations:"
+echo "📁 Storage Locations (inside container):"
+echo "  Config: /config"
+echo "  Movies: /media/movies"
+echo "  TV Shows: /media/tv"
+echo "  Downloads: /media/downloads"
+echo ""
+echo "📁 Host Storage Locations:"
 echo "  Config: /mnt/jellyfin/config"
-echo "  Media: /mnt/jellyfin/media"
+echo "  Movies: /mnt/jellyfin/media/movies"
+echo "  TV Shows: /mnt/jellyfin/media/tv"
+echo "  Downloads: /mnt/jellyfin/media/downloads"
+echo ""
+echo "📚 Library Setup:"
+echo "  After first login, add these libraries in Dashboard → Libraries:"
+echo "  - Movies: /media/movies"
+echo "  - TV Shows: /media/tv"
 echo ""
 echo "🔐 Certificate:"
 echo "  Using shared wildcard certificate: ${WILDCARD_SECRET_NAME}"
@@ -187,3 +227,6 @@ echo ""
 echo "🔍 Verify deployment:"
 echo "  kubectl get pods -n june-services | grep jellyfin"
 echo "  kubectl get ingress -n june-services | grep jellyfin"
+echo ""
+echo "🔧 Verify mounts inside container:"
+echo "  kubectl exec -n june-services deployment/jellyfin -- ls -la /media/"
