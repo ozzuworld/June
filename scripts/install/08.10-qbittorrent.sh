@@ -41,8 +41,8 @@ mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
 mkdir -p /mnt/jellyfin/media/downloads/incomplete
 mkdir -p /mnt/jellyfin/media/downloads/complete
 
-# Pre-create qBittorrent config with username and password
-log "Pre-setting qBittorrent Web UI credentials..."
+# Pre-create qBittorrent config with username, password, and download paths
+log "Pre-setting qBittorrent Web UI credentials and download paths..."
 cat > /mnt/media/configs/qbittorrent/qBittorrent.conf <<EOF
 [LegalNotice]
 Accepted=true
@@ -51,6 +51,11 @@ Accepted=true
 WebUI\\Username=admin
 WebUI\\Password_PBKDF2=@ByteArray(ARQ77eY1NUZaQsuDHbIMCA==:0WMRkYTUWVT9wVvdDtHAjU9b3b7uB8NR1Gur2hmQCvCDpm39Q+PsJRJPaCU51dEiz+dTzh8qbPsL8WkFljQYFQ==)
 WebUI\\LocalHostAuth=false
+Downloads\\SavePath=/downloads/complete
+Downloads\\TempPath=/downloads/incomplete
+Downloads\\TempPathEnabled=true
+Downloads\\PreAllocation=false
+Downloads\\UseIncompleteExtension=false
 EOF
 
 # Set ownership
@@ -208,8 +213,19 @@ echo "  URL: https://qbittorrent.${DOMAIN}"
 echo "  Default Username: admin"
 echo "  Default Password: adminadmin"
 echo ""
+echo "📂 Download Paths:"
+echo "  Complete: /downloads/complete"
+echo "  Incomplete: /downloads/incomplete"
+echo "  Host Path: /mnt/jellyfin/media/downloads"
+echo ""
 echo "📝 Setup Instructions:"
 echo " 1. Go to https://qbittorrent.${DOMAIN}"
 echo " 2. Login with the credentials above"
 echo " 3. Change password in Tools > Options > Web UI"
 echo " 4. Use these credentials to connect Sonarr/Radarr"
+echo ""
+echo "🔗 Connection Details for Sonarr/Radarr:"
+echo "  Host: qbittorrent.june-services.svc.cluster.local"
+echo "  Port: 8080"
+echo "  Username: admin"
+echo "  Password: adminadmin"
