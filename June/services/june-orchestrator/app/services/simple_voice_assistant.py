@@ -1,13 +1,15 @@
 """
-Simple Voice Assistant - Natural Conversation (IMPROVED)
-Fixes: Better prompting for direct responses and story-telling
+Simple Voice Assistant - Natural Conversation (FULLY FIXED)
+All fixes applied: Output cleaning, better timeout, improved interruption handling
 
 KEY IMPROVEMENTS:
-1. ✅ More direct, action-oriented responses
+1. ✅ Removes "June:" prefix from output
 2. ✅ Better story-telling capability
 3. ✅ Natural explanations like ChatGPT/Claude
 4. ✅ Voice-optimized pacing
 5. ✅ Proper history management with debug logging
+6. ✅ 15s TTS timeout (increased from 10s)
+7. ✅ Better interruption handling
 """
 import asyncio
 import logging
@@ -31,7 +33,7 @@ class Message:
 class ConversationHistory:
     """Simple in-memory conversation history with better logging"""
     
-    def __init__(self, max_turns: int = 5):  # Increased from 3 to 5
+    def __init__(self, max_turns: int = 5):
         self.sessions: Dict[str, List[Message]] = {}
         self.max_turns = max_turns
         logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
@@ -82,12 +84,13 @@ class ConversationHistory:
 class SimpleVoiceAssistant:
     """
     Voice assistant with natural explanations and better story-telling
+    NOW WITH ALL FIXES APPLIED
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
-        self.history = ConversationHistory(max_turns=5)  # Keep more context
+        self.history = ConversationHistory(max_turns=5)
         
         # Simple sentence detection
         self.sentence_end = re.compile(r'[.!?。！？]+\s*')
@@ -111,11 +114,12 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (IMPROVED) initialized")
+        logger.info("✅ Simple Voice Assistant (FULLY FIXED) initialized")
         logger.info("   - Mode: Direct, action-oriented responses")
         logger.info("   - History: Last 5 exchanges")
-        logger.info("   - Better story-telling")
-        logger.info("   - Natural explanations")
+        logger.info("   - Output cleaning: Removes speaker labels")
+        logger.info("   - TTS timeout: 15 seconds")
+        logger.info("   - Better interruption handling")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -141,11 +145,26 @@ class SimpleVoiceAssistant:
         self._recent_transcripts[session_id] = (text, current_time)
         return False
     
-    def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """Build improved prompt for direct, helpful responses"""
+    def _clean_llm_output(self, text: str) -> str:
+        """Remove any speaker labels that snuck into the output"""
+        # Remove "June:" or "June :" at the start
+        text = re.sub(r'^(June\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
         
-        # Improved system prompt - more direct, less meta-commentary
+        # Remove "Assistant:" or similar
+        text = re.sub(r'^(Assistant\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
+        
+        return text.strip()
+    
+    def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
+        """Build improved prompt WITHOUT speaker labels in output"""
+        
+        # Improved system prompt - explicitly tell it NOT to use labels
         system = """You are June, a knowledgeable and friendly voice assistant.
+
+CRITICAL OUTPUT RULE:
+• Do NOT include "June:" or any speaker labels in your responses
+• Start speaking directly - your words will be converted to speech
+• Never write "June: " before your response
 
 CORE BEHAVIOR:
 • Give direct, helpful responses - don't ask if you should help, just help
@@ -154,7 +173,7 @@ CORE BEHAVIOR:
 • Speak naturally, like a helpful friend who knows a lot
 
 WHEN ASKED TO CREATE CONTENT (stories, poems, etc.):
-• Start creating immediately - no "I'll write that for you" preamble
+• Start creating immediately - no preamble
 • Jump right into the content
 • Keep it concise for voice (30-60 seconds of speech)
 
@@ -164,36 +183,32 @@ WHEN ASKED TO EXPLAIN (science, history, tech):
 • Break complex topics into understandable pieces
 • Be thorough but voice-friendly (not too long)
 
-CONVERSATION STYLE:
-• Natural and warm, not robotic
-• No meta-commentary about what you're doing
-• Just do it
-
 EXAMPLES:
 
-❌ BAD (too much meta-talk):
+❌ BAD (with label):
 User: "Tell me a story about Pokemon"
-You: "Sure! I can write that for you. Let me create something now..."
+You: "June: In a small village..."
+
+✅ GOOD (direct speech):
+User: "Tell me a story about Pokemon"
+You: "In a small village near Mount Silver, a young trainer discovered a mysterious Pokeball..."
+
+❌ BAD (with meta-talk):
+User: "Explain dark matter"
+You: "Sure! Let me explain that for you. Dark matter is..."
 
 ✅ GOOD (direct):
-User: "Tell me a story about Pokemon"  
-You: "In a small village near Mount Silver, a young trainer named Kai discovered a mysterious Pokeball glowing in the forest..."
-
-❌ BAD (asking unnecessary questions):
 User: "Explain dark matter"
-You: "Would you like a simple explanation or detailed one?"
+You: "Dark matter is invisible material that makes up about 85% of the universe's mass..."
 
-✅ GOOD (just explain):
-User: "Explain dark matter"
-You: "Dark matter is invisible material that makes up about 85% of the universe's mass. We can't see it directly, but we know it's there because we can see its gravitational effects on galaxies and light..."
-
-Remember: You're helpful and direct. When someone asks for something, just do it naturally."""
+Remember: Speak naturally and directly. No labels, no preamble."""
 
         # Format conversation history
         if history:
             context_lines = []
             for msg in history:
-                role = "User" if msg['role'] == 'user' else "June"
+                # Show role clearly in context but not in output
+                role = "User" if msg['role'] == 'user' else "June (you said)"
                 content = msg['content']
                 context_lines.append(f"{role}: {content}")
             
@@ -207,14 +222,14 @@ Remember: You're helpful and direct. When someone asks for something, just do it
 === Current User Message ===
 User: {user_message}
 
-June:"""
+Your response (speak directly, no "June:" label):"""
         else:
             # No history - fresh conversation
             prompt = f"""{system}
 
 User: {user_message}
 
-June:"""
+Your response (speak directly, no "June:" label):"""
         
         return prompt
     
@@ -252,14 +267,23 @@ June:"""
         
         lock = self._processing_lock[session_id]
         
-        # Check if already processing
+        # ✅ FIX 5: Better interruption handling
+        word_count = len(text.strip().split())
+        
         if lock.locked():
-            logger.warning(f"⚠️ Already processing for session {session_id[:8]}..., skipping")
-            return {
-                "status": "skipped",
-                "reason": "already_processing",
-                "text": text[:100]
-            }
+            # If it's a short input while processing, skip it
+            if word_count < 5:
+                logger.warning(f"⚠️ Already processing, skipping short input: '{text}'")
+                return {
+                    "status": "skipped",
+                    "reason": "already_processing",
+                    "text": text[:100]
+                }
+            else:
+                # If it's a longer input, this might be an intentional interruption
+                logger.info(f"🛑 User interrupting with new request: '{text[:50]}...'")
+                logger.info(f"   (Previous response will complete, but new request will be queued)")
+                # Let it wait for the lock - will process after current response finishes
         
         # Process with lock
         async with lock:
@@ -336,10 +360,16 @@ June:"""
                     if sentence:
                         sentence_count += 1
                         
+                        # ✅ FIX 2 & 3: Clean the output before sending to TTS
+                        cleaned_sentence = self._clean_llm_output(sentence)
+                        
+                        if not cleaned_sentence:  # Skip if cleaning removed everything
+                            continue
+                        
                         # Track first sentence timing
                         if sentence_count == 1:
                             first_sentence_time = (time.time() - start_time) * 1000
-                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{sentence[:40]}...'")
+                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
                             
                             # Update running average
                             if self.avg_first_sentence_ms == 0:
@@ -349,17 +379,19 @@ June:"""
                                     self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
                                 )
                         
-                        # Send to TTS sequentially
-                        logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
-                        await self._send_to_tts(room_name, sentence, session_id)
+                        # Send cleaned sentence to TTS
+                        logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned_sentence[:50]}...'")
+                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
                         self.total_sentences_sent += 1
             
-            # Send any remaining text
+            # Send any remaining text (cleaned)
             if sentence_buffer.strip():
-                sentence_count += 1
-                logger.info(f"🔊 Final fragment: '{sentence_buffer[:50]}...'")
-                await self._send_to_tts(room_name, sentence_buffer.strip(), session_id)
-                self.total_sentences_sent += 1
+                cleaned_fragment = self._clean_llm_output(sentence_buffer.strip())
+                if cleaned_fragment:
+                    sentence_count += 1
+                    logger.info(f"🔊 Final fragment: '{cleaned_fragment[:50]}...'")
+                    await self._send_to_tts(room_name, cleaned_fragment, session_id)
+                    self.total_sentences_sent += 1
             
             llm_time = (time.time() - llm_start) * 1000
             
@@ -462,12 +494,12 @@ June:"""
                 yield "I'm experiencing technical difficulties."
     
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
-        """Send text to TTS service with natural pacing and timeout"""
+        """Send text to TTS service with natural pacing and increased timeout"""
         try:
             # Natural pacing between sentences
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
-                if time_since_last < 0.4:  # Reduced from 1.5s - faster pacing
+                if time_since_last < 0.4:
                     delay = 0.4 - time_since_last
                     logger.debug(f"⏸️ Pacing delay: {delay:.1f}s")
                     await asyncio.sleep(delay)
@@ -475,7 +507,7 @@ June:"""
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # Send with timeout
+            # ✅ FIX 4: Increased timeout from 10s to 15s
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -484,10 +516,10 @@ June:"""
                         voice_id="default",
                         streaming=True
                     ),
-                    timeout=10.0
+                    timeout=15.0  # ← Increased from 10.0
                 )
             except asyncio.TimeoutError:
-                logger.error(f"❌ TTS timeout (>10s) for: '{text[:50]}...'")
+                logger.error(f"❌ TTS timeout (>15s) for: '{text[:50]}...'")
                 return
             
             tts_time = (time.time() - tts_start) * 1000
@@ -520,7 +552,7 @@ June:"""
             }
         
         return {
-            "mode": "simple_voice_assistant_improved",
+            "mode": "simple_voice_assistant_fully_fixed",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -547,7 +579,7 @@ June:"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_improved",
+            "assistant": "simple_voice_assistant_fully_fixed",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
