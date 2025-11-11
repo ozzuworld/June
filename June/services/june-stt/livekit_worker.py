@@ -230,7 +230,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     
     # ✅ FIX: Track silence for finalizing utterances
     silence_counter = 0
-    silence_threshold = 3  # Number of silent chunks before finalizing (500ms * 3 = 1.5s)
+    silence_threshold = 5  # Number of silent chunks before finalizing (500ms * 3 = 1.5s)
 
     try:
         async for ev in audio_stream:
