@@ -62,6 +62,72 @@ chown -R 1000:1000 /mnt/opencti/minio
 chown -R 999:999 /mnt/opencti/rabbitmq
 chmod -R 755 /mnt/opencti
 
+# CREATE PERSISTENT VOLUMES BEFORE HELM INSTALL
+log "Creating PersistentVolumes..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencti-opensearch-pv
+spec:
+  capacity:
+    storage: 30Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/opencti/opensearch
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencti-minio-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/opencti/minio
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencti-rabbitmq-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/opencti/rabbitmq
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: opencti-redis-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/opencti/redis
+    type: DirectoryOrCreate
+EOF
+
+success "PersistentVolumes created"
+
 # Generate passwords
 OPENCTI_TOKEN=$(openssl rand -hex 32)
 ADMIN_EMAIL="${OPENCTI_ADMIN_EMAIL:-admin@${DOMAIN}}"
@@ -85,12 +151,11 @@ else
     warn "Wildcard certificate not found: $WILDCARD_SECRET_NAME"
 fi
 
-# Create values file - ALL FIXES APPLIED
+# Create values file
 log "Creating Helm values..."
 cat > /tmp/opencti-values.yaml <<EOF
-# OpenCTI Platform Environment Variables (as KEY: VALUE map, not array!)
+# OpenCTI Platform Environment Variables
 env:
-  # APP OPENCTI
   APP__ADMIN__EMAIL: "${ADMIN_EMAIL}"
   APP__ADMIN__PASSWORD: "${ADMIN_PASSWORD}"
   APP__ADMIN__TOKEN: "${OPENCTI_TOKEN}"
@@ -101,30 +166,21 @@ env:
   APP__TELEMETRY__METRICS__ENABLED: true
   NODE_OPTIONS: "--max-old-space-size=8096"
   PROVIDERS__LOCAL__STRATEGY: "LocalStrategy"
-  
-  # MINIO
   MINIO__ENDPOINT: "opencti-minio"
   MINIO__PORT: 9000
   MINIO__ACCESS_KEY: "${MINIO_USER}"
   MINIO__SECRET_KEY: "${MINIO_PASSWORD}"
   MINIO__USE_SSL: false
-  
-  # OPENSEARCH - CORRECT SERVICE NAME (without opencti- prefix)
   ELASTICSEARCH__URL: "http://opensearch-cluster-master:9200"
-  
-  # RABBITMQ
   RABBITMQ__HOSTNAME: "opencti-rabbitmq"
   RABBITMQ__PORT_MANAGEMENT: 15672
   RABBITMQ__PORT: 5672
   RABBITMQ__USERNAME: "opencti"
   RABBITMQ__PASSWORD: "${RABBITMQ_PASSWORD}"
-  
-  # REDIS - CORRECT SERVICE NAME
   REDIS__HOSTNAME: "opencti-redis"
   REDIS__PORT: 6379
   REDIS__MODE: "single"
 
-# Resources for OpenCTI server
 resources:
   requests:
     memory: 2Gi
@@ -133,15 +189,12 @@ resources:
     memory: 8Gi
     cpu: 4000m
 
-# Worker Configuration
 worker:
   enabled: true
   replicaCount: 2
-  
   env:
     WORKER_LOG_LEVEL: "info"
     WORKER_TELEMETRY_ENABLED: true
-  
   resources:
     requests:
       memory: 512Mi
@@ -150,28 +203,22 @@ worker:
       memory: 2Gi
       cpu: 2000m
 
-# OpenSearch Configuration - REMOVED INVALID SETTING
 opensearch:
   enabled: true
   replicas: 1
-  
   sysctlInit:
     enabled: true
-  
   opensearchJavaOpts: "-Xms2g -Xmx2g"
-  
   config:
     opensearch.yml: |
       cluster.name: opencti
       network.host: 0.0.0.0
       discovery.type: single-node
       plugins.security.disabled: true
-  
   persistence:
     enabled: true
     storageClass: ""
     size: 30Gi
-  
   resources:
     requests:
       cpu: 1000m
@@ -180,20 +227,16 @@ opensearch:
       cpu: 2000m
       memory: 4Gi
 
-# MinIO Configuration
 minio:
   enabled: true
   mode: standalone
-  
   auth:
     rootUser: "${MINIO_USER}"
     rootPassword: "${MINIO_PASSWORD}"
-  
   persistence:
     enabled: true
     storageClass: ""
     size: 20Gi
-  
   resources:
     requests:
       memory: 512Mi
@@ -202,21 +245,17 @@ minio:
       memory: 2Gi
       cpu: 1000m
 
-# Redis Configuration
 redis:
   enabled: true
   architecture: standalone
-  
   auth:
     enabled: true
     password: "${REDIS_PASSWORD}"
-  
   master:
     persistence:
       enabled: true
       storageClass: ""
       size: 5Gi
-    
     resources:
       requests:
         memory: 256Mi
@@ -225,24 +264,19 @@ redis:
         memory: 1Gi
         cpu: 500m
 
-# RabbitMQ Configuration
 rabbitmq:
   enabled: true
-  
   auth:
     username: "opencti"
     password: "${RABBITMQ_PASSWORD}"
     erlangCookie: "${RABBITMQ_ERLANG}"
-  
   persistence:
     enabled: true
     storageClass: ""
     size: 5Gi
-  
   extraConfiguration: |
     max_message_size = 536870912
     consumer_timeout = 86400000
-  
   resources:
     requests:
       memory: 512Mi
@@ -251,11 +285,9 @@ rabbitmq:
       memory: 2Gi
       cpu: 1000m
 
-# Ingress Configuration
 ingress:
   enabled: true
   className: nginx
-  
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
@@ -263,65 +295,51 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-  
   hosts:
     - host: dark.${DOMAIN}
       paths:
         - path: /
           pathType: Prefix
-  
   tls:
     - secretName: ${WILDCARD_SECRET_NAME}
       hosts:
         - dark.${DOMAIN}
 EOF
 
-log "Generated OpenCTI configuration:"
+log "Configuration generated:"
 log "  Hostname: dark.${DOMAIN}"
-log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
-log "  Admin Email: ${ADMIN_EMAIL}"
 log "  OpenSearch: http://opensearch-cluster-master:9200"
 log "  Redis: opencti-redis:6379"
+log "  Admin: ${ADMIN_EMAIL}"
 
 # Install OpenCTI via Helm
-log "Installing OpenCTI with Helm (this may take 10-15 minutes)..."
+log "Installing OpenCTI with Helm (10-15 minutes)..."
 helm upgrade --install opencti opencti/opencti \
   --namespace june-services \
   --values /tmp/opencti-values.yaml \
   --timeout 20m \
   --wait
 
-log "Waiting for OpenSearch to be ready..."
+log "Waiting for components to be ready..."
 kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/name=opensearch \
   -n june-services \
-  --timeout=600s || warn "OpenSearch not ready yet"
+  --timeout=600s || warn "OpenSearch not ready"
 
-log "Waiting for MinIO to be ready..."
 kubectl wait --for=condition=ready pod \
   -l app=minio \
   -n june-services \
-  --timeout=300s || warn "MinIO not ready yet"
+  --timeout=300s || warn "MinIO not ready"
 
-log "Waiting for RabbitMQ to be ready..."
 kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/name=rabbitmq \
   -n june-services \
-  --timeout=300s || warn "RabbitMQ not ready yet"
+  --timeout=300s || warn "RabbitMQ not ready"
 
-log "Waiting for OpenCTI platform to be ready..."
 kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/name=opencti \
   -n june-services \
-  --timeout=600s || warn "OpenCTI platform not ready yet"
-
-# Get deployment status
-log "OpenCTI deployment status:"
-kubectl get pods -n june-services | grep -E "(opencti|opensearch|minio|rabbitmq)" || true
-
-# Get ingress status
-log "OpenCTI ingress status:"
-kubectl get ingress -n june-services | grep opencti || warn "No OpenCTI ingress found"
+  --timeout=600s || warn "OpenCTI not ready"
 
 # Save credentials
 CREDS_FILE="/root/.opencti-credentials"
@@ -332,13 +350,6 @@ URL: https://dark.${DOMAIN}
 Admin Email: ${ADMIN_EMAIL}
 Admin Password: ${ADMIN_PASSWORD}
 Admin Token: ${OPENCTI_TOKEN}
-Health Access Key: ${HEALTH_KEY}
-
-Service Endpoints:
-  OpenSearch: http://opensearch-cluster-master:9200
-  Redis: opencti-redis:6379
-  RabbitMQ: opencti-rabbitmq:5672
-  MinIO: opencti-minio:9000
 
 MinIO: ${MINIO_USER} / ${MINIO_PASSWORD}
 Redis Password: ${REDIS_PASSWORD}
@@ -351,16 +362,9 @@ chmod 600 "$CREDS_FILE"
 
 success "OpenCTI installed successfully!"
 echo ""
-echo "🔒 OpenCTI Cyber Threat Intelligence Platform:"
-echo "  URL: https://dark.${DOMAIN}"
-echo "  Email: ${ADMIN_EMAIL}"
-echo "  Password: ${ADMIN_PASSWORD}"
+echo "🔒 OpenCTI: https://dark.${DOMAIN}"
+echo "📧 Email: ${ADMIN_EMAIL}"
+echo "🔑 Password: ${ADMIN_PASSWORD}"
+echo "📋 Credentials: ${CREDS_FILE}"
 echo ""
-echo "📋 Credentials saved to: ${CREDS_FILE}"
-echo ""
-echo "🔍 Verify:"
-echo "  kubectl get pods -n june-services | grep opencti"
-echo "  kubectl logs -f deployment/opencti-server -n june-services"
-echo ""
-echo "⚠️  Note: First startup takes 3-5 minutes for all dependencies to initialize"
-echo "  Monitor: kubectl get pods -n june-services -w"
+echo "🔍 Monitor: kubectl get pods -n june-services | grep opencti"
