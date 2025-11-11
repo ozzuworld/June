@@ -193,7 +193,7 @@ async def send_to_orchestrator(
 
 
 # ---------------------------------------------------------------------------
-# Audio → ASR with FULL FIX
+# Audio → ASR with PROPER SEGMENT CONCATENATION
 # ---------------------------------------------------------------------------
 
 async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.RemoteParticipant):
@@ -201,10 +201,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     Subscribe to an audio track, feed PCM into WhisperStreaming processor and log transcripts.
     One processor per audio track.
     
-    FIXES APPLIED:
-    1. ✅ Sends FINAL transcripts after detecting silence (not just on disconnect)
-    2. ✅ Properly accumulates full text (Whisper gives progressive updates)
-    3. ✅ Avoids duplicate partials
+    ✅ FIXED: Properly concatenates sequential segments (different time ranges)
+    ✅ FIXED: Replaces text when same segment is being refined (same time range)
     """
     from livekit.rtc import AudioStream
 
@@ -224,13 +222,14 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     # Track room name for orchestrator
     room_name = os.getenv("LIVEKIT_ROOM", "ozzu-main")
     
-    # ✅ FIX: Track ACCUMULATED full text (Whisper builds up progressively)
-    accumulated_text = ""  # Full utterance text so far
+    # ✅ FIX: Track accumulated text AND segment timing
+    accumulated_text = ""  # Full utterance text built from segments
+    last_segment_end = 0.0  # End time of last segment
     last_sent_partial = ""  # Last partial we sent (to avoid duplicates)
     
     # ✅ FIX: Track silence for finalizing utterances
     silence_counter = 0
-    silence_threshold = 5  # Number of silent chunks before finalizing (500ms * 3 = 1.5s)
+    silence_threshold = 5  # Number of silent chunks before finalizing (500ms * 5 = 2.5s)
 
     try:
         async for ev in audio_stream:
@@ -269,18 +268,40 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if not text:
                         continue
                     
-                    # ✅ FIX: ACCUMULATE the full text
-                    # Whisper streaming gives us progressive refinements of the same utterance
-                    # Each update contains the FULL text so far, not just new words
-                    accumulated_text = text
+                    # ✅ CRITICAL FIX: Determine if this is a NEW segment or refinement
+                    # NEW segment: beg is at or after the last segment's end
+                    # Refinement: beg is before the last segment's end (overlapping/updating)
                     
-                    # ✅ FIX: Reset silence counter when we get new text
+                    is_new_segment = beg >= (last_segment_end - 0.3)  # Allow 0.3s overlap tolerance
+                    
+                    if is_new_segment:
+                        # This is a NEW segment - CONCATENATE it
+                        if accumulated_text:
+                            # Add space before concatenating
+                            accumulated_text = accumulated_text + " " + text
+                            logger.debug(
+                                f"[Concatenate] Adding segment: '{text}' → Full: '{accumulated_text[:50]}...'"
+                            )
+                        else:
+                            # First segment
+                            accumulated_text = text
+                        
+                        # Update the last segment end time
+                        last_segment_end = end
+                    else:
+                        # This is a REFINEMENT of existing segment - REPLACE
+                        accumulated_text = text
+                        last_segment_end = end
+                        logger.debug(
+                            f"[Refinement] Replacing with: '{text}'"
+                        )
+                    
+                    # ✅ Reset silence counter when we get new text
                     silence_counter = 0
                     
                     # Only send partial if it's significantly different from last one
-                    # This avoids sending duplicate partials for tiny changes
-                    if text != last_sent_partial and len(text) > len(last_sent_partial):
-                        last_sent_partial = text
+                    if accumulated_text != last_sent_partial and len(accumulated_text) > len(last_sent_partial):
+                        last_sent_partial = accumulated_text
                         
                         # Log locally
                         logger.info(
@@ -288,7 +309,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             participant.identity,
                             beg,
                             end,
-                            text,
+                            accumulated_text,
                         )
                         
                         # Send partial transcription
@@ -296,32 +317,33 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             send_to_orchestrator(
                                 room_name=room_name,
                                 participant=participant.identity,
-                                text=text,
+                                text=accumulated_text,
                                 is_partial=True
                             )
                         )
                 else:
-                    # ✅ FIX: No output means silence detected by VAD
+                    # ✅ No output means silence detected by VAD
                     silence_counter += 1
                     
-                    # ✅ FIX: After enough silence, finalize with FULL accumulated text
+                    # ✅ After enough silence, finalize with FULL accumulated text
                     if silence_counter >= silence_threshold and accumulated_text:
                         logger.info(
                             "[LiveKit FINAL after silence] %s: %s",
                             participant.identity,
-                            accumulated_text,  # ✅ Send complete utterance!
+                            accumulated_text,
                         )
                         
                         # Send FINAL transcription with complete accumulated text
                         await send_to_orchestrator(
                             room_name=room_name,
                             participant=participant.identity,
-                            text=accumulated_text,  # ✅ Complete text!
+                            text=accumulated_text,
                             is_partial=False
                         )
                         
-                        # Reset state for next utterance
+                        # ✅ Reset state for next utterance
                         accumulated_text = ""
+                        last_segment_end = 0.0
                         last_sent_partial = ""
                         silence_counter = 0
 
@@ -335,20 +357,25 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
             beg, end, text = output
             text = text.strip()
             
-            if text:  # Only send if non-empty
+            if text:
+                # Check if this is a new segment to concatenate
+                if beg >= (last_segment_end - 0.3) and accumulated_text:
+                    accumulated_text = accumulated_text + " " + text
+                else:
+                    accumulated_text = text
+                    
                 logger.info(
                     "[LiveKit FINAL on track end] %s %.2f–%.2fs: %s",
                     participant.identity,
                     beg,
                     end,
-                    text,
+                    accumulated_text,
                 )
                 
-                # Send FINAL transcription
                 await send_to_orchestrator(
                     room_name=room_name,
                     participant=participant.identity,
-                    text=text,
+                    text=accumulated_text,
                     is_partial=False
                 )
         else:
