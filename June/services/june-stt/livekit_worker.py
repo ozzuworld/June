@@ -212,7 +212,7 @@ async def send_to_orchestrator(
                 )
                 return False
                 
-    except httpx.TimeoutError:
+    except httpx.TimeoutException:
         # ✅ FIXED: Timeout is also expected when orchestrator is busy
         logger.debug(f"⏸️ Orchestrator timeout (busy processing, this is normal)")
         return False
