@@ -69,7 +69,7 @@ git pull
 docker build -f June/services/june-vast/Dockerfile -t ozzuworld/june-vast:latest .
 docker push ozzuworld/june-vast:latest
 
-kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://50.175.95.210:53001"}]}]}}}}'
+kubectl patch deploy june-orchestrator -n june-services -p '{"spec":{"template":{"spec":{"containers":[{"name":"orchestrator","env":[{"name":"TTS_SERVICE_URL","value":"http://38.64.28.7:27825"}]}]}}}}'
 kubectl get pods -n june-services -w
 
 

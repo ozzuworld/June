@@ -1,15 +1,13 @@
 """
-Simple Voice Assistant - Natural Conversation (Production Ready)
-STT → LLM → TTS with all fixes applied
+Simple Voice Assistant - Natural Conversation (IMPROVED)
+Fixes: Better prompting for direct responses and story-telling
 
-FIXES INCLUDED:
-1. ✅ Ignores partial transcripts (processes finals only)
-2. ✅ Deduplication (3-second window)
-3. ✅ Processing locks (one response per session at a time)
-4. ✅ Sequential TTS (await, not create_task)
-5. ✅ TTS timeout (10 seconds max)
-6. ✅ Improved context-aware system prompt
-7. ✅ Better conversational understanding
+KEY IMPROVEMENTS:
+1. ✅ More direct, action-oriented responses
+2. ✅ Better story-telling capability
+3. ✅ Natural explanations like ChatGPT/Claude
+4. ✅ Voice-optimized pacing
+5. ✅ Proper history management with debug logging
 """
 import asyncio
 import logging
@@ -31,9 +29,9 @@ class Message:
 
 
 class ConversationHistory:
-    """Simple in-memory conversation history"""
+    """Simple in-memory conversation history with better logging"""
     
-    def __init__(self, max_turns: int = 3):
+    def __init__(self, max_turns: int = 5):  # Increased from 3 to 5
         self.sessions: Dict[str, List[Message]] = {}
         self.max_turns = max_turns
         logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
@@ -42,6 +40,7 @@ class ConversationHistory:
         """Add message and auto-trim old history"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
+            logger.info(f"🆕 Created new conversation for session {session_id[:8]}...")
         
         self.sessions[session_id].append(
             Message(role=role, content=content, timestamp=datetime.utcnow())
@@ -49,37 +48,46 @@ class ConversationHistory:
         
         # Keep only last N exchanges (user+assistant pairs)
         max_messages = self.max_turns * 2
-        if len(self.sessions[session_id]) > max_messages:
-            old_count = len(self.sessions[session_id])
+        before_count = len(self.sessions[session_id])
+        
+        if before_count > max_messages:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
-            logger.debug(f"🗑️ Trimmed history for {session_id}: {old_count} → {max_messages} messages")
+            logger.info(f"🗑️ Trimmed history for {session_id[:8]}...: {before_count} → {len(self.sessions[session_id])} messages")
+        
+        # Log current state
+        logger.debug(f"📚 History for {session_id[:8]}... now has {len(self.sessions[session_id])} messages")
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
         """Get conversation history as dict list for LLM"""
         if session_id not in self.sessions:
+            logger.debug(f"📭 No history found for {session_id[:8]}...")
             return []
         
-        return [
+        history = [
             {"role": msg.role, "content": msg.content}
             for msg in self.sessions[session_id]
         ]
+        
+        logger.debug(f"📚 Retrieved {len(history)} messages for {session_id[:8]}...")
+        return history
     
     def clear_session(self, session_id: str):
         """Clear history for a session"""
         if session_id in self.sessions:
+            msg_count = len(self.sessions[session_id])
             del self.sessions[session_id]
-            logger.info(f"🗑️ Cleared history for session {session_id}")
+            logger.info(f"🗑️ Cleared {msg_count} messages for session {session_id[:8]}...")
 
 
 class SimpleVoiceAssistant:
     """
-    Production-ready voice assistant with natural conversation flow
+    Voice assistant with natural explanations and better story-telling
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
-        self.history = ConversationHistory(max_turns=3)
+        self.history = ConversationHistory(max_turns=5)  # Keep more context
         
         # Simple sentence detection
         self.sentence_end = re.compile(r'[.!?。！？]+\s*')
@@ -103,11 +111,11 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (Production) initialized")
-        logger.info("   - Mode: Direct STT → LLM → TTS")
-        logger.info("   - History: Last 3 exchanges")
-        logger.info("   - Context-aware prompts")
-        logger.info("   - All fixes applied")
+        logger.info("✅ Simple Voice Assistant (IMPROVED) initialized")
+        logger.info("   - Mode: Direct, action-oriented responses")
+        logger.info("   - History: Last 5 exchanges")
+        logger.info("   - Better story-telling")
+        logger.info("   - Natural explanations")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -134,72 +142,79 @@ class SimpleVoiceAssistant:
         return False
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """Build natural conversation prompt with improved context awareness"""
+        """Build improved prompt for direct, helpful responses"""
         
-        # Context-aware system prompt
-        system = """You are June, a friendly and intelligent voice assistant. You have natural conversations with users.
+        # Improved system prompt - more direct, less meta-commentary
+        system = """You are June, a knowledgeable and friendly voice assistant.
 
-CONVERSATION RULES:
-1. **Pay attention to context**: Remember what you just said and what the user is responding to
-2. **Infer intent**: If the user's words are unclear, figure out what they probably mean based on context
-3. **Be brief**: Keep responses to 1-3 sentences for natural voice conversation
-4. **Be natural**: Speak like a helpful friend, not a robot
-5. **Follow through**: If you asked a question, treat the next message as the answer
+CORE BEHAVIOR:
+• Give direct, helpful responses - don't ask if you should help, just help
+• For requests (stories, explanations, etc.), fulfill them immediately
+• Be concise but complete - aim for 2-4 sentences unless more detail is needed
+• Speak naturally, like a helpful friend who knows a lot
 
-HANDLING UNCLEAR INPUT:
-- If transcription seems garbled, infer the likely meaning from context
-- Focus on keywords and intent, not exact words
-- If you just asked "what topic?", assume next message is the topic
+WHEN ASKED TO CREATE CONTENT (stories, poems, etc.):
+• Start creating immediately - no "I'll write that for you" preamble
+• Jump right into the content
+• Keep it concise for voice (30-60 seconds of speech)
+
+WHEN ASKED TO EXPLAIN (science, history, tech):
+• Give clear, accurate explanations
+• Use analogies and examples when helpful
+• Break complex topics into understandable pieces
+• Be thorough but voice-friendly (not too long)
+
+CONVERSATION STYLE:
+• Natural and warm, not robotic
+• No meta-commentary about what you're doing
+• Just do it
 
 EXAMPLES:
 
-Bad (ignoring context):
-You: "What would you like a story about?"
-User: "pokemons or they happy"
-You: "Would you like Pokemon or happiness?" ❌ (treating as new question)
+❌ BAD (too much meta-talk):
+User: "Tell me a story about Pokemon"
+You: "Sure! I can write that for you. Let me create something now..."
 
-Good (using context):
-You: "What would you like a story about?"
-User: "pokemons or they happy"  
-You: "Great! Here's a story about happy Pokemon..." ✅ (inferring they chose Pokemon)
+✅ GOOD (direct):
+User: "Tell me a story about Pokemon"  
+You: "In a small village near Mount Silver, a young trainer named Kai discovered a mysterious Pokeball glowing in the forest..."
 
-Bad (too long):
-"I can tell you many different types of stories. I could tell you about Pokemon, or about happiness, or about adventures. What would you prefer?" ❌
+❌ BAD (asking unnecessary questions):
+User: "Explain dark matter"
+You: "Would you like a simple explanation or detailed one?"
 
-Good (brief):
-"Sure! What should the story be about?" ✅
+✅ GOOD (just explain):
+User: "Explain dark matter"
+You: "Dark matter is invisible material that makes up about 85% of the universe's mass. We can't see it directly, but we know it's there because we can see its gravitational effects on galaxies and light..."
 
-Remember: You're having a CONVERSATION, not answering isolated questions."""
-        
-        # Format conversation history with better context
+Remember: You're helpful and direct. When someone asks for something, just do it naturally."""
+
+        # Format conversation history
         if history:
             context_lines = []
             for msg in history:
-                role = "User" if msg['role'] == 'user' else "You (June)"
+                role = "User" if msg['role'] == 'user' else "June"
                 content = msg['content']
                 context_lines.append(f"{role}: {content}")
             
             context = "\n".join(context_lines)
             
-            # More explicit context handling
             prompt = f"""{system}
 
 === Recent Conversation ===
 {context}
 
-=== User's Latest Message ===
+=== Current User Message ===
 User: {user_message}
 
-Remember: Look at the conversation above. If you just asked the user something, they're probably answering it now. Respond naturally and helpfully.
-
-You (June):"""
+June:"""
         else:
             # No history - fresh conversation
             prompt = f"""{system}
 
 User: {user_message}
 
-You (June):"""
+June:"""
         
         return prompt
     
@@ -214,7 +229,7 @@ You (June):"""
         start_time = time.time()
         self.total_requests += 1
         
-        # FIX 1: Ignore all partials
+        # Ignore all partials
         if is_partial and self.ignore_partials:
             logger.debug(f"⏸️ Ignoring partial: '{text[:50]}...'")
             return {
@@ -223,7 +238,7 @@ You (June):"""
                 "text": text[:100]
             }
         
-        # FIX 2: Check for duplicates
+        # Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
             return {
                 "status": "skipped",
@@ -231,13 +246,13 @@ You (June):"""
                 "text": text[:100]
             }
         
-        # FIX 3: Get or create processing lock
+        # Get or create processing lock
         if session_id not in self._processing_lock:
             self._processing_lock[session_id] = asyncio.Lock()
         
         lock = self._processing_lock[session_id]
         
-        # FIX 4: Check if already processing
+        # Check if already processing
         if lock.locked():
             logger.warning(f"⚠️ Already processing for session {session_id[:8]}..., skipping")
             return {
@@ -246,7 +261,7 @@ You (June):"""
                 "text": text[:100]
             }
         
-        # FIX 5: Process with lock
+        # Process with lock
         async with lock:
             return await self._process_transcript(
                 session_id=session_id,
@@ -282,15 +297,20 @@ You (June):"""
         status = "PARTIAL" if is_partial else "FINAL"
         logger.info("=" * 80)
         logger.info(f"📥 [{status}] Session: {session_id[:8]}")
-        logger.info(f"📝 Text: '{text[:100]}...'")
+        logger.info(f"📝 Text: '{text}'")
         logger.info(f"📊 Words: {word_count}, Chars: {char_count}")
         
         try:
-            # Get conversation history
+            # Get conversation history with debug logging
             history = self.history.get_history(session_id)
             logger.info(f"📚 History: {len(history)} messages")
             
-            # Build prompt with improved context
+            if history:
+                logger.debug("📜 Current conversation context:")
+                for i, msg in enumerate(history[-4:]):  # Show last 2 exchanges
+                    logger.debug(f"   {i+1}. {msg['role']}: {msg['content'][:60]}...")
+            
+            # Build prompt with improved system instructions
             prompt = self._build_prompt(text, history)
             logger.debug(f"🔧 Prompt length: {len(prompt)} chars")
             
@@ -329,7 +349,7 @@ You (June):"""
                                     self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
                                 )
                         
-                        # FIX 6: Send to TTS SEQUENTIALLY (await, not create_task!)
+                        # Send to TTS sequentially
                         logger.info(f"🔊 Sentence #{sentence_count}: '{sentence[:50]}...'")
                         await self._send_to_tts(room_name, sentence, session_id)
                         self.total_sentences_sent += 1
@@ -343,11 +363,17 @@ You (June):"""
             
             llm_time = (time.time() - llm_start) * 1000
             
-            # Add to history (ONLY for finals)
+            # Add to history (ONLY for finals) - WITH DEBUG LOGGING
             if not is_partial:
+                logger.info(f"💾 Adding to history...")
+                logger.debug(f"   User message: '{text}'")
+                logger.debug(f"   Assistant response: '{full_response[:100]}...'")
+                
                 self.history.add_message(session_id, "user", text)
                 self.history.add_message(session_id, "assistant", full_response)
-                logger.info(f"💾 Added to history (now {len(self.history.get_history(session_id))} messages)")
+                
+                new_history = self.history.get_history(session_id)
+                logger.info(f"✅ History updated: now {len(new_history)} messages total")
             else:
                 logger.info(f"⏭️ Partial - not adding to history")
             
@@ -404,9 +430,9 @@ You (June):"""
                 model='gemini-2.0-flash-exp',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=250,
-                    top_p=0.9,
+                    temperature=0.8,  # Slightly more creative for stories
+                    max_output_tokens=400,  # More tokens for explanations/stories
+                    top_p=0.95,
                     top_k=40,
                 ),
             ):
@@ -425,8 +451,8 @@ You (June):"""
                     model='gemini-2.0-flash',
                     contents=prompt,
                     config=genai.types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=250
+                        temperature=0.8,
+                        max_output_tokens=400
                     ),
                 ):
                     if chunk.text:
@@ -438,18 +464,18 @@ You (June):"""
     async def _send_to_tts(self, room_name: str, text: str, session_id: str):
         """Send text to TTS service with natural pacing and timeout"""
         try:
-            # Wait if we just sent TTS recently (natural sentence spacing)
+            # Natural pacing between sentences
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
-                if time_since_last < 1.5:
-                    delay = 1.5 - time_since_last
-                    logger.info(f"⏸️ Pacing delay: {delay:.1f}s (natural sentence spacing)")
+                if time_since_last < 0.4:  # Reduced from 1.5s - faster pacing
+                    delay = 0.4 - time_since_last
+                    logger.debug(f"⏸️ Pacing delay: {delay:.1f}s")
                     await asyncio.sleep(delay)
             
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # FIX 7: Add timeout to prevent hanging
+            # Send with timeout
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -485,8 +511,16 @@ You (June):"""
         active_sessions = len(self.history.sessions)
         total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
         
+        # Detailed session info
+        session_details = {}
+        for session_id, msgs in self.history.sessions.items():
+            session_details[session_id[:8]] = {
+                "messages": len(msgs),
+                "last_activity": msgs[-1].timestamp.isoformat() if msgs else None
+            }
+        
         return {
-            "mode": "simple_voice_assistant_production",
+            "mode": "simple_voice_assistant_improved",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -494,10 +528,7 @@ You (June):"""
             "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
             "ignore_partials": self.ignore_partials,
             "duplicate_window_seconds": self._duplicate_window,
-            "sessions": {
-                session_id: len(msgs)
-                for session_id, msgs in self.history.sessions.items()
-            }
+            "sessions": session_details
         }
     
     def clear_session(self, session_id: str):
@@ -516,7 +547,7 @@ You (June):"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_production",
+            "assistant": "simple_voice_assistant_improved",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
