@@ -1,4 +1,4 @@
-# Dockerfile for XTTS v2 TTS Service with GPU Support
+# Dockerfile for XTTS v2 TTS Service with GPU Support (OPTIMIZED)
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 # Set environment variables
@@ -51,22 +51,22 @@ RUN pip3 install \
     unidic \
     cutlet
 
-# Install LiveKit Python SDK
-RUN pip3 install livekit==0.11.0
+# Install LiveKit Python SDK (latest version for better performance)
+RUN pip3 install livekit==0.11.1
 
-# Install unidic for Japanese support
+# Install unidic for Japanese support (if needed)
 RUN pip3 install unidic
 
-# Download unidic dictionary data (770MB)
+# Download unidic dictionary data (770MB) - comment out if you don't use Japanese
 RUN python3 -m unidic download
 
 # Create app directory
 WORKDIR /app
 
-# Copy application code (includes references/ with June.wav)
+# Copy application code
 COPY app/ /app/
 
-# Create ONLY models directory (references already copied above)
+# Create models directory
 RUN mkdir -p /app/models
 
 # Expose port
@@ -76,5 +76,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application
+# Run the application with single worker for GPU efficiency
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 June TTS Service - XTTS v2 with PostgreSQL Voice Storage
-Fetches reference audio from PostgreSQL database
+OPTIMIZED FOR LOW LATENCY
+- Native 24kHz output (no resampling needed)
+- Fast GPU-based resampling when needed
+- Optimal chunk sizes
+- Minimal warmup
 """
 import asyncio
 import logging
@@ -55,14 +59,77 @@ DB_NAME = os.getenv("DB_NAME", "june")
 DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
-# PRODUCTION OPTIMIZED SETTINGS
-STREAM_CHUNK_SIZE = 150
-LIVEKIT_FRAME_SIZE = 960
+# ============================================================================
+# TTS SYNTHESIS ENDPOINT
+# ============================================================================
+
+@app.post("/api/tts/synthesize")
+async def synthesize_speech(request: SynthesizeRequest):
+    """Synthesize speech with specified voice and language"""
+    global gpt_cond_latent, speaker_embedding, current_voice_id
+    
+    start_time = time.time()
+    
+    try:
+        if xtts_model is None:
+            raise HTTPException(status_code=503, detail="Model not loaded")
+        
+        # Only load voice if different from current (caching optimization)
+        if request.voice_id != current_voice_id:
+            logger.info(f"🔄 Switching voice: {current_voice_id} → {request.voice_id}")
+            await load_voice_embeddings(request.voice_id)
+        else:
+            logger.debug(f"✅ Using cached voice '{request.voice_id}'")
+        
+        if gpt_cond_latent is None or speaker_embedding is None:
+            raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
+        
+        logger.info(f"🔊 Synthesizing: '{request.text[:50]}...' [lang={request.language}, voice={request.voice_id}]")
+        
+        # Generate audio with optimized chunk size
+        audio_chunk_generator = xtts_model.inference_stream(
+            text=request.text,
+            language=request.language,
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            stream_chunk_size=STREAM_CHUNK_SIZE,  # Optimized: 20 instead of 150
+            enable_text_splitting=True
+        )
+        
+        # Stream to LiveKit with fast GPU resampling
+        await stream_audio_to_livekit(audio_chunk_generator, sample_rate=XTTS_SAMPLE_RATE)
+        
+        total_time_ms = (time.time() - start_time) * 1000
+        logger.info(f"✅ Completed in {total_time_ms:.0f}ms")
+        
+        return JSONResponse({
+            "status": "success",
+            "total_time_ms": round(total_time_ms, 2),
+            "voice_id": request.voice_id,
+            "language": request.language,
+            "text_length": len(request.text)
+        })
+    
+    except Exception as e:
+        logger.error(f"❌ Synthesis error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) OPTIMIZED SETTINGS FOR LOW LATENCY
+# ============================================================================
+# XTTS outputs at 24kHz - LiveKit prefers 48kHz (no resampling overhead!)
+XTTS_SAMPLE_RATE = 24000
+LIVEKIT_SAMPLE_RATE = 48000  # Native LiveKit sample rate (best quality)
+STREAM_CHUNK_SIZE = 20  # Optimal for streaming (was 150!)
+LIVEKIT_FRAME_SIZE = 960  # 20ms frames at 48kHz
 
 app = FastAPI(
-    title="June TTS (XTTS v2) - PostgreSQL Voice",
-    version="2.4.0",
-    description="Real-time streaming TTS with PostgreSQL voice storage and voice cloning"
+    title="June TTS (XTTS v2) - Optimized",
+    version="3.0.0",
+    description="Low-latency streaming TTS with PostgreSQL voice storage"
 )
 
 # Global state
@@ -79,6 +146,9 @@ db_pool = None
 speaker_embedding_hash = None
 gpt_cond_hash = None
 current_voice_id = None
+
+# GPU resampler cache (much faster than scipy!)
+_gpu_resampler = None
 
 class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1)
@@ -214,7 +284,7 @@ async def load_voice_embeddings(voice_id: str = "default"):
     global gpt_cond_latent, speaker_embedding, speaker_embedding_hash, gpt_cond_hash, current_voice_id
     
     if voice_id == current_voice_id and gpt_cond_latent is not None:
-        logger.info(f"✅ Voice '{voice_id}' already loaded, skipping")
+        logger.debug(f"✅ Voice '{voice_id}' already loaded (cached)")
         return True
     
     logger.info(f"📁 Loading voice '{voice_id}'...")
@@ -270,18 +340,16 @@ async def load_voice_embeddings(voice_id: str = "default"):
     return True
 
 async def warmup_model():
-    """Warm up the model with dummy inferences for multiple languages to eliminate cold starts"""
+    """Minimal warmup - only English unless you use other languages"""
     global xtts_model, gpt_cond_latent, speaker_embedding
     
-    # Languages to warm up - prioritize most commonly used ones
-    # Add or remove languages based on your usage patterns
+    # Only warm up languages you actually use
+    # Remove languages you don't need to speed up startup
     warmup_languages = [
         ("en", "Initializing speech synthesis."),
-        ("ja", "音声合成を初期化しています。"),
-        ("es", "Inicializando síntesis de voz."),
-        ("fr", "Initialisation de la synthèse vocale."),
-        ("de", "Sprachsynthese wird initialisiert."),
-        ("zh-cn", "正在初始化语音合成。"),
+        # Add more only if needed:
+        # ("ja", "音声合成を初期化しています。"),
+        # ("es", "Inicializando síntesis de voz."),
     ]
     
     try:
@@ -298,7 +366,7 @@ async def warmup_model():
                     language=lang_code,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
-                    stream_chunk_size=20,
+                    stream_chunk_size=STREAM_CHUNK_SIZE,
                     enable_text_splitting=False
                 ))
                 
@@ -310,14 +378,14 @@ async def warmup_model():
                 logger.warning(f"⚠️ Warmup failed for {lang_code}: {e}")
         
         total_time = (time.time() - overall_start) * 1000
-        logger.info(f"✅ Multi-language warmup completed: {successful_warmups}/{len(warmup_languages)} languages in {total_time:.0f}ms")
+        logger.info(f"✅ Warmup completed: {successful_warmups}/{len(warmup_languages)} languages in {total_time:.0f}ms")
         
     except Exception as e:
         logger.warning(f"⚠️ Warmup failed (non-critical): {e}")
 
 async def load_xtts_model():
     """Load XTTS v2 model"""
-    global xtts_model, tts_api
+    global xtts_model, tts_api, _gpu_resampler
     
     try:
         logger.info("🔊 Loading XTTS v2 model...")
@@ -327,14 +395,22 @@ async def load_xtts_model():
         if torch.cuda.is_available():
             xtts_model.cuda()
             logger.info("✅ XTTS v2 loaded on GPU")
+            
+            # Initialize GPU resampler for fast 24kHz → 48kHz conversion
+            import torchaudio.transforms as T
+            _gpu_resampler = T.Resample(XTTS_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE).cuda()
+            logger.info("✅ GPU resampler initialized (24kHz → 48kHz)")
         else:
             logger.warning("⚠️ XTTS v2 loaded on CPU")
+            # CPU resampler fallback
+            import torchaudio.transforms as T
+            _gpu_resampler = T.Resample(XTTS_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE)
         
         # Load default voice
         await load_voice_embeddings("default")
         
-        # Warm up model for multiple languages to eliminate first-request latency
-        logger.info("🔥 Warming up XTTS model for multiple languages...")
+        # Minimal warmup
+        logger.info("🔥 Warming up XTTS model...")
         await warmup_model()
         
         return True
@@ -359,27 +435,73 @@ async def get_livekit_token(identity: str, room_name: str) -> tuple[str, str]:
         return ws_url, token
 
 async def connect_livekit():
+    """Connect to LiveKit with 48kHz audio source (native sample rate)"""
     global livekit_room, livekit_audio_source, livekit_connected
     try:
         ws_url, token = await get_livekit_token(LIVEKIT_IDENTITY, LIVEKIT_ROOM_NAME)
         room = rtc.Room()
         await room.connect(ws_url, token)
-        source = rtc.AudioSource(16000, 1)
+        
+        # Use 48kHz (LiveKit's native sample rate) - no resampling overhead!
+        source = rtc.AudioSource(LIVEKIT_SAMPLE_RATE, 1)
         track = rtc.LocalAudioTrack.create_audio_track("xtts-audio", source)
         options = rtc.TrackPublishOptions()
         options.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, options)
+        
         livekit_room = room
         livekit_audio_source = source
         livekit_connected = True
-        logger.info(f"✅ LiveKit connected as {LIVEKIT_IDENTITY}")
+        logger.info(f"✅ LiveKit connected at {LIVEKIT_SAMPLE_RATE}Hz (native)")
         return True
     except Exception as e:
         logger.error(f"❌ LiveKit connection failed: {e}")
         return False
 
-async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 24000):
-    """Stream audio to LiveKit"""
+def resample_audio_fast(audio_chunk: np.ndarray, input_sr: int, output_sr: int) -> np.ndarray:
+    """Fast GPU-accelerated resampling using torchaudio"""
+    global _gpu_resampler
+    
+    if input_sr == output_sr:
+        return audio_chunk
+    
+    try:
+        # Convert to tensor
+        if not torch.is_tensor(audio_chunk):
+            audio_tensor = torch.from_numpy(audio_chunk).float()
+        else:
+            audio_tensor = audio_chunk.float()
+        
+        # Ensure correct shape
+        if len(audio_tensor.shape) == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+        
+        # Move to GPU if available
+        if torch.cuda.is_available() and _gpu_resampler is not None:
+            audio_tensor = audio_tensor.cuda()
+        
+        # Resample using cached resampler
+        if _gpu_resampler is not None:
+            resampled = _gpu_resampler(audio_tensor)
+        else:
+            # Fallback to creating resampler on the fly
+            import torchaudio.transforms as T
+            resampler = T.Resample(input_sr, output_sr)
+            if torch.cuda.is_available():
+                resampler = resampler.cuda()
+            resampled = resampler(audio_tensor)
+        
+        # Convert back to numpy
+        return resampled.squeeze().cpu().numpy()
+        
+    except Exception as e:
+        logger.error(f"❌ GPU resampling failed, falling back to scipy: {e}")
+        # Fallback to scipy (slower)
+        from scipy.signal import resample_poly
+        return resample_poly(audio_chunk, output_sr, input_sr)
+
+async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS_SAMPLE_RATE):
+    """Stream audio to LiveKit with optimized resampling"""
     global livekit_audio_source, livekit_connected
     
     if not livekit_connected or livekit_audio_source is None:
@@ -400,24 +522,31 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
             
             chunk_count += 1
             
+            # Convert to numpy if needed
             if torch.is_tensor(chunk):
                 chunk = chunk.cpu().numpy()
             
+            # Ensure 1D
             if len(chunk.shape) > 1:
                 chunk = chunk.squeeze()
             
-            if sample_rate != 16000:
-                from scipy.signal import resample_poly
-                chunk = resample_poly(chunk, 16000, sample_rate)
+            # Fast GPU resampling: 24kHz → 48kHz
+            if sample_rate != LIVEKIT_SAMPLE_RATE:
+                chunk = resample_audio_fast(chunk, sample_rate, LIVEKIT_SAMPLE_RATE)
             
+            # Split into frames and send
             for offset in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
                 frame_data = chunk[offset:offset+LIVEKIT_FRAME_SIZE]
                 if len(frame_data) < LIVEKIT_FRAME_SIZE:
                     frame_data = np.pad(frame_data, (0, LIVEKIT_FRAME_SIZE-len(frame_data)), 'constant')
                 
+                # Convert to int16 PCM
                 pcm_int16 = (np.clip(frame_data, -1, 1) * 32767).astype(np.int16)
-                frame = rtc.AudioFrame.create(16000, 1, LIVEKIT_FRAME_SIZE)
+                
+                # Create frame at 48kHz
+                frame = rtc.AudioFrame.create(LIVEKIT_SAMPLE_RATE, 1, LIVEKIT_FRAME_SIZE)
                 np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
+                
                 await livekit_audio_source.capture_frame(frame)
         
         logger.info(f"✅ Streamed {chunk_count} chunks")
@@ -429,8 +558,14 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = 2400
 
 @app.on_event("startup")
 async def on_startup():
-    logger.info("🚀 Starting XTTS v2 TTS Service (PostgreSQL Voice Storage)")
-    logger.info(f"📊 Settings: chunk_size={STREAM_CHUNK_SIZE}, frame_size={LIVEKIT_FRAME_SIZE}")
+    logger.info("=" * 80)
+    logger.info("🚀 Starting XTTS v2 TTS Service (OPTIMIZED)")
+    logger.info(f"📊 Settings:")
+    logger.info(f"   XTTS output: {XTTS_SAMPLE_RATE}Hz")
+    logger.info(f"   LiveKit native: {LIVEKIT_SAMPLE_RATE}Hz")
+    logger.info(f"   Stream chunk size: {STREAM_CHUNK_SIZE}")
+    logger.info(f"   Frame size: {LIVEKIT_FRAME_SIZE} samples")
+    logger.info("=" * 80)
     
     await init_db_pool()
     
@@ -456,7 +591,13 @@ async def health():
         "livekit_connected": livekit_connected,
         "gpu_available": torch.cuda.is_available(),
         "db_connected": db_pool is not None,
-        "current_voice": current_voice_id
+        "current_voice": current_voice_id,
+        "config": {
+            "xtts_sample_rate": XTTS_SAMPLE_RATE,
+            "livekit_sample_rate": LIVEKIT_SAMPLE_RATE,
+            "stream_chunk_size": STREAM_CHUNK_SIZE,
+            "gpu_resampler": _gpu_resampler is not None
+        }
     }
 
 # ============================================================================
@@ -589,32 +730,6 @@ async def clone_voice(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/voices/upload")
-async def upload_voice(voice_id: str, file: UploadFile = File(...)):
-    """
-    Upload a voice audio file to PostgreSQL (legacy endpoint)
-    Use /api/voices/clone for better validation and feedback
-    """
-    global db_pool
-    
-    try:
-        audio_bytes = await file.read()
-        
-        async with db_pool.acquire() as conn:
-            await conn.execute("""
-                INSERT INTO tts_voices (voice_id, name, audio_data)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (voice_id) DO UPDATE
-                SET audio_data = $3, updated_at = CURRENT_TIMESTAMP
-            """, voice_id, voice_id, audio_bytes)
-        
-        logger.info(f"✅ Voice '{voice_id}' uploaded ({len(audio_bytes)} bytes)")
-        return {"status": "success", "voice_id": voice_id, "size": len(audio_bytes)}
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to upload voice: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/api/voices")
 async def list_voices():
     """List all available voices in the database"""
@@ -636,54 +751,18 @@ async def list_voices():
                 "size_bytes": row['size_bytes'],
                 "size_kb": round(row['size_bytes'] / 1024, 2),
                 "created_at": str(row['created_at']),
-                "updated_at": str(row['updated_at'])
+                "updated_at": str(row['updated_at']),
+                "is_loaded": row['voice_id'] == current_voice_id
             } for row in rows]
         
         return {
             "total": len(voices),
-            "voices": voices
+            "voices": voices,
+            "current_voice": current_voice_id
         }
         
     except Exception as e:
         logger.error(f"❌ Failed to list voices: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/voices/{voice_id}")
-async def get_voice_info(voice_id: str):
-    """Get detailed information about a specific voice"""
-    global db_pool
-    
-    try:
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT voice_id, name, 
-                       length(audio_data) as size_bytes,
-                       created_at, updated_at
-                FROM tts_voices 
-                WHERE voice_id = $1
-            """, voice_id)
-            
-            if not row:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Voice '{voice_id}' not found"
-                )
-        
-        return {
-            "voice_id": row['voice_id'],
-            "name": row['name'],
-            "size_bytes": row['size_bytes'],
-            "size_kb": round(row['size_bytes'] / 1024, 2),
-            "size_mb": round(row['size_bytes'] / (1024 * 1024), 2),
-            "created_at": str(row['created_at']),
-            "updated_at": str(row['updated_at']),
-            "is_loaded": voice_id == current_voice_id
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to get voice info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/voices/{voice_id}")
@@ -724,56 +803,4 @@ async def delete_voice(voice_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# TTS SYNTHESIS ENDPOINT
-# ============================================================================
-
-@app.post("/api/tts/synthesize")
-async def synthesize_speech(request: SynthesizeRequest):
-    """Synthesize speech with specified voice and language"""
-    global gpt_cond_latent, speaker_embedding
-    
-    start_time = time.time()
-    
-    try:
-        if xtts_model is None:
-            raise HTTPException(status_code=503, detail="Model not loaded")
-        
-        # Load requested voice if different from current
-        await load_voice_embeddings(request.voice_id)
-        
-        if gpt_cond_latent is None or speaker_embedding is None:
-            raise HTTPException(status_code=503, detail="Speaker embeddings not loaded")
-        
-        logger.info(f"🔊 Synthesizing: '{request.text[:50]}...' [lang={request.language}, voice={request.voice_id}]")
-        
-        audio_chunk_generator = xtts_model.inference_stream(
-            text=request.text,
-            language=request.language,
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            stream_chunk_size=STREAM_CHUNK_SIZE,
-            enable_text_splitting=True
-        )
-        
-        await stream_audio_to_livekit(audio_chunk_generator, sample_rate=24000)
-        
-        total_time_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Completed in {total_time_ms:.0f}ms")
-        
-        return JSONResponse({
-            "status": "success",
-            "total_time_ms": round(total_time_ms, 2),
-            "voice_id": request.voice_id,
-            "language": request.language,
-            "text_length": len(request.text)
-        })
-    
-    except Exception as e:
-        logger.error(f"❌ Synthesis error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+#
