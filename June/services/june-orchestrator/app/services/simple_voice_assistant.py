@@ -1,6 +1,7 @@
 """
-Simple Voice Assistant - Natural Conversation (FULLY FIXED)
-All fixes applied: Output cleaning, better timeout, improved interruption handling
+Simple Voice Assistant - Natural Conversation (FULLY FIXED + OPTIMIZED)
+All fixes applied: Output cleaning, better timeout, improved interruption handling,
+smart sentence splitting, and enhanced performance
 
 KEY IMPROVEMENTS:
 1. ✅ Removes "June:" prefix from output
@@ -8,8 +9,10 @@ KEY IMPROVEMENTS:
 3. ✅ Natural explanations like ChatGPT/Claude
 4. ✅ Voice-optimized pacing
 5. ✅ Proper history management with debug logging
-6. ✅ 15s TTS timeout (increased from 10s)
+6. ✅ 30s TTS timeout (increased from 15s)
 7. ✅ Better interruption handling
+8. ✅ Smart sentence splitting at 120 chars for faster response
+9. ✅ Early break at commas/semicolons for natural pacing
 """
 import asyncio
 import logging
@@ -84,7 +87,7 @@ class ConversationHistory:
 class SimpleVoiceAssistant:
     """
     Voice assistant with natural explanations and better story-telling
-    NOW WITH ALL FIXES APPLIED
+    NOW WITH ALL FIXES + OPTIMIZATIONS APPLIED
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -94,6 +97,11 @@ class SimpleVoiceAssistant:
         
         # Simple sentence detection
         self.sentence_end = re.compile(r'[.!?。！？]+\s*')
+        
+        # ✅ NEW: Smart splitting configuration
+        self.max_sentence_chars = 120  # Target: ~8-10s of speech
+        self.early_split_chars = 100    # Start looking for breaks at this length
+        self.split_opportunities = re.compile(r'[,;:—]\s+')  # Good places to split
         
         # Metrics
         self.total_requests = 0
@@ -114,12 +122,13 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (FULLY FIXED) initialized")
+        logger.info("✅ Simple Voice Assistant (FULLY OPTIMIZED) initialized")
         logger.info("   - Mode: Direct, action-oriented responses")
         logger.info("   - History: Last 5 exchanges")
         logger.info("   - Output cleaning: Removes speaker labels")
-        logger.info("   - TTS timeout: 15 seconds")
-        logger.info("   - Better interruption handling")
+        logger.info("   - TTS timeout: 30 seconds")
+        logger.info("   - Smart sentence splitting: Max 120 chars")
+        logger.info("   - Early breaks at commas/semicolons")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -154,6 +163,42 @@ class SimpleVoiceAssistant:
         text = re.sub(r'^(Assistant\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
         
         return text.strip()
+    
+    def _smart_sentence_split(self, text_buffer: str) -> tuple[str, str]:
+        """
+        Split long sentences early at natural break points
+        
+        Returns:
+            (sentence_to_send, remaining_buffer)
+        """
+        # If under target length, don't split
+        if len(text_buffer) < self.early_split_chars:
+            return "", text_buffer
+        
+        # If we hit max length, force split at next opportunity
+        if len(text_buffer) >= self.max_sentence_chars:
+            # Look for comma, semicolon, colon, etc.
+            matches = list(self.split_opportunities.finditer(text_buffer))
+            if matches:
+                # Find the split closest to max_sentence_chars
+                best_match = None
+                best_distance = float('inf')
+                
+                for match in matches:
+                    distance = abs(match.end() - self.max_sentence_chars)
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_match = match
+                
+                if best_match and best_match.end() > 50:  # Don't split too early
+                    split_pos = best_match.end()
+                    sentence = text_buffer[:split_pos].strip()
+                    remaining = text_buffer[split_pos:].strip()
+                    logger.debug(f"📏 Early split at {split_pos} chars: '{sentence[:30]}...'")
+                    return sentence, remaining
+        
+        # No good split point found
+        return "", text_buffer
     
     def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
         """Build improved prompt WITHOUT speaker labels in output"""
@@ -267,7 +312,7 @@ Your response (speak directly, no "June:" label):"""
         
         lock = self._processing_lock[session_id]
         
-        # ✅ FIX 5: Better interruption handling
+        # Better interruption handling
         word_count = len(text.strip().split())
         
         if lock.locked():
@@ -338,7 +383,7 @@ Your response (speak directly, no "June:" label):"""
             prompt = self._build_prompt(text, history)
             logger.debug(f"🔧 Prompt length: {len(prompt)} chars")
             
-            # Stream LLM response with sentence chunking
+            # Stream LLM response with SMART CHUNKING
             full_response = ""
             sentence_buffer = ""
             sentence_count = 0
@@ -351,7 +396,33 @@ Your response (speak directly, no "June:" label):"""
                 full_response += token
                 sentence_buffer += token
                 
-                # Check if we have a complete sentence
+                # ✅ NEW: Check for early split opportunity
+                early_sentence, sentence_buffer = self._smart_sentence_split(sentence_buffer)
+                
+                if early_sentence:
+                    # We found a good early split point
+                    sentence_count += 1
+                    cleaned_sentence = self._clean_llm_output(early_sentence)
+                    
+                    if cleaned_sentence:
+                        # Track first sentence timing
+                        if sentence_count == 1:
+                            first_sentence_time = (time.time() - start_time) * 1000
+                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
+                            
+                            # Update running average
+                            if self.avg_first_sentence_ms == 0:
+                                self.avg_first_sentence_ms = first_sentence_time
+                            else:
+                                self.avg_first_sentence_ms = (
+                                    self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
+                                )
+                        
+                        logger.info(f"🔊 Sentence #{sentence_count} (early split): '{cleaned_sentence[:50]}...'")
+                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
+                        self.total_sentences_sent += 1
+                
+                # Check for natural sentence end
                 match = self.sentence_end.search(sentence_buffer)
                 if match:
                     sentence = sentence_buffer[:match.end()].strip()
@@ -359,11 +430,9 @@ Your response (speak directly, no "June:" label):"""
                     
                     if sentence:
                         sentence_count += 1
-                        
-                        # ✅ FIX 2 & 3: Clean the output before sending to TTS
                         cleaned_sentence = self._clean_llm_output(sentence)
                         
-                        if not cleaned_sentence:  # Skip if cleaning removed everything
+                        if not cleaned_sentence:
                             continue
                         
                         # Track first sentence timing
@@ -507,7 +576,7 @@ Your response (speak directly, no "June:" label):"""
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # ✅ FIX 4: Increased timeout from 10s to 15s
+            # ✅ FIXED: Increased timeout from 15s to 30s
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -516,10 +585,10 @@ Your response (speak directly, no "June:" label):"""
                         voice_id="default",
                         streaming=True
                     ),
-                    timeout=15.0  # ← Increased from 10.0
+                    timeout=30.0  # ← Increased from 15.0
                 )
             except asyncio.TimeoutError:
-                logger.error(f"❌ TTS timeout (>15s) for: '{text[:50]}...'")
+                logger.error(f"❌ TTS timeout (>30s) for: '{text[:50]}...'")
                 return
             
             tts_time = (time.time() - tts_start) * 1000
@@ -552,7 +621,7 @@ Your response (speak directly, no "June:" label):"""
             }
         
         return {
-            "mode": "simple_voice_assistant_fully_fixed",
+            "mode": "simple_voice_assistant_fully_optimized",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
@@ -560,6 +629,8 @@ Your response (speak directly, no "June:" label):"""
             "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
             "ignore_partials": self.ignore_partials,
             "duplicate_window_seconds": self._duplicate_window,
+            "max_sentence_chars": self.max_sentence_chars,
+            "early_split_chars": self.early_split_chars,
             "sessions": session_details
         }
     
@@ -579,7 +650,7 @@ Your response (speak directly, no "June:" label):"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_fully_fixed",
+            "assistant": "simple_voice_assistant_fully_optimized",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()

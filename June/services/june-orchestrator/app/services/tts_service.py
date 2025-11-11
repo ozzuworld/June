@@ -1,7 +1,13 @@
-"""XTTS TTS Service Client - PostgreSQL Voice Integration
+"""XTTS TTS Service Client - PostgreSQL Voice Integration (OPTIMIZED)
 
 Replaces CosyVoice2 with XTTS v2 voice cloning system.
 Uses voice_id instead of language codes.
+
+KEY IMPROVEMENTS:
+1. ✅ Increased HTTP read timeout from 60s to 90s
+2. ✅ Separate timeout configuration for connection/read/write
+3. ✅ Better error logging with text length
+4. ✅ Handles long sentences (~200 chars / 30s synthesis)
 """
 import logging
 import os
@@ -27,8 +33,17 @@ class TTSService:
 
     def __init__(self):
         self.base_url = config.services.tts_base_url
-        self.timeout = 60.0
+        
+        # ✅ OPTIMIZED: Increased timeout with separate components
+        self.timeout = httpx.Timeout(
+            connect=10.0,   # Connection timeout - OK
+            read=90.0,      # ← CHANGED from 60.0 (allows long sentences)
+            write=10.0,     # Write timeout - OK
+            pool=None       # No pool timeout
+        )
+        
         logger.info(f"✅ XTTS service initialized: {self.base_url}")
+        logger.info(f"⏱️  Timeout config: connect=10s, read=90s, write=10s")
         self._log_network_debug()
 
     def _log_network_debug(self):
@@ -79,6 +94,8 @@ class TTSService:
         """
         Publish XTTS audio to LiveKit room
         
+        Now handles sentences up to ~200 chars / 30s synthesis time
+        
         Args:
             room_name: LiveKit room name
             text: Text to synthesize
@@ -100,6 +117,7 @@ class TTSService:
                 text = text[:1000]
 
             logger.info(f"📢 XTTS request for room '{room_name}': {text[:50]}...")
+            logger.info(f"📊 Text length: {len(text)} chars")
 
             # XTTS payload format
             payload = {
@@ -119,6 +137,7 @@ class TTSService:
             
             connection_start = time.time()
 
+            # ✅ Use configured timeout (now 90s read)
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 logger.info(f"🔄 Sending POST request...")
                 
@@ -155,15 +174,23 @@ class TTSService:
                     
         except httpx.TimeoutException as e:
             total = (time.time() - request_start_time) * 1000
+            logger.error("="*80)
             logger.error(f"⏱️  TIMEOUT after {total:.0f}ms: {e}")
+            logger.error(f"   Text length: {len(text)} chars")
+            logger.error(f"   Text preview: '{text[:100]}...'")
+            logger.error("="*80)
             return False
             
         except httpx.ConnectError as e:
+            logger.error("="*80)
             logger.error(f"🔌 CONNECTION ERROR: {e}")
+            logger.error("="*80)
             return False
             
         except Exception as e:
+            logger.error("="*80)
             logger.error(f"❌ UNEXPECTED ERROR: {e}", exc_info=True)
+            logger.error("="*80)
             return False
 
     async def clone_voice(

@@ -1,6 +1,17 @@
+"""
+LiveKit Worker with STT Integration (OPTIMIZED)
+
+KEY IMPROVEMENTS:
+1. ✅ Proper segment concatenation (different time ranges)
+2. ✅ Segment refinement detection (same time range)
+3. ✅ 3-second cooldown after FINAL to prevent late partials
+4. ✅ Duplicate partial deduplication
+5. ✅ Better logging with timestamps
+"""
 import os
 import asyncio
 import logging
+import time
 from typing import Optional
 from datetime import datetime
 
@@ -79,7 +90,6 @@ async def connect_room_as_subscriber(
 ) -> None:
     """
     Connect to LiveKit room with retry logic.
-    Mirrors the pattern you had working.
     """
     last_err: Optional[Exception] = None
 
@@ -193,7 +203,7 @@ async def send_to_orchestrator(
 
 
 # ---------------------------------------------------------------------------
-# Audio → ASR with PROPER SEGMENT CONCATENATION
+# Audio → ASR with PROPER SEGMENT CONCATENATION + COOLDOWN
 # ---------------------------------------------------------------------------
 
 async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.RemoteParticipant):
@@ -203,6 +213,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     
     ✅ FIXED: Properly concatenates sequential segments (different time ranges)
     ✅ FIXED: Replaces text when same segment is being refined (same time range)
+    ✅ OPTIMIZED: 3-second cooldown after FINAL to prevent stray partials
+    ✅ OPTIMIZED: Deduplicates identical partials
     """
     from livekit.rtc import AudioStream
 
@@ -222,14 +234,19 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
     # Track room name for orchestrator
     room_name = os.getenv("LIVEKIT_ROOM", "ozzu-main")
     
-    # ✅ FIX: Track accumulated text AND segment timing
+    # Track accumulated text AND segment timing
     accumulated_text = ""  # Full utterance text built from segments
     last_segment_end = 0.0  # End time of last segment
     last_sent_partial = ""  # Last partial we sent (to avoid duplicates)
     
-    # ✅ FIX: Track silence for finalizing utterances
+    # Track silence for finalizing utterances
     silence_counter = 0
     silence_threshold = 5  # Number of silent chunks before finalizing (500ms * 5 = 2.5s)
+
+    # ✅ NEW: Cooldown tracking
+    last_final_time = 0.0
+    FINAL_COOLDOWN_SECONDS = 3.0  # Ignore partials for 3s after FINAL
+    last_partial_text = ""  # For deduplication
 
     try:
         async for ev in audio_stream:
@@ -259,6 +276,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 
                 # Check for transcription output
                 output = processor.process_iter()
+                current_time = time.time()
                 
                 if output[0] is not None:
                     beg, end, text = output
@@ -268,7 +286,22 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if not text:
                         continue
                     
-                    # ✅ CRITICAL FIX: Determine if this is a NEW segment or refinement
+                    # ✅ NEW: Check cooldown period after FINAL
+                    time_since_final = current_time - last_final_time
+                    if time_since_final < FINAL_COOLDOWN_SECONDS:
+                        logger.debug(
+                            f"⏸️ In cooldown ({time_since_final:.1f}s < {FINAL_COOLDOWN_SECONDS}s), "
+                            f"ignoring partial: '{text[:30]}...'"
+                        )
+                        continue
+                    
+                    # ✅ NEW: Deduplicate identical partials
+                    if text == last_partial_text:
+                        logger.debug(f"⏸️ Duplicate partial ignored: '{text[:30]}...'")
+                        continue
+                    last_partial_text = text
+                    
+                    # Determine if this is a NEW segment or refinement
                     # NEW segment: beg is at or after the last segment's end
                     # Refinement: beg is before the last segment's end (overlapping/updating)
                     
@@ -296,7 +329,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             f"[Refinement] Replacing with: '{text}'"
                         )
                     
-                    # ✅ Reset silence counter when we get new text
+                    # Reset silence counter when we get new text
                     silence_counter = 0
                     
                     # Only send partial if it's significantly different from last one
@@ -322,10 +355,10 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             )
                         )
                 else:
-                    # ✅ No output means silence detected by VAD
+                    # No output means silence detected by VAD
                     silence_counter += 1
                     
-                    # ✅ After enough silence, finalize with FULL accumulated text
+                    # After enough silence, finalize with FULL accumulated text
                     if silence_counter >= silence_threshold and accumulated_text:
                         logger.info(
                             "[LiveKit FINAL after silence] %s: %s",
@@ -341,10 +374,14 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             is_partial=False
                         )
                         
-                        # ✅ Reset state for next utterance
+                        # ✅ NEW: Set cooldown timestamp
+                        last_final_time = time.time()
+                        
+                        # Reset state for next utterance
                         accumulated_text = ""
                         last_segment_end = 0.0
                         last_sent_partial = ""
+                        last_partial_text = ""  # ← Reset dedup tracker
                         silence_counter = 0
 
         # Process any remaining audio in buffer
@@ -378,6 +415,9 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     text=accumulated_text,
                     is_partial=False
                 )
+                
+                # ✅ Set final cooldown
+                last_final_time = time.time()
         else:
             # Even if finish() returns None, send accumulated text if we have it
             if accumulated_text:
@@ -392,6 +432,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     text=accumulated_text,
                     is_partial=False
                 )
+                last_final_time = time.time()
                 
     except Exception as e:
         logger.error("Error in LiveKit audio handler: %s", e, exc_info=True)
