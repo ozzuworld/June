@@ -1,6 +1,6 @@
 #!/bin/bash
 # June Platform - OpenCTI Installation - FULLY WORKING VERSION
-# This script includes ALL fixes discovered during debugging
+# This script includes ALL fixes discovered during debugging + race condition fix
 
 set -e
 
@@ -285,6 +285,13 @@ kubectl set env deployment/opencti-server -n june-services \
 
 kubectl set env deployment/opencti-worker -n june-services \
   REDIS__HOSTNAME=opencti-redis 2>/dev/null || true
+
+# CRITICAL FIX: Force cleanup of old pods to prevent initialization lock conflicts
+log "Cleaning up old server pods to prevent initialization conflicts..."
+kubectl delete pods -n june-services \
+  -l app.kubernetes.io/name=opencti,app.kubernetes.io/component=server \
+  --force --grace-period=0 2>/dev/null || true
+sleep 15
 
 # Restart deployments
 log "Restarting OpenCTI services..."
