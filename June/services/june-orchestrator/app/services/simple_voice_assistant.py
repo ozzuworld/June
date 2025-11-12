@@ -108,7 +108,7 @@ class SimpleVoiceAssistant:
         logger.info("   - Natural speech mode enabled")
         logger.info("   - Mockingbird voice cloning ready")
         logger.info("   - MCP-compatible tool calling")
-        logger.info("   - NEW google-genai SDK")
+        logger.info("   - NEW google-genai SDK with proper tool config")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -184,27 +184,35 @@ class SimpleVoiceAssistant:
 🎭 MOCKINGBIRD VOICE CLONING - CRITICAL TOOL USAGE:
 You have THREE tools that you MUST use when appropriate:
 
-1. enable_mockingbird - CALL THIS IMMEDIATELY when user says:
+1. enable_mockingbird() - CALL THIS FUNCTION when user says ANY of these:
    - "enable mockingbird"
    - "activate mockingbird"
+   - "enable your skill"
+   - "activate your skill"
+   - "enable skill mockingbird"
    - "clone my voice"
    - "speak in my voice"
-   DO NOT just talk about it - CALL THE TOOL!
+   - "use my voice"
+   
+   When you detect these phrases, CALL THE FUNCTION - do not just talk about it!
 
-2. disable_mockingbird - CALL THIS IMMEDIATELY when user says:
+2. disable_mockingbird() - CALL THIS FUNCTION when user says:
    - "disable mockingbird"
    - "deactivate mockingbird"
+   - "disable your skill"
    - "use your voice"
    - "stop using my voice"
-   DO NOT just talk about it - CALL THE TOOL!
+   - "go back to your voice"
 
-3. check_mockingbird_status - CALL THIS when user asks:
+3. check_mockingbird_status() - CALL THIS FUNCTION when user asks:
    - "is mockingbird active?"
    - "what voice are you using?"
-   DO NOT just answer - CALL THE TOOL to get accurate status!
+   - "is the skill active?"
 
-⚠️ IMPORTANT: When user requests mockingbird activation/deactivation, you MUST call the tool.
-DO NOT explain what you're going to do - ACTUALLY DO IT by calling the tool!
+⚠️ CRITICAL: When you see these trigger phrases, you MUST call the function.
+DO NOT just say "I'm enabling..." or explain what you'll do - CALL THE FUNCTION FIRST!
+
+After calling the function, the system will automatically send the appropriate message to the user.
 
 NATURAL SPEECH RULES:
 • Write for voice: "Oh, that's interesting!" vs "That is interesting."
@@ -214,11 +222,11 @@ NATURAL SPEECH RULES:
 • Sound like a real person having a conversation
 
 ❌ AVOID:
-• Lists or bullet points
+• Lists or bullet points in speech
 • Formal language ("Furthermore", "Additionally")
 • Robotic phrasing
 • Monotone delivery
-• Talking about using tools instead of actually using them!"""
+• Talking about calling functions instead of calling them!"""
     
     async def handle_transcript(
         self,
@@ -344,6 +352,7 @@ NATURAL SPEECH RULES:
             ):
                 # Handle tool calls
                 if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
+                    logger.info(f"🔧 Tool called: {chunk['tool_name']}")
                     tool_result = await self._execute_tool(
                         tool_name=chunk["tool_name"],
                         tool_args=chunk["tool_args"],
@@ -418,6 +427,9 @@ NATURAL SPEECH RULES:
             logger.info(f"✅ SUCCESS")
             logger.info(f"   Voice: {current_voice_id}")
             logger.info(f"   Tools used: {len(tool_calls_made)}")
+            if tool_calls_made:
+                for tc in tool_calls_made:
+                    logger.info(f"      - {tc['tool']}")
             logger.info(f"   Total time: {total_time:.0f}ms")
             logger.info("=" * 80)
             
@@ -450,13 +462,14 @@ NATURAL SPEECH RULES:
         history: List[Dict],
         session_id: str
     ) -> AsyncIterator:
-        """Stream from Gemini with tool calling support - NEW SDK"""
+        """Stream from Gemini with tool calling support - NEW SDK with proper config"""
         try:
             # ✅ NEW SDK IMPORT
             from google import genai
+            from google.genai import types
             
             client = genai.Client(api_key=self.gemini_api_key)
-            logger.debug("🌐 Connecting to Gemini API (new SDK)...")
+            logger.debug("🌐 Connecting to Gemini API (new SDK with tool_config)...")
             
             # Build full context
             if history:
@@ -466,13 +479,19 @@ NATURAL SPEECH RULES:
             else:
                 prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
             
-            # Configure with tools
-            config = genai.types.GenerateContentConfig(
+            # ✅ PROPER CONFIG FROM OFFICIAL DOCS
+            config = types.GenerateContentConfig(
                 temperature=0.9,
                 max_output_tokens=500,
                 top_p=0.95,
                 top_k=50,
-                tools=MOCKINGBIRD_TOOLS
+                tools=MOCKINGBIRD_TOOLS,
+                # ✅ PROPER TOOL CONFIG - Let model decide when to use tools
+                tool_config=types.ToolConfig(
+                    function_calling_config=types.FunctionCallingConfig(
+                        mode='AUTO'  # AUTO mode - model decides when to call
+                    )
+                )
             )
             
             # Stream with tool support
@@ -500,6 +519,8 @@ NATURAL SPEECH RULES:
             
             try:
                 from google import genai
+                from google.genai import types
+                
                 client = genai.Client(api_key=self.gemini_api_key)
                 
                 # Build prompt again
@@ -510,10 +531,15 @@ NATURAL SPEECH RULES:
                 else:
                     prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
                 
-                config = genai.types.GenerateContentConfig(
+                config = types.GenerateContentConfig(
                     temperature=0.9,
                     max_output_tokens=500,
-                    tools=MOCKINGBIRD_TOOLS
+                    tools=MOCKINGBIRD_TOOLS,
+                    tool_config=types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(
+                            mode='AUTO'
+                        )
+                    )
                 )
                 
                 for chunk in client.models.generate_content_stream(
