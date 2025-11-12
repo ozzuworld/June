@@ -77,7 +77,8 @@ class MockingbirdSkill:
                 "cloned_voice_id": None,
                 "capture_start_time": None,
                 "sample_count": 0,
-                "activated_at": None
+                "activated_at": None,
+                "message_sent": False  # ✅ Track if we've sent the processing message
             }
         return self.sessions[session_id]
     
@@ -121,6 +122,7 @@ class MockingbirdSkill:
         state["state"] = MockingbirdState.AWAITING_SAMPLE
         state["activated_at"] = datetime.utcnow()
         state["sample_count"] = 0
+        state["message_sent"] = False  # ✅ Reset message tracking
         
         # Initialize audio buffer
         self.audio_buffers[session_id] = []
@@ -224,20 +226,27 @@ class MockingbirdSkill:
                 return await self.capture_audio_chunk(session_id, audio_data, sample_rate)
             
             # No audio data - estimate from text
-            # Rough estimate: ~3 chars per second of speech
-            estimated_duration = len(text) / 3.0
-            
             if state["state"] == MockingbirdState.AWAITING_SAMPLE:
                 state["state"] = MockingbirdState.CAPTURING
                 state["capture_start_time"] = time.time()
+                # ✅ Return without message for first chunk
+                return {"status": "capturing_started"}
             
             elapsed = time.time() - state["capture_start_time"]
             
-            if elapsed >= self.min_sample_duration:
+            # ✅ Only send message ONCE when we have enough
+            if elapsed >= self.min_sample_duration and not state["message_sent"]:
+                state["message_sent"] = True  # Mark message as sent
                 return {
                     "status": "ready_to_clone",
                     "message": "Thank you! Processing your voice sample now..."
                 }
+            
+            # ✅ For all other chunks during capture, return without message
+            return {
+                "status": "capturing",
+                "elapsed": round(elapsed, 1)
+            }
         
         return {"status": "not_applicable"}
     
@@ -352,6 +361,7 @@ class MockingbirdSkill:
         state["state"] = MockingbirdState.INACTIVE
         state["cloned_voice_id"] = None
         state["capture_start_time"] = None
+        state["message_sent"] = False  # ✅ Reset message tracking
         
         # Clear buffer
         if session_id in self.audio_buffers:
