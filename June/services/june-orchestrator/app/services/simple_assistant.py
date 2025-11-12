@@ -1,12 +1,15 @@
 """
 Simple Assistant Service Module
 Provides global access to the SimpleVoiceAssistant
+
+✅ UPDATED: Passes ConversationManager to assistant
 """
 import logging
 from typing import Optional
 from .simple_voice_assistant import SimpleVoiceAssistant
 from .tts_service import tts_service
 from ..config import config
+from ..core.dependencies import get_conversation_manager
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +43,15 @@ def initialize_assistant() -> SimpleVoiceAssistant:
         logger.info(f"✅ TTS service: {config.services.tts_base_url}")
         logger.info(f"✅ LiveKit URL: {config.livekit.ws_url}")
         
-        # Create assistant with LiveKit credentials
+        # ✅ Get ConversationManager singleton
+        conversation_manager = get_conversation_manager()
+        logger.info(f"✅ ConversationManager ready")
+        
+        # Create assistant with LiveKit credentials and ConversationManager
         _global_assistant = SimpleVoiceAssistant(
             gemini_api_key=config.services.gemini_api_key,
             tts_service=tts_service,
+            conversation_manager=conversation_manager,  # ✅ NEW
             livekit_url=config.livekit.ws_url,
             livekit_api_key=config.livekit.api_key,
             livekit_api_secret=config.livekit.api_secret
