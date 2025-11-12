@@ -1,17 +1,27 @@
 """
-Simple Voice Assistant with Mockingbird Voice Cloning Skill
-Natural speech + MCP-compatible tool calling
+Simple Voice Assistant - Natural Conversation (FULLY FIXED + OPTIMIZED)
+All fixes applied: Output cleaning, better timeout, improved interruption handling,
+smart sentence splitting, and enhanced performance
+
+KEY IMPROVEMENTS:
+1. ✅ Removes "June:" prefix from output
+2. ✅ Better story-telling capability
+3. ✅ Natural explanations like ChatGPT/Claude
+4. ✅ Voice-optimized pacing
+5. ✅ Proper history management with debug logging
+6. ✅ 30s TTS timeout (increased from 15s)
+7. ✅ Better interruption handling
+8. ✅ Smart sentence splitting at 120 chars for faster response
+9. ✅ Early break at commas/semicolons for natural pacing
+10. ✅ FIXED: New google-genai SDK import
 """
 import asyncio
 import logging
 import re
 import time
-import json
-from typing import Dict, List, Optional, AsyncIterator, Any
+from typing import Dict, List, Optional, AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
-
-from .mockingbird_skill import MockingbirdSkill, MOCKINGBIRD_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -19,48 +29,66 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Message:
     """Single conversation message"""
-    role: str
+    role: str  # "user" or "assistant"
     content: str
     timestamp: datetime
 
 
 class ConversationHistory:
-    """Simple in-memory conversation history"""
+    """Simple in-memory conversation history with better logging"""
     
     def __init__(self, max_turns: int = 5):
         self.sessions: Dict[str, List[Message]] = {}
         self.max_turns = max_turns
+        logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
     
     def add_message(self, session_id: str, role: str, content: str):
+        """Add message and auto-trim old history"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
+            logger.info(f"🆕 Created new conversation for session {session_id[:8]}...")
         
         self.sessions[session_id].append(
             Message(role=role, content=content, timestamp=datetime.utcnow())
         )
         
+        # Keep only last N exchanges (user+assistant pairs)
         max_messages = self.max_turns * 2
-        if len(self.sessions[session_id]) > max_messages:
+        before_count = len(self.sessions[session_id])
+        
+        if before_count > max_messages:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
+            logger.info(f"🗑️ Trimmed history for {session_id[:8]}...: {before_count} → {len(self.sessions[session_id])} messages")
+        
+        # Log current state
+        logger.debug(f"📚 History for {session_id[:8]}... now has {len(self.sessions[session_id])} messages")
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
+        """Get conversation history as dict list for LLM"""
         if session_id not in self.sessions:
+            logger.debug(f"📭 No history found for {session_id[:8]}...")
             return []
         
-        return [
+        history = [
             {"role": msg.role, "content": msg.content}
             for msg in self.sessions[session_id]
         ]
+        
+        logger.debug(f"📚 Retrieved {len(history)} messages for {session_id[:8]}...")
+        return history
     
     def clear_session(self, session_id: str):
+        """Clear history for a session"""
         if session_id in self.sessions:
+            msg_count = len(self.sessions[session_id])
             del self.sessions[session_id]
+            logger.info(f"🗑️ Cleared {msg_count} messages for session {session_id[:8]}...")
 
 
 class SimpleVoiceAssistant:
     """
-    Voice assistant with Mockingbird voice cloning skill
-    MCP-compatible tool calling with natural speech
+    Voice assistant with natural explanations and better story-telling
+    NOW WITH ALL FIXES + OPTIMIZATIONS APPLIED
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -68,45 +96,47 @@ class SimpleVoiceAssistant:
         self.tts = tts_service
         self.history = ConversationHistory(max_turns=5)
         
-        # Initialize Mockingbird skill
-        self.mockingbird = MockingbirdSkill(tts_service)
+        # Simple sentence detection
+        self.sentence_end = re.compile(r'[.!?。！？]+\s*')
         
-        # Natural speech settings
-        self.max_sentence_chars = 180
-        self.min_chunk_size = 50
-        self.sentence_end = re.compile(r'[.!?。！？]+\s+')
-        self.natural_pause_markers = re.compile(r'[,;:—]\s+')
+        # ✅ NEW: Smart splitting configuration
+        self.max_sentence_chars = 120  # Target: ~8-10s of speech
+        self.early_split_chars = 100    # Start looking for breaks at this length
+        self.split_opportunities = re.compile(r'[,;:—]\s+')  # Good places to split
         
         # Metrics
         self.total_requests = 0
         self.total_sentences_sent = 0
         self.avg_first_sentence_ms = 0
-        self.mockingbird_activations = 0
         
-        # TTS pacing
+        # TTS pacing tracker
         self._last_tts_time: Dict[str, float] = {}
-        self._natural_pause_duration = 0.6
         
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
         self._duplicate_window = 3.0
         
-        # Processing locks
+        # Processing locks per session
         self._processing_lock: Dict[str, asyncio.Lock] = {}
         
+        # Configuration
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Voice Assistant with Mockingbird initialized")
-        logger.info("   - Natural speech mode enabled")
-        logger.info("   - Mockingbird voice cloning ready")
-        logger.info("   - MCP-compatible tool calling")
+        logger.info("✅ Simple Voice Assistant (FULLY OPTIMIZED) initialized")
+        logger.info("   - Mode: Direct, action-oriented responses")
+        logger.info("   - History: Last 5 exchanges")
+        logger.info("   - Output cleaning: Removes speaker labels")
+        logger.info("   - TTS timeout: 30 seconds")
+        logger.info("   - Smart sentence splitting: Max 120 chars")
+        logger.info("   - Early breaks at commas/semicolons")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
-        """Check for duplicate transcripts"""
+        """Check if this transcript is a duplicate of a recent one"""
         current_time = time.time()
         
+        # Clean up old entries
         expired = [
             sid for sid, (_, ts) in self._recent_transcripts.items()
             if current_time - ts > self._duplicate_window
@@ -114,153 +144,194 @@ class SimpleVoiceAssistant:
         for sid in expired:
             del self._recent_transcripts[sid]
         
+        # Check for duplicate
         if session_id in self._recent_transcripts:
             recent_text, recent_time = self._recent_transcripts[session_id]
             if recent_text == text and current_time - recent_time < self._duplicate_window:
+                logger.warning(f"⚠️ Duplicate detected: '{text[:30]}...' (within {current_time - recent_time:.1f}s)")
                 return True
         
+        # Update tracker
         self._recent_transcripts[session_id] = (text, current_time)
         return False
     
     def _clean_llm_output(self, text: str) -> str:
-        """Clean LLM output"""
+        """Remove any speaker labels that snuck into the output"""
+        # Remove "June:" or "June :" at the start
         text = re.sub(r'^(June\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
+        
+        # Remove "Assistant:" or similar
         text = re.sub(r'^(Assistant\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
-        text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
+        
         return text.strip()
     
-    def _add_prosody_hints(self, text: str) -> str:
-        """Add prosody hints"""
-        text = re.sub(r'\s+(but|however|although|though)\s+', r', \1 ', text, flags=re.IGNORECASE)
-        text = re.sub(r'^(Well|So|Now|Actually|In fact|By the way),?\s+', r'\1, ', text, flags=re.IGNORECASE)
-        return text
-    
-    def _extract_complete_sentence(self, text_buffer: str) -> tuple[str, str]:
-        """Extract complete sentence from buffer"""
-        if len(text_buffer) < self.min_chunk_size:
+    def _smart_sentence_split(self, text_buffer: str) -> tuple[str, str]:
+        """
+        Split long sentences early at natural break points
+        
+        Returns:
+            (sentence_to_send, remaining_buffer)
+        """
+        # If under target length, don't split
+        if len(text_buffer) < self.early_split_chars:
             return "", text_buffer
         
-        match = self.sentence_end.search(text_buffer)
-        
-        if match:
-            sentence = text_buffer[:match.end()].strip()
-            remaining = text_buffer[match.end():].strip()
-            
-            if len(sentence) >= self.min_chunk_size:
-                return sentence, remaining
-        
+        # If we hit max length, force split at next opportunity
         if len(text_buffer) >= self.max_sentence_chars:
-            pause_matches = list(self.natural_pause_markers.finditer(text_buffer))
-            
-            if pause_matches:
-                for match in reversed(pause_matches):
-                    if match.end() >= self.min_chunk_size:
-                        sentence = text_buffer[:match.end()].strip()
-                        remaining = text_buffer[match.end():].strip()
-                        return sentence, remaining
+            # Look for comma, semicolon, colon, etc.
+            matches = list(self.split_opportunities.finditer(text_buffer))
+            if matches:
+                # Find the split closest to max_sentence_chars
+                best_match = None
+                best_distance = float('inf')
+                
+                for match in matches:
+                    distance = abs(match.end() - self.max_sentence_chars)
+                    if distance < best_distance:
+                        best_distance = distance
+                        best_match = match
+                
+                if best_match and best_match.end() > 50:  # Don't split too early
+                    split_pos = best_match.end()
+                    sentence = text_buffer[:split_pos].strip()
+                    remaining = text_buffer[split_pos:].strip()
+                    logger.debug(f"📏 Early split at {split_pos} chars: '{sentence[:30]}...'")
+                    return sentence, remaining
         
+        # No good split point found
         return "", text_buffer
     
-    def _build_system_prompt_with_tools(self) -> str:
-        """Build system prompt with tool awareness"""
-        return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
+    def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
+        """Build improved prompt WITHOUT speaker labels in output"""
+        
+        # Improved system prompt - explicitly tell it NOT to use labels
+        system = """You are June, a knowledgeable and friendly voice assistant.
 
-🎯 CORE PERSONALITY:
-• Speak naturally and conversationally (your responses are spoken aloud)
-• Be warm, helpful, and engaging
-• Show appropriate emotion and enthusiasm
-• Use natural pauses, varied sentence length
+CRITICAL OUTPUT RULE:
+• Do NOT include "June:" or any speaker labels in your responses
+• Start speaking directly - your words will be converted to speech
+• Never write "June: " before your response
 
-🎭 MOCKINGBIRD VOICE CLONING:
-You have a special skill called "Mockingbird" that lets you clone and speak in the user's voice.
+CORE BEHAVIOR:
+• Give direct, helpful responses - don't ask if you should help, just help
+• For requests (stories, explanations, etc.), fulfill them immediately
+• Be concise but complete - aim for 2-4 sentences unless more detail is needed
+• Speak naturally, like a helpful friend who knows a lot
 
-WHEN TO USE MOCKINGBIRD:
-• User says: "enable mockingbird", "clone my voice", "speak in my voice"
-• User says: "disable mockingbird", "stop using my voice", "use your voice"
-• User asks: "is mockingbird active?", "what voice are you using?"
+WHEN ASKED TO CREATE CONTENT (stories, poems, etc.):
+• Start creating immediately - no preamble
+• Jump right into the content
+• Keep it concise for voice (30-60 seconds of speech)
 
-HOW IT WORKS:
-1. When user requests voice cloning, call enable_mockingbird tool
-2. Tell them you'll clone their voice and need them to speak for 6-10 seconds
-3. Once cloned, you'll automatically speak in their voice
-4. When they disable it, call disable_mockingbird and return to your default voice
+WHEN ASKED TO EXPLAIN (science, history, tech):
+• Give clear, accurate explanations
+• Use analogies and examples when helpful
+• Break complex topics into understandable pieces
+• Be thorough but voice-friendly (not too long)
 
-NATURAL SPEECH RULES:
-• Write for voice: "Oh, that's interesting!" vs "That is interesting."
-• Use commas for natural pauses
-• Vary sentence length (short AND long)
-• Show emotion when appropriate
-• Sound like a real person having a conversation
+EXAMPLES:
 
-❌ AVOID:
-• Lists or bullet points
-• Formal language ("Furthermore", "Additionally")
-• Robotic phrasing
-• Monotone delivery
+❌ BAD (with label):
+User: "Tell me a story about Pokemon"
+You: "June: In a small village..."
 
-TOOL USAGE:
-When user mentions mockingbird/voice cloning, USE THE TOOLS - don't just talk about it!"""
+✅ GOOD (direct speech):
+User: "Tell me a story about Pokemon"
+You: "In a small village near Mount Silver, a young trainer discovered a mysterious Pokeball..."
+
+❌ BAD (with meta-talk):
+User: "Explain dark matter"
+You: "Sure! Let me explain that for you. Dark matter is..."
+
+✅ GOOD (direct):
+User: "Explain dark matter"
+You: "Dark matter is invisible material that makes up about 85% of the universe's mass..."
+
+Remember: Speak naturally and directly. No labels, no preamble."""
+
+        # Format conversation history
+        if history:
+            context_lines = []
+            for msg in history:
+                # Show role clearly in context but not in output
+                role = "User" if msg['role'] == 'user' else "June (you said)"
+                content = msg['content']
+                context_lines.append(f"{role}: {content}")
+            
+            context = "\n".join(context_lines)
+            
+            prompt = f"""{system}
+
+=== Recent Conversation ===
+{context}
+
+=== Current User Message ===
+User: {user_message}
+
+Your response (speak directly, no "June:" label):"""
+        else:
+            # No history - fresh conversation
+            prompt = f"""{system}
+
+User: {user_message}
+
+Your response (speak directly, no "June:" label):"""
+        
+        return prompt
     
     async def handle_transcript(
         self,
         session_id: str,
         room_name: str,
         text: str,
-        is_partial: bool = False,
-        audio_data: Optional[bytes] = None
+        is_partial: bool = False
     ) -> Dict:
         """Main entry point for STT transcripts"""
         start_time = time.time()
         self.total_requests += 1
         
-        # Check if Mockingbird is capturing audio
-        if self.mockingbird.is_active(session_id):
-            mockingbird_state = self.mockingbird.get_session_state(session_id)
-            
-            if mockingbird_state["state"] in ["awaiting_voice_sample", "capturing_audio"]:
-                logger.info(f"🎤 Mockingbird capturing audio from '{text[:30]}...'")
-                
-                # Let mockingbird process the audio
-                capture_result = await self.mockingbird.process_transcript_chunk(
-                    session_id=session_id,
-                    text=text,
-                    audio_data=audio_data
-                )
-                
-                if capture_result.get("status") == "ready_to_clone":
-                    # Got enough audio - respond naturally
-                    response_text = capture_result.get("message", "Processing your voice...")
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=response_text,
-                        session_id=session_id,
-                        voice_id="default"  # Use default while processing
-                    )
-                
-                return {
-                    "status": "mockingbird_capturing",
-                    "capture_result": capture_result
-                }
-        
-        # Ignore partials
+        # Ignore all partials
         if is_partial and self.ignore_partials:
-            return {"status": "skipped", "reason": "partial_ignored"}
+            logger.debug(f"⏸️ Ignoring partial: '{text[:50]}...'")
+            return {
+                "status": "skipped",
+                "reason": "partial_ignored",
+                "text": text[:100]
+            }
         
         # Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
-            return {"status": "skipped", "reason": "duplicate"}
+            return {
+                "status": "skipped",
+                "reason": "duplicate_transcript",
+                "text": text[:100]
+            }
         
-        # Get processing lock
+        # Get or create processing lock
         if session_id not in self._processing_lock:
             self._processing_lock[session_id] = asyncio.Lock()
         
         lock = self._processing_lock[session_id]
+        
+        # Better interruption handling
         word_count = len(text.strip().split())
         
-        if lock.locked() and word_count < 5:
-            return {"status": "skipped", "reason": "already_processing"}
+        if lock.locked():
+            # If it's a short input while processing, skip it
+            if word_count < 5:
+                logger.warning(f"⚠️ Already processing, skipping short input: '{text}'")
+                return {
+                    "status": "skipped",
+                    "reason": "already_processing",
+                    "text": text[:100]
+                }
+            else:
+                # If it's a longer input, this might be an intentional interruption
+                logger.info(f"🛑 User interrupting with new request: '{text[:50]}...'")
+                logger.info(f"   (Previous response will complete, but new request will be queued)")
+                # Let it wait for the lock - will process after current response finishes
         
+        # Process with lock
         async with lock:
             return await self._process_transcript(
                 session_id=session_id,
@@ -278,116 +349,144 @@ When user mentions mockingbird/voice cloning, USE THE TOOLS - don't just talk ab
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """Process transcript with tool calling support"""
+        """Internal method to process transcript (called within lock)"""
         
+        # Skip tiny inputs
         word_count = len(text.strip().split())
+        char_count = len(text.strip())
         
         if word_count < 2:
-            return {"status": "skipped", "reason": "too_short"}
+            logger.debug(f"⏸️ Text too short: '{text}' ({word_count} words)")
+            return {
+                "status": "skipped",
+                "reason": "too_short",
+                "word_count": word_count
+            }
         
+        # Log what we're processing
+        status = "PARTIAL" if is_partial else "FINAL"
         logger.info("=" * 80)
-        logger.info(f"📥 Session: {session_id[:8]}")
+        logger.info(f"📥 [{status}] Session: {session_id[:8]}")
         logger.info(f"📝 Text: '{text}'")
+        logger.info(f"📊 Words: {word_count}, Chars: {char_count}")
         
         try:
-            # Get history
+            # Get conversation history with debug logging
             history = self.history.get_history(session_id)
+            logger.info(f"📚 History: {len(history)} messages")
             
-            # Build prompt
-            system_prompt = self._build_system_prompt_with_tools()
+            if history:
+                logger.debug("📜 Current conversation context:")
+                for i, msg in enumerate(history[-4:]):  # Show last 2 exchanges
+                    logger.debug(f"   {i+1}. {msg['role']}: {msg['content'][:60]}...")
             
-            # Stream LLM response with tool support
+            # Build prompt with improved system instructions
+            prompt = self._build_prompt(text, history)
+            logger.debug(f"🔧 Prompt length: {len(prompt)} chars")
+            
+            # Stream LLM response with SMART CHUNKING
             full_response = ""
             sentence_buffer = ""
             sentence_count = 0
             first_sentence_time = None
-            tool_calls_made = []
             
-            # Get current voice (might be cloned)
-            current_voice_id = self.mockingbird.get_current_voice_id(session_id)
-            
-            logger.info(f"🎙️ Using voice: {current_voice_id}")
-            logger.info(f"🧠 Starting LLM stream with tool support...")
+            logger.info(f"🧠 Starting LLM stream...")
             llm_start = time.time()
             
-            async for chunk in self._stream_gemini_with_tools(
-                system_prompt=system_prompt,
-                user_message=text,
-                history=history,
-                session_id=session_id
-            ):
-                # Handle tool calls
-                if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
-                    tool_result = await self._execute_tool(
-                        tool_name=chunk["tool_name"],
-                        tool_args=chunk["tool_args"],
-                        session_id=session_id,
-                        room_name=room_name
-                    )
-                    tool_calls_made.append({
-                        "tool": chunk["tool_name"],
-                        "result": tool_result
-                    })
-                    
-                    # Update voice if mockingbird was activated/deactivated
-                    current_voice_id = self.mockingbird.get_current_voice_id(session_id)
-                    continue
+            async for token in self._stream_gemini(prompt):
+                full_response += token
+                sentence_buffer += token
                 
-                # Handle text tokens
-                if isinstance(chunk, str):
-                    full_response += chunk
-                    sentence_buffer += chunk
+                # ✅ NEW: Check for early split opportunity
+                early_sentence, sentence_buffer = self._smart_sentence_split(sentence_buffer)
+                
+                if early_sentence:
+                    # We found a good early split point
+                    sentence_count += 1
+                    cleaned_sentence = self._clean_llm_output(early_sentence)
                     
-                    sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
+                    if cleaned_sentence:
+                        # Track first sentence timing
+                        if sentence_count == 1:
+                            first_sentence_time = (time.time() - start_time) * 1000
+                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
+                            
+                            # Update running average
+                            if self.avg_first_sentence_ms == 0:
+                                self.avg_first_sentence_ms = first_sentence_time
+                            else:
+                                self.avg_first_sentence_ms = (
+                                    self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
+                                )
+                        
+                        logger.info(f"🔊 Sentence #{sentence_count} (early split): '{cleaned_sentence[:50]}...'")
+                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
+                        self.total_sentences_sent += 1
+                
+                # Check for natural sentence end
+                match = self.sentence_end.search(sentence_buffer)
+                if match:
+                    sentence = sentence_buffer[:match.end()].strip()
+                    sentence_buffer = sentence_buffer[match.end():]
                     
                     if sentence:
                         sentence_count += 1
-                        cleaned = self._clean_llm_output(sentence)
-                        cleaned = self._add_prosody_hints(cleaned)
+                        cleaned_sentence = self._clean_llm_output(sentence)
                         
-                        if not cleaned:
+                        if not cleaned_sentence:
                             continue
                         
+                        # Track first sentence timing
                         if sentence_count == 1:
                             first_sentence_time = (time.time() - start_time) * 1000
+                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
+                            
+                            # Update running average
+                            if self.avg_first_sentence_ms == 0:
+                                self.avg_first_sentence_ms = first_sentence_time
+                            else:
+                                self.avg_first_sentence_ms = (
+                                    self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
+                                )
                         
-                        logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
-                        await self._send_to_tts_natural(
-                            room_name=room_name,
-                            text=cleaned,
-                            session_id=session_id,
-                            voice_id=current_voice_id
-                        )
+                        # Send cleaned sentence to TTS
+                        logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned_sentence[:50]}...'")
+                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
                         self.total_sentences_sent += 1
             
-            # Send remaining text
+            # Send any remaining text (cleaned)
             if sentence_buffer.strip():
-                cleaned = self._clean_llm_output(sentence_buffer.strip())
-                cleaned = self._add_prosody_hints(cleaned)
-                
-                if cleaned and len(cleaned) >= self.min_chunk_size:
+                cleaned_fragment = self._clean_llm_output(sentence_buffer.strip())
+                if cleaned_fragment:
                     sentence_count += 1
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=cleaned,
-                        session_id=session_id,
-                        voice_id=current_voice_id
-                    )
+                    logger.info(f"🔊 Final fragment: '{cleaned_fragment[:50]}...'")
+                    await self._send_to_tts(room_name, cleaned_fragment, session_id)
                     self.total_sentences_sent += 1
             
             llm_time = (time.time() - llm_start) * 1000
             
-            # Add to history
+            # Add to history (ONLY for finals) - WITH DEBUG LOGGING
             if not is_partial:
+                logger.info(f"💾 Adding to history...")
+                logger.debug(f"   User message: '{text}'")
+                logger.debug(f"   Assistant response: '{full_response[:100]}...'")
+                
                 self.history.add_message(session_id, "user", text)
                 self.history.add_message(session_id, "assistant", full_response)
+                
+                new_history = self.history.get_history(session_id)
+                logger.info(f"✅ History updated: now {len(new_history)} messages total")
+            else:
+                logger.info(f"⏭️ Partial - not adding to history")
             
             total_time = (time.time() - start_time) * 1000
             
             logger.info("─" * 80)
-            logger.info(f"✅ SUCCESS")
-            logger.info(f"   Voice: {current_voice_id}")
-            logger.info(f"   Tools used: {len(tool_calls_made)}")
+            logger.info(f"✅ SUCCESS:")
+            logger.info(f"   Response: {len(full_response)} chars")
+            logger.info(f"   Sentences: {sentence_count}")
+            logger.info(f"   LLM time: {llm_time:.0f}ms")
+            logger.info(f"   First sentence: {first_sentence_time:.0f}ms" if first_sentence_time else "   First sentence: N/A")
             logger.info(f"   Total time: {total_time:.0f}ms")
             logger.info("=" * 80)
             
@@ -395,177 +494,153 @@ When user mentions mockingbird/voice cloning, USE THE TOOLS - don't just talk ab
                 "status": "success",
                 "response": full_response,
                 "sentences_sent": sentence_count,
-                "tool_calls": tool_calls_made,
-                "voice_id": current_voice_id,
-                "total_time_ms": total_time
+                "total_time_ms": total_time,
+                "llm_time_ms": llm_time,
+                "first_sentence_ms": first_sentence_time,
+                "was_partial": is_partial,
+                "history_size": len(self.history.get_history(session_id))
             }
             
         except Exception as e:
-            logger.error(f"❌ Error: {e}", exc_info=True)
+            logger.error("=" * 80)
+            logger.error(f"❌ ERROR processing transcript: {e}", exc_info=True)
+            logger.error("=" * 80)
             
-            error_msg = "Sorry, I'm having trouble right now."
+            # Send error message to user
+            error_msg = "Sorry, I'm having trouble right now. Can you repeat that?"
             try:
-                await self._send_to_tts_natural(room_name, error_msg, session_id, "default")
+                await self._send_to_tts(room_name, error_msg, session_id)
             except:
                 pass
             
-            return {"status": "error", "error": str(e)}
+            return {
+                "status": "error",
+                "error": str(e),
+                "total_time_ms": (time.time() - start_time) * 1000
+            }
     
-    async def _stream_gemini_with_tools(
-        self,
-        system_prompt: str,
-        user_message: str,
-        history: List[Dict],
-        session_id: str
-    ) -> AsyncIterator:
-        """Stream from Gemini with tool calling support"""
+    async def _stream_gemini(self, prompt: str) -> AsyncIterator[str]:
+        """Stream tokens from Gemini - FIXED for new SDK"""
         try:
+            # ✅ FIXED: Correct import for new SDK
             from google import genai
             
             client = genai.Client(api_key=self.gemini_api_key)
+            logger.debug("🌐 Connecting to Gemini API...")
             
-            # Build full context
-            if history:
-                context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
-                context = "\n".join(context_lines)
-                prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
-            else:
-                prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
-            
-            # Configure with tools
-            config = genai.types.GenerateContentConfig(
-                temperature=0.9,
-                max_output_tokens=500,
-                top_p=0.95,
-                top_k=50,
-                tools=MOCKINGBIRD_TOOLS
-            )
-            
-            # Stream with tool support
+            # Stream with optimized settings for voice
             for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash-exp',
                 contents=prompt,
-                config=config
+                config=genai.types.GenerateContentConfig(
+                    temperature=0.8,  # Slightly more creative for stories
+                    max_output_tokens=400,  # More tokens for explanations/stories
+                    top_p=0.95,
+                    top_k=40,
+                ),
             ):
-                # Check for tool calls
-                if hasattr(chunk, 'function_calls') and chunk.function_calls:
-                    for func_call in chunk.function_calls:
-                        yield {
-                            "type": "tool_call",
-                            "tool_name": func_call.name,
-                            "tool_args": dict(func_call.args) if func_call.args else {}
-                        }
-                
-                # Yield text
                 if chunk.text:
                     yield chunk.text
                     
         except Exception as e:
-            logger.error(f"❌ Gemini error: {e}")
-            yield "I'm having technical difficulties."
+            logger.error(f"❌ Gemini streaming error: {e}")
+            logger.info("🔄 Falling back to gemini-2.0-flash...")
+            
+            try:
+                from google import genai
+                client = genai.Client(api_key=self.gemini_api_key)
+                
+                for chunk in client.models.generate_content_stream(
+                    model='gemini-2.0-flash',
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        temperature=0.8,
+                        max_output_tokens=400
+                    ),
+                ):
+                    if chunk.text:
+                        yield chunk.text
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback also failed: {fallback_error}")
+                yield "I'm experiencing technical difficulties."
     
-    async def _execute_tool(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        session_id: str,
-        room_name: str
-    ) -> Dict[str, Any]:
-        """Execute a tool call"""
-        logger.info(f"🔧 Executing tool: {tool_name}")
-        
+    async def _send_to_tts(self, room_name: str, text: str, session_id: str):
+        """Send text to TTS service with natural pacing and increased timeout"""
         try:
-            if tool_name == "enable_mockingbird":
-                result = await self.mockingbird.enable(session_id, session_id)
-                self.mockingbird_activations += 1
-                
-                # Send instruction to user
-                if result.get("message"):
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=result["message"],
-                        session_id=session_id,
-                        voice_id="default"
-                    )
-                
-                return result
-            
-            elif tool_name == "disable_mockingbird":
-                result = await self.mockingbird.disable(session_id)
-                
-                # Confirm with user (in default voice)
-                if result.get("message"):
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=result["message"],
-                        session_id=session_id,
-                        voice_id="default"
-                    )
-                
-                return result
-            
-            elif tool_name == "check_mockingbird_status":
-                return self.mockingbird.get_status(session_id)
-            
-            else:
-                return {"status": "unknown_tool", "tool": tool_name}
-                
-        except Exception as e:
-            logger.error(f"❌ Tool execution error: {e}")
-            return {"status": "error", "error": str(e)}
-    
-    async def _send_to_tts_natural(
-        self,
-        room_name: str,
-        text: str,
-        session_id: str,
-        voice_id: str = "default"
-    ):
-        """Send to TTS with natural pacing"""
-        try:
+            # Natural pacing between sentences
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
-                if time_since_last < self._natural_pause_duration:
-                    delay = self._natural_pause_duration - time_since_last
+                if time_since_last < 0.4:
+                    delay = 0.4 - time_since_last
+                    logger.debug(f"⏸️ Pacing delay: {delay:.1f}s")
                     await asyncio.sleep(delay)
             
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            await asyncio.wait_for(
-                self.tts.publish_to_room(
-                    room_name=room_name,
-                    text=text,
-                    voice_id=voice_id,
-                    streaming=True
-                ),
-                timeout=45.0
-            )
+            # ✅ FIXED: Increased timeout from 15s to 30s
+            try:
+                await asyncio.wait_for(
+                    self.tts.publish_to_room(
+                        room_name=room_name,
+                        text=text,
+                        voice_id="default",
+                        streaming=True
+                    ),
+                    timeout=30.0  # ← Increased from 15.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"❌ TTS timeout (>30s) for: '{text[:50]}...'")
+                return
+            
+            tts_time = (time.time() - tts_start) * 1000
+            logger.debug(f"   TTS completed in {tts_time:.0f}ms")
             
         except Exception as e:
-            logger.error(f"❌ TTS error: {e}")
+            logger.error(f"❌ TTS error for session {session_id}: {e}")
     
     async def handle_interruption(self, session_id: str, room_name: str):
         """Handle user interruption"""
-        return {"status": "interrupted"}
-    
-    def get_stats(self) -> Dict:
-        """Get statistics"""
-        mockingbird_stats = self.mockingbird.get_stats()
+        logger.info(f"🛑 User interrupted session {session_id}")
         
         return {
-            "mode": "natural_speech_with_mockingbird",
-            "active_sessions": len(self.history.sessions),
+            "status": "interrupted",
+            "session_id": session_id,
+            "message": "Interruption handled naturally by streaming"
+        }
+    
+    def get_stats(self) -> Dict:
+        """Get simple statistics"""
+        active_sessions = len(self.history.sessions)
+        total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
+        
+        # Detailed session info
+        session_details = {}
+        for session_id, msgs in self.history.sessions.items():
+            session_details[session_id[:8]] = {
+                "messages": len(msgs),
+                "last_activity": msgs[-1].timestamp.isoformat() if msgs else None
+            }
+        
+        return {
+            "mode": "simple_voice_assistant_fully_optimized",
+            "active_sessions": active_sessions,
+            "total_messages": total_messages,
             "total_requests": self.total_requests,
             "total_sentences_sent": self.total_sentences_sent,
-            "mockingbird_activations": self.mockingbird_activations,
-            "mockingbird": mockingbird_stats
+            "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
+            "ignore_partials": self.ignore_partials,
+            "duplicate_window_seconds": self._duplicate_window,
+            "max_sentence_chars": self.max_sentence_chars,
+            "early_split_chars": self.early_split_chars,
+            "sessions": session_details
         }
     
     def clear_session(self, session_id: str):
-        """Clear session data"""
+        """Clear conversation history for a session"""
         self.history.clear_session(session_id)
         
+        # Clean up tracking data
         if session_id in self._recent_transcripts:
             del self._recent_transcripts[session_id]
         if session_id in self._last_tts_time:
@@ -574,12 +649,11 @@ When user mentions mockingbird/voice cloning, USE THE TOOLS - don't just talk ab
             del self._processing_lock[session_id]
     
     async def health_check(self) -> Dict:
-        """Health check"""
-        mockingbird_stats = self.mockingbird.get_stats()
-        
+        """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "natural_speech_with_mockingbird",
-            "mockingbird": mockingbird_stats,
+            "assistant": "simple_voice_assistant_fully_optimized",
+            "tts_available": self.tts is not None,
+            "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
         }
