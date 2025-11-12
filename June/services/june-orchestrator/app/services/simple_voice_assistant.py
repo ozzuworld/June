@@ -489,7 +489,7 @@ NATURAL SPEECH RULES:
                 # ✅ PROPER TOOL CONFIG - Let model decide when to use tools
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='AUTO'  # AUTO mode - model decides when to call
+                        mode='ANY'  
                     )
                 )
             )
