@@ -1,6 +1,8 @@
 """
 Mockingbird Voice Cloning Skill - PRODUCTION VERSION
 All fixes applied based on architecture analysis
+
+✅ CRITICAL FIX: Uses ConversationManager to find participants already in room
 """
 import asyncio
 import logging
@@ -54,22 +56,21 @@ class MockingbirdSkill:
     """
     Voice cloning skill with self-contained LiveKit audio capture
     
-    FIXED ISSUES:
-    - Event-driven LiveKit (no remote_participants access)
-    - Proper state checking to prevent transcript processing during recording
-    - Resource cleanup on errors
-    - Better timeout handling
-    - Comprehensive logging
+    ✅ FIXED: Uses ConversationManager to find existing participants
+    ✅ FIXED: Checks participant audio availability before recording
+    ✅ FIXED: Proper state checking to prevent transcript processing during recording
     """
     
     def __init__(
         self, 
         tts_service,
+        conversation_manager,
         livekit_url: str,
         livekit_api_key: str,
         livekit_api_secret: str
     ):
         self.tts = tts_service
+        self.conversation_manager = conversation_manager  # ✅ NEW
         self.livekit_url = livekit_url
         self.livekit_api_key = livekit_api_key
         self.livekit_api_secret = livekit_api_secret
@@ -106,7 +107,7 @@ class MockingbirdSkill:
         """
         Enable mockingbird - start voice cloning flow
         
-        Returns instruction message that will be sent via TTS
+        ✅ UPDATED: Checks participant availability first
         """
         state = self.get_session_state(session_id)
         
@@ -127,6 +128,30 @@ class MockingbirdSkill:
                     "skip_llm_response": True
                 }
         
+        # ✅ CRITICAL: Check if participant is in room and has audio
+        if not self.conversation_manager.is_participant_in_room(session_id, room_name):
+            logger.error(f"❌ Session {session_id[:8]}... not found in room {room_name}")
+            return {
+                "status": "error",
+                "tts_message": "I can't find you in the room. Please make sure you're connected.",
+                "skip_llm_response": True
+            }
+        
+        # Check if audio is available
+        participant_info = self.conversation_manager.get_participant_info(session_id)
+        if not participant_info:
+            logger.error(f"❌ No participant info for session {session_id[:8]}...")
+            return {
+                "status": "error",
+                "tts_message": "I'm having trouble finding your audio. Please try again.",
+                "skip_llm_response": True
+            }
+        
+        logger.info(
+            f"✅ Participant check passed: {participant_info.identity} "
+            f"(audio_available={participant_info.is_publishing_audio})"
+        )
+        
         # Start capture flow
         state.state = MockingbirdState.AWAITING_SAMPLE
         state.activated_at = datetime.utcnow()
@@ -144,9 +169,8 @@ class MockingbirdSkill:
         return {
             "status": "awaiting_sample",
             "tts_message": (
-                "I'll clone your voice! Please speak naturally for about 6 to 10 seconds. "
-                "You can say anything - tell me about your day, count to 20, or recite a poem. "
-                "Just keep talking naturally, and I'll let you know when I have enough!"
+                "Ready to clone your voice! Please speak naturally for about 8 seconds. "
+                "Start speaking now!"
             ),
             "skip_llm_response": True
         }
@@ -155,12 +179,29 @@ class MockingbirdSkill:
         """
         Connect to LiveKit room and record user audio
         
-        ✅ FIXED: Event-driven only, no remote_participants access
+        ✅ CRITICAL FIX: Gets participant identity from ConversationManager
+        ✅ CRITICAL FIX: Checks existing participants after connecting
         """
         state = self.get_session_state(session_id)
         room: Optional[rtc.Room] = None
         
         try:
+            # ✅ Get participant identity from ConversationManager
+            participant_info = self.conversation_manager.get_participant_info(session_id)
+            
+            if not participant_info:
+                logger.error(f"❌ No participant info for session {session_id}")
+                state.state = MockingbirdState.ERROR
+                await self._send_tts(
+                    room_name,
+                    "Sorry, I lost track of your connection. Please try again.",
+                    "default"
+                )
+                return
+            
+            target_identity = participant_info.identity
+            logger.info(f"🎯 Target participant identity: {target_identity}")
+            
             # Generate token for recording bot
             token = api.AccessToken(self.livekit_api_key, self.livekit_api_secret)
             token.with_identity(f"mockingbird_{session_id[:8]}")
@@ -175,7 +216,7 @@ class MockingbirdSkill:
             
             jwt = token.to_jwt()
             
-            logger.info(f"🎙️ Spawning LiveKit recorder for room '{room_name}'")
+            logger.info(f"🎤 Spawning LiveKit recorder for room '{room_name}'")
             
             # Audio capture state
             audio_buffer: List[bytes] = []
@@ -186,14 +227,13 @@ class MockingbirdSkill:
             # Create room
             room = rtc.Room()
             
-            # ✅ Event handler for participant connection
+            # ✅ Event handler for participant connection (for new participants)
             @room.on("participant_connected")
             def on_participant_connected(participant: rtc.RemoteParticipant):
-                """Called when a participant joins"""
+                """Called when a participant joins AFTER recorder connects"""
                 logger.info(f"👤 Participant connected: {participant.identity}")
                 
-                # If it's our target, subscribe to their tracks
-                if participant.identity == session_id:
+                if participant.identity == target_identity:
                     logger.info(f"🎯 Target participant joined! Subscribing to audio...")
                     asyncio.create_task(self._subscribe_to_participant(participant))
             
@@ -209,7 +249,7 @@ class MockingbirdSkill:
                 # Only record audio from the target user
                 is_target_audio = (
                     track.kind == rtc.TrackKind.KIND_AUDIO and 
-                    participant.identity == session_id
+                    participant.identity == target_identity
                 )
                 
                 if is_target_audio:
@@ -235,10 +275,23 @@ class MockingbirdSkill:
             logger.info(f"✅ Connected to room '{room_name}' as recorder")
             
             # Wait a moment for room to stabilize
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             
-            # ✅ Use event system, wait for participants
-            logger.info(f"🔍 Room connected, waiting for participants via events...")
+            # ✅ CRITICAL FIX: Check for existing participants
+            logger.info(f"🔍 Checking for existing participants in room...")
+            
+            # Access remote_participants to find existing participants
+            existing_participants = list(room.remote_participants.values())
+            logger.info(f"👥 Found {len(existing_participants)} existing participants")
+            
+            for participant in existing_participants:
+                logger.info(f"  - {participant.identity}")
+                if participant.identity == target_identity:
+                    logger.info(f"✅ Found target participant already in room!")
+                    await self._subscribe_to_participant(participant)
+                    break
+            else:
+                logger.info(f"🔎 Target participant not in room yet, waiting for events...")
             
             # Wait for audio capture (with timeout)
             timeout = 20  # seconds
@@ -258,7 +311,7 @@ class MockingbirdSkill:
                 
                 # Warn if no audio found after 5 seconds
                 if elapsed >= 5 and not audio_track_found:
-                    logger.warning(f"⚠️ No user audio track found after 5s")
+                    logger.warning(f"⚠️ No user audio track found after {elapsed}s")
             
             # Disconnect
             if room:
@@ -277,7 +330,7 @@ class MockingbirdSkill:
                 state.state = MockingbirdState.ERROR
                 await self._send_tts(
                     room_name, 
-                    "Sorry, I had trouble capturing your voice. Let's try again later.", 
+                    "Sorry, I had trouble capturing your voice. Please try again later.", 
                     "default"
                 )
                 
