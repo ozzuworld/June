@@ -496,7 +496,7 @@ NATURAL SPEECH RULES:
             
             # Stream with tool support
             for chunk in client.models.generate_content_stream(
-                model='gemini-2.0-flash-exp',
+                model='gemini-2.5-flash',
                 contents=prompt,
                 config=config
             ):
