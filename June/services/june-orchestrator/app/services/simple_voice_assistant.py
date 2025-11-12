@@ -70,13 +70,25 @@ class SimpleVoiceAssistant:
     MCP-compatible tool calling with natural speech
     """
     
-    def __init__(self, gemini_api_key: str, tts_service):
+    def __init__(
+        self, 
+        gemini_api_key: str, 
+        tts_service,
+        livekit_url: str,
+        livekit_api_key: str,
+        livekit_api_secret: str
+    ):
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
         self.history = ConversationHistory(max_turns=5)
         
-        # Initialize Mockingbird skill
-        self.mockingbird = MockingbirdSkill(tts_service)
+        # Initialize Mockingbird skill with LiveKit credentials
+        self.mockingbird = MockingbirdSkill(
+            tts_service=tts_service,
+            livekit_url=livekit_url,
+            livekit_api_key=livekit_api_key,
+            livekit_api_secret=livekit_api_secret
+        )
         
         # Natural speech settings
         self.max_sentence_chars = 180
@@ -109,6 +121,7 @@ class SimpleVoiceAssistant:
         logger.info("   - Mockingbird voice cloning ready")
         logger.info("   - MCP-compatible tool calling")
         logger.info("   - NEW google-genai SDK with proper tool config")
+        logger.info("   - LiveKit audio capture enabled")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -244,29 +257,13 @@ NATURAL SPEECH RULES:
         if self.mockingbird.is_active(session_id):
             mockingbird_state = self.mockingbird.get_session_state(session_id)
             
+            # If mockingbird is capturing, it handles its own audio
+            # We just log that it's happening
             if mockingbird_state["state"] in ["awaiting_voice_sample", "capturing_audio"]:
-                logger.info(f"🎤 Mockingbird capturing audio from '{text[:30]}...'")
-                
-                # Let mockingbird process the audio
-                capture_result = await self.mockingbird.process_transcript_chunk(
-                    session_id=session_id,
-                    text=text,
-                    audio_data=audio_data
-                )
-                
-                if capture_result.get("status") == "ready_to_clone":
-                    # Got enough audio - respond naturally
-                    response_text = capture_result.get("message", "Processing your voice...")
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=response_text,
-                        session_id=session_id,
-                        voice_id="default"  # Use default while processing
-                    )
-                
+                logger.debug(f"🎤 Mockingbird is capturing audio for session {session_id[:8]}...")
                 return {
                     "status": "mockingbird_capturing",
-                    "capture_result": capture_result
+                    "state": mockingbird_state["state"]
                 }
         
         # Ignore partials
@@ -464,7 +461,6 @@ NATURAL SPEECH RULES:
     ) -> AsyncIterator:
         """Stream from Gemini with tool calling support - NEW SDK with proper config"""
         try:
-            # ✅ NEW SDK IMPORT
             from google import genai
             from google.genai import types
             
@@ -479,24 +475,22 @@ NATURAL SPEECH RULES:
             else:
                 prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
             
-            # ✅ PROPER CONFIG FROM OFFICIAL DOCS
             config = types.GenerateContentConfig(
                 temperature=0.9,
                 max_output_tokens=500,
                 top_p=0.95,
                 top_k=50,
                 tools=MOCKINGBIRD_TOOLS,
-                # ✅ PROPER TOOL CONFIG - Let model decide when to use tools
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='ANY'  
+                        mode='AUTO'
                     )
                 )
             )
             
             # Stream with tool support
             for chunk in client.models.generate_content_stream(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash-exp',
                 contents=prompt,
                 config=config
             ):
@@ -574,7 +568,7 @@ NATURAL SPEECH RULES:
         
         try:
             if tool_name == "enable_mockingbird":
-                result = await self.mockingbird.enable(session_id, session_id)
+                result = await self.mockingbird.enable(session_id, room_name)
                 self.mockingbird_activations += 1
                 
                 # Send instruction to user
