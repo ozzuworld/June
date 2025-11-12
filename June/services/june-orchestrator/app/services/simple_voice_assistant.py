@@ -432,7 +432,7 @@ NATURAL SPEECH (when NOT using tools):
                 tools=MOCKINGBIRD_TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='AUTO'
+                        mode='ANY'
                     )
                 )
             )
