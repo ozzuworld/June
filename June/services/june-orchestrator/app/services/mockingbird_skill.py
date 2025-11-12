@@ -261,41 +261,40 @@ class MockingbirdSkill:
                 del self.recording_tasks[session_id]
     
     async def _capture_audio_frames(
-    self,
-    track: rtc.RemoteTrack,
-    buffer: List[bytes],
-    session_id: str,
-    start_time: float,
-    room: rtc.Room
-):
-    """Capture audio frames from track"""
-    try:
-        # Create audio stream from track
-        audio_stream = rtc.AudioStream(track)
-        
-        logger.info(f"🎵 Starting audio frame capture...")
-        
-        async for event in audio_stream:
-            # ✅ FIXED: Access frame through event.frame
-            frame = event.frame
+        self,
+        track: rtc.RemoteTrack,
+        buffer: List[bytes],
+        session_id: str,
+        start_time: float,
+        room: rtc.Room
+    ):
+        """Capture audio frames from track"""
+        try:
+            # Create audio stream from track
+            audio_stream = rtc.AudioStream(track)
             
-            # Convert frame to bytes and add to buffer
-            # frame.data is a numpy array
-            audio_data = frame.data.tobytes()
-            buffer.append(audio_data)
+            logger.info(f"🎵 Starting audio frame capture...")
             
-            # Check if we have enough
-            elapsed = time.time() - start_time
+            async for event in audio_stream:
+                # ✅ FIXED: Access frame through event.frame
+                frame = event.frame
+                
+                # Convert frame to bytes and add to buffer
+                # frame.data is a numpy array
+                audio_data = frame.data.tobytes()
+                buffer.append(audio_data)
+                
+                # Check if we have enough
+                elapsed = time.time() - start_time
+                
+                if elapsed >= self.max_sample_duration:
+                    logger.info(f"✅ Max duration reached: {elapsed:.1f}s - stopping capture")
+                    break
             
-            if elapsed >= self.max_sample_duration:
-                logger.info(f"✅ Max duration reached: {elapsed:.1f}s - stopping capture")
-                break
-        
-        logger.info(f"🎵 Audio capture completed: {len(buffer)} frames")
-        
-    except Exception as e:
-        logger.error(f"❌ Frame capture error: {e}", exc_info=True)
-
+            logger.info(f"🎵 Audio capture completed: {len(buffer)} frames")
+            
+        except Exception as e:
+            logger.error(f"❌ Frame capture error: {e}", exc_info=True)
     
     async def _process_captured_audio(
         self, 
