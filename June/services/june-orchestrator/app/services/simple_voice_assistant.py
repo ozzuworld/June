@@ -284,7 +284,7 @@ Your response (speak directly, no "June:" label):"""
         session_id: str,
         room_name: str,
         text: str,
-        is_partial: bool = False
+        is_partial: bool = False,
         audio_data: Optional[bytes] = None
     ) -> Dict:
         """Main entry point for STT transcripts"""
