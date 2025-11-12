@@ -253,17 +253,17 @@ NATURAL SPEECH RULES:
         start_time = time.time()
         self.total_requests += 1
         
-        # Check if Mockingbird is capturing audio
+        # ✅ FIXED: Check if Mockingbird is busy (capturing/cloning)
         if self.mockingbird.is_active(session_id):
             mockingbird_state = self.mockingbird.get_session_state(session_id)
             
-            # If mockingbird is capturing, it handles its own audio
-            # We just log that it's happening
-            if mockingbird_state["state"] in ["awaiting_voice_sample", "capturing_audio"]:
-                logger.debug(f"🎤 Mockingbird is capturing audio for session {session_id[:8]}...")
+            # If mockingbird is in these states, IGNORE all transcripts
+            if mockingbird_state["state"] in ["awaiting_voice_sample", "capturing_audio", "cloning_voice"]:
+                logger.info(f"🎤 Mockingbird is {mockingbird_state['state']} - ignoring transcript: '{text[:30]}...'")
                 return {
-                    "status": "mockingbird_capturing",
-                    "state": mockingbird_state["state"]
+                    "status": "mockingbird_busy",
+                    "state": mockingbird_state["state"],
+                    "message": "Mockingbird is recording/processing voice sample"
                 }
         
         # Ignore partials
@@ -483,7 +483,7 @@ NATURAL SPEECH RULES:
                 tools=MOCKINGBIRD_TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='ANY'
+                        mode='AUTO'
                     )
                 )
             )
