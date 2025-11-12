@@ -8,9 +8,7 @@ from .simple_voice_assistant import SimpleVoiceAssistant
 from .tts_service import tts_service
 from ..config import config
 
-
 logger = logging.getLogger(__name__)
-
 
 # Global assistant instance
 _global_assistant: Optional[SimpleVoiceAssistant] = None
@@ -29,10 +27,10 @@ def initialize_assistant() -> SimpleVoiceAssistant:
             logger.error("❌ GEMINI_API_KEY not configured!")
             raise ValueError("GEMINI_API_KEY must be set in environment")
         
-        # ✅ Validate LiveKit configuration
-        if not config.livekit.url:
-            logger.error("❌ LIVEKIT_URL not configured!")
-            raise ValueError("LIVEKIT_URL must be set in environment")
+        # Validate LiveKit configuration
+        if not config.livekit.ws_url:
+            logger.error("❌ LIVEKIT_WS_URL not configured!")
+            raise ValueError("LIVEKIT_WS_URL must be set in environment")
         
         if not config.livekit.api_key or not config.livekit.api_secret:
             logger.error("❌ LIVEKIT credentials not configured!")
@@ -40,13 +38,13 @@ def initialize_assistant() -> SimpleVoiceAssistant:
         
         logger.info(f"✅ Gemini API key configured")
         logger.info(f"✅ TTS service: {config.services.tts_base_url}")
-        logger.info(f"✅ LiveKit URL: {config.livekit.url}")
+        logger.info(f"✅ LiveKit URL: {config.livekit.ws_url}")
         
-        # ✅ Create assistant with LiveKit credentials
+        # Create assistant with LiveKit credentials
         _global_assistant = SimpleVoiceAssistant(
             gemini_api_key=config.services.gemini_api_key,
             tts_service=tts_service,
-            livekit_url=config.livekit.url,
+            livekit_url=config.livekit.ws_url,
             livekit_api_key=config.livekit.api_key,
             livekit_api_secret=config.livekit.api_secret
         )
