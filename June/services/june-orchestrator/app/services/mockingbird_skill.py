@@ -2,6 +2,7 @@
 Mockingbird Voice Cloning Skill
 MCP-compatible skill for real-time voice cloning with LiveKit audio capture
 
+
 FLOW:
 1. User: "June, enable mockingbird"
 2. June: "I'll clone your voice! Please speak naturally for about 6-10 seconds..."
@@ -20,11 +21,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+
 import soundfile as sf
 import numpy as np
 from livekit import rtc, api
 
+
 logger = logging.getLogger(__name__)
+
 
 
 class MockingbirdState(str, Enum):
@@ -37,6 +41,7 @@ class MockingbirdState(str, Enum):
     ERROR = "error"
 
 
+
 @dataclass
 class VoiceSample:
     """Captured voice sample data"""
@@ -44,6 +49,7 @@ class VoiceSample:
     sample_rate: int
     duration_seconds: float
     timestamp: datetime
+
 
 
 class MockingbirdSkill:
@@ -153,150 +159,150 @@ class MockingbirdSkill:
         }
     
     async def _record_audio_from_room(self, session_id: str, room_name: str):
-    """
-    Spawn temporary LiveKit client to record audio
-    FIXED: Correct way to access participants in LiveKit SDK 0.11.1
-    """
-    state = self.get_session_state(session_id)
-    
-    try:
-        # Generate token for recording bot
-        token = api.AccessToken(self.livekit_api_key, self.livekit_api_secret)
-        token.with_identity(f"mockingbird_{session_id[:8]}")
-        token.with_name("Mockingbird Recorder")
-        token.with_grants(api.VideoGrants(
-            room_join=True,
-            room=room_name,
-            can_subscribe=True,
-            can_publish=False
-        ))
+        """
+        Spawn temporary LiveKit client to record audio
+        FIXED: Correct way to access participants in LiveKit SDK 0.11.1
+        """
+        state = self.get_session_state(session_id)
         
-        jwt = token.to_jwt()
-        
-        logger.info(f"🎙️ Spawning LiveKit recorder for room '{room_name}'")
-        
-        # Connect to room
-        room = rtc.Room()
-        audio_buffer: List[bytes] = []
-        sample_rate = 48000
-        start_time = None
-        recording_started = False
-        user_track_found = False
-        
-        # ✅ FIXED: Store tracks we want to record from
-        target_tracks = []
-        
-        @room.on("track_subscribed")
-        def on_track_subscribed(
-            track: rtc.RemoteTrack,
-            publication: rtc.RemoteTrackPublication,
-            participant: rtc.RemoteParticipant
-        ):
-            """Called when we subscribe to a track"""
-            nonlocal start_time, recording_started, user_track_found, target_tracks
+        try:
+            # Generate token for recording bot
+            token = api.AccessToken(self.livekit_api_key, self.livekit_api_secret)
+            token.with_identity(f"mockingbird_{session_id[:8]}")
+            token.with_name("Mockingbird Recorder")
+            token.with_grants(api.VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_subscribe=True,
+                can_publish=False
+            ))
             
-            # Only record audio from the USER
-            is_user_track = (
-                track.kind == rtc.TrackKind.KIND_AUDIO and 
-                participant.identity == session_id and
-                not participant.identity.startswith('june-tts') and
-                not participant.identity.startswith('mockingbird') and
-                not participant.identity.startswith('agent-')
-            )
+            jwt = token.to_jwt()
             
-            if is_user_track:
-                logger.info(f"🎤 Recording audio from {participant.identity}")
-                user_track_found = True
-                state["state"] = MockingbirdState.CAPTURING
-                start_time = time.time()
-                recording_started = True
-                target_tracks.append(track)
+            logger.info(f"🎙️ Spawning LiveKit recorder for room '{room_name}'")
+            
+            # Connect to room
+            room = rtc.Room()
+            audio_buffer: List[bytes] = []
+            sample_rate = 48000
+            start_time = None
+            recording_started = False
+            user_track_found = False
+            
+            # ✅ FIXED: Store tracks we want to record from
+            target_tracks = []
+            
+            @room.on("track_subscribed")
+            def on_track_subscribed(
+                track: rtc.RemoteTrack,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                """Called when we subscribe to a track"""
+                nonlocal start_time, recording_started, user_track_found, target_tracks
                 
-                # Start capturing frames
-                asyncio.create_task(
-                    self._capture_audio_frames(
-                        track, audio_buffer, session_id, start_time, room
+                # Only record audio from the USER
+                is_user_track = (
+                    track.kind == rtc.TrackKind.KIND_AUDIO and 
+                    participant.identity == session_id and
+                    not participant.identity.startswith('june-tts') and
+                    not participant.identity.startswith('mockingbird') and
+                    not participant.identity.startswith('agent-')
+                )
+                
+                if is_user_track:
+                    logger.info(f"🎤 Recording audio from {participant.identity}")
+                    user_track_found = True
+                    state["state"] = MockingbirdState.CAPTURING
+                    start_time = time.time()
+                    recording_started = True
+                    target_tracks.append(track)
+                    
+                    # Start capturing frames
+                    asyncio.create_task(
+                        self._capture_audio_frames(
+                            track, audio_buffer, session_id, start_time, room
+                        )
                     )
+                else:
+                    logger.debug(f"⏭️ Skipping track from {participant.identity}")
+            
+            @room.on("participant_connected")
+            def on_participant_connected(participant: rtc.RemoteParticipant):
+                logger.info(f"👤 Participant connected: {participant.identity}")
+            
+            # Connect with manual subscription
+            await room.connect(
+                self.livekit_url, 
+                jwt,
+                options=rtc.RoomOptions(auto_subscribe=False)
+            )
+            logger.info(f"✅ Connected to room '{room_name}' as recorder")
+            
+            # Wait for room state to populate
+            await asyncio.sleep(0.5)
+            
+            # ✅ FIXED: Access participants correctly
+            subscribed_count = 0
+            
+            # The correct way to iterate participants in LiveKit SDK 0.11.1:
+            for participant in room.remote_participants.values():
+                logger.info(f"👤 Found participant: {participant.identity}")
+                
+                # Only subscribe to the target user
+                if participant.identity == session_id:
+                    # Iterate through track publications
+                    for publication in participant.track_publications.values():
+                        if publication.kind == rtc.TrackKind.KIND_AUDIO:
+                            logger.info(f"🔔 Subscribing to audio from {participant.identity}")
+                            await publication.set_subscribed(True)
+                            subscribed_count += 1
+                else:
+                    logger.debug(f"⏭️ Skipping participant: {participant.identity}")
+            
+            if subscribed_count == 0:
+                logger.warning(f"⚠️ No audio tracks found for {session_id}")
+            else:
+                logger.info(f"✅ Subscribed to {subscribed_count} audio track(s)")
+            
+            # Wait for recording (max 20s)
+            timeout = 20
+            elapsed = 0
+            while elapsed < timeout:
+                await asyncio.sleep(1)
+                elapsed += 1
+                
+                if recording_started and start_time:
+                    duration = time.time() - start_time
+                    if duration >= self.target_sample_duration:
+                        logger.info(f"✅ Target duration reached: {duration:.1f}s")
+                        break
+                
+                if elapsed == 5 and not user_track_found:
+                    logger.warning(f"⚠️ No user audio track found after 5s")
+            
+            # Disconnect
+            await room.disconnect()
+            logger.info(f"🔌 Disconnected recorder from room")
+            
+            # Process captured audio
+            if audio_buffer and recording_started:
+                logger.info(f"📊 Captured {len(audio_buffer)} audio frames")
+                await self._process_captured_audio(
+                    session_id, audio_buffer, sample_rate, room_name
                 )
             else:
-                logger.debug(f"⏭️ Skipping track from {participant.identity}")
-        
-        @room.on("participant_connected")
-        def on_participant_connected(participant: rtc.RemoteParticipant):
-            logger.info(f"👤 Participant connected: {participant.identity}")
-        
-        # Connect with manual subscription
-        await room.connect(
-            self.livekit_url, 
-            jwt,
-            options=rtc.RoomOptions(auto_subscribe=False)
-        )
-        logger.info(f"✅ Connected to room '{room_name}' as recorder")
-        
-        # Wait for room state to populate
-        await asyncio.sleep(0.5)
-        
-        # ✅ FIXED: Access participants correctly
-        subscribed_count = 0
-        
-        # The correct way to iterate participants in LiveKit SDK 0.11.1:
-        for participant in room.remote_participants.values():
-            logger.info(f"👤 Found participant: {participant.identity}")
-            
-            # Only subscribe to the target user
-            if participant.identity == session_id:
-                # Iterate through track publications
-                for publication in participant.track_publications.values():
-                    if publication.kind == rtc.TrackKind.KIND_AUDIO:
-                        logger.info(f"🔔 Subscribing to audio from {participant.identity}")
-                        await publication.set_subscribed(True)
-                        subscribed_count += 1
-            else:
-                logger.debug(f"⏭️ Skipping participant: {participant.identity}")
-        
-        if subscribed_count == 0:
-            logger.warning(f"⚠️ No audio tracks found for {session_id}")
-        else:
-            logger.info(f"✅ Subscribed to {subscribed_count} audio track(s)")
-        
-        # Wait for recording (max 20s)
-        timeout = 20
-        elapsed = 0
-        while elapsed < timeout:
-            await asyncio.sleep(1)
-            elapsed += 1
-            
-            if recording_started and start_time:
-                duration = time.time() - start_time
-                if duration >= self.target_sample_duration:
-                    logger.info(f"✅ Target duration reached: {duration:.1f}s")
-                    break
-            
-            if elapsed == 5 and not user_track_found:
-                logger.warning(f"⚠️ No user audio track found after 5s")
-        
-        # Disconnect
-        await room.disconnect()
-        logger.info(f"🔌 Disconnected recorder from room")
-        
-        # Process captured audio
-        if audio_buffer and recording_started:
-            logger.info(f"📊 Captured {len(audio_buffer)} audio frames")
-            await self._process_captured_audio(
-                session_id, audio_buffer, sample_rate, room_name
-            )
-        else:
-            logger.error(f"❌ No audio captured")
+                logger.error(f"❌ No audio captured")
+                state["state"] = MockingbirdState.ERROR
+                await self._send_error_message(room_name)
+                
+        except Exception as e:
+            logger.error(f"❌ Recording error: {e}", exc_info=True)
             state["state"] = MockingbirdState.ERROR
             await self._send_error_message(room_name)
-            
-    except Exception as e:
-        logger.error(f"❌ Recording error: {e}", exc_info=True)
-        state["state"] = MockingbirdState.ERROR
-        await self._send_error_message(room_name)
-    finally:
-        if session_id in self.recording_tasks:
-            del self.recording_tasks[session_id]
+        finally:
+            if session_id in self.recording_tasks:
+                del self.recording_tasks[session_id]
     
     async def _capture_audio_frames(
         self,
@@ -520,9 +526,11 @@ class MockingbirdSkill:
         }
 
 
+
 # ============================================================================
 # TOOL DEFINITIONS FOR NEW GOOGLE-GENAI SDK
 # ============================================================================
+
 
 def enable_mockingbird() -> dict:
     """Enable voice cloning mode (Mockingbird). June will clone the user's voice and speak with it.
@@ -533,6 +541,7 @@ def enable_mockingbird() -> dict:
         dict: Status and instructions for voice capture
     """
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
+
 
 
 def disable_mockingbird() -> dict:
@@ -546,6 +555,7 @@ def disable_mockingbird() -> dict:
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
 
 
+
 def check_mockingbird_status() -> dict:
     """Check if Mockingbird voice cloning is currently active and which voice is being used.
     
@@ -555,6 +565,7 @@ def check_mockingbird_status() -> dict:
         dict: Current status information
     """
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
+
 
 
 # Export functions as tools (new SDK format)
