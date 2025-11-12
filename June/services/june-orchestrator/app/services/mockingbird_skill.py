@@ -6,7 +6,7 @@ FLOW:
 1. User: "June, enable mockingbird"
 2. June: "I'll clone your voice! Please speak naturally for about 6-10 seconds..."
 3. Mockingbird spawns invisible LiveKit client
-4. Records user's audio directly from room
+4. Records user's audio directly from room (EXCLUDING TTS/bots)
 5. Processes voice clone
 6. June responds in cloned voice: "Got it! I'm now speaking with your voice."
 """
@@ -156,6 +156,7 @@ class MockingbirdSkill:
         """
         Spawn temporary LiveKit client to record audio
         This runs in background - invisible to user
+        FIXED: Only subscribes to user's audio, excludes TTS/bots
         """
         state = self.get_session_state(session_id)
         
@@ -181,6 +182,7 @@ class MockingbirdSkill:
             sample_rate = 48000  # LiveKit default
             start_time = None
             recording_started = False
+            user_track_found = False
             
             @room.on("track_subscribed")
             def on_track_subscribed(
@@ -189,13 +191,22 @@ class MockingbirdSkill:
                 participant: rtc.RemoteParticipant
             ):
                 """Called when we subscribe to a track"""
-                nonlocal start_time, recording_started
+                nonlocal start_time, recording_started, user_track_found
                 
-                # Only record audio from the USER (not bots or TTS)
-                if (track.kind == rtc.TrackKind.KIND_AUDIO and 
-                    participant.identity == session_id):
-                    
+                # ✅ FIXED: Only record audio from the USER
+                # Exclude TTS bots, other bots, and self
+                is_user_track = (
+                    track.kind == rtc.TrackKind.KIND_AUDIO and 
+                    participant.identity == session_id and
+                    not participant.identity.startswith('june-tts') and
+                    not participant.identity.startswith('mockingbird') and
+                    not participant.identity.startswith('agent-')
+                )
+                
+                if is_user_track:
                     logger.info(f"🎤 Recording audio from {participant.identity}")
+                    logger.info(f"📊 Track: {track.sid}, Kind: {track.kind}")
+                    user_track_found = True
                     state["state"] = MockingbirdState.CAPTURING
                     start_time = time.time()
                     recording_started = True
@@ -210,14 +221,47 @@ class MockingbirdSkill:
                             room
                         )
                     )
+                else:
+                    # Log what we're ignoring
+                    logger.debug(f"⏭️ Skipping track from {participant.identity} (kind: {track.kind})")
             
-            # Connect to room
+            @room.on("participant_connected")
+            def on_participant_connected(participant: rtc.RemoteParticipant):
+                """Log when participants join"""
+                logger.info(f"👤 Participant connected: {participant.identity}")
+            
+            # ✅ Connect with manual subscription control
             await room.connect(
                 self.livekit_url, 
                 jwt,
-                options=rtc.RoomOptions(auto_subscribe=True)
+                options=rtc.RoomOptions(
+                    auto_subscribe=False  # Don't auto-subscribe to all tracks
+                )
             )
             logger.info(f"✅ Connected to room '{room_name}' as recorder")
+            
+            # ✅ Wait a moment for participants to be discovered
+            await asyncio.sleep(0.5)
+            
+            # ✅ Manually subscribe ONLY to the user's audio track
+            subscribed_count = 0
+            for participant_id, participant in room.remote_participants.items():
+                logger.info(f"👤 Found participant: {participant.identity}")
+                
+                # Only subscribe to the target user
+                if participant.identity == session_id:
+                    for pub_id, publication in participant.track_publications.items():
+                        if publication.kind == rtc.TrackKind.KIND_AUDIO:
+                            logger.info(f"🔔 Subscribing to audio track from {participant.identity}")
+                            await publication.set_subscribed(True)
+                            subscribed_count += 1
+                else:
+                    logger.debug(f"⏭️ Skipping participant: {participant.identity}")
+            
+            if subscribed_count == 0:
+                logger.warning(f"⚠️ No audio tracks found for {session_id}")
+            else:
+                logger.info(f"✅ Subscribed to {subscribed_count} audio track(s)")
             
             # Wait for recording to complete or timeout (max 20 seconds)
             timeout = 20
@@ -232,6 +276,10 @@ class MockingbirdSkill:
                     if duration >= self.target_sample_duration:
                         logger.info(f"✅ Target duration reached: {duration:.1f}s")
                         break
+                
+                # Warn if no user track found yet
+                if elapsed == 5 and not user_track_found:
+                    logger.warning(f"⚠️ No user audio track found after 5s")
             
             # Disconnect
             await room.disconnect()
@@ -247,7 +295,7 @@ class MockingbirdSkill:
                     room_name
                 )
             else:
-                logger.error(f"❌ No audio captured from room (started: {recording_started})")
+                logger.error(f"❌ No audio captured from room (started: {recording_started}, track_found: {user_track_found})")
                 state["state"] = MockingbirdState.ERROR
                 await self._send_error_message(room_name)
                 
