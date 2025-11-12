@@ -285,6 +285,7 @@ Your response (speak directly, no "June:" label):"""
         room_name: str,
         text: str,
         is_partial: bool = False
+        audio_data: Optional[bytes] = None
     ) -> Dict:
         """Main entry point for STT transcripts"""
         start_time = time.time()
