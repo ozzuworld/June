@@ -410,54 +410,48 @@ class MockingbirdSkill:
         }
 
 
-# Tool definition for LLM (Gemini Function Calling)
-MOCKINGBIRD_TOOLS = [
-    {
-        "name": "enable_mockingbird",
-        "description": (
-            "Enable voice cloning mode (Mockingbird). June will clone the user's voice "
-            "and speak with it. Use when user asks to 'enable mockingbird', 'clone my voice', "
-            "'speak in my voice', or similar requests."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "confirmation": {
-                    "type": "string",
-                    "description": "Confirmation message to user about starting voice cloning"
-                }
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "disable_mockingbird",
-        "description": (
-            "Disable voice cloning mode and return to default voice. "
-            "Use when user asks to 'disable mockingbird', 'stop using my voice', "
-            "'go back to your voice', or similar requests."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "confirmation": {
-                    "type": "string",
-                    "description": "Confirmation message to user about returning to default voice"
-                }
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "check_mockingbird_status",
-        "description": (
-            "Check if Mockingbird voice cloning is currently active. "
-            "Use when user asks about mockingbird status or which voice is being used."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    }
-]
+# ============================================================================
+# TOOL DEFINITIONS FOR NEW GOOGLE-GENAI SDK
+# ============================================================================
+
+def enable_mockingbird(confirmation: str = "") -> dict:
+    """Enable voice cloning mode (Mockingbird). June will clone the user's voice and speak with it.
+    
+    Use when user asks to 'enable mockingbird', 'clone my voice', 'speak in my voice', or similar requests.
+    
+    Args:
+        confirmation: Confirmation message to user about starting voice cloning
+    
+    Returns:
+        Status and instructions for voice capture
+    """
+    pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
+
+
+def disable_mockingbird(confirmation: str = "") -> dict:
+    """Disable voice cloning mode and return to default voice.
+    
+    Use when user asks to 'disable mockingbird', 'stop using my voice', 'go back to your voice', or similar requests.
+    
+    Args:
+        confirmation: Confirmation message to user about returning to default voice
+    
+    Returns:
+        Status confirmation
+    """
+    pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
+
+
+def check_mockingbird_status() -> dict:
+    """Check if Mockingbird voice cloning is currently active and which voice is being used.
+    
+    Use when user asks about mockingbird status or which voice is being used.
+    
+    Returns:
+        Current status information
+    """
+    pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
+
+
+# Export functions as tools (new SDK format)
+MOCKINGBIRD_TOOLS = [enable_mockingbird, disable_mockingbird, check_mockingbird_status]
