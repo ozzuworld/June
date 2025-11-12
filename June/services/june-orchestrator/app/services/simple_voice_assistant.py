@@ -453,48 +453,103 @@ NATURAL SPEECH RULES:
             return {"status": "error", "error": str(e)}
     
     async def _stream_gemini_with_tools(
-        self,
-        system_prompt: str,
-        user_message: str,
-        history: List[Dict],
-        session_id: str
-    ) -> AsyncIterator:
-        """Stream from Gemini with tool calling support - NEW SDK with proper config"""
+    self,
+    system_prompt: str,
+    user_message: str,
+    history: List[Dict],
+    session_id: str
+) -> AsyncIterator:
+    """
+    Stream from Gemini with FIXED tool calling
+    
+    KEY FIX: After tool call, don't expect immediate text response.
+    The tool itself sends TTS messages.
+    """
+    try:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=self.gemini_api_key)
+        
+        # Build context
+        if history:
+            context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
+            context = "\n".join(context_lines)
+            full_prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
+        else:
+            full_prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
+        
+        config = types.GenerateContentConfig(
+            temperature=0.9,
+            max_output_tokens=500,
+            top_p=0.95,
+            top_k=50,
+            tools=MOCKINGBIRD_TOOLS,
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode='ANY'  # Forces tool use when appropriate
+                )
+            )
+        )
+        
+        tool_called = False
+        
+        # First request - may include tool calls
+        for chunk in client.models.generate_content_stream(
+            model='gemini-2.0-flash-exp',
+            contents=full_prompt,
+            config=config
+        ):
+            # Handle tool calls FIRST
+            if hasattr(chunk, 'function_calls') and chunk.function_calls:
+                for func_call in chunk.function_calls:
+                    tool_called = True
+                    yield {
+                        "type": "tool_call",
+                        "tool_name": func_call.name,
+                        "tool_args": dict(func_call.args) if func_call.args else {}
+                    }
+            
+            # ✅ FIXED: Only yield text if no tool was called
+            # When a tool is called, the tool itself handles TTS
+            if not tool_called and chunk.text:
+                yield chunk.text
+        
+        # ✅ NEW: If tool was called, we're done - no follow-up text needed
+        # The tool (enable_mockingbird) already sent TTS with instructions
+        
+    except Exception as e:
+        logger.error(f"❌ Gemini error: {e}")
+        # Fallback
         try:
             from google import genai
             from google.genai import types
             
             client = genai.Client(api_key=self.gemini_api_key)
-            logger.debug("🌐 Connecting to Gemini API (new SDK with tool_config)...")
             
-            # Build full context
             if history:
                 context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
                 context = "\n".join(context_lines)
-                prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
+                full_prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
             else:
-                prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
+                full_prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
             
             config = types.GenerateContentConfig(
                 temperature=0.9,
                 max_output_tokens=500,
-                top_p=0.95,
-                top_k=50,
                 tools=MOCKINGBIRD_TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='ANY'
+                        mode='AUTO'
                     )
                 )
             )
             
-            # Stream with tool support
             for chunk in client.models.generate_content_stream(
-                model='gemini-2.0-flash-exp',
-                contents=prompt,
+                model='gemini-2.0-flash',
+                contents=full_prompt,
                 config=config
             ):
-                # Check for tool calls
                 if hasattr(chunk, 'function_calls') and chunk.function_calls:
                     for func_call in chunk.function_calls:
                         yield {
@@ -503,108 +558,176 @@ NATURAL SPEECH RULES:
                             "tool_args": dict(func_call.args) if func_call.args else {}
                         }
                 
-                # Yield text
                 if chunk.text:
                     yield chunk.text
                     
-        except Exception as e:
-            logger.error(f"❌ Gemini error: {e}")
-            logger.info("🔄 Falling back to gemini-2.0-flash...")
-            
-            try:
-                from google import genai
-                from google.genai import types
+        except Exception as fallback_error:
+            logger.error(f"❌ Fallback failed: {fallback_error}")
+            yield "I'm having technical difficulties."
+
+
+async def _process_transcript(
+    self,
+    session_id: str,
+    room_name: str,
+    text: str,
+    is_partial: bool,
+    start_time: float
+) -> Dict:
+    """
+    Process transcript with FIXED tool execution flow
+    """
+    
+    word_count = len(text.strip().split())
+    
+    if word_count < 2:
+        logger.debug(f"⏸️ Text too short: '{text}' ({word_count} words)")
+        return {"status": "skipped", "reason": "too_short"}
+    
+    logger.info("=" * 80)
+    logger.info(f"📥 Session: {session_id[:8]}")
+    logger.info(f"📝 Text: '{text}'")
+    logger.info(f"📊 Words: {word_count}")
+    
+    try:
+        history = self.history.get_history(session_id)
+        logger.info(f"📚 History: {len(history)} messages")
+        
+        system_prompt = self._build_system_prompt_with_tools()
+        
+        full_response = ""
+        sentence_buffer = ""
+        sentence_count = 0
+        first_sentence_time = None
+        tool_calls_made = []
+        
+        current_voice_id = self.mockingbird.get_current_voice_id(session_id)
+        
+        logger.info(f"🎙️ Using voice: {current_voice_id}")
+        logger.info(f"🧠 Starting LLM stream with tool support...")
+        llm_start = time.time()
+        
+        async for chunk in self._stream_gemini_with_tools(
+            system_prompt=system_prompt,
+            user_message=text,
+            history=history,
+            session_id=session_id
+        ):
+            # Handle tool calls
+            if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
+                logger.info(f"🔧 Tool called: {chunk['tool_name']}")
                 
-                client = genai.Client(api_key=self.gemini_api_key)
-                
-                # Build prompt again
-                if history:
-                    context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
-                    context = "\n".join(context_lines)
-                    prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
-                else:
-                    prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
-                
-                config = types.GenerateContentConfig(
-                    temperature=0.9,
-                    max_output_tokens=500,
-                    tools=MOCKINGBIRD_TOOLS,
-                    tool_config=types.ToolConfig(
-                        function_calling_config=types.FunctionCallingConfig(
-                            mode='AUTO'
-                        )
-                    )
+                # ✅ FIXED: Execute tool and DON'T expect text response
+                tool_result = await self._execute_tool(
+                    tool_name=chunk["tool_name"],
+                    tool_args=chunk["tool_args"],
+                    session_id=session_id,
+                    room_name=room_name
                 )
                 
-                for chunk in client.models.generate_content_stream(
-                    model='gemini-2.0-flash',
-                    contents=prompt,
-                    config=config
-                ):
-                    if hasattr(chunk, 'function_calls') and chunk.function_calls:
-                        for func_call in chunk.function_calls:
-                            yield {
-                                "type": "tool_call",
-                                "tool_name": func_call.name,
-                                "tool_args": dict(func_call.args) if func_call.args else {}
-                            }
+                tool_calls_made.append({
+                    "tool": chunk["tool_name"],
+                    "result": tool_result
+                })
+                
+                # Update voice
+                current_voice_id = self.mockingbird.get_current_voice_id(session_id)
+                
+                # ✅ KEY: Tool already sent TTS, so we're done
+                # No need to continue streaming text
+                continue
+            
+            # Handle text tokens (only if no tool was called)
+            if isinstance(chunk, str):
+                full_response += chunk
+                sentence_buffer += chunk
+                
+                sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
+                
+                if sentence:
+                    sentence_count += 1
+                    cleaned = self._clean_llm_output(sentence)
+                    cleaned = self._add_prosody_hints(cleaned)
                     
-                    if chunk.text:
-                        yield chunk.text
-                        
-            except Exception as fallback_error:
-                logger.error(f"❌ Fallback also failed: {fallback_error}")
-                yield "I'm having technical difficulties."
-    
-    async def _execute_tool(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        session_id: str,
-        room_name: str
-    ) -> Dict[str, Any]:
-        """Execute a tool call"""
-        logger.info(f"🔧 Executing tool: {tool_name}")
+                    if not cleaned:
+                        continue
+                    
+                    if sentence_count == 1:
+                        first_sentence_time = (time.time() - start_time) * 1000
+                        logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms")
+                    
+                    logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
+                    await self._send_to_tts_natural(
+                        room_name=room_name,
+                        text=cleaned,
+                        session_id=session_id,
+                        voice_id=current_voice_id
+                    )
+                    self.total_sentences_sent += 1
         
+        # Send remaining text (only if not a tool call response)
+        if sentence_buffer.strip() and not tool_calls_made:
+            cleaned = self._clean_llm_output(sentence_buffer.strip())
+            cleaned = self._add_prosody_hints(cleaned)
+            
+            if cleaned and len(cleaned) >= self.min_chunk_size:
+                sentence_count += 1
+                logger.info(f"🔊 Final fragment: '{cleaned[:50]}...'")
+                await self._send_to_tts_natural(
+                    room_name=room_name,
+                    text=cleaned,
+                    session_id=session_id,
+                    voice_id=current_voice_id
+                )
+                self.total_sentences_sent += 1
+        
+        # Add to history
+        if not is_partial:
+            logger.info(f"💾 Adding to history...")
+            self.history.add_message(session_id, "user", text)
+            
+            # ✅ FIXED: If tool was called, store tool info in history
+            if tool_calls_made:
+                tool_summary = f"[Used tool: {tool_calls_made[0]['tool']}]"
+                self.history.add_message(session_id, "assistant", tool_summary)
+            elif full_response:
+                self.history.add_message(session_id, "assistant", full_response)
+            
+            logger.info(f"✅ History updated: now {len(self.history.get_history(session_id))} messages")
+        
+        total_time = (time.time() - start_time) * 1000
+        
+        logger.info("─" * 80)
+        logger.info(f"✅ SUCCESS")
+        logger.info(f"   Voice: {current_voice_id}")
+        logger.info(f"   Tools used: {len(tool_calls_made)}")
+        if tool_calls_made:
+            for tc in tool_calls_made:
+                logger.info(f"      - {tc['tool']}")
+        logger.info(f"   Total time: {total_time:.0f}ms")
+        logger.info("=" * 80)
+        
+        return {
+            "status": "success",
+            "response": full_response or "[Tool execution]",
+            "sentences_sent": sentence_count,
+            "tool_calls": tool_calls_made,
+            "voice_id": current_voice_id,
+            "total_time_ms": total_time
+        }
+        
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error(f"❌ Error: {e}", exc_info=True)
+        logger.error("=" * 80)
+        
+        error_msg = "Sorry, I'm having trouble right now."
         try:
-            if tool_name == "enable_mockingbird":
-                result = await self.mockingbird.enable(session_id, room_name)
-                self.mockingbird_activations += 1
-                
-                # Send instruction to user
-                if result.get("message"):
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=result["message"],
-                        session_id=session_id,
-                        voice_id="default"
-                    )
-                
-                return result
-            
-            elif tool_name == "disable_mockingbird":
-                result = await self.mockingbird.disable(session_id)
-                
-                # Confirm with user (in default voice)
-                if result.get("message"):
-                    await self._send_to_tts_natural(
-                        room_name=room_name,
-                        text=result["message"],
-                        session_id=session_id,
-                        voice_id="default"
-                    )
-                
-                return result
-            
-            elif tool_name == "check_mockingbird_status":
-                return self.mockingbird.get_status(session_id)
-            
-            else:
-                return {"status": "unknown_tool", "tool": tool_name}
-                
-        except Exception as e:
-            logger.error(f"❌ Tool execution error: {e}")
-            return {"status": "error", "error": str(e)}
+            await self._send_to_tts_natural(room_name, error_msg, session_id, "default")
+        except:
+            pass
+        
+        return {"status": "error", "error": str(e)}
     
     async def _send_to_tts_natural(
         self,
