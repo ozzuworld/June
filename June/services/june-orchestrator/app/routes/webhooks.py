@@ -22,35 +22,44 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
     
     Handles both partial and final transcripts with simple buffering
     """
-    
     try:
         # Parse payload
         payload = await request.json()
-        
+
         # Log incoming payload
         logger.debug(f"📥 Received payload: {payload}")
-        
+
         # Extract fields (handles various STT formats)
         session_id = payload.get("participant") or payload.get("session_id") or "unknown"
         room_name = payload.get("room_name") or payload.get("roomName") or "unknown"
-        
+
         # Get text from various possible fields
         text = (
-            payload.get("text") or 
-            payload.get("transcript") or 
-            payload.get("final_text") or 
-            payload.get("content") or
-            ""
+            payload.get("text")
+            or payload.get("transcript")
+            or payload.get("final_text")
+            or payload.get("content")
+            or ""
         ).strip()
-        
+
         # Determine if partial
         is_partial = (
-            payload.get("partial", False) or
-            payload.get("is_partial", False) or
-            payload.get("event") == "partial" or
-            payload.get("type") == "partial"
+            payload.get("partial", False)
+            or payload.get("is_partial", False)
+            or payload.get("event") == "partial"
+            or payload.get("type") == "partial"
         )
-        
+
+        # ✅ ADD: Extract audio data
+        audio_data = payload.get("audio_data")
+        if audio_data and isinstance(audio_data, str):
+            try:
+                import base64
+                audio_data = base64.b64decode(audio_data)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to base64-decode audio_data: {e}")
+                audio_data = None
+
         # Validate input
         if not text:
             logger.warning("⚠️ Empty text received, skipping")
@@ -59,11 +68,11 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
                 "reason": "empty_text",
                 "timestamp": datetime.utcnow().isoformat()
             }
-        
+
         if not room_name or room_name == "unknown":
             logger.error(f"❌ Invalid room_name: {room_name}")
             raise HTTPException(status_code=400, detail="room_name is required")
-        
+
         # Log incoming request
         status_label = "PARTIAL" if is_partial else "FINAL"
         logger.info(
@@ -72,24 +81,26 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             f"Room: {room_name} "
             f"Text: '{text[:50]}...'"
         )
-        
+
         # Get assistant and process
         assistant = get_assistant()
-        
+
+        # ✅ UPDATE: Pass audio to assistant
         result = await assistant.handle_transcript(
             session_id=session_id,
             room_name=room_name,
             text=text,
-            is_partial=is_partial
+            is_partial=is_partial,
+            audio_data=audio_data,  # ← NEW
         )
-        
+
         # Add metadata to response
         result["timestamp"] = datetime.utcnow().isoformat()
         result["session_id"] = session_id
         result["room_name"] = room_name
-        
+
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -98,6 +109,7 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             status_code=500,
             detail=f"Internal error: {str(e)}"
         )
+
 
 
 @router.post("/api/webhooks/voice_onset")

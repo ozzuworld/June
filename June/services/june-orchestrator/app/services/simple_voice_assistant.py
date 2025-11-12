@@ -1,22 +1,17 @@
 """
-Simple Voice Assistant - NATURAL SPEECH OPTIMIZED
-Focus on human-like intonation and pacing over pure speed
-
-KEY IMPROVEMENTS FOR NATURAL SPEECH:
-1. ✅ Larger sentence chunks (180 chars) for better prosody context
-2. ✅ LLM prompt optimized for natural, conversational speech
-3. ✅ Prosody hints (commas, ellipses) added to text
-4. ✅ Complete sentences sent to TTS (no mid-sentence splits)
-5. ✅ Natural pauses between thoughts
-6. ✅ Emotion/emphasis cues preserved
+Simple Voice Assistant with Mockingbird Voice Cloning Skill
+Natural speech + MCP-compatible tool calling
 """
 import asyncio
 import logging
 import re
 import time
-from typing import Dict, List, Optional, AsyncIterator
+import json
+from typing import Dict, List, Optional, AsyncIterator, Any
 from dataclasses import dataclass
 from datetime import datetime
+
+from .mockingbird_skill import MockingbirdSkill, MOCKINGBIRD_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Message:
     """Single conversation message"""
-    role: str  # "user" or "assistant"
+    role: str
     content: str
     timestamp: datetime
 
@@ -35,34 +30,20 @@ class ConversationHistory:
     def __init__(self, max_turns: int = 5):
         self.sessions: Dict[str, List[Message]] = {}
         self.max_turns = max_turns
-        logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
     
     def add_message(self, session_id: str, role: str, content: str):
-        """Add message and auto-trim old history"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
-            logger.info(f"🆕 Created new conversation for session {session_id[:8]}...")
         
         self.sessions[session_id].append(
             Message(role=role, content=content, timestamp=datetime.utcnow())
         )
         
-        # Keep only last N exchanges
         max_messages = self.max_turns * 2
-        before_count = len(self.sessions[session_id])
-        
-        if before_count > max_messages:
+        if len(self.sessions[session_id]) > max_messages:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
-            after_count = len(self.sessions[session_id])
-            logger.info(
-                f"🗑️ Trimmed history for {session_id[:8]}...: "
-                f"{before_count} → {after_count} messages"
-            )
-        
-        logger.debug(f"📚 History for {session_id[:8]}... now has {len(self.sessions[session_id])} messages")
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
-        """Get conversation history as dict list for LLM"""
         if session_id not in self.sessions:
             return []
         
@@ -72,17 +53,14 @@ class ConversationHistory:
         ]
     
     def clear_session(self, session_id: str):
-        """Clear history for a session"""
         if session_id in self.sessions:
-            msg_count = len(self.sessions[session_id])
             del self.sessions[session_id]
-            logger.info(f"🗑️ Cleared {msg_count} messages for session {session_id[:8]}...")
 
 
 class SimpleVoiceAssistant:
     """
-    Voice assistant optimized for NATURAL HUMAN-LIKE SPEECH
-    Prioritizes prosody and intonation over raw speed
+    Voice assistant with Mockingbird voice cloning skill
+    MCP-compatible tool calling with natural speech
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -90,50 +68,45 @@ class SimpleVoiceAssistant:
         self.tts = tts_service
         self.history = ConversationHistory(max_turns=5)
         
-        # NATURAL SPEECH SETTINGS
-        # ✅ Larger chunks allow XTTS to understand context and add proper intonation
-        self.max_sentence_chars = 180  # Increased from 100
-        self.min_chunk_size = 50       # Don't send tiny fragments
+        # Initialize Mockingbird skill
+        self.mockingbird = MockingbirdSkill(tts_service)
         
-        # Natural sentence boundaries (complete thoughts)
+        # Natural speech settings
+        self.max_sentence_chars = 180
+        self.min_chunk_size = 50
         self.sentence_end = re.compile(r'[.!?。！？]+\s+')
-        
-        # Prosody markers for natural pauses
         self.natural_pause_markers = re.compile(r'[,;:—]\s+')
         
         # Metrics
         self.total_requests = 0
         self.total_sentences_sent = 0
         self.avg_first_sentence_ms = 0
+        self.mockingbird_activations = 0
         
-        # TTS pacing tracker - longer pauses for natural rhythm
+        # TTS pacing
         self._last_tts_time: Dict[str, float] = {}
-        self._natural_pause_duration = 0.6  # Increased from 0.4s
+        self._natural_pause_duration = 0.6
         
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
         self._duplicate_window = 3.0
         
-        # Processing locks per session
+        # Processing locks
         self._processing_lock: Dict[str, asyncio.Lock] = {}
         
-        # Configuration
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (NATURAL SPEECH MODE)")
-        logger.info("   - Priority: Natural intonation and human-like pacing")
-        logger.info("   - Sentence chunks: 180 chars (gives XTTS more context)")
-        logger.info("   - Complete sentences only (no mid-sentence splits)")
-        logger.info("   - Natural pauses: 0.6s between thoughts")
-        logger.info("   - Prosody hints: Preserved commas, ellipses, emphasis")
+        logger.info("✅ Voice Assistant with Mockingbird initialized")
+        logger.info("   - Natural speech mode enabled")
+        logger.info("   - Mockingbird voice cloning ready")
+        logger.info("   - MCP-compatible tool calling")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
-        """Check if this transcript is a duplicate of a recent one"""
+        """Check for duplicate transcripts"""
         current_time = time.time()
         
-        # Clean up old entries
         expired = [
             sid for sid, (_, ts) in self._recent_transcripts.items()
             if current_time - ts > self._duplicate_window
@@ -141,209 +114,153 @@ class SimpleVoiceAssistant:
         for sid in expired:
             del self._recent_transcripts[sid]
         
-        # Check for duplicate
         if session_id in self._recent_transcripts:
             recent_text, recent_time = self._recent_transcripts[session_id]
             if recent_text == text and current_time - recent_time < self._duplicate_window:
-                logger.warning(f"⚠️ Duplicate detected: '{text[:30]}...'")
                 return True
         
-        # Update tracker
         self._recent_transcripts[session_id] = (text, current_time)
         return False
     
     def _clean_llm_output(self, text: str) -> str:
-        """Remove speaker labels and normalize punctuation for natural speech"""
-        # Remove speaker labels
+        """Clean LLM output"""
         text = re.sub(r'^(June\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
         text = re.sub(r'^(Assistant\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
-        
-        # Normalize multiple spaces
         text = re.sub(r'\s+', ' ', text)
-        
-        # Ensure proper spacing after punctuation
         text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
-        
         return text.strip()
     
     def _add_prosody_hints(self, text: str) -> str:
-        """
-        Add subtle prosody hints to help XTTS with natural intonation
-        (without making it sound weird)
-        """
-        # Add slight pause before "but", "however", "although" (natural speech patterns)
+        """Add prosody hints"""
         text = re.sub(r'\s+(but|however|although|though)\s+', r', \1 ', text, flags=re.IGNORECASE)
-        
-        # Add pause after introductory phrases
         text = re.sub(r'^(Well|So|Now|Actually|In fact|By the way),?\s+', r'\1, ', text, flags=re.IGNORECASE)
-        
         return text
     
     def _extract_complete_sentence(self, text_buffer: str) -> tuple[str, str]:
-        """
-        Extract a complete sentence (or natural thought unit) from buffer
-        Only returns when we have a complete, meaningful chunk
-        
-        Returns:
-            (sentence_to_send, remaining_buffer)
-        """
-        # Must have minimum content
+        """Extract complete sentence from buffer"""
         if len(text_buffer) < self.min_chunk_size:
             return "", text_buffer
         
-        # Look for sentence endings
         match = self.sentence_end.search(text_buffer)
         
         if match:
-            # Found a complete sentence
             sentence = text_buffer[:match.end()].strip()
             remaining = text_buffer[match.end():].strip()
             
-            # Make sure it's substantial enough
             if len(sentence) >= self.min_chunk_size:
                 return sentence, remaining
         
-        # If buffer is getting long but no sentence end, look for natural break
         if len(text_buffer) >= self.max_sentence_chars:
-            # Find a natural pause point (comma, semicolon, etc.)
             pause_matches = list(self.natural_pause_markers.finditer(text_buffer))
             
             if pause_matches:
-                # Use the last natural pause before max length
                 for match in reversed(pause_matches):
                     if match.end() >= self.min_chunk_size:
                         sentence = text_buffer[:match.end()].strip()
                         remaining = text_buffer[match.end():].strip()
-                        logger.debug(f"📏 Natural break at {match.end()} chars")
                         return sentence, remaining
         
-        # Not ready yet - keep accumulating
         return "", text_buffer
     
-    def _build_natural_speech_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """
-        Build prompt optimized for NATURAL, CONVERSATIONAL speech
-        Instructs LLM to write the way humans actually talk
-        """
-        
-        system = """You are June, a warm and intelligent voice assistant who speaks naturally and conversationally.
+    def _build_system_prompt_with_tools(self) -> str:
+        """Build system prompt with tool awareness"""
+        return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
 
-🎯 CRITICAL: Write for VOICE, not text. Your responses will be spoken aloud.
+🎯 CORE PERSONALITY:
+• Speak naturally and conversationally (your responses are spoken aloud)
+• Be warm, helpful, and engaging
+• Show appropriate emotion and enthusiasm
+• Use natural pauses, varied sentence length
+
+🎭 MOCKINGBIRD VOICE CLONING:
+You have a special skill called "Mockingbird" that lets you clone and speak in the user's voice.
+
+WHEN TO USE MOCKINGBIRD:
+• User says: "enable mockingbird", "clone my voice", "speak in my voice"
+• User says: "disable mockingbird", "stop using my voice", "use your voice"
+• User asks: "is mockingbird active?", "what voice are you using?"
+
+HOW IT WORKS:
+1. When user requests voice cloning, call enable_mockingbird tool
+2. Tell them you'll clone their voice and need them to speak for 6-10 seconds
+3. Once cloned, you'll automatically speak in their voice
+4. When they disable it, call disable_mockingbird and return to your default voice
 
 NATURAL SPEECH RULES:
-• Write the way people actually talk - conversational and fluid
-• Use natural pauses with commas: "Well, let me think about that"
-• Vary your sentence length - short AND long sentences (like real speech)
-• Show emotion/enthusiasm when appropriate: "That's fascinating!" or "Hmm, interesting question"
-• Use filler words occasionally: "you know", "I mean", "actually"
-• Break complex ideas into smaller, digestible thoughts
-• Sound engaged and present - not like you're reading a script
-
-PROSODY & RHYTHM:
-• Start responses naturally: "Oh, that's a great question" vs robotic "The answer is..."
-• Use commas for natural breathing pauses
-• Build up ideas gradually rather than info-dumping
-• End with natural conclusions, not abrupt stops
-
-CONTENT STYLE:
-• Be concise but complete (aim for 2-4 sentences typically)
-• For stories/explanations: 3-5 sentences with natural flow
-• Sound like you're having a real conversation, not giving a presentation
-• If uncertain, say so naturally: "I'm not entirely sure, but..."
+• Write for voice: "Oh, that's interesting!" vs "That is interesting."
+• Use commas for natural pauses
+• Vary sentence length (short AND long)
+• Show emotion when appropriate
+• Sound like a real person having a conversation
 
 ❌ AVOID:
-• Lists or bullet points (unnatural in speech)
-• Overly formal language ("Furthermore", "Additionally")
-• Robotic phrasing: "I will now tell you..."
-• Monotone delivery - show some personality!
+• Lists or bullet points
+• Formal language ("Furthermore", "Additionally")
+• Robotic phrasing
+• Monotone delivery
 
-✅ GOOD EXAMPLES:
-
-User: "Tell me about black holes"
-You: "Oh, black holes are fascinating! So basically, they're regions in space where gravity is so incredibly strong that not even light can escape. That's why they appear black. Think of it like a cosmic drain - once something crosses that point of no return, called the event horizon, it's gone forever."
-
-User: "What's the weather like?"
-You: "Hmm, I actually don't have real-time weather access right now. But if you tell me where you are, I can help you think about what to expect based on the season!"
-
-Remember: You're speaking OUT LOUD to a person. Sound natural, warm, and human!"""
-
-        # Format conversation history
-        if history:
-            context_lines = []
-            for msg in history:
-                role = "User" if msg['role'] == 'user' else "June (you said)"
-                content = msg['content']
-                context_lines.append(f"{role}: {content}")
-            
-            context = "\n".join(context_lines)
-            
-            prompt = f"""{system}
-
-=== Recent Conversation ===
-{context}
-
-=== Current User Message ===
-User: {user_message}
-
-Your response (speak naturally, like you're having a real conversation):"""
-        else:
-            prompt = f"""{system}
-
-User: {user_message}
-
-Your response (speak naturally, like you're having a real conversation):"""
-        
-        return prompt
+TOOL USAGE:
+When user mentions mockingbird/voice cloning, USE THE TOOLS - don't just talk about it!"""
     
     async def handle_transcript(
         self,
         session_id: str,
         room_name: str,
         text: str,
-        is_partial: bool = False
+        is_partial: bool = False,
+        audio_data: Optional[bytes] = None
     ) -> Dict:
         """Main entry point for STT transcripts"""
         start_time = time.time()
         self.total_requests += 1
         
-        # Ignore all partials
+        # Check if Mockingbird is capturing audio
+        if self.mockingbird.is_active(session_id):
+            mockingbird_state = self.mockingbird.get_session_state(session_id)
+            
+            if mockingbird_state["state"] in ["awaiting_voice_sample", "capturing_audio"]:
+                logger.info(f"🎤 Mockingbird capturing audio from '{text[:30]}...'")
+                
+                # Let mockingbird process the audio
+                capture_result = await self.mockingbird.process_transcript_chunk(
+                    session_id=session_id,
+                    text=text,
+                    audio_data=audio_data
+                )
+                
+                if capture_result.get("status") == "ready_to_clone":
+                    # Got enough audio - respond naturally
+                    response_text = capture_result.get("message", "Processing your voice...")
+                    await self._send_to_tts_natural(
+                        room_name=room_name,
+                        text=response_text,
+                        session_id=session_id,
+                        voice_id="default"  # Use default while processing
+                    )
+                
+                return {
+                    "status": "mockingbird_capturing",
+                    "capture_result": capture_result
+                }
+        
+        # Ignore partials
         if is_partial and self.ignore_partials:
-            logger.debug(f"⏸️ Ignoring partial: '{text[:50]}...'")
-            return {
-                "status": "skipped",
-                "reason": "partial_ignored",
-                "text": text[:100]
-            }
+            return {"status": "skipped", "reason": "partial_ignored"}
         
         # Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
-            return {
-                "status": "skipped",
-                "reason": "duplicate_transcript",
-                "text": text[:100]
-            }
+            return {"status": "skipped", "reason": "duplicate"}
         
-        # Get or create processing lock
+        # Get processing lock
         if session_id not in self._processing_lock:
             self._processing_lock[session_id] = asyncio.Lock()
         
         lock = self._processing_lock[session_id]
-        
-        # Handle interruptions gracefully
         word_count = len(text.strip().split())
         
-        if lock.locked():
-            if word_count < 5:
-                logger.warning(f"⚠️ Already processing, skipping short input: '{text}'")
-                return {
-                    "status": "skipped",
-                    "reason": "already_processing",
-                    "text": text[:100]
-                }
-            else:
-                logger.info(f"🛑 User interrupting with new request: '{text[:50]}...'")
+        if lock.locked() and word_count < 5:
+            return {"status": "skipped", "reason": "already_processing"}
         
-        # Process with lock
         async with lock:
             return await self._process_transcript(
                 session_id=session_id,
@@ -361,106 +278,116 @@ Your response (speak naturally, like you're having a real conversation):"""
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """Internal method to process transcript"""
+        """Process transcript with tool calling support"""
         
-        # Skip tiny inputs
         word_count = len(text.strip().split())
-        char_count = len(text.strip())
         
         if word_count < 2:
-            logger.debug(f"⏸️ Text too short: '{text}'")
-            return {
-                "status": "skipped",
-                "reason": "too_short",
-                "word_count": word_count
-            }
+            return {"status": "skipped", "reason": "too_short"}
         
-        # Log what we're processing
-        status = "PARTIAL" if is_partial else "FINAL"
         logger.info("=" * 80)
-        logger.info(f"📥 [{status}] Session: {session_id[:8]}")
+        logger.info(f"📥 Session: {session_id[:8]}")
         logger.info(f"📝 Text: '{text}'")
-        logger.info(f"📊 Words: {word_count}, Chars: {char_count}")
         
         try:
-            # Get conversation history
+            # Get history
             history = self.history.get_history(session_id)
-            logger.info(f"📚 History: {len(history)} messages")
             
-            # Build prompt optimized for natural speech
-            prompt = self._build_natural_speech_prompt(text, history)
+            # Build prompt
+            system_prompt = self._build_system_prompt_with_tools()
             
-            # Stream LLM response with NATURAL CHUNKING
+            # Stream LLM response with tool support
             full_response = ""
             sentence_buffer = ""
             sentence_count = 0
             first_sentence_time = None
+            tool_calls_made = []
             
-            logger.info(f"🧠 Starting LLM stream (natural speech mode)...")
+            # Get current voice (might be cloned)
+            current_voice_id = self.mockingbird.get_current_voice_id(session_id)
+            
+            logger.info(f"🎙️ Using voice: {current_voice_id}")
+            logger.info(f"🧠 Starting LLM stream with tool support...")
             llm_start = time.time()
             
-            async for token in self._stream_gemini(prompt):
-                full_response += token
-                sentence_buffer += token
+            async for chunk in self._stream_gemini_with_tools(
+                system_prompt=system_prompt,
+                user_message=text,
+                history=history,
+                session_id=session_id
+            ):
+                # Handle tool calls
+                if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
+                    tool_result = await self._execute_tool(
+                        tool_name=chunk["tool_name"],
+                        tool_args=chunk["tool_args"],
+                        session_id=session_id,
+                        room_name=room_name
+                    )
+                    tool_calls_made.append({
+                        "tool": chunk["tool_name"],
+                        "result": tool_result
+                    })
+                    
+                    # Update voice if mockingbird was activated/deactivated
+                    current_voice_id = self.mockingbird.get_current_voice_id(session_id)
+                    continue
                 
-                # Try to extract a complete sentence
-                sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
-                
-                if sentence:
-                    sentence_count += 1
+                # Handle text tokens
+                if isinstance(chunk, str):
+                    full_response += chunk
+                    sentence_buffer += chunk
                     
-                    # Clean and add prosody hints
-                    cleaned_sentence = self._clean_llm_output(sentence)
-                    cleaned_sentence = self._add_prosody_hints(cleaned_sentence)
+                    sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
                     
-                    if not cleaned_sentence:
-                        continue
-                    
-                    # Track first sentence timing
-                    if sentence_count == 1:
-                        first_sentence_time = (time.time() - start_time) * 1000
-                        logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms")
+                    if sentence:
+                        sentence_count += 1
+                        cleaned = self._clean_llm_output(sentence)
+                        cleaned = self._add_prosody_hints(cleaned)
                         
-                        # Update running average
-                        if self.avg_first_sentence_ms == 0:
-                            self.avg_first_sentence_ms = first_sentence_time
-                        else:
-                            self.avg_first_sentence_ms = (
-                                self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
-                            )
-                    
-                    # Send to TTS with natural pacing
-                    logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned_sentence[:60]}...'")
-                    await self._send_to_tts_natural(room_name, cleaned_sentence, session_id)
-                    self.total_sentences_sent += 1
+                        if not cleaned:
+                            continue
+                        
+                        if sentence_count == 1:
+                            first_sentence_time = (time.time() - start_time) * 1000
+                        
+                        logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
+                        await self._send_to_tts_natural(
+                            room_name=room_name,
+                            text=cleaned,
+                            session_id=session_id,
+                            voice_id=current_voice_id
+                        )
+                        self.total_sentences_sent += 1
             
-            # Send any remaining text
+            # Send remaining text
             if sentence_buffer.strip():
-                cleaned_fragment = self._clean_llm_output(sentence_buffer.strip())
-                cleaned_fragment = self._add_prosody_hints(cleaned_fragment)
+                cleaned = self._clean_llm_output(sentence_buffer.strip())
+                cleaned = self._add_prosody_hints(cleaned)
                 
-                if cleaned_fragment and len(cleaned_fragment) >= self.min_chunk_size:
+                if cleaned and len(cleaned) >= self.min_chunk_size:
                     sentence_count += 1
-                    logger.info(f"🔊 Final fragment: '{cleaned_fragment[:60]}...'")
-                    await self._send_to_tts_natural(room_name, cleaned_fragment, session_id)
+                    await self._send_to_tts_natural(
+                        room_name=room_name,
+                        text=cleaned,
+                        session_id=session_id,
+                        voice_id=current_voice_id
+                    )
                     self.total_sentences_sent += 1
             
             llm_time = (time.time() - llm_start) * 1000
             
-            # Add to history (ONLY for finals)
+            # Add to history
             if not is_partial:
                 self.history.add_message(session_id, "user", text)
                 self.history.add_message(session_id, "assistant", full_response)
-                logger.info(f"✅ History updated")
             
             total_time = (time.time() - start_time) * 1000
             
             logger.info("─" * 80)
-            logger.info(f"✅ SUCCESS (Natural Speech Mode):")
-            logger.info(f"   Response: {len(full_response)} chars")
-            logger.info(f"   Sentences: {sentence_count}")
-            logger.info(f"   LLM time: {llm_time:.0f}ms")
-            logger.info(f"   First sentence: {first_sentence_time:.0f}ms" if first_sentence_time else "   First sentence: N/A")
+            logger.info(f"✅ SUCCESS")
+            logger.info(f"   Voice: {current_voice_id}")
+            logger.info(f"   Tools used: {len(tool_calls_made)}")
             logger.info(f"   Total time: {total_time:.0f}ms")
             logger.info("=" * 80)
             
@@ -468,133 +395,175 @@ Your response (speak naturally, like you're having a real conversation):"""
                 "status": "success",
                 "response": full_response,
                 "sentences_sent": sentence_count,
-                "total_time_ms": total_time,
-                "llm_time_ms": llm_time,
-                "first_sentence_ms": first_sentence_time,
-                "mode": "natural_speech",
-                "was_partial": is_partial
+                "tool_calls": tool_calls_made,
+                "voice_id": current_voice_id,
+                "total_time_ms": total_time
             }
             
         except Exception as e:
-            logger.error("=" * 80)
-            logger.error(f"❌ ERROR processing transcript: {e}", exc_info=True)
-            logger.error("=" * 80)
+            logger.error(f"❌ Error: {e}", exc_info=True)
             
-            # Send error message
-            error_msg = "Sorry, I'm having trouble right now. Can you repeat that?"
+            error_msg = "Sorry, I'm having trouble right now."
             try:
-                await self._send_to_tts_natural(room_name, error_msg, session_id)
+                await self._send_to_tts_natural(room_name, error_msg, session_id, "default")
             except:
                 pass
             
-            return {
-                "status": "error",
-                "error": str(e),
-                "total_time_ms": (time.time() - start_time) * 1000
-            }
+            return {"status": "error", "error": str(e)}
     
-    async def _stream_gemini(self, prompt: str) -> AsyncIterator[str]:
-        """Stream tokens from Gemini with settings optimized for natural speech"""
+    async def _stream_gemini_with_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        history: List[Dict],
+        session_id: str
+    ) -> AsyncIterator:
+        """Stream from Gemini with tool calling support"""
         try:
             from google import genai
             
             client = genai.Client(api_key=self.gemini_api_key)
             
-            # Optimized for natural, varied responses
+            # Build full context
+            if history:
+                context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
+                context = "\n".join(context_lines)
+                prompt = f"{system_prompt}\n\n=== Recent Conversation ===\n{context}\n\n=== Current Message ===\nUser: {user_message}\n\nYour response:"
+            else:
+                prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
+            
+            # Configure with tools
+            config = genai.types.GenerateContentConfig(
+                temperature=0.9,
+                max_output_tokens=500,
+                top_p=0.95,
+                top_k=50,
+                tools=MOCKINGBIRD_TOOLS
+            )
+            
+            # Stream with tool support
             for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash-exp',
                 contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    temperature=0.9,  # Higher for more natural variation
-                    max_output_tokens=500,  # Allow longer natural responses
-                    top_p=0.95,
-                    top_k=50,  # More diversity
-                ),
+                config=config
             ):
+                # Check for tool calls
+                if hasattr(chunk, 'function_calls') and chunk.function_calls:
+                    for func_call in chunk.function_calls:
+                        yield {
+                            "type": "tool_call",
+                            "tool_name": func_call.name,
+                            "tool_args": dict(func_call.args) if func_call.args else {}
+                        }
+                
+                # Yield text
                 if chunk.text:
                     yield chunk.text
                     
         except Exception as e:
-            logger.error(f"❌ Gemini streaming error: {e}")
-            yield "I'm experiencing technical difficulties right now."
+            logger.error(f"❌ Gemini error: {e}")
+            yield "I'm having technical difficulties."
     
-    async def _send_to_tts_natural(self, room_name: str, text: str, session_id: str):
-        """
-        Send text to TTS with NATURAL PACING for human-like rhythm
-        Longer pauses between thoughts for more natural flow
-        """
+    async def _execute_tool(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        session_id: str,
+        room_name: str
+    ) -> Dict[str, Any]:
+        """Execute a tool call"""
+        logger.info(f"🔧 Executing tool: {tool_name}")
+        
         try:
-            # Natural pacing between sentences (longer pause for natural rhythm)
+            if tool_name == "enable_mockingbird":
+                result = await self.mockingbird.enable(session_id, session_id)
+                self.mockingbird_activations += 1
+                
+                # Send instruction to user
+                if result.get("message"):
+                    await self._send_to_tts_natural(
+                        room_name=room_name,
+                        text=result["message"],
+                        session_id=session_id,
+                        voice_id="default"
+                    )
+                
+                return result
+            
+            elif tool_name == "disable_mockingbird":
+                result = await self.mockingbird.disable(session_id)
+                
+                # Confirm with user (in default voice)
+                if result.get("message"):
+                    await self._send_to_tts_natural(
+                        room_name=room_name,
+                        text=result["message"],
+                        session_id=session_id,
+                        voice_id="default"
+                    )
+                
+                return result
+            
+            elif tool_name == "check_mockingbird_status":
+                return self.mockingbird.get_status(session_id)
+            
+            else:
+                return {"status": "unknown_tool", "tool": tool_name}
+                
+        except Exception as e:
+            logger.error(f"❌ Tool execution error: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    async def _send_to_tts_natural(
+        self,
+        room_name: str,
+        text: str,
+        session_id: str,
+        voice_id: str = "default"
+    ):
+        """Send to TTS with natural pacing"""
+        try:
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
                 if time_since_last < self._natural_pause_duration:
                     delay = self._natural_pause_duration - time_since_last
-                    logger.debug(f"⏸️ Natural pause: {delay:.1f}s")
                     await asyncio.sleep(delay)
             
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # Send to TTS with generous timeout for natural prosody
-            try:
-                await asyncio.wait_for(
-                    self.tts.publish_to_room(
-                        room_name=room_name,
-                        text=text,
-                        voice_id="default",
-                        streaming=True
-                    ),
-                    timeout=45.0  # Longer timeout for natural-paced synthesis
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"❌ TTS timeout for: '{text[:50]}...'")
-                return
-            
-            tts_time = (time.time() - tts_start) * 1000
-            logger.debug(f"   TTS completed in {tts_time:.0f}ms")
+            await asyncio.wait_for(
+                self.tts.publish_to_room(
+                    room_name=room_name,
+                    text=text,
+                    voice_id=voice_id,
+                    streaming=True
+                ),
+                timeout=45.0
+            )
             
         except Exception as e:
-            logger.error(f"❌ TTS error for session {session_id}: {e}")
+            logger.error(f"❌ TTS error: {e}")
     
     async def handle_interruption(self, session_id: str, room_name: str):
         """Handle user interruption"""
-        logger.info(f"🛑 User interrupted session {session_id}")
-        return {
-            "status": "interrupted",
-            "session_id": session_id,
-            "message": "Interruption handled naturally"
-        }
+        return {"status": "interrupted"}
     
     def get_stats(self) -> Dict:
         """Get statistics"""
-        active_sessions = len(self.history.sessions)
-        total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
-        
-        session_details = {}
-        for session_id, msgs in self.history.sessions.items():
-            session_details[session_id[:8]] = {
-                "messages": len(msgs),
-                "last_activity": msgs[-1].timestamp.isoformat() if msgs else None
-            }
+        mockingbird_stats = self.mockingbird.get_stats()
         
         return {
-            "mode": "natural_speech_optimized",
-            "active_sessions": active_sessions,
-            "total_messages": total_messages,
+            "mode": "natural_speech_with_mockingbird",
+            "active_sessions": len(self.history.sessions),
             "total_requests": self.total_requests,
             "total_sentences_sent": self.total_sentences_sent,
-            "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
-            "config": {
-                "max_sentence_chars": self.max_sentence_chars,
-                "min_chunk_size": self.min_chunk_size,
-                "natural_pause_duration": self._natural_pause_duration,
-                "ignore_partials": self.ignore_partials
-            },
-            "sessions": session_details
+            "mockingbird_activations": self.mockingbird_activations,
+            "mockingbird": mockingbird_stats
         }
     
     def clear_session(self, session_id: str):
-        """Clear conversation history for a session"""
+        """Clear session data"""
         self.history.clear_session(session_id)
         
         if session_id in self._recent_transcripts:
@@ -605,11 +574,12 @@ Your response (speak naturally, like you're having a real conversation):"""
             del self._processing_lock[session_id]
     
     async def health_check(self) -> Dict:
-        """Health check endpoint"""
+        """Health check"""
+        mockingbird_stats = self.mockingbird.get_stats()
+        
         return {
             "healthy": True,
-            "assistant": "natural_speech_optimized",
-            "tts_available": self.tts is not None,
-            "gemini_configured": bool(self.gemini_api_key),
+            "assistant": "natural_speech_with_mockingbird",
+            "mockingbird": mockingbird_stats,
             "stats": self.get_stats()
         }
