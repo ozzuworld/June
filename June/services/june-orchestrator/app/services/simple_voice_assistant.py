@@ -5,6 +5,8 @@ All fixes applied:
 - Proper state checking
 - Better error handling
 - Comprehensive logging
+
+✅ UPDATED: Accepts conversation_manager parameter
 """
 import asyncio
 import logging
@@ -75,23 +77,28 @@ class SimpleVoiceAssistant:
     - Better deduplication
     - Comprehensive error handling
     - Better logging
+    
+    ✅ UPDATED: Now accepts conversation_manager
     """
     
     def __init__(
         self, 
         gemini_api_key: str, 
         tts_service,
+        conversation_manager,  # ✅ NEW
         livekit_url: str,
         livekit_api_key: str,
         livekit_api_secret: str
     ):
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
+        self.conversation_manager = conversation_manager  # ✅ NEW
         self.history = ConversationHistory(max_turns=5)
         
-        # Initialize Mockingbird skill
+        # Initialize Mockingbird skill with conversation_manager
         self.mockingbird = MockingbirdSkill(
             tts_service=tts_service,
+            conversation_manager=conversation_manager,  # ✅ NEW
             livekit_url=livekit_url,
             livekit_api_key=livekit_api_key,
             livekit_api_secret=livekit_api_secret
@@ -116,6 +123,9 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("✅ Voice Assistant with Mockingbird initialized")
+    
+    # ... rest of the methods unchanged ...
+    # (I'll include the full code to avoid breaking anything)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
         """Check for duplicate transcripts"""
@@ -228,11 +238,7 @@ NATURAL SPEECH (when NOT using tools):
         is_partial: bool = False,
         audio_data: Optional[bytes] = None
     ) -> Dict:
-        """
-        Main entry point for STT transcripts
-        
-        ✅ FIXED: Checks Mockingbird busy state FIRST
-        """
+        """Main entry point for STT transcripts"""
         start_time = time.time()
         self.total_requests += 1
         
@@ -284,11 +290,7 @@ NATURAL SPEECH (when NOT using tools):
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """
-        Process transcript
-        
-        ✅ FIXED: Breaks immediately after tool call to prevent loop
-        """
+        """Process transcript - ✅ Breaks immediately after tool call"""
         
         word_count = len(text.strip().split())
         
@@ -305,7 +307,7 @@ NATURAL SPEECH (when NOT using tools):
             
             # Get current voice
             current_voice_id = self.mockingbird.get_current_voice_id(session_id)
-            logger.info(f"🎙️ Using voice: {current_voice_id}")
+            logger.info(f"🎤 Using voice: {current_voice_id}")
             
             # Build system prompt
             system_prompt = self._build_system_prompt()
@@ -422,11 +424,7 @@ NATURAL SPEECH (when NOT using tools):
         user_message: str,
         history: List[Dict]
     ) -> AsyncIterator:
-        """
-        Stream from Gemini with tool support
-        
-        ✅ FIXED: Only yields tool call once, then stops
-        """
+        """Stream from Gemini with tool support"""
         try:
             from google import genai
             from google.genai import types
@@ -481,7 +479,6 @@ NATURAL SPEECH (when NOT using tools):
                                 "tool_args": dict(func_call.args) if func_call.args else {}
                             }
                             # ✅ CRITICAL: Return immediately after first tool call
-                            # Don't process any more chunks
                             return
                 
                 # Only yield text if we haven't seen a tool call
@@ -499,11 +496,7 @@ NATURAL SPEECH (when NOT using tools):
         session_id: str,
         room_name: str
     ) -> None:
-        """
-        Execute Mockingbird tool
-        
-        ✅ Tools handle their own TTS - no return value needed
-        """
+        """Execute Mockingbird tool"""
         try:
             logger.info(f"🔧 Executing tool: {tool_name}")
             
