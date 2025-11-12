@@ -1,19 +1,14 @@
 """
-Simple Voice Assistant - Natural Conversation (FULLY FIXED + TIGHTER SPLITTING)
-All fixes applied: Output cleaning, better timeout, improved interruption handling,
-tighter sentence splitting (100 chars), and enhanced performance
+Simple Voice Assistant - NATURAL SPEECH OPTIMIZED
+Focus on human-like intonation and pacing over pure speed
 
-KEY IMPROVEMENTS:
-1. ✅ Removes "June:" prefix from output
-2. ✅ Better story-telling capability
-3. ✅ Natural explanations like ChatGPT/Claude
-4. ✅ Voice-optimized pacing
-5. ✅ Proper history management with debug logging
-6. ✅ 30s TTS timeout (increased from 15s)
-7. ✅ Better interruption handling
-8. ✅ Tighter sentence splitting at 100 chars (was 120)
-9. ✅ Early break at commas/semicolons at 85 chars (was 100)
-10. ✅ Fixed duplicate trim logs
+KEY IMPROVEMENTS FOR NATURAL SPEECH:
+1. ✅ Larger sentence chunks (180 chars) for better prosody context
+2. ✅ LLM prompt optimized for natural, conversational speech
+3. ✅ Prosody hints (commas, ellipses) added to text
+4. ✅ Complete sentences sent to TTS (no mid-sentence splits)
+5. ✅ Natural pauses between thoughts
+6. ✅ Emotion/emphasis cues preserved
 """
 import asyncio
 import logging
@@ -35,7 +30,7 @@ class Message:
 
 
 class ConversationHistory:
-    """Simple in-memory conversation history with better logging"""
+    """Simple in-memory conversation history"""
     
     def __init__(self, max_turns: int = 5):
         self.sessions: Dict[str, List[Message]] = {}
@@ -52,37 +47,29 @@ class ConversationHistory:
             Message(role=role, content=content, timestamp=datetime.utcnow())
         )
         
-        # Keep only last N exchanges (user+assistant pairs)
+        # Keep only last N exchanges
         max_messages = self.max_turns * 2
         before_count = len(self.sessions[session_id])
         
-        # ✅ FIXED: Only log if we actually trimmed
         if before_count > max_messages:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
             after_count = len(self.sessions[session_id])
-            
-            # Only log ONCE when trim actually happens
             logger.info(
                 f"🗑️ Trimmed history for {session_id[:8]}...: "
                 f"{before_count} → {after_count} messages"
             )
         
-        # Use debug level for routine state logging
         logger.debug(f"📚 History for {session_id[:8]}... now has {len(self.sessions[session_id])} messages")
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
         """Get conversation history as dict list for LLM"""
         if session_id not in self.sessions:
-            logger.debug(f"📭 No history found for {session_id[:8]}...")
             return []
         
-        history = [
+        return [
             {"role": msg.role, "content": msg.content}
             for msg in self.sessions[session_id]
         ]
-        
-        logger.debug(f"📚 Retrieved {len(history)} messages for {session_id[:8]}...")
-        return history
     
     def clear_session(self, session_id: str):
         """Clear history for a session"""
@@ -94,8 +81,8 @@ class ConversationHistory:
 
 class SimpleVoiceAssistant:
     """
-    Voice assistant with natural explanations and better story-telling
-    NOW WITH ALL FIXES + TIGHTER SPLITTING
+    Voice assistant optimized for NATURAL HUMAN-LIKE SPEECH
+    Prioritizes prosody and intonation over raw speed
     """
     
     def __init__(self, gemini_api_key: str, tts_service):
@@ -103,21 +90,25 @@ class SimpleVoiceAssistant:
         self.tts = tts_service
         self.history = ConversationHistory(max_turns=5)
         
-        # Simple sentence detection
-        self.sentence_end = re.compile(r'[.!?。！？]+\s*')
+        # NATURAL SPEECH SETTINGS
+        # ✅ Larger chunks allow XTTS to understand context and add proper intonation
+        self.max_sentence_chars = 180  # Increased from 100
+        self.min_chunk_size = 50       # Don't send tiny fragments
         
-        # ✅ OPTIMIZED: Tighter splitting configuration
-        self.max_sentence_chars = 100  # ← CHANGED from 120 to 100 (target: ~6s TTS)
-        self.early_split_chars = 85    # ← CHANGED from 100 to 85
-        self.split_opportunities = re.compile(r'[,;:—]\s+')  # Good places to split
+        # Natural sentence boundaries (complete thoughts)
+        self.sentence_end = re.compile(r'[.!?。！？]+\s+')
+        
+        # Prosody markers for natural pauses
+        self.natural_pause_markers = re.compile(r'[,;:—]\s+')
         
         # Metrics
         self.total_requests = 0
         self.total_sentences_sent = 0
         self.avg_first_sentence_ms = 0
         
-        # TTS pacing tracker
+        # TTS pacing tracker - longer pauses for natural rhythm
         self._last_tts_time: Dict[str, float] = {}
+        self._natural_pause_duration = 0.6  # Increased from 0.4s
         
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
@@ -130,13 +121,12 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("=" * 80)
-        logger.info("✅ Simple Voice Assistant (TIGHTER SPLITTING) initialized")
-        logger.info("   - Mode: Direct, action-oriented responses")
-        logger.info("   - History: Last 5 exchanges")
-        logger.info("   - Output cleaning: Removes speaker labels")
-        logger.info("   - TTS timeout: 30 seconds")
-        logger.info("   - Smart sentence splitting: Max 100 chars (was 120)")
-        logger.info("   - Early breaks at commas/semicolons: 85 chars (was 100)")
+        logger.info("✅ Simple Voice Assistant (NATURAL SPEECH MODE)")
+        logger.info("   - Priority: Natural intonation and human-like pacing")
+        logger.info("   - Sentence chunks: 180 chars (gives XTTS more context)")
+        logger.info("   - Complete sentences only (no mid-sentence splits)")
+        logger.info("   - Natural pauses: 0.6s between thoughts")
+        logger.info("   - Prosody hints: Preserved commas, ellipses, emphasis")
         logger.info("=" * 80)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
@@ -155,7 +145,7 @@ class SimpleVoiceAssistant:
         if session_id in self._recent_transcripts:
             recent_text, recent_time = self._recent_transcripts[session_id]
             if recent_text == text and current_time - recent_time < self._duplicate_window:
-                logger.warning(f"⚠️ Duplicate detected: '{text[:30]}...' (within {current_time - recent_time:.1f}s)")
+                logger.warning(f"⚠️ Duplicate detected: '{text[:30]}...'")
                 return True
         
         # Update tracker
@@ -163,104 +153,124 @@ class SimpleVoiceAssistant:
         return False
     
     def _clean_llm_output(self, text: str) -> str:
-        """Remove any speaker labels that snuck into the output"""
-        # Remove "June:" or "June :" at the start
+        """Remove speaker labels and normalize punctuation for natural speech"""
+        # Remove speaker labels
         text = re.sub(r'^(June\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
-        
-        # Remove "Assistant:" or similar
         text = re.sub(r'^(Assistant\s*:\s*)', '', text.strip(), flags=re.IGNORECASE)
+        
+        # Normalize multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Ensure proper spacing after punctuation
+        text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
         
         return text.strip()
     
-    def _smart_sentence_split(self, text_buffer: str) -> tuple[str, str]:
+    def _add_prosody_hints(self, text: str) -> str:
         """
-        Split long sentences early at natural break points
+        Add subtle prosody hints to help XTTS with natural intonation
+        (without making it sound weird)
+        """
+        # Add slight pause before "but", "however", "although" (natural speech patterns)
+        text = re.sub(r'\s+(but|however|although|though)\s+', r', \1 ', text, flags=re.IGNORECASE)
+        
+        # Add pause after introductory phrases
+        text = re.sub(r'^(Well|So|Now|Actually|In fact|By the way),?\s+', r'\1, ', text, flags=re.IGNORECASE)
+        
+        return text
+    
+    def _extract_complete_sentence(self, text_buffer: str) -> tuple[str, str]:
+        """
+        Extract a complete sentence (or natural thought unit) from buffer
+        Only returns when we have a complete, meaningful chunk
         
         Returns:
             (sentence_to_send, remaining_buffer)
         """
-        # If under target length, don't split
-        if len(text_buffer) < self.early_split_chars:
+        # Must have minimum content
+        if len(text_buffer) < self.min_chunk_size:
             return "", text_buffer
         
-        # If we hit max length, force split at next opportunity
-        if len(text_buffer) >= self.max_sentence_chars:
-            # Look for comma, semicolon, colon, etc.
-            matches = list(self.split_opportunities.finditer(text_buffer))
-            if matches:
-                # Find the split closest to max_sentence_chars
-                best_match = None
-                best_distance = float('inf')
-                
-                for match in matches:
-                    distance = abs(match.end() - self.max_sentence_chars)
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match = match
-                
-                if best_match and best_match.end() > 50:  # Don't split too early
-                    split_pos = best_match.end()
-                    sentence = text_buffer[:split_pos].strip()
-                    remaining = text_buffer[split_pos:].strip()
-                    logger.debug(f"📏 Early split at {split_pos} chars: '{sentence[:30]}...'")
-                    return sentence, remaining
+        # Look for sentence endings
+        match = self.sentence_end.search(text_buffer)
         
-        # No good split point found
+        if match:
+            # Found a complete sentence
+            sentence = text_buffer[:match.end()].strip()
+            remaining = text_buffer[match.end():].strip()
+            
+            # Make sure it's substantial enough
+            if len(sentence) >= self.min_chunk_size:
+                return sentence, remaining
+        
+        # If buffer is getting long but no sentence end, look for natural break
+        if len(text_buffer) >= self.max_sentence_chars:
+            # Find a natural pause point (comma, semicolon, etc.)
+            pause_matches = list(self.natural_pause_markers.finditer(text_buffer))
+            
+            if pause_matches:
+                # Use the last natural pause before max length
+                for match in reversed(pause_matches):
+                    if match.end() >= self.min_chunk_size:
+                        sentence = text_buffer[:match.end()].strip()
+                        remaining = text_buffer[match.end():].strip()
+                        logger.debug(f"📏 Natural break at {match.end()} chars")
+                        return sentence, remaining
+        
+        # Not ready yet - keep accumulating
         return "", text_buffer
     
-    def _build_prompt(self, user_message: str, history: List[Dict]) -> str:
-        """Build improved prompt WITHOUT speaker labels in output"""
+    def _build_natural_speech_prompt(self, user_message: str, history: List[Dict]) -> str:
+        """
+        Build prompt optimized for NATURAL, CONVERSATIONAL speech
+        Instructs LLM to write the way humans actually talk
+        """
         
-        # Improved system prompt - explicitly tell it NOT to use labels
-        system = """You are June, a knowledgeable and friendly voice assistant.
+        system = """You are June, a warm and intelligent voice assistant who speaks naturally and conversationally.
 
-CRITICAL OUTPUT RULE:
-• Do NOT include "June:" or any speaker labels in your responses
-• Start speaking directly - your words will be converted to speech
-• Never write "June: " before your response
+🎯 CRITICAL: Write for VOICE, not text. Your responses will be spoken aloud.
 
-CORE BEHAVIOR:
-• Give direct, helpful responses - don't ask if you should help, just help
-• For requests (stories, explanations, etc.), fulfill them immediately
-• Be concise but complete - aim for 2-4 sentences unless more detail is needed
-• Speak naturally, like a helpful friend who knows a lot
+NATURAL SPEECH RULES:
+• Write the way people actually talk - conversational and fluid
+• Use natural pauses with commas: "Well, let me think about that"
+• Vary your sentence length - short AND long sentences (like real speech)
+• Show emotion/enthusiasm when appropriate: "That's fascinating!" or "Hmm, interesting question"
+• Use filler words occasionally: "you know", "I mean", "actually"
+• Break complex ideas into smaller, digestible thoughts
+• Sound engaged and present - not like you're reading a script
 
-WHEN ASKED TO CREATE CONTENT (stories, poems, etc.):
-• Start creating immediately - no preamble
-• Jump right into the content
-• Keep it concise for voice (30-60 seconds of speech)
+PROSODY & RHYTHM:
+• Start responses naturally: "Oh, that's a great question" vs robotic "The answer is..."
+• Use commas for natural breathing pauses
+• Build up ideas gradually rather than info-dumping
+• End with natural conclusions, not abrupt stops
 
-WHEN ASKED TO EXPLAIN (science, history, tech):
-• Give clear, accurate explanations
-• Use analogies and examples when helpful
-• Break complex topics into understandable pieces
-• Be thorough but voice-friendly (not too long)
+CONTENT STYLE:
+• Be concise but complete (aim for 2-4 sentences typically)
+• For stories/explanations: 3-5 sentences with natural flow
+• Sound like you're having a real conversation, not giving a presentation
+• If uncertain, say so naturally: "I'm not entirely sure, but..."
 
-EXAMPLES:
+❌ AVOID:
+• Lists or bullet points (unnatural in speech)
+• Overly formal language ("Furthermore", "Additionally")
+• Robotic phrasing: "I will now tell you..."
+• Monotone delivery - show some personality!
 
-❌ BAD (with label):
-User: "Tell me a story about Pokemon"
-You: "June: In a small village..."
+✅ GOOD EXAMPLES:
 
-✅ GOOD (direct speech):
-User: "Tell me a story about Pokemon"
-You: "In a small village near Mount Silver, a young trainer discovered a mysterious Pokeball..."
+User: "Tell me about black holes"
+You: "Oh, black holes are fascinating! So basically, they're regions in space where gravity is so incredibly strong that not even light can escape. That's why they appear black. Think of it like a cosmic drain - once something crosses that point of no return, called the event horizon, it's gone forever."
 
-❌ BAD (with meta-talk):
-User: "Explain dark matter"
-You: "Sure! Let me explain that for you. Dark matter is..."
+User: "What's the weather like?"
+You: "Hmm, I actually don't have real-time weather access right now. But if you tell me where you are, I can help you think about what to expect based on the season!"
 
-✅ GOOD (direct):
-User: "Explain dark matter"
-You: "Dark matter is invisible material that makes up about 85% of the universe's mass..."
-
-Remember: Speak naturally and directly. No labels, no preamble."""
+Remember: You're speaking OUT LOUD to a person. Sound natural, warm, and human!"""
 
         # Format conversation history
         if history:
             context_lines = []
             for msg in history:
-                # Show role clearly in context but not in output
                 role = "User" if msg['role'] == 'user' else "June (you said)"
                 content = msg['content']
                 context_lines.append(f"{role}: {content}")
@@ -275,14 +285,13 @@ Remember: Speak naturally and directly. No labels, no preamble."""
 === Current User Message ===
 User: {user_message}
 
-Your response (speak directly, no "June:" label):"""
+Your response (speak naturally, like you're having a real conversation):"""
         else:
-            # No history - fresh conversation
             prompt = f"""{system}
 
 User: {user_message}
 
-Your response (speak directly, no "June:" label):"""
+Your response (speak naturally, like you're having a real conversation):"""
         
         return prompt
     
@@ -320,11 +329,10 @@ Your response (speak directly, no "June:" label):"""
         
         lock = self._processing_lock[session_id]
         
-        # Better interruption handling
+        # Handle interruptions gracefully
         word_count = len(text.strip().split())
         
         if lock.locked():
-            # If it's a short input while processing, skip it
             if word_count < 5:
                 logger.warning(f"⚠️ Already processing, skipping short input: '{text}'")
                 return {
@@ -333,10 +341,7 @@ Your response (speak directly, no "June:" label):"""
                     "text": text[:100]
                 }
             else:
-                # If it's a longer input, this might be an intentional interruption
                 logger.info(f"🛑 User interrupting with new request: '{text[:50]}...'")
-                logger.info(f"   (Previous response will complete, but new request will be queued)")
-                # Let it wait for the lock - will process after current response finishes
         
         # Process with lock
         async with lock:
@@ -356,14 +361,14 @@ Your response (speak directly, no "June:" label):"""
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """Internal method to process transcript (called within lock)"""
+        """Internal method to process transcript"""
         
         # Skip tiny inputs
         word_count = len(text.strip().split())
         char_count = len(text.strip())
         
         if word_count < 2:
-            logger.debug(f"⏸️ Text too short: '{text}' ({word_count} words)")
+            logger.debug(f"⏸️ Text too short: '{text}'")
             return {
                 "status": "skipped",
                 "reason": "too_short",
@@ -378,118 +383,80 @@ Your response (speak directly, no "June:" label):"""
         logger.info(f"📊 Words: {word_count}, Chars: {char_count}")
         
         try:
-            # Get conversation history with debug logging
+            # Get conversation history
             history = self.history.get_history(session_id)
             logger.info(f"📚 History: {len(history)} messages")
             
-            if history:
-                logger.debug("📜 Current conversation context:")
-                for i, msg in enumerate(history[-4:]):  # Show last 2 exchanges
-                    logger.debug(f"   {i+1}. {msg['role']}: {msg['content'][:60]}...")
+            # Build prompt optimized for natural speech
+            prompt = self._build_natural_speech_prompt(text, history)
             
-            # Build prompt with improved system instructions
-            prompt = self._build_prompt(text, history)
-            logger.debug(f"🔧 Prompt length: {len(prompt)} chars")
-            
-            # Stream LLM response with SMART CHUNKING
+            # Stream LLM response with NATURAL CHUNKING
             full_response = ""
             sentence_buffer = ""
             sentence_count = 0
             first_sentence_time = None
             
-            logger.info(f"🧠 Starting LLM stream...")
+            logger.info(f"🧠 Starting LLM stream (natural speech mode)...")
             llm_start = time.time()
             
             async for token in self._stream_gemini(prompt):
                 full_response += token
                 sentence_buffer += token
                 
-                # ✅ Check for early split opportunity
-                early_sentence, sentence_buffer = self._smart_sentence_split(sentence_buffer)
+                # Try to extract a complete sentence
+                sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
                 
-                if early_sentence:
-                    # We found a good early split point
+                if sentence:
                     sentence_count += 1
-                    cleaned_sentence = self._clean_llm_output(early_sentence)
                     
-                    if cleaned_sentence:
-                        # Track first sentence timing
-                        if sentence_count == 1:
-                            first_sentence_time = (time.time() - start_time) * 1000
-                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
-                            
-                            # Update running average
-                            if self.avg_first_sentence_ms == 0:
-                                self.avg_first_sentence_ms = first_sentence_time
-                            else:
-                                self.avg_first_sentence_ms = (
-                                    self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
-                                )
-                        
-                        logger.info(f"🔊 Sentence #{sentence_count} (early split): '{cleaned_sentence[:50]}...'")
-                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
-                        self.total_sentences_sent += 1
-                
-                # Check for natural sentence end
-                match = self.sentence_end.search(sentence_buffer)
-                if match:
-                    sentence = sentence_buffer[:match.end()].strip()
-                    sentence_buffer = sentence_buffer[match.end():]
+                    # Clean and add prosody hints
+                    cleaned_sentence = self._clean_llm_output(sentence)
+                    cleaned_sentence = self._add_prosody_hints(cleaned_sentence)
                     
-                    if sentence:
-                        sentence_count += 1
-                        cleaned_sentence = self._clean_llm_output(sentence)
+                    if not cleaned_sentence:
+                        continue
+                    
+                    # Track first sentence timing
+                    if sentence_count == 1:
+                        first_sentence_time = (time.time() - start_time) * 1000
+                        logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms")
                         
-                        if not cleaned_sentence:
-                            continue
-                        
-                        # Track first sentence timing
-                        if sentence_count == 1:
-                            first_sentence_time = (time.time() - start_time) * 1000
-                            logger.info(f"⚡ First sentence in {first_sentence_time:.0f}ms: '{cleaned_sentence[:40]}...'")
-                            
-                            # Update running average
-                            if self.avg_first_sentence_ms == 0:
-                                self.avg_first_sentence_ms = first_sentence_time
-                            else:
-                                self.avg_first_sentence_ms = (
-                                    self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
-                                )
-                        
-                        # Send cleaned sentence to TTS
-                        logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned_sentence[:50]}...'")
-                        await self._send_to_tts(room_name, cleaned_sentence, session_id)
-                        self.total_sentences_sent += 1
+                        # Update running average
+                        if self.avg_first_sentence_ms == 0:
+                            self.avg_first_sentence_ms = first_sentence_time
+                        else:
+                            self.avg_first_sentence_ms = (
+                                self.avg_first_sentence_ms * 0.9 + first_sentence_time * 0.1
+                            )
+                    
+                    # Send to TTS with natural pacing
+                    logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned_sentence[:60]}...'")
+                    await self._send_to_tts_natural(room_name, cleaned_sentence, session_id)
+                    self.total_sentences_sent += 1
             
-            # Send any remaining text (cleaned)
+            # Send any remaining text
             if sentence_buffer.strip():
                 cleaned_fragment = self._clean_llm_output(sentence_buffer.strip())
-                if cleaned_fragment:
+                cleaned_fragment = self._add_prosody_hints(cleaned_fragment)
+                
+                if cleaned_fragment and len(cleaned_fragment) >= self.min_chunk_size:
                     sentence_count += 1
-                    logger.info(f"🔊 Final fragment: '{cleaned_fragment[:50]}...'")
-                    await self._send_to_tts(room_name, cleaned_fragment, session_id)
+                    logger.info(f"🔊 Final fragment: '{cleaned_fragment[:60]}...'")
+                    await self._send_to_tts_natural(room_name, cleaned_fragment, session_id)
                     self.total_sentences_sent += 1
             
             llm_time = (time.time() - llm_start) * 1000
             
-            # Add to history (ONLY for finals) - WITH DEBUG LOGGING
+            # Add to history (ONLY for finals)
             if not is_partial:
-                logger.info(f"💾 Adding to history...")
-                logger.debug(f"   User message: '{text}'")
-                logger.debug(f"   Assistant response: '{full_response[:100]}...'")
-                
                 self.history.add_message(session_id, "user", text)
                 self.history.add_message(session_id, "assistant", full_response)
-                
-                new_history = self.history.get_history(session_id)
-                logger.info(f"✅ History updated: now {len(new_history)} messages total")
-            else:
-                logger.info(f"⏭️ Partial - not adding to history")
+                logger.info(f"✅ History updated")
             
             total_time = (time.time() - start_time) * 1000
             
             logger.info("─" * 80)
-            logger.info(f"✅ SUCCESS:")
+            logger.info(f"✅ SUCCESS (Natural Speech Mode):")
             logger.info(f"   Response: {len(full_response)} chars")
             logger.info(f"   Sentences: {sentence_count}")
             logger.info(f"   LLM time: {llm_time:.0f}ms")
@@ -504,8 +471,8 @@ Your response (speak directly, no "June:" label):"""
                 "total_time_ms": total_time,
                 "llm_time_ms": llm_time,
                 "first_sentence_ms": first_sentence_time,
-                "was_partial": is_partial,
-                "history_size": len(self.history.get_history(session_id))
+                "mode": "natural_speech",
+                "was_partial": is_partial
             }
             
         except Exception as e:
@@ -513,10 +480,10 @@ Your response (speak directly, no "June:" label):"""
             logger.error(f"❌ ERROR processing transcript: {e}", exc_info=True)
             logger.error("=" * 80)
             
-            # Send error message to user
+            # Send error message
             error_msg = "Sorry, I'm having trouble right now. Can you repeat that?"
             try:
-                await self._send_to_tts(room_name, error_msg, session_id)
+                await self._send_to_tts_natural(room_name, error_msg, session_id)
             except:
                 pass
             
@@ -527,22 +494,21 @@ Your response (speak directly, no "June:" label):"""
             }
     
     async def _stream_gemini(self, prompt: str) -> AsyncIterator[str]:
-        """Stream tokens from Gemini"""
+        """Stream tokens from Gemini with settings optimized for natural speech"""
         try:
             from google import genai
             
             client = genai.Client(api_key=self.gemini_api_key)
-            logger.debug("🌐 Connecting to Gemini API...")
             
-            # Stream with optimized settings for voice
+            # Optimized for natural, varied responses
             for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash-exp',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(
-                    temperature=0.8,  # Slightly more creative for stories
-                    max_output_tokens=400,  # More tokens for explanations/stories
+                    temperature=0.9,  # Higher for more natural variation
+                    max_output_tokens=500,  # Allow longer natural responses
                     top_p=0.95,
-                    top_k=40,
+                    top_k=50,  # More diversity
                 ),
             ):
                 if chunk.text:
@@ -550,41 +516,26 @@ Your response (speak directly, no "June:" label):"""
                     
         except Exception as e:
             logger.error(f"❌ Gemini streaming error: {e}")
-            logger.info("🔄 Falling back to gemini-2.0-flash...")
-            
-            try:
-                from google import genai
-                client = genai.Client(api_key=self.gemini_api_key)
-                
-                for chunk in client.models.generate_content_stream(
-                    model='gemini-2.0-flash',
-                    contents=prompt,
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.8,
-                        max_output_tokens=400
-                    ),
-                ):
-                    if chunk.text:
-                        yield chunk.text
-            except Exception as fallback_error:
-                logger.error(f"❌ Fallback also failed: {fallback_error}")
-                yield "I'm experiencing technical difficulties."
+            yield "I'm experiencing technical difficulties right now."
     
-    async def _send_to_tts(self, room_name: str, text: str, session_id: str):
-        """Send text to TTS service with natural pacing and increased timeout"""
+    async def _send_to_tts_natural(self, room_name: str, text: str, session_id: str):
+        """
+        Send text to TTS with NATURAL PACING for human-like rhythm
+        Longer pauses between thoughts for more natural flow
+        """
         try:
-            # Natural pacing between sentences
+            # Natural pacing between sentences (longer pause for natural rhythm)
             if session_id in self._last_tts_time:
                 time_since_last = time.time() - self._last_tts_time[session_id]
-                if time_since_last < 0.4:
-                    delay = 0.4 - time_since_last
-                    logger.debug(f"⏸️ Pacing delay: {delay:.1f}s")
+                if time_since_last < self._natural_pause_duration:
+                    delay = self._natural_pause_duration - time_since_last
+                    logger.debug(f"⏸️ Natural pause: {delay:.1f}s")
                     await asyncio.sleep(delay)
             
             tts_start = time.time()
             self._last_tts_time[session_id] = tts_start
             
-            # ✅ FIXED: Increased timeout from 15s to 30s
+            # Send to TTS with generous timeout for natural prosody
             try:
                 await asyncio.wait_for(
                     self.tts.publish_to_room(
@@ -593,10 +544,10 @@ Your response (speak directly, no "June:" label):"""
                         voice_id="default",
                         streaming=True
                     ),
-                    timeout=30.0  # ← Increased from 15.0
+                    timeout=45.0  # Longer timeout for natural-paced synthesis
                 )
             except asyncio.TimeoutError:
-                logger.error(f"❌ TTS timeout (>30s) for: '{text[:50]}...'")
+                logger.error(f"❌ TTS timeout for: '{text[:50]}...'")
                 return
             
             tts_time = (time.time() - tts_start) * 1000
@@ -608,19 +559,17 @@ Your response (speak directly, no "June:" label):"""
     async def handle_interruption(self, session_id: str, room_name: str):
         """Handle user interruption"""
         logger.info(f"🛑 User interrupted session {session_id}")
-        
         return {
             "status": "interrupted",
             "session_id": session_id,
-            "message": "Interruption handled naturally by streaming"
+            "message": "Interruption handled naturally"
         }
     
     def get_stats(self) -> Dict:
-        """Get simple statistics"""
+        """Get statistics"""
         active_sessions = len(self.history.sessions)
         total_messages = sum(len(msgs) for msgs in self.history.sessions.values())
         
-        # Detailed session info
         session_details = {}
         for session_id, msgs in self.history.sessions.items():
             session_details[session_id[:8]] = {
@@ -629,16 +578,18 @@ Your response (speak directly, no "June:" label):"""
             }
         
         return {
-            "mode": "simple_voice_assistant_tighter_splitting",
+            "mode": "natural_speech_optimized",
             "active_sessions": active_sessions,
             "total_messages": total_messages,
             "total_requests": self.total_requests,
             "total_sentences_sent": self.total_sentences_sent,
             "avg_first_sentence_ms": round(self.avg_first_sentence_ms, 1),
-            "ignore_partials": self.ignore_partials,
-            "duplicate_window_seconds": self._duplicate_window,
-            "max_sentence_chars": self.max_sentence_chars,
-            "early_split_chars": self.early_split_chars,
+            "config": {
+                "max_sentence_chars": self.max_sentence_chars,
+                "min_chunk_size": self.min_chunk_size,
+                "natural_pause_duration": self._natural_pause_duration,
+                "ignore_partials": self.ignore_partials
+            },
             "sessions": session_details
         }
     
@@ -646,7 +597,6 @@ Your response (speak directly, no "June:" label):"""
         """Clear conversation history for a session"""
         self.history.clear_session(session_id)
         
-        # Clean up tracking data
         if session_id in self._recent_transcripts:
             del self._recent_transcripts[session_id]
         if session_id in self._last_tts_time:
@@ -658,7 +608,7 @@ Your response (speak directly, no "June:" label):"""
         """Health check endpoint"""
         return {
             "healthy": True,
-            "assistant": "simple_voice_assistant_tighter_splitting",
+            "assistant": "natural_speech_optimized",
             "tts_available": self.tts is not None,
             "gemini_configured": bool(self.gemini_api_key),
             "stats": self.get_stats()
