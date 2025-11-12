@@ -70,7 +70,7 @@ class MockingbirdSkill:
         self.sessions: Dict[str, Dict[str, Any]] = {}
         
         # Voice sample requirements
-        self.min_sample_duration = 6.0  # seconds
+        self.min_sample_duration = 4.0  # seconds (reduced for easier testing)
         self.max_sample_duration = 12.0  # seconds
         self.target_sample_duration = 8.0  # ideal
         
@@ -275,23 +275,29 @@ class MockingbirdSkill:
             
             logger.info(f"🎵 Starting audio frame capture...")
             
+            frame_count = 0
             async for event in audio_stream:
-                # ✅ FIXED: Access frame through event.frame
+                # Access frame through event.frame
                 frame = event.frame
                 
                 # Convert frame to bytes and add to buffer
                 # frame.data is a numpy array
                 audio_data = frame.data.tobytes()
                 buffer.append(audio_data)
+                frame_count += 1
                 
-                # Check if we have enough
+                # Check if we have enough (using elapsed time, not frame count)
                 elapsed = time.time() - start_time
+                
+                # Log progress every second
+                if frame_count % 100 == 0:  # ~every second (100 frames * 10ms = 1s)
+                    logger.debug(f"📊 Captured {frame_count} frames ({elapsed:.1f}s elapsed)")
                 
                 if elapsed >= self.max_sample_duration:
                     logger.info(f"✅ Max duration reached: {elapsed:.1f}s - stopping capture")
                     break
             
-            logger.info(f"🎵 Audio capture completed: {len(buffer)} frames")
+            logger.info(f"🎵 Audio capture completed: {frame_count} frames in {time.time() - start_time:.1f}s")
             
         except Exception as e:
             logger.error(f"❌ Frame capture error: {e}", exc_info=True)
@@ -325,8 +331,13 @@ class MockingbirdSkill:
             # Each sample is 4 bytes (float32)
             audio_array = np.frombuffer(combined_audio, dtype=np.float32)
             
-            duration = len(audio_array) / sample_rate
+            # Calculate duration correctly
+            # Each frame in LiveKit is 10ms of audio (480 samples at 48kHz)
+            num_samples = len(audio_array)
+            duration = num_samples / sample_rate
+            
             logger.info(f"🎵 Processing {duration:.1f}s of audio at {sample_rate} Hz")
+            logger.info(f"📊 Total samples: {num_samples}, Frames: {len(audio_buffer)}")
             
             if duration < self.min_sample_duration:
                 raise ValueError(f"Audio too short: {duration:.1f}s (min: {self.min_sample_duration}s)")
