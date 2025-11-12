@@ -172,8 +172,8 @@ class SimpleVoiceAssistant:
         return "", text_buffer
     
     def _build_system_prompt_with_tools(self) -> str:
-    """Build system prompt with tool awareness"""
-    return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
+        """Build system prompt with tool awareness"""
+        return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
 
 🎯 CORE PERSONALITY:
 • Speak naturally and conversationally (your responses are spoken aloud)
@@ -219,8 +219,7 @@ NATURAL SPEECH RULES:
 • Robotic phrasing
 • Monotone delivery
 • Talking about using tools instead of actually using them!"""
-
-
+    
     async def handle_transcript(
         self,
         session_id: str,
