@@ -161,7 +161,7 @@ class MockingbirdSkill:
     async def _record_audio_from_room(self, session_id: str, room_name: str):
         """
         Spawn temporary LiveKit client to record audio
-        Based on official LiveKit Python SDK documentation
+        FIXED: Proper event-driven approach per LiveKit SDK docs
         """
         state = self.get_session_state(session_id)
         
@@ -188,6 +188,7 @@ class MockingbirdSkill:
             start_time = None
             recording_started = False
             user_track_found = False
+            subscribed_to_tracks = False
             
             @room.on("track_subscribed")
             def on_track_subscribed(
@@ -225,42 +226,52 @@ class MockingbirdSkill:
             
             @room.on("participant_connected")
             def on_participant_connected(participant: rtc.RemoteParticipant):
+                """Called when a participant connects"""
+                nonlocal subscribed_to_tracks
+                
                 logger.info(f"👤 Participant connected: {participant.identity}")
+                
+                # Subscribe to their audio tracks if it's our target user
+                if participant.identity == session_id:
+                    asyncio.create_task(self._subscribe_to_participant_audio(participant))
+                    subscribed_to_tracks = True
             
-            # Connect with manual subscription
+            # Connect to room
             await room.connect(
                 self.livekit_url, 
                 jwt,
-                options=rtc.RoomOptions(auto_subscribe=False)
+                options=rtc.RoomOptions(auto_subscribe=False)  # Manual subscription
             )
             logger.info(f"✅ Connected to room '{room_name}' as recorder")
             
-            # Wait for room state to populate
-            await asyncio.sleep(0.5)
+            # Wait a bit for room state to stabilize
+            await asyncio.sleep(1.0)
             
-            # ✅ FIXED: Correct way to iterate participants per official docs
-            subscribed_count = 0
-            logger.info(f"🔍 Checking for existing participants...")
-            
-            # Iterate participants as shown in official LiveKit Python SDK docs
-            for identity, participant in room.remote_participants.items():
-                logger.info(f"👤 Found participant: {identity}")
+            # ✅ FIXED: Check for existing participants ONLY if room is connected
+            # This is the pattern from official docs
+            if room.connection_state == rtc.ConnectionState.CONN_CONNECTED:
+                logger.info(f"🔍 Room connected, checking for existing participants...")
                 
-                # Only subscribe to the target user
-                if identity == session_id:
-                    # Iterate through track publications
-                    for tid, publication in participant.track_publications.items():
-                        if publication.kind == rtc.TrackKind.KIND_AUDIO:
-                            logger.info(f"🔔 Subscribing to audio track {tid} from {identity}")
-                            publication.set_subscribed(True)
-                            subscribed_count += 1
-                else:
-                    logger.debug(f"⏭️ Skipping participant: {identity}")
-            
-            if subscribed_count == 0:
-                logger.warning(f"⚠️ No audio tracks found for {session_id}")
+                try:
+                    # Get remote participants - this should work after connection
+                    participants = dict(room.remote_participants)
+                    logger.info(f"Found {len(participants)} remote participants")
+                    
+                    for identity, participant in participants.items():
+                        logger.info(f"👤 Existing participant: {identity}")
+                        
+                        # Only subscribe to the target user
+                        if identity == session_id:
+                            await self._subscribe_to_participant_audio(participant)
+                            subscribed_to_tracks = True
+                        else:
+                            logger.debug(f"⏭️ Skipping participant: {identity}")
+                            
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not access remote_participants: {e}")
+                    logger.info("Will rely on participant_connected events instead")
             else:
-                logger.info(f"✅ Subscribed to {subscribed_count} audio track(s)")
+                logger.warning(f"⚠️ Room not fully connected: {room.connection_state}")
             
             # Wait for recording (max 20s)
             timeout = 20
@@ -300,6 +311,19 @@ class MockingbirdSkill:
         finally:
             if session_id in self.recording_tasks:
                 del self.recording_tasks[session_id]
+    
+    async def _subscribe_to_participant_audio(self, participant: rtc.RemoteParticipant):
+        """Subscribe to audio tracks from a participant"""
+        try:
+            # Get track publications - use dict() to safely iterate
+            publications = dict(participant.track_publications)
+            
+            for track_sid, publication in publications.items():
+                if publication.kind == rtc.TrackKind.KIND_AUDIO:
+                    logger.info(f"🔔 Subscribing to audio track {track_sid}")
+                    publication.set_subscribed(True)
+        except Exception as e:
+            logger.error(f"❌ Error subscribing to participant audio: {e}")
     
     async def _capture_audio_frames(
         self,
