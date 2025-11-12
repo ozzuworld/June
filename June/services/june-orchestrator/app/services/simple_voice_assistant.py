@@ -483,7 +483,7 @@ NATURAL SPEECH RULES:
                 tools=MOCKINGBIRD_TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='AUTO'
+                        mode='ANY'
                     )
                 )
             )
