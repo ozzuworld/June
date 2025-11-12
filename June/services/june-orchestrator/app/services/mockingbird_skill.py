@@ -414,30 +414,24 @@ class MockingbirdSkill:
 # TOOL DEFINITIONS FOR NEW GOOGLE-GENAI SDK
 # ============================================================================
 
-def enable_mockingbird(confirmation: str = "") -> dict:
+def enable_mockingbird() -> dict:
     """Enable voice cloning mode (Mockingbird). June will clone the user's voice and speak with it.
     
     Use when user asks to 'enable mockingbird', 'clone my voice', 'speak in my voice', or similar requests.
     
-    Args:
-        confirmation: Confirmation message to user about starting voice cloning
-    
     Returns:
-        Status and instructions for voice capture
+        dict: Status and instructions for voice capture
     """
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
 
 
-def disable_mockingbird(confirmation: str = "") -> dict:
+def disable_mockingbird() -> dict:
     """Disable voice cloning mode and return to default voice.
     
     Use when user asks to 'disable mockingbird', 'stop using my voice', 'go back to your voice', or similar requests.
     
-    Args:
-        confirmation: Confirmation message to user about returning to default voice
-    
     Returns:
-        Status confirmation
+        dict: Status confirmation
     """
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
 
@@ -448,7 +442,7 @@ def check_mockingbird_status() -> dict:
     Use when user asks about mockingbird status or which voice is being used.
     
     Returns:
-        Current status information
+        dict: Current status information
     """
     pass  # Implementation handled by SimpleVoiceAssistant._execute_tool
 
