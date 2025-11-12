@@ -1,6 +1,6 @@
 """
-Mockingbird Voice Cloning Skill - FIXED VERSION
-LiveKit SDK compatibility fix + better participant handling
+Mockingbird Voice Cloning Skill - PRODUCTION VERSION
+All fixes applied based on architecture analysis
 """
 import asyncio
 import logging
@@ -54,10 +54,12 @@ class MockingbirdSkill:
     """
     Voice cloning skill with self-contained LiveKit audio capture
     
-    FIXED:
-    - Handles LiveKit SDK without remote_participants attribute
-    - Relies entirely on events for participant detection
-    - Better timeout and error handling
+    FIXED ISSUES:
+    - Event-driven LiveKit (no remote_participants access)
+    - Proper state checking to prevent transcript processing during recording
+    - Resource cleanup on errors
+    - Better timeout handling
+    - Comprehensive logging
     """
     
     def __init__(
@@ -110,12 +112,20 @@ class MockingbirdSkill:
         
         # Check if already active
         if state.state != MockingbirdState.INACTIVE:
-            logger.warning(f"⚠️ Mockingbird already active: {state.state}")
-            return {
-                "status": "already_active",
-                "tts_message": "Mockingbird is already active or in progress.",
-                "skip_llm_response": True
-            }
+            logger.warning(f"⚠️ Mockingbird already in state: {state.state}")
+            
+            if state.state == MockingbirdState.ACTIVE:
+                return {
+                    "status": "already_active",
+                    "tts_message": "Mockingbird is already active. I'm using your cloned voice right now.",
+                    "skip_llm_response": True
+                }
+            else:
+                return {
+                    "status": "in_progress",
+                    "tts_message": "Mockingbird is already in progress. Please wait.",
+                    "skip_llm_response": True
+                }
         
         # Start capture flow
         state.state = MockingbirdState.AWAITING_SAMPLE
@@ -227,7 +237,7 @@ class MockingbirdSkill:
             # Wait a moment for room to stabilize
             await asyncio.sleep(1.0)
             
-            # ✅ FIXED: Use event system, don't access remote_participants
+            # ✅ Use event system, wait for participants
             logger.info(f"🔍 Room connected, waiting for participants via events...")
             
             # Wait for audio capture (with timeout)
@@ -267,7 +277,7 @@ class MockingbirdSkill:
                 state.state = MockingbirdState.ERROR
                 await self._send_tts(
                     room_name, 
-                    "Sorry, I had trouble cloning your voice. Let's try again later.", 
+                    "Sorry, I had trouble capturing your voice. Let's try again later.", 
                     "default"
                 )
                 
@@ -513,11 +523,22 @@ class MockingbirdSkill:
         }
 
 
-# Tool definitions for Google Gemini
+# ============================================================================
+# TOOL DECLARATIONS FOR GEMINI
+# ============================================================================
+
 def enable_mockingbird() -> dict:
     """Enable voice cloning mode (Mockingbird). June will clone the user's voice.
     
-    Use when user asks to 'enable mockingbird', 'clone my voice', 'speak in my voice', etc.
+    Use when user asks to:
+    - 'enable mockingbird'
+    - 'clone my voice'
+    - 'speak in my voice'
+    - 'use my voice'
+    - 'turn on mockingbird'
+    - 'activate mockingbird'
+    
+    This will record a voice sample and clone the user's voice for June to use.
     """
     pass
 
@@ -525,7 +546,13 @@ def enable_mockingbird() -> dict:
 def disable_mockingbird() -> dict:
     """Disable voice cloning and return to default voice.
     
-    Use when user asks to 'disable mockingbird', 'use your voice', 'stop using my voice', etc.
+    Use when user asks to:
+    - 'disable mockingbird'
+    - 'use your voice'
+    - 'stop using my voice'
+    - 'turn off mockingbird'
+    - 'use your normal voice'
+    - 'deactivate mockingbird'
     """
     pass
 
@@ -533,7 +560,12 @@ def disable_mockingbird() -> dict:
 def check_mockingbird_status() -> dict:
     """Check if Mockingbird is currently active and which voice is being used.
     
-    Use when user asks 'is mockingbird on', 'what voice are you using', etc.
+    Use when user asks:
+    - 'is mockingbird on'
+    - 'what voice are you using'
+    - 'are you using my voice'
+    - 'mockingbird status'
+    - 'is voice cloning active'
     """
     pass
 

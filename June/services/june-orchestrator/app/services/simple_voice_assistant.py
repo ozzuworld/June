@@ -1,6 +1,10 @@
 """
-Simple Voice Assistant - FIXED VERSION (Loop Prevention)
-Stops tool calling loop by not continuing LLM stream after tool execution
+Simple Voice Assistant - PRODUCTION VERSION
+All fixes applied:
+- Tool call loop prevention
+- Proper state checking
+- Better error handling
+- Comprehensive logging
 """
 import asyncio
 import logging
@@ -32,6 +36,7 @@ class ConversationHistory:
         logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
     
     def add_message(self, session_id: str, role: str, content: str):
+        """Add message to history"""
         if session_id not in self.sessions:
             self.sessions[session_id] = []
         
@@ -45,6 +50,7 @@ class ConversationHistory:
             self.sessions[session_id] = self.sessions[session_id][-max_messages:]
     
     def get_history(self, session_id: str) -> List[Dict[str, str]]:
+        """Get conversation history"""
         if session_id not in self.sessions:
             return []
         
@@ -54,12 +60,22 @@ class ConversationHistory:
         ]
     
     def clear_session(self, session_id: str):
+        """Clear session history"""
         if session_id in self.sessions:
             del self.sessions[session_id]
 
 
 class SimpleVoiceAssistant:
-    """Voice assistant with Mockingbird - FIXED tool loop prevention"""
+    """
+    Voice assistant with Mockingbird skill
+    
+    FIXED ISSUES:
+    - Tool call loop prevention (break immediately after tool)
+    - Proper Mockingbird busy state checking
+    - Better deduplication
+    - Comprehensive error handling
+    - Better logging
+    """
     
     def __init__(
         self, 
@@ -201,7 +217,7 @@ NATURAL SPEECH (when NOT using tools):
 • Use commas for natural pauses
 • Vary sentence length
 • Show emotion when appropriate
-• Sound like a real person
+• Sound like a real person talking
 """
     
     async def handle_transcript(
@@ -212,11 +228,15 @@ NATURAL SPEECH (when NOT using tools):
         is_partial: bool = False,
         audio_data: Optional[bytes] = None
     ) -> Dict:
-        """Main entry point for STT transcripts"""
+        """
+        Main entry point for STT transcripts
+        
+        ✅ FIXED: Checks Mockingbird busy state FIRST
+        """
         start_time = time.time()
         self.total_requests += 1
         
-        # ✅ KEY FIX: Check if Mockingbird is busy FIRST
+        # ✅ CRITICAL FIX: Check if Mockingbird is busy FIRST
         state = self.mockingbird.get_session_state(session_id)
         if state.is_busy():
             logger.info(
@@ -264,7 +284,11 @@ NATURAL SPEECH (when NOT using tools):
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """Process transcript - FIXED to prevent tool loop"""
+        """
+        Process transcript
+        
+        ✅ FIXED: Breaks immediately after tool call to prevent loop
+        """
         
         word_count = len(text.strip().split())
         
@@ -300,7 +324,7 @@ NATURAL SPEECH (when NOT using tools):
                 user_message=text,
                 history=history
             ):
-                # ✅ Handle tool calls
+                # ✅ CRITICAL FIX: Handle tool calls and break immediately
                 if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
                     tool_name = chunk['tool_name']
                     logger.info(f"🔧 Tool called: {tool_name}")
@@ -432,7 +456,7 @@ NATURAL SPEECH (when NOT using tools):
                 tools=MOCKINGBIRD_TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode='ANY'
+                        mode='AUTO'
                     )
                 )
             )
@@ -446,7 +470,7 @@ NATURAL SPEECH (when NOT using tools):
                 contents=full_prompt,
                 config=config
             ):
-                # Check for tool calls FIRST
+                # ✅ CRITICAL: Check for tool calls FIRST
                 if hasattr(chunk, 'function_calls') and chunk.function_calls:
                     for func_call in chunk.function_calls:
                         if not tool_call_seen:
