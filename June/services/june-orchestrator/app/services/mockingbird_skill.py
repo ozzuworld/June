@@ -161,7 +161,7 @@ class MockingbirdSkill:
     async def _record_audio_from_room(self, session_id: str, room_name: str):
         """
         Spawn temporary LiveKit client to record audio
-        FIXED: Correct way to access participants in LiveKit SDK 0.11.1
+        Based on official LiveKit Python SDK documentation
         """
         state = self.get_session_state(session_id)
         
@@ -189,17 +189,14 @@ class MockingbirdSkill:
             recording_started = False
             user_track_found = False
             
-            # ✅ FIXED: Store tracks we want to record from
-            target_tracks = []
-            
             @room.on("track_subscribed")
             def on_track_subscribed(
-                track: rtc.RemoteTrack,
+                track: rtc.Track,
                 publication: rtc.RemoteTrackPublication,
                 participant: rtc.RemoteParticipant
             ):
                 """Called when we subscribe to a track"""
-                nonlocal start_time, recording_started, user_track_found, target_tracks
+                nonlocal start_time, recording_started, user_track_found
                 
                 # Only record audio from the USER
                 is_user_track = (
@@ -216,7 +213,6 @@ class MockingbirdSkill:
                     state["state"] = MockingbirdState.CAPTURING
                     start_time = time.time()
                     recording_started = True
-                    target_tracks.append(track)
                     
                     # Start capturing frames
                     asyncio.create_task(
@@ -242,23 +238,24 @@ class MockingbirdSkill:
             # Wait for room state to populate
             await asyncio.sleep(0.5)
             
-            # ✅ FIXED: Access participants correctly
+            # ✅ FIXED: Correct way to iterate participants per official docs
             subscribed_count = 0
+            logger.info(f"🔍 Checking for existing participants...")
             
-            # The correct way to iterate participants in LiveKit SDK 0.11.1:
-            for participant in room.remote_participants.values():
-                logger.info(f"👤 Found participant: {participant.identity}")
+            # Iterate participants as shown in official LiveKit Python SDK docs
+            for identity, participant in room.remote_participants.items():
+                logger.info(f"👤 Found participant: {identity}")
                 
                 # Only subscribe to the target user
-                if participant.identity == session_id:
+                if identity == session_id:
                     # Iterate through track publications
-                    for publication in participant.track_publications.values():
+                    for tid, publication in participant.track_publications.items():
                         if publication.kind == rtc.TrackKind.KIND_AUDIO:
-                            logger.info(f"🔔 Subscribing to audio from {participant.identity}")
-                            await publication.set_subscribed(True)
+                            logger.info(f"🔔 Subscribing to audio track {tid} from {identity}")
+                            publication.set_subscribed(True)
                             subscribed_count += 1
                 else:
-                    logger.debug(f"⏭️ Skipping participant: {participant.identity}")
+                    logger.debug(f"⏭️ Skipping participant: {identity}")
             
             if subscribed_count == 0:
                 logger.warning(f"⚠️ No audio tracks found for {session_id}")
@@ -306,7 +303,7 @@ class MockingbirdSkill:
     
     async def _capture_audio_frames(
         self,
-        track: rtc.RemoteTrack,
+        track: rtc.Track,
         buffer: List[bytes],
         session_id: str,
         start_time: float,
