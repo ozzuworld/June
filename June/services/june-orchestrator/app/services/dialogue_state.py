@@ -205,13 +205,13 @@ class ConversationContext:
         
         self.current_topic = new_topic
     
-    def get_recent_history(self, max_turns: int = 5) -> List[Dict[str, str]]:
+    def get_recent_history(self, max_turns: int = 10) -> List[Dict[str, str]]:
         """
         Get recent conversation history formatted for LLM
-        
+
         Args:
-            max_turns: Maximum number of turns to return
-            
+            max_turns: Maximum number of turns to return (default: 10 for better context)
+
         Returns:
             List of message dicts with role and content
         """

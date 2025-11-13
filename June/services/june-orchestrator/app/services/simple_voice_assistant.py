@@ -29,7 +29,7 @@ class Message:
 class ConversationHistory:
     """Simple in-memory conversation history"""
     
-    def __init__(self, max_turns: int = 5):
+    def __init__(self, max_turns: int = 10):
         self.sessions: Dict[str, List[Message]] = {}
         self.max_turns = max_turns
         logger.info(f"✅ ConversationHistory initialized (max_turns={max_turns})")
@@ -86,7 +86,7 @@ class SimpleVoiceAssistant:
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
         self.conversation_manager = conversation_manager
-        self.history = ConversationHistory(max_turns=5)
+        self.history = ConversationHistory(max_turns=10)
         
         # Initialize Mockingbird skill with conversation_manager
         self.mockingbird = MockingbirdSkill(
@@ -280,15 +280,53 @@ class SimpleVoiceAssistant:
         ]
         return any(keyword in text_lower for keyword in keywords)
 
-    def _build_system_prompt(self) -> str:
-        """Build system prompt with tool instructions"""
-        return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
+    def _build_system_prompt(self, conversation_style: str = "balanced") -> str:
+        """
+        Build system prompt with tool instructions and conversation style
 
-🎯 PERSONALITY:
+        Args:
+            conversation_style: "casual", "formal", "balanced", or "technical"
+        """
+        # Style-specific personality prompts
+        style_prompts = {
+            "casual": """🎯 PERSONALITY & STYLE:
+• Speak in a friendly, relaxed, conversational tone
+• Use contractions freely (I'm, you're, let's, etc.)
+• Keep responses brief and to the point
+• Sound like you're chatting with a friend
+• Use casual expressions and phrases
+• Be warm and approachable""",
+
+            "formal": """🎯 PERSONALITY & STYLE:
+• Speak in a professional, polite, and articulate manner
+• Use complete sentences without contractions
+• Be thorough and precise in your responses
+• Maintain a respectful and courteous tone
+• Use proper grammar and formal language
+• Be helpful while maintaining professionalism""",
+
+            "technical": """🎯 PERSONALITY & STYLE:
+• Speak with technical precision and expertise
+• Use appropriate technical terminology
+• Provide detailed, accurate explanations
+• Be specific and thorough in responses
+• Show depth of knowledge when relevant
+• Balance technical detail with clarity""",
+
+            "balanced": """🎯 PERSONALITY & STYLE:
 • Speak naturally and conversationally
 • Be warm, helpful, and engaging
 • Show appropriate emotion
 • Use natural pauses and varied sentence length
+• Adapt your tone to match the context"""
+        }
+
+        # Get the appropriate style prompt (default to balanced if unknown)
+        personality_section = style_prompts.get(conversation_style, style_prompts["balanced"])
+
+        return f"""You are June, a warm and intelligent voice assistant with voice cloning capabilities.
+
+{personality_section}
 
 🎭 MOCKINGBIRD VOICE CLONING:
 
@@ -377,8 +415,9 @@ NATURAL SPEECH (when NOT using tools):
             last_time = self._last_response_time.get(session_id, 0)
             time_since_response = current_time - last_time
 
-            # If assistant responded recently (within 1.5 seconds), skip
-            if time_since_response < 1.5:
+            # If assistant responded recently (within 0.5 seconds), skip
+            # Reduced from 1.5s to 0.5s for more natural conversation flow
+            if time_since_response < 0.5:
                 logger.info(
                     f"🔇 Assistant still responding ({time_since_response:.1f}s ago) - "
                     f"ignoring new input: '{text[:30]}...'"
@@ -447,9 +486,19 @@ NATURAL SPEECH (when NOT using tools):
             # Get current voice
             current_voice_id = self.mockingbird.get_current_voice_id(session_id)
             logger.info(f"🎤 Using voice: {current_voice_id}")
-            
-            # Build system prompt
-            system_prompt = self._build_system_prompt()
+
+            # Get conversation style from context
+            conversation_style = "balanced"  # Default
+            try:
+                context = self.conversation_manager.get_context(room_name, session_id)
+                if context:
+                    conversation_style = context.conversation_style
+                    logger.info(f"💬 Using conversation style: {conversation_style}")
+            except Exception as e:
+                logger.debug(f"Could not get conversation style, using default: {e}")
+
+            # Build system prompt with conversation style
+            system_prompt = self._build_system_prompt(conversation_style=conversation_style)
             
             # Stream from LLM with tool support
             full_response = ""

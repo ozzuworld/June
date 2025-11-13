@@ -11,6 +11,7 @@ KEY IMPROVEMENTS:
 7. ✅ FIXED: Per-participant state management
 8. ✅ FIXED: Only ONE FINAL per utterance
 9. ✅ FIXED: Retry logic for FINAL delivery
+10. ✅ FIXED: Text similarity deduplication to prevent near-duplicate FINALs
 """
 import os
 import asyncio
@@ -19,12 +20,29 @@ import time
 from typing import Optional, Dict
 from datetime import datetime
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 import numpy as np
 import httpx
 from livekit import rtc
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Text Similarity Utilities
+# ---------------------------------------------------------------------------
+
+def calculate_text_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate similarity ratio between two strings using SequenceMatcher.
+
+    Returns:
+        float: Similarity ratio from 0.0 (completely different) to 1.0 (identical)
+    """
+    if not text1 or not text2:
+        return 0.0
+    return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 
 # ---------------------------------------------------------------------------
@@ -433,10 +451,16 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if not text:
                         continue
 
-                    # ✅ NEW: Detect new utterance (different from last FINAL)
-                    if text and state.final_sent_for_utterance and text != state.last_sent_final:
-                        logger.info(f"🆕 New utterance detected, resetting state")
-                        state.reset_for_new_utterance()
+                    # ✅ NEW: Detect new utterance (substantially different from last FINAL)
+                    # Use similarity check instead of exact comparison to prevent false resets
+                    if text and state.final_sent_for_utterance and state.last_sent_final:
+                        similarity = calculate_text_similarity(text, state.last_sent_final)
+                        # Only reset if texts are substantially different (< 50% similar)
+                        if similarity < 0.5:
+                            logger.info(
+                                f"🆕 New utterance detected (similarity: {similarity:.2f}), resetting state"
+                            )
+                            state.reset_for_new_utterance()
                     
                     # ✅ Check cooldown period after FINAL
                     time_since_final = current_time - state.last_final_time
@@ -512,11 +536,26 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
 
                     # After enough silence, finalize with FULL accumulated text
                     # ✅ CRITICAL: Only send ONE FINAL per utterance
-                    # ✅ NEW: Also check text differs from last sent FINAL
-                    if (state.silence_counter >= silence_threshold and
+                    # ✅ NEW: Use similarity check to prevent near-duplicate FINALs
+                    should_send_final = (
+                        state.silence_counter >= silence_threshold and
                         state.accumulated_text and
-                        not state.final_sent_for_utterance and
-                        state.accumulated_text != state.last_sent_final):
+                        not state.final_sent_for_utterance
+                    )
+
+                    # Check if text is substantially different from last FINAL (< 80% similar)
+                    if should_send_final and state.last_sent_final:
+                        similarity = calculate_text_similarity(
+                            state.accumulated_text,
+                            state.last_sent_final
+                        )
+                        if similarity >= 0.8:
+                            logger.debug(
+                                f"⏸️ Skipping FINAL (too similar to last: {similarity:.2f})"
+                            )
+                            should_send_final = False
+
+                    if should_send_final:
                         logger.info(
                             "[LiveKit FINAL after silence] %s: %s",
                             participant.identity,
@@ -571,8 +610,20 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     state.accumulated_text,
                 )
 
-                # ✅ CRITICAL: Only send if not already sent AND text is different
-                if not state.final_sent_for_utterance and state.accumulated_text != state.last_sent_final:
+                # ✅ CRITICAL: Only send if not already sent AND text is substantially different
+                should_send_final = not state.final_sent_for_utterance
+                if should_send_final and state.last_sent_final:
+                    similarity = calculate_text_similarity(
+                        state.accumulated_text,
+                        state.last_sent_final
+                    )
+                    if similarity >= 0.8:
+                        logger.debug(
+                            f"⏸️ Skipping FINAL on track end (too similar: {similarity:.2f})"
+                        )
+                        should_send_final = False
+
+                if should_send_final:
                     success = await send_final_with_retry(
                         room_name=room_name,
                         participant=participant.identity,
@@ -585,8 +636,24 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                         state.last_sent_final = state.accumulated_text
         else:
             # Even if finish() returns None, send accumulated text if we have it
-            # ✅ CRITICAL: Only send if not already sent AND text is different
-            if state.accumulated_text and not state.final_sent_for_utterance and state.accumulated_text != state.last_sent_final:
+            # ✅ CRITICAL: Only send if not already sent AND text is substantially different
+            should_send_final = (
+                state.accumulated_text and
+                not state.final_sent_for_utterance
+            )
+
+            if should_send_final and state.last_sent_final:
+                similarity = calculate_text_similarity(
+                    state.accumulated_text,
+                    state.last_sent_final
+                )
+                if similarity >= 0.8:
+                    logger.debug(
+                        f"⏸️ Skipping FINAL from accumulated (too similar: {similarity:.2f})"
+                    )
+                    should_send_final = False
+
+            if should_send_final:
                 logger.info(
                     "[LiveKit FINAL from accumulated on track end] %s: %s",
                     participant.identity,
