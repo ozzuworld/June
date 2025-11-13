@@ -1,8 +1,6 @@
 """
-Mockingbird Voice Cloning Skill - PRODUCTION VERSION
-All fixes applied based on architecture analysis
-
-✅ CRITICAL FIX: Uses ConversationManager to find participants already in room
+Mockingbird Voice Cloning Skill - WORKING VERSION
+Uses LiveKit 0.11.1 event-based API correctly
 """
 import asyncio
 import logging
@@ -53,13 +51,7 @@ class SessionState:
 
 
 class MockingbirdSkill:
-    """
-    Voice cloning skill with self-contained LiveKit audio capture
-    
-    ✅ FIXED: Uses ConversationManager to find existing participants
-    ✅ FIXED: Checks participant audio availability before recording
-    ✅ FIXED: Proper state checking to prevent transcript processing during recording
-    """
+    """Voice cloning skill with LiveKit audio capture"""
     
     def __init__(
         self, 
@@ -75,15 +67,10 @@ class MockingbirdSkill:
         self.livekit_api_key = livekit_api_key
         self.livekit_api_secret = livekit_api_secret
         
-        # Session state tracking
         self.sessions: Dict[str, SessionState] = {}
-        
-        # Voice sample requirements
-        self.min_sample_duration = 4.0  # seconds
-        self.max_sample_duration = 15.0  # seconds
-        self.target_sample_duration = 8.0  # ideal
-        
-        # Recording tasks
+        self.min_sample_duration = 4.0
+        self.max_sample_duration = 15.0
+        self.target_sample_duration = 8.0
         self.recording_tasks: Dict[str, asyncio.Task] = {}
         
         logger.info("✅ Mockingbird voice cloning skill initialized")
@@ -97,24 +84,16 @@ class MockingbirdSkill:
     def get_current_voice_id(self, session_id: str) -> str:
         """Get the voice ID to use for this session"""
         state = self.get_session_state(session_id)
-        
         if state.is_active() and state.cloned_voice_id:
             return state.cloned_voice_id
-        
         return "default"
     
     async def enable(self, session_id: str, room_name: str) -> Dict[str, Any]:
-        """
-        Enable mockingbird - start voice cloning flow
-        
-        ✅ UPDATED: Checks participant availability first
-        """
+        """Enable mockingbird - start voice cloning flow"""
         state = self.get_session_state(session_id)
         
-        # Check if already active
         if state.state != MockingbirdState.INACTIVE:
             logger.warning(f"⚠️ Mockingbird already in state: {state.state}")
-            
             if state.state == MockingbirdState.ACTIVE:
                 return {
                     "status": "already_active",
@@ -128,7 +107,6 @@ class MockingbirdSkill:
                     "skip_llm_response": True
                 }
         
-        # Check if participant is in room and has audio
         if not self.conversation_manager.is_participant_in_room(session_id, room_name):
             logger.error(f"❌ Session {session_id[:8]}... not found in room {room_name}")
             return {
@@ -137,7 +115,6 @@ class MockingbirdSkill:
                 "skip_llm_response": True
             }
         
-        # Check if audio is available
         participant_info = self.conversation_manager.get_participant_info(session_id)
         if not participant_info:
             logger.error(f"❌ No participant info for session {session_id[:8]}...")
@@ -152,20 +129,17 @@ class MockingbirdSkill:
             f"(audio_available={participant_info.is_publishing_audio})"
         )
         
-        # Start capture flow
         state.state = MockingbirdState.AWAITING_SAMPLE
         state.activated_at = datetime.utcnow()
         state.room_name = room_name
         
         logger.info(f"🎤 Mockingbird enabled for session {session_id[:8]}...")
         
-        # Start background recording task
         task = asyncio.create_task(
             self._record_audio_from_room(session_id, room_name)
         )
         self.recording_tasks[session_id] = task
         
-        # Return message that will be sent via TTS
         return {
             "status": "awaiting_sample",
             "tts_message": (
@@ -180,18 +154,16 @@ class MockingbirdSkill:
         session_id: str,
         room_name: str
     ) -> Optional[bytes]:
-        """
-        Record audio from a specific participant using AudioStream
-        
-        This is the CORRECT way to record audio in LiveKit SDK 0.11.1
-        """
+        """Record audio using LiveKit 0.11.1 event-based API"""
         state = self.get_session_state(session_id)
         state.state = MockingbirdState.CAPTURING
         
         room = rtc.Room()
+        audio_buffer = []
+        audio_stream = None
+        recording_complete = asyncio.Event()
         
         try:
-            # Get participant identity from ConversationManager
             target_identity = self.conversation_manager.get_participant_identity(session_id)
             if not target_identity:
                 logger.error(f"❌ Could not find identity for session {session_id}")
@@ -199,7 +171,6 @@ class MockingbirdSkill:
             
             logger.info(f"🎯 Target participant identity: {target_identity}")
             
-            # Generate LiveKit JWT for recorder
             jwt = api.AccessToken(self.livekit_api_key, self.livekit_api_secret) \
                 .with_identity(f"recorder-{session_id[:8]}") \
                 .with_name("Voice Recorder") \
@@ -212,7 +183,19 @@ class MockingbirdSkill:
             
             logger.info(f"🎤 Spawning LiveKit recorder for room '{room_name}'")
             
-            # Connect to room
+            @room.on("track_subscribed")
+            def on_track_subscribed(
+                track: rtc.Track,
+                publication: rtc.RemoteTrackPublication,
+                participant: rtc.RemoteParticipant
+            ):
+                nonlocal audio_stream
+                
+                if participant.identity == target_identity and track.kind == rtc.TrackKind.KIND_AUDIO:
+                    logger.info(f"🎤 Audio track subscribed for {target_identity}")
+                    audio_stream = rtc.AudioStream(track, sample_rate=16000, num_channels=1)
+                    asyncio.create_task(self._collect_frames(audio_stream, audio_buffer, recording_complete))
+            
             await room.connect(
                 self.livekit_url,
                 jwt,
@@ -220,51 +203,12 @@ class MockingbirdSkill:
             )
             
             logger.info(f"✅ Connected to room '{room_name}' as recorder")
-            await asyncio.sleep(1.0)  # Wait for participants to be ready
             
-            # Find target participant
-            logger.info(f"🔍 Looking for participant: {target_identity}")
+            try:
+                await asyncio.wait_for(recording_complete.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ Recording timeout - using what we have")
             
-            target_participant = None
-            for participant in room.participants.values():
-                if participant.identity == target_identity:
-                    if participant.sid != room.local_participant.sid:
-                        target_participant = participant
-                        logger.info(f"✅ Found target participant: {target_identity}")
-                        break
-            
-            if not target_participant:
-                logger.error(f"❌ Target participant '{target_identity}' not found")
-                return None
-            
-            # Create AudioStream
-            logger.info(f"🎤 Creating AudioStream for {target_identity}")
-            
-            audio_stream = rtc.AudioStream.from_participant(
-                participant=target_participant,
-                track_source=rtc.TrackSource.SOURCE_MICROPHONE,
-                sample_rate=16000,
-                num_channels=1
-            )
-            
-            logger.info(f"🎤 Recording audio from {target_identity} for {self.target_sample_duration}s...")
-            
-            # Collect audio frames
-            audio_buffer = []
-            start_time = time.time()
-            
-            async for audio_frame in audio_stream:
-                audio_buffer.append(bytes(audio_frame.data))
-                
-                elapsed = time.time() - start_time
-                if elapsed >= self.target_sample_duration:
-                    logger.info(f"✅ Recording complete! Collected {len(audio_buffer)} frames")
-                    break
-                
-                if len(audio_buffer) % 50 == 0:
-                    logger.info(f"📊 Recording... {elapsed:.1f}s / {self.target_sample_duration}s")
-            
-            # Process the captured audio
             if audio_buffer:
                 await self._process_captured_audio(
                     session_id=session_id,
@@ -295,6 +239,37 @@ class MockingbirdSkill:
             except:
                 pass
     
+    async def _collect_frames(
+        self,
+        audio_stream: rtc.AudioStream,
+        audio_buffer: List[bytes],
+        recording_complete: asyncio.Event
+    ):
+        """Collect audio frames from stream"""
+        try:
+            logger.info(f"🎤 Recording audio for {self.target_sample_duration}s...")
+            start_time = time.time()
+            frame_count = 0
+            
+            async for event in audio_stream:
+                frame = event.frame
+                audio_buffer.append(bytes(frame.data))
+                frame_count += 1
+                
+                elapsed = time.time() - start_time
+                if elapsed >= self.target_sample_duration:
+                    logger.info(f"✅ Recording complete! Collected {frame_count} frames")
+                    break
+                
+                if frame_count % 50 == 0:
+                    logger.info(f"📊 Recording... {elapsed:.1f}s / {self.target_sample_duration}s")
+            
+            recording_complete.set()
+            
+        except Exception as e:
+            logger.error(f"❌ Frame collection error: {e}", exc_info=True)
+            recording_complete.set()
+    
     async def _process_captured_audio(
         self,
         session_id: str,
@@ -307,20 +282,14 @@ class MockingbirdSkill:
         state.state = MockingbirdState.CLONING
         
         try:
-            # Send processing message
             await self._send_tts(
                 room_name, 
                 "Thank you! Processing your voice sample now...", 
                 "default"
             )
             
-            # Combine audio frames
             combined_audio = b''.join(audio_buffer)
-            
-            # Convert to numpy array (LiveKit uses float32)
             audio_array = np.frombuffer(combined_audio, dtype=np.float32)
-            
-            # Calculate duration
             duration = len(audio_array) / sample_rate
             
             logger.info(f"🎵 Processing {duration:.1f}s of audio at {sample_rate} Hz")
@@ -328,13 +297,11 @@ class MockingbirdSkill:
             if duration < self.min_sample_duration:
                 raise ValueError(f"Audio too short: {duration:.1f}s (min: {self.min_sample_duration}s)")
             
-            # Save to temporary WAV file
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
                 tmp_path = tmp_file.name
                 sf.write(tmp_path, audio_array, sample_rate)
             
             try:
-                # Clone voice
                 voice_id = f"mockingbird_{session_id[:8]}_{int(time.time())}"
                 voice_name = f"Cloned Voice - {session_id[:8]}"
                 
@@ -351,7 +318,6 @@ class MockingbirdSkill:
                     state.cloned_voice_id = voice_id
                     logger.info(f"✅ Voice cloned successfully: {voice_id}")
                     
-                    # Send confirmation in CLONED VOICE
                     await self._send_tts(
                         room_name,
                         "Got it! I'm now speaking with your voice.",
@@ -361,7 +327,6 @@ class MockingbirdSkill:
                     raise Exception(f"Voice cloning failed: {result.get('detail', 'Unknown error')}")
                     
             finally:
-                # Cleanup temp file
                 try:
                     os.unlink(tmp_path)
                 except:
@@ -399,22 +364,18 @@ class MockingbirdSkill:
                 "skip_llm_response": True
             }
         
-        # Cancel recording task if active
         if session_id in self.recording_tasks:
             self.recording_tasks[session_id].cancel()
             del self.recording_tasks[session_id]
         
-        # Get voice ID before clearing
         voice_id = state.cloned_voice_id
         
-        # Reset state
         state.state = MockingbirdState.INACTIVE
         state.cloned_voice_id = None
         state.room_name = None
         
         logger.info(f"🔇 Mockingbird disabled for session {session_id[:8]}...")
         
-        # Optionally delete cloned voice
         if voice_id and voice_id != "default":
             try:
                 await self.tts.delete_voice(voice_id)
@@ -460,10 +421,6 @@ class MockingbirdSkill:
             "recording_tasks": len(self.recording_tasks)
         }
 
-
-# ============================================================================
-# TOOL DECLARATIONS FOR GEMINI
-# ============================================================================
 
 def enable_mockingbird() -> dict:
     """Enable voice cloning mode (Mockingbird). June will clone the user's voice.
