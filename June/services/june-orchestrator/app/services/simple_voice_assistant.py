@@ -99,7 +99,7 @@ class SimpleVoiceAssistant:
         
         # Natural speech settings
         self.max_sentence_chars = 180
-        self.min_chunk_size = 50
+        self.min_chunk_size = 15  # ✅ FIX: Reduced from 50 to allow shorter responses
         self.sentence_end = re.compile(r'[.!?。！？]+\s+')
         
         # Metrics
