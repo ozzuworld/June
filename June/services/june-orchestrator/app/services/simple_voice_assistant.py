@@ -105,7 +105,7 @@ class SimpleVoiceAssistant:
         # Metrics
         self.total_requests = 0
         self.total_sentences_sent = 0
-        
+
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
         self._duplicate_window = 3.0
@@ -115,14 +115,33 @@ class SimpleVoiceAssistant:
         self._processing_tasks: Dict[str, asyncio.Task] = {}
         self._interrupted_sessions: set = set()
 
+        # Turn management - track when assistant is responding
+        self._assistant_responding: Dict[str, bool] = {}
+        self._last_response_time: Dict[str, float] = {}
+
         self.ignore_partials = True
         
         logger.info("✅ Voice Assistant with Mockingbird initialized")
     
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two texts (simple word overlap)"""
+        # Normalize texts
+        words1 = set(text1.lower().replace(',', '').replace('.', '').split())
+        words2 = set(text2.lower().replace(',', '').replace('.', '').split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        # Calculate Jaccard similarity
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+
+        return len(intersection) / len(union) if union else 0.0
+
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
-        """Check for duplicate transcripts"""
+        """Check for duplicate or very similar transcripts"""
         current_time = time.time()
-        
+
         # Clean up old entries
         expired = [
             sid for sid, (_, ts) in self._recent_transcripts.items()
@@ -130,13 +149,28 @@ class SimpleVoiceAssistant:
         ]
         for sid in expired:
             del self._recent_transcripts[sid]
-        
-        # Check if duplicate
+
+        # Check if duplicate or very similar
         if session_id in self._recent_transcripts:
             recent_text, recent_time = self._recent_transcripts[session_id]
-            if recent_text == text and current_time - recent_time < self._duplicate_window:
-                return True
-        
+            time_diff = current_time - recent_time
+
+            # If within duplicate window
+            if time_diff < self._duplicate_window:
+                # Exact match
+                if recent_text == text:
+                    logger.info(f"🔁 Exact duplicate detected: '{text[:30]}...'")
+                    return True
+
+                # Similar match (80% similarity threshold)
+                similarity = self._calculate_similarity(recent_text, text)
+                if similarity >= 0.8:
+                    logger.info(
+                        f"🔁 Similar transcript detected ({similarity:.0%} match): "
+                        f"'{text[:30]}...' vs '{recent_text[:30]}...'"
+                    )
+                    return True
+
         self._recent_transcripts[session_id] = (text, current_time)
         return False
     
@@ -287,11 +321,25 @@ NATURAL SPEECH (when NOT using tools):
                 "state": state.state,
                 "message": "Recording/processing voice sample"
             }
-        
+
+        # Turn management: Check if assistant is still responding
+        if self._assistant_responding.get(session_id, False):
+            current_time = time.time()
+            last_time = self._last_response_time.get(session_id, 0)
+            time_since_response = current_time - last_time
+
+            # If assistant responded recently (within 1.5 seconds), skip
+            if time_since_response < 1.5:
+                logger.info(
+                    f"🔇 Assistant still responding ({time_since_response:.1f}s ago) - "
+                    f"ignoring new input: '{text[:30]}...'"
+                )
+                return {"status": "skipped", "reason": "assistant_turn"}
+
         # Ignore partials
         if is_partial and self.ignore_partials:
             return {"status": "skipped", "reason": "partial_ignored"}
-        
+
         # Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
             return {"status": "skipped", "reason": "duplicate"}
@@ -325,16 +373,19 @@ NATURAL SPEECH (when NOT using tools):
         start_time: float
     ) -> Dict:
         """Process transcript"""
-        
+
         word_count = len(text.strip().split())
-        
+
         if word_count < 2:
             return {"status": "skipped", "reason": "too_short"}
-        
+
         logger.info("=" * 80)
         logger.info(f"📥 Session: {session_id[:8]}...")
         logger.info(f"📝 Text: '{text}'")
-        
+
+        # Mark that assistant is now responding
+        self._assistant_responding[session_id] = True
+
         try:
             # Get conversation history
             history = self.history.get_history(session_id)
@@ -409,6 +460,7 @@ NATURAL SPEECH (when NOT using tools):
                         if cleaned:
                             logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
                             await self._send_tts(room_name, cleaned, current_voice_id)
+                            self._last_response_time[session_id] = time.time()
                             self.total_sentences_sent += 1
             
             # Send remaining text (only if no tool was called)
@@ -419,6 +471,7 @@ NATURAL SPEECH (when NOT using tools):
                     sentence_count += 1
                     logger.info(f"🔊 Final: '{cleaned[:50]}...'")
                     await self._send_tts(room_name, cleaned, current_voice_id)
+                    self._last_response_time[session_id] = time.time()
                     self.total_sentences_sent += 1
             
             # Add to history
@@ -458,14 +511,19 @@ NATURAL SPEECH (when NOT using tools):
             
         except Exception as e:
             logger.error(f"❌ Error: {e}", exc_info=True)
-            
+
             # Send error message
             try:
                 await self._send_tts(room_name, "Sorry, I'm having trouble right now.", "default")
             except:
                 pass
-            
+
             return {"status": "error", "error": str(e)}
+
+        finally:
+            # Clear responding flag - assistant's turn is over
+            self._assistant_responding[session_id] = False
+            logger.info(f"✅ Assistant turn complete for {session_id[:8]}...")
     
     async def _stream_gemini(
         self,
@@ -654,6 +712,10 @@ NATURAL SPEECH (when NOT using tools):
             del self._processing_lock[session_id]
         if session_id in self._processing_tasks:
             del self._processing_tasks[session_id]
+        if session_id in self._assistant_responding:
+            del self._assistant_responding[session_id]
+        if session_id in self._last_response_time:
+            del self._last_response_time[session_id]
         self._interrupted_sessions.discard(session_id)
     
     async def health_check(self) -> Dict:
