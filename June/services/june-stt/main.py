@@ -170,7 +170,7 @@ async def startup_event() -> None:
     global asr_service
 
     config = ASRConfig(
-        model="base",
+        model="large-v2",  # ✅ UPGRADED from "base" for production-grade accuracy
         language="en",
         task="transcribe",
         use_vac=True,

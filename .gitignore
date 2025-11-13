@@ -37,3 +37,13 @@ June/services/june-tts/checkpoints_v2/
 *.safetensors
 *.onnx
 *.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
