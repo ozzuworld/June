@@ -1,6 +1,8 @@
 """
-Mockingbird Voice Cloning Skill - WORKING VERSION
+Mockingbird Voice Cloning Skill - FIXED VERSION
 Uses LiveKit 0.11.1 event-based API correctly
+
+FIX: AudioStream constructor doesn't accept sample_rate/num_channels parameters
 """
 import asyncio
 import logging
@@ -193,7 +195,9 @@ class MockingbirdSkill:
                 
                 if participant.identity == target_identity and track.kind == rtc.TrackKind.KIND_AUDIO:
                     logger.info(f"🎤 Audio track subscribed for {target_identity}")
-                    audio_stream = rtc.AudioStream(track, sample_rate=16000, num_channels=1)
+                    # ✅ FIX: AudioStream in livekit 0.11.1 doesn't accept sample_rate/num_channels
+                    # It handles audio format internally based on the track
+                    audio_stream = rtc.AudioStream(track)
                     asyncio.create_task(self._collect_frames(audio_stream, audio_buffer, recording_complete))
             
             await room.connect(
@@ -213,7 +217,7 @@ class MockingbirdSkill:
                 await self._process_captured_audio(
                     session_id=session_id,
                     audio_buffer=audio_buffer,
-                    sample_rate=16000,
+                    sample_rate=16000,  # We'll resample if needed
                     room_name=room_name
                 )
             else:
