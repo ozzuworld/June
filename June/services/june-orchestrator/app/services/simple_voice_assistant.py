@@ -607,8 +607,10 @@ NATURAL SPEECH (when NOT using tools):
 
                 # Only yield text if we haven't seen a tool call
                 if not tool_call_seen and chunk.text:
-                    logger.debug(f"📝 Yielding text chunk: '{chunk.text[:50]}...'")
+                    logger.info(f"📝 Yielding text chunk: '{chunk.text[:50]}'")
                     yield chunk.text
+                    # ✅ FIX: Yield control back to event loop after each chunk
+                    await asyncio.sleep(0)
 
             logger.info(f"✅ Stream complete: {chunk_count} chunks processed, tool_call_seen={tool_call_seen}")
                     
