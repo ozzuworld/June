@@ -411,6 +411,8 @@ NATURAL SPEECH (when NOT using tools):
                 user_message=text,
                 history=history
             ):
+                logger.info(f"🔄 CONSUMER received chunk: type={type(chunk).__name__}, is_str={isinstance(chunk, str)}, is_dict={isinstance(chunk, dict)}")
+
                 # Check for interruption
                 if session_id in self._interrupted_sessions:
                     logger.info(f"🛑 Interruption detected - stopping LLM stream")
@@ -438,11 +440,14 @@ NATURAL SPEECH (when NOT using tools):
 
                 # Handle text tokens (only if no tool was called)
                 if not tool_executed and isinstance(chunk, str):
+                    logger.info(f"📝 Processing text chunk: '{chunk[:50]}', tool_executed={tool_executed}")
                     full_response += chunk
                     sentence_buffer += chunk
+                    logger.info(f"📊 Buffer state: full_response_len={len(full_response)}, sentence_buffer='{sentence_buffer[:50]}'")
 
                     # Extract complete sentences
                     sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
+                    logger.info(f"📐 Extracted: sentence='{sentence}', remaining_buffer='{sentence_buffer[:30]}'")
 
                     if sentence:
                         # Check for interruption before sending TTS
