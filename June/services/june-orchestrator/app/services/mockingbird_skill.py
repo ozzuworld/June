@@ -182,36 +182,46 @@ Using AudioStream.from_participant() - the proper LiveKit 0.11.1 way
 
 async def _record_audio_from_room(
     self,
-    room: rtc.Room,
     session_id: str,
-    target_identity: str,
-    record_duration: float = 8.0
+    room_name: str
 ) -> Optional[bytes]:
     """
     Record audio from a specific participant using AudioStream
     
     This is the CORRECT way to record audio in LiveKit SDK 0.11.1
     """
+    state = self.get_session_state(session_id)
+    state.state = MockingbirdState.CAPTURING
+    
+    room = rtc.Room()
+    
     try:
-        # Generate LiveKit JWT for recorder
-        import time
-        from livekit import api as lk_api
+        # Get participant identity from ConversationManager
+        target_identity = self.conversation_manager.get_participant_identity(session_id)
+        if not target_identity:
+            logger.error(f"❌ Could not find identity for session {session_id}")
+            return None
         
-        jwt = lk_api.AccessToken(self.livekit_api_key, self.livekit_api_secret) \
+        logger.info(f"🎯 Target participant identity: {target_identity}")
+        
+        # Generate LiveKit JWT for recorder
+        jwt = api.AccessToken(self.livekit_api_key, self.livekit_api_secret) \
             .with_identity(f"recorder-{session_id[:8]}") \
             .with_name("Voice Recorder") \
-            .with_grants(lk_api.VideoGrants(
+            .with_grants(api.VideoGrants(
                 room_join=True,
                 room=room_name,
                 can_subscribe=True,
                 can_publish=False
             )).to_jwt()
         
+        logger.info(f"🎤 Spawning LiveKit recorder for room '{room_name}'")
+        
         # Connect to room
         await room.connect(
             self.livekit_url,
             jwt,
-            options=rtc.RoomOptions(auto_subscribe=True)  # ✅ Enable auto_subscribe
+            options=rtc.RoomOptions(auto_subscribe=True)
         )
         
         logger.info(f"✅ Connected to room '{room_name}' as recorder")
@@ -223,7 +233,6 @@ async def _record_audio_from_room(
         target_participant = None
         for participant in room.participants.values():
             if participant.identity == target_identity:
-                # Make sure it's not us (the local participant)
                 if participant.sid != room.local_participant.sid:
                     target_participant = participant
                     logger.info(f"✅ Found target participant: {target_identity}")
@@ -233,51 +242,59 @@ async def _record_audio_from_room(
             logger.error(f"❌ Target participant '{target_identity}' not found")
             return None
         
-        # ✅ CORRECT WAY: Use AudioStream.from_participant()
-        # This automatically subscribes to the participant's audio
+        # Create AudioStream
         logger.info(f"🎤 Creating AudioStream for {target_identity}")
         
         audio_stream = rtc.AudioStream.from_participant(
             participant=target_participant,
             track_source=rtc.TrackSource.SOURCE_MICROPHONE,
-            sample_rate=16000,  # Good for voice cloning
+            sample_rate=16000,
             num_channels=1
         )
         
-        logger.info(f"🎤 Recording audio from {target_identity} for {record_duration}s...")
+        logger.info(f"🎤 Recording audio from {target_identity} for {self.target_sample_duration}s...")
         
         # Collect audio frames
-        audio_frames = []
+        audio_buffer = []
         start_time = time.time()
         
         async for audio_frame in audio_stream:
-            # Collect the frame
-            audio_frames.append(bytes(audio_frame.data))
+            audio_buffer.append(bytes(audio_frame.data))
             
-            # Check if we've recorded enough
             elapsed = time.time() - start_time
-            if elapsed >= record_duration:
-                logger.info(f"✅ Recording complete! Collected {len(audio_frames)} frames")
+            if elapsed >= self.target_sample_duration:
+                logger.info(f"✅ Recording complete! Collected {len(audio_buffer)} frames")
                 break
             
-            # Log progress
-            if len(audio_frames) % 50 == 0:
-                logger.info(f"📊 Recording... {elapsed:.1f}s / {record_duration}s")
+            if len(audio_buffer) % 50 == 0:
+                logger.info(f"📊 Recording... {elapsed:.1f}s / {self.target_sample_duration}s")
         
-        # Combine all frames
-        if audio_frames:
-            audio_bytes = b''.join(audio_frames)
-            logger.info(f"✅ Got {len(audio_bytes)} bytes of audio")
-            return audio_bytes
+        # Process the captured audio
+        if audio_buffer:
+            await self._process_captured_audio(
+                session_id=session_id,
+                audio_buffer=audio_buffer,
+                sample_rate=16000,
+                room_name=room_name
+            )
         else:
             logger.warning("⚠️ No audio frames captured")
-            return None
+            state.state = MockingbirdState.ERROR
+            await self._send_tts(
+                room_name,
+                "Sorry, I couldn't capture any audio. Please try again.",
+                "default"
+            )
             
     except Exception as e:
         logger.error(f"❌ Recording error: {e}", exc_info=True)
-        return None
+        state.state = MockingbirdState.ERROR
+        await self._send_tts(
+            room_name,
+            "Sorry, I had trouble recording. Let's try again later.",
+            "default"
+        )
     finally:
-        # Cleanup
         try:
             await room.disconnect()
         except:
