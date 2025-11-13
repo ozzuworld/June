@@ -108,7 +108,7 @@ class SimpleVoiceAssistant:
 
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
-        self._duplicate_window = 3.0
+        self._duplicate_window = 30.0  # ✅ Increased from 3s to 30s to catch delayed duplicates from STT
 
         # Processing locks and task tracking
         self._processing_lock: Dict[str, asyncio.Lock] = {}
