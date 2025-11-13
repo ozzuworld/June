@@ -533,10 +533,10 @@ NATURAL SPEECH (when NOT using tools):
                 
             elif tool_name == "check_mockingbird_status":
                 result = self.mockingbird.check_status(session_id)
-                
-                # Tool returns TTS message - send it with current voice
+
+                # Tool returns TTS message - send it with the voice_id from result
                 if "tts_message" in result:
-                    await self._send_tts(room_name, result["tts_message"], current_voice)
+                    await self._send_tts(room_name, result["tts_message"], result.get("voice_id", "default"))
             else:
                 logger.error(f"❌ Unknown tool: {tool_name}")
                 
