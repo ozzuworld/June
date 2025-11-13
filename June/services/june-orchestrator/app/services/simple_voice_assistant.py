@@ -119,6 +119,11 @@ class SimpleVoiceAssistant:
         self._assistant_responding: Dict[str, bool] = {}
         self._last_response_time: Dict[str, float] = {}
 
+        # Echo detection - track recent assistant responses to prevent feedback loops
+        self._recent_assistant_responses: Dict[str, list[tuple[str, float]]] = {}
+        self._echo_window = 30.0  # Check last 30 seconds of responses
+        self._echo_similarity_threshold = 0.6  # 60% match = likely echo
+
         self.ignore_partials = True
         
         logger.info("✅ Voice Assistant with Mockingbird initialized")
@@ -173,7 +178,51 @@ class SimpleVoiceAssistant:
 
         self._recent_transcripts[session_id] = (text, current_time)
         return False
-    
+
+    def _is_echo(self, session_id: str, text: str) -> bool:
+        """Check if transcript is likely an echo of assistant's own voice"""
+        current_time = time.time()
+
+        # Get recent assistant responses for this session
+        if session_id not in self._recent_assistant_responses:
+            return False
+
+        recent_responses = self._recent_assistant_responses[session_id]
+
+        # Clean up old responses (older than echo_window)
+        recent_responses = [
+            (resp, timestamp)
+            for resp, timestamp in recent_responses
+            if current_time - timestamp < self._echo_window
+        ]
+        self._recent_assistant_responses[session_id] = recent_responses
+
+        # Check similarity with recent responses
+        for response_text, timestamp in recent_responses:
+            similarity = self._calculate_similarity(text, response_text)
+
+            if similarity >= self._echo_similarity_threshold:
+                logger.warning(
+                    f"🔊 ECHO DETECTED ({similarity:.0%} match): "
+                    f"User transcript '{text[:50]}...' matches recent assistant response"
+                )
+                return True
+
+        return False
+
+    def _track_assistant_response(self, session_id: str, text: str):
+        """Track assistant's response to detect echoes later"""
+        current_time = time.time()
+
+        if session_id not in self._recent_assistant_responses:
+            self._recent_assistant_responses[session_id] = []
+
+        self._recent_assistant_responses[session_id].append((text, current_time))
+
+        # Keep only last 10 responses per session
+        if len(self._recent_assistant_responses[session_id]) > 10:
+            self._recent_assistant_responses[session_id] = self._recent_assistant_responses[session_id][-10:]
+
     def _clean_llm_output(self, text: str) -> str:
         """Clean LLM output for TTS"""
         # Remove leading "June:" or "Assistant:"
@@ -340,6 +389,11 @@ NATURAL SPEECH (when NOT using tools):
         if is_partial and self.ignore_partials:
             return {"status": "skipped", "reason": "partial_ignored"}
 
+        # Check for echo (assistant's own voice being transcribed)
+        if self._is_echo(session_id, text):
+            logger.info(f"🔊 Echo detected - ignoring: '{text[:50]}...'")
+            return {"status": "skipped", "reason": "echo"}
+
         # Check for duplicates
         if self._is_duplicate_transcript(session_id, text):
             return {"status": "skipped", "reason": "duplicate"}
@@ -494,7 +548,9 @@ NATURAL SPEECH (when NOT using tools):
                 elif full_response:
                     # Normal response
                     self.history.add_message(session_id, "assistant", full_response)
-                
+                    # Track response for echo detection
+                    self._track_assistant_response(session_id, full_response)
+
                 logger.info(f"✅ History updated: now {len(self.history.get_history(session_id))} messages")
             
             total_time = (time.time() - start_time) * 1000
