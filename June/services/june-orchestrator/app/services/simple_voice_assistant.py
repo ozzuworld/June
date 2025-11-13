@@ -109,10 +109,12 @@ class SimpleVoiceAssistant:
         # Deduplication
         self._recent_transcripts: Dict[str, tuple[str, float]] = {}
         self._duplicate_window = 3.0
-        
-        # Processing locks
+
+        # Processing locks and task tracking
         self._processing_lock: Dict[str, asyncio.Lock] = {}
-        
+        self._processing_tasks: Dict[str, asyncio.Task] = {}
+        self._interrupted_sessions: set = set()
+
         self.ignore_partials = True
         
         logger.info("✅ Voice Assistant with Mockingbird initialized")
@@ -358,11 +360,20 @@ NATURAL SPEECH (when NOT using tools):
                 user_message=text,
                 history=history
             ):
+                # Check for interruption
+                if session_id in self._interrupted_sessions:
+                    logger.info(f"🛑 Interruption detected - stopping LLM stream")
+                    self._interrupted_sessions.discard(session_id)
+                    return {
+                        "status": "interrupted",
+                        "message": "Processing stopped due to user interruption"
+                    }
+
                 # Handle tool calls and break immediately
                 if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
                     tool_name = chunk['tool_name']
                     logger.info(f"🔧 Tool called: {tool_name}")
-                    
+
                     # Execute tool ONCE
                     await self._execute_tool(
                         tool_name=tool_name,
@@ -370,22 +381,31 @@ NATURAL SPEECH (when NOT using tools):
                         session_id=session_id,
                         room_name=room_name
                     )
-                    
+
                     tool_executed = True
                     break
-                
+
                 # Handle text tokens (only if no tool was called)
                 if not tool_executed and isinstance(chunk, str):
                     full_response += chunk
                     sentence_buffer += chunk
-                    
+
                     # Extract complete sentences
                     sentence, sentence_buffer = self._extract_complete_sentence(sentence_buffer)
-                    
+
                     if sentence:
+                        # Check for interruption before sending TTS
+                        if session_id in self._interrupted_sessions:
+                            logger.info(f"🛑 Interruption detected - stopping before TTS")
+                            self._interrupted_sessions.discard(session_id)
+                            return {
+                                "status": "interrupted",
+                                "message": "Processing stopped due to user interruption"
+                            }
+
                         sentence_count += 1
                         cleaned = self._clean_llm_output(sentence)
-                        
+
                         if cleaned:
                             logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
                             await self._send_tts(room_name, cleaned, current_voice_id)
@@ -585,9 +605,34 @@ NATURAL SPEECH (when NOT using tools):
             logger.error(f"❌ TTS error: {e}")
     
     async def handle_interruption(self, session_id: str, room_name: str):
-        """Handle user interruption"""
-        logger.info(f"🛑 User interrupted")
-        return {"status": "interrupted"}
+        """Handle user interruption - stop ongoing processing and TTS"""
+        logger.info(f"🛑 User interruption for session {session_id[:8]}... in room {room_name}")
+
+        # Mark session as interrupted
+        self._interrupted_sessions.add(session_id)
+
+        # Cancel any ongoing processing task
+        if session_id in self._processing_tasks:
+            task = self._processing_tasks[session_id]
+            if not task.done():
+                logger.info(f"🛑 Cancelling ongoing processing task for {session_id[:8]}...")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info(f"✅ Task cancelled successfully")
+            del self._processing_tasks[session_id]
+
+        # Note: We cannot easily stop ongoing TTS playback in LiveKit from here
+        # The TTS request has already been sent to the XTTS service
+        # The interruption will prevent NEW TTS from being sent
+
+        logger.info(f"✅ Interruption handled - new processing will be prevented")
+
+        return {
+            "status": "interrupted",
+            "message": "Processing stopped, ready for new input"
+        }
     
     def get_stats(self) -> Dict:
         """Get statistics"""
@@ -602,11 +647,14 @@ NATURAL SPEECH (when NOT using tools):
     def clear_session(self, session_id: str):
         """Clear session data"""
         self.history.clear_session(session_id)
-        
+
         if session_id in self._recent_transcripts:
             del self._recent_transcripts[session_id]
         if session_id in self._processing_lock:
             del self._processing_lock[session_id]
+        if session_id in self._processing_tasks:
+            del self._processing_tasks[session_id]
+        self._interrupted_sessions.discard(session_id)
     
     async def health_check(self) -> Dict:
         """Health check"""
