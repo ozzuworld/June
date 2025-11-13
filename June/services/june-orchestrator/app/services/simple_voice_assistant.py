@@ -179,6 +179,22 @@ class SimpleVoiceAssistant:
         
         return "", text_buffer
     
+    def _should_enable_tools(self, text: str) -> bool:
+        """Check if user message contains Mockingbird-related keywords"""
+        text_lower = text.lower()
+        keywords = [
+            'mockingbird',
+            'clone my voice',
+            'clone voice',
+            'use my voice',
+            'use your voice',
+            'voice cloning',
+            'what voice are you using',
+            'which voice',
+            'voice status'
+        ]
+        return any(keyword in text_lower for keyword in keywords)
+
     def _build_system_prompt(self) -> str:
         """Build system prompt with tool instructions"""
         return """You are June, a warm and intelligent voice assistant with voice cloning capabilities.
@@ -441,9 +457,9 @@ NATURAL SPEECH (when NOT using tools):
         try:
             from google import genai
             from google.genai import types
-            
+
             client = genai.Client(api_key=self.gemini_api_key)
-            
+
             # Build prompt with history
             if history:
                 context_lines = [f"{msg['role']}: {msg['content']}" for msg in history]
@@ -457,20 +473,33 @@ NATURAL SPEECH (when NOT using tools):
                 )
             else:
                 full_prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
-            
-            # Configure generation with tools
-            config = types.GenerateContentConfig(
-                temperature=0.9,
-                max_output_tokens=500,
-                top_p=0.95,
-                top_k=50,
-                tools=MOCKINGBIRD_TOOLS,
-                tool_config=types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(
-                        mode='AUTO'  # Let model decide when to call tools vs respond normally
+
+            # Only enable tools if user mentions Mockingbird-related keywords
+            enable_tools = self._should_enable_tools(user_message)
+
+            # Configure generation
+            if enable_tools:
+                logger.info("🔧 Tools ENABLED - Mockingbird keywords detected")
+                config = types.GenerateContentConfig(
+                    temperature=0.9,
+                    max_output_tokens=500,
+                    top_p=0.95,
+                    top_k=50,
+                    tools=MOCKINGBIRD_TOOLS,
+                    tool_config=types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(
+                            mode='AUTO'
+                        )
                     )
                 )
-            )
+            else:
+                logger.info("💬 Tools DISABLED - Normal conversation mode")
+                config = types.GenerateContentConfig(
+                    temperature=0.9,
+                    max_output_tokens=500,
+                    top_p=0.95,
+                    top_k=50
+                )
             
             # Track if we've seen a tool call
             tool_call_seen = False
