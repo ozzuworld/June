@@ -581,28 +581,36 @@ NATURAL SPEECH (when NOT using tools):
             
             # Track if we've seen a tool call
             tool_call_seen = False
-            
+            chunk_count = 0
+
             # Stream response
             for chunk in client.models.generate_content_stream(
                 model='gemini-2.0-flash-exp',
                 contents=full_prompt,
                 config=config
             ):
+                chunk_count += 1
+                logger.info(f"📦 Chunk #{chunk_count}: has_text={hasattr(chunk, 'text')}, text='{getattr(chunk, 'text', '')[:50]}', has_function_calls={hasattr(chunk, 'function_calls') and bool(getattr(chunk, 'function_calls', []))}")
+
                 # Check for tool calls FIRST
                 if hasattr(chunk, 'function_calls') and chunk.function_calls:
                     for func_call in chunk.function_calls:
                         if not tool_call_seen:
                             tool_call_seen = True
+                            logger.info(f"🔧 Function call detected in chunk: {func_call.name}")
                             yield {
                                 "type": "tool_call",
                                 "tool_name": func_call.name,
                                 "tool_args": dict(func_call.args) if func_call.args else {}
                             }
                             return
-                
+
                 # Only yield text if we haven't seen a tool call
                 if not tool_call_seen and chunk.text:
+                    logger.debug(f"📝 Yielding text chunk: '{chunk.text[:50]}...'")
                     yield chunk.text
+
+            logger.info(f"✅ Stream complete: {chunk_count} chunks processed, tool_call_seen={tool_call_seen}")
                     
         except Exception as e:
             logger.error(f"❌ Gemini error: {e}")
