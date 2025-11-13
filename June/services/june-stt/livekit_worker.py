@@ -50,6 +50,7 @@ class ParticipantState:
 
     # CRITICAL: Prevent duplicate FINALs
     final_sent_for_utterance: bool = False
+    last_sent_final: str = ""  # ← Track what FINAL text we sent
 
     def reset_for_new_utterance(self):
         """Reset state when starting a new utterance"""
@@ -59,6 +60,7 @@ class ParticipantState:
         self.last_partial_text = ""
         self.silence_counter = 0
         self.final_sent_for_utterance = False  # ← Critical reset
+        # NOTE: last_sent_final is NOT reset - we keep it to detect duplicate text
 
 
 # Global participant state tracking
@@ -426,10 +428,15 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 if output[0] is not None:
                     beg, end, text = output
                     text = text.strip()
-                    
+
                     # Skip if empty
                     if not text:
                         continue
+
+                    # ✅ NEW: Detect new utterance (different from last FINAL)
+                    if text and state.final_sent_for_utterance and text != state.last_sent_final:
+                        logger.info(f"🆕 New utterance detected, resetting state")
+                        state.reset_for_new_utterance()
                     
                     # ✅ Check cooldown period after FINAL
                     time_since_final = current_time - state.last_final_time
@@ -505,18 +512,25 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
 
                     # After enough silence, finalize with FULL accumulated text
                     # ✅ CRITICAL: Only send ONE FINAL per utterance
-                    if state.silence_counter >= silence_threshold and state.accumulated_text and not state.final_sent_for_utterance:
+                    # ✅ NEW: Also check text differs from last sent FINAL
+                    if (state.silence_counter >= silence_threshold and
+                        state.accumulated_text and
+                        not state.final_sent_for_utterance and
+                        state.accumulated_text != state.last_sent_final):
                         logger.info(
                             "[LiveKit FINAL after silence] %s: %s",
                             participant.identity,
                             state.accumulated_text,
                         )
 
+                        # Track what we're sending
+                        final_text = state.accumulated_text
+
                         # ✅ Send FINAL with retry logic
                         success = await send_final_with_retry(
                             room_name=room_name,
                             participant=participant.identity,
-                            text=state.accumulated_text
+                            text=final_text
                         )
 
                         if success:
@@ -526,8 +540,11 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             # ✅ Set cooldown timestamp
                             state.last_final_time = time.time()
 
-                            # Reset state for next utterance
-                            state.reset_for_new_utterance()
+                            # ✅ Track the FINAL text we sent
+                            state.last_sent_final = final_text
+
+                            # ✅ FIX: DON'T reset here! Keep accumulated_text to detect duplicates
+                            # Reset will happen when NEW audio with different text arrives
 
         # Process any remaining audio in buffer
         if len(audio_buffer) > 0:
@@ -554,8 +571,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     state.accumulated_text,
                 )
 
-                # ✅ CRITICAL: Only send if not already sent
-                if not state.final_sent_for_utterance:
+                # ✅ CRITICAL: Only send if not already sent AND text is different
+                if not state.final_sent_for_utterance and state.accumulated_text != state.last_sent_final:
                     success = await send_final_with_retry(
                         room_name=room_name,
                         participant=participant.identity,
@@ -565,10 +582,11 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     if success:
                         state.final_sent_for_utterance = True
                         state.last_final_time = time.time()
+                        state.last_sent_final = state.accumulated_text
         else:
             # Even if finish() returns None, send accumulated text if we have it
-            # ✅ CRITICAL: Only send if not already sent
-            if state.accumulated_text and not state.final_sent_for_utterance:
+            # ✅ CRITICAL: Only send if not already sent AND text is different
+            if state.accumulated_text and not state.final_sent_for_utterance and state.accumulated_text != state.last_sent_final:
                 logger.info(
                     "[LiveKit FINAL from accumulated on track end] %s: %s",
                     participant.identity,
@@ -584,6 +602,7 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 if success:
                     state.final_sent_for_utterance = True
                     state.last_final_time = time.time()
+                    state.last_sent_final = state.accumulated_text
 
         # ✅ ENTERPRISE: Cleanup participant state on track end
         if participant_id in participant_states:
