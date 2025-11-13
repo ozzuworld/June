@@ -1,12 +1,9 @@
 """
-Simple Voice Assistant - PRODUCTION VERSION
-All fixes applied:
-- Tool call loop prevention
-- Proper state checking
-- Better error handling
-- Comprehensive logging
-
-✅ UPDATED: Accepts conversation_manager parameter
+Simple Voice Assistant - FIXED VERSION
+Fixes:
+1. More restrictive tool triggering (reduce false positives)
+2. Use cloned voice for "already active" messages
+3. Better system prompt to prevent accidental tool calls
 """
 import asyncio
 import logging
@@ -71,34 +68,30 @@ class SimpleVoiceAssistant:
     """
     Voice assistant with Mockingbird skill
     
-    FIXED ISSUES:
-    - Tool call loop prevention (break immediately after tool)
-    - Proper Mockingbird busy state checking
-    - Better deduplication
-    - Comprehensive error handling
-    - Better logging
-    
-    ✅ UPDATED: Now accepts conversation_manager
+    FIXES:
+    1. Better tool trigger detection (reduce false positives)
+    2. Use cloned voice for "already active" messages
+    3. Improved system prompt
     """
     
     def __init__(
         self, 
         gemini_api_key: str, 
         tts_service,
-        conversation_manager,  # ✅ NEW
+        conversation_manager,
         livekit_url: str,
         livekit_api_key: str,
         livekit_api_secret: str
     ):
         self.gemini_api_key = gemini_api_key
         self.tts = tts_service
-        self.conversation_manager = conversation_manager  # ✅ NEW
+        self.conversation_manager = conversation_manager
         self.history = ConversationHistory(max_turns=5)
         
         # Initialize Mockingbird skill with conversation_manager
         self.mockingbird = MockingbirdSkill(
             tts_service=tts_service,
-            conversation_manager=conversation_manager,  # ✅ NEW
+            conversation_manager=conversation_manager,
             livekit_url=livekit_url,
             livekit_api_key=livekit_api_key,
             livekit_api_secret=livekit_api_secret
@@ -123,9 +116,6 @@ class SimpleVoiceAssistant:
         self.ignore_partials = True
         
         logger.info("✅ Voice Assistant with Mockingbird initialized")
-    
-    # ... rest of the methods unchanged ...
-    # (I'll include the full code to avoid breaking anything)
     
     def _is_duplicate_transcript(self, session_id: str, text: str) -> bool:
         """Check for duplicate transcripts"""
@@ -201,26 +191,52 @@ class SimpleVoiceAssistant:
 
 🎭 MOCKINGBIRD VOICE CLONING:
 
-CRITICAL: When you detect trigger phrases, IMMEDIATELY CALL THE FUNCTION ONCE.
-Call it once and stop - do NOT call it multiple times.
+⚠️ CRITICAL: ONLY call these tools when user EXPLICITLY asks for them!
 
 TOOL 1: enable_mockingbird()
-Triggers: "enable mockingbird", "clone my voice", "speak in my voice", "use my voice"
-Action: CALL enable_mockingbird() ONCE → STOP
+ONLY call when user says EXACTLY:
+- "enable mockingbird"
+- "turn on mockingbird"
+- "activate mockingbird"
+- "clone my voice"
+- "use my voice"
+DO NOT call for: normal conversation, questions, unrelated commands
 
 TOOL 2: disable_mockingbird()
-Triggers: "disable mockingbird", "use your voice", "stop using my voice"
-Action: CALL disable_mockingbird() ONCE → STOP
+ONLY call when user says EXACTLY:
+- "disable mockingbird"
+- "turn off mockingbird"
+- "deactivate mockingbird"
+- "use your voice"
+- "stop using my voice"
+DO NOT call for: normal conversation, questions, unrelated commands
 
 TOOL 3: check_mockingbird_status()
-Triggers: "is mockingbird active", "what voice are you using", "mockingbird status"
-Action: CALL check_mockingbird_status() ONCE → STOP
+ONLY call when user says EXACTLY:
+- "is mockingbird active"
+- "mockingbird status"
+- "what voice are you using"
+- "are you using my voice"
+DO NOT call for: normal conversation, questions, mentions of voice
 
 ⚠️ CRITICAL RULES:
-1. Call each function ONLY ONCE per request
-2. After calling a function → STOP (don't call it again)
-3. The function will handle all communication with the user
-4. Do NOT generate any text after calling a function
+1. Be VERY conservative - don't call tools unless user explicitly requests them
+2. If user just mentions "voice" or "mockingbird" in conversation, respond normally (NO TOOL)
+3. Call each function ONLY ONCE per request
+4. After calling a function → STOP (don't call it again)
+5. The function will handle all communication with the user
+6. Do NOT generate any text after calling a function
+
+EXAMPLES OF WHEN NOT TO CALL TOOLS:
+❌ "your voice else I can doubt" → Normal response (no tool)
+❌ "I like your voice" → Normal response (no tool)
+❌ "Ready to clone your voice..." → Normal response (this is TTS echo, no tool)
+❌ "can you hear my voice" → Normal response (no tool)
+
+EXAMPLES OF WHEN TO CALL TOOLS:
+✅ "enable mockingbird" → Call enable_mockingbird()
+✅ "turn on mockingbird" → Call enable_mockingbird()
+✅ "disable mockingbird" → Call disable_mockingbird()
 
 NATURAL SPEECH (when NOT using tools):
 • Write for voice: "Oh, that's interesting!" vs "That is interesting."
@@ -242,7 +258,7 @@ NATURAL SPEECH (when NOT using tools):
         start_time = time.time()
         self.total_requests += 1
         
-        # ✅ CRITICAL FIX: Check if Mockingbird is busy FIRST
+        # Check if Mockingbird is busy
         state = self.mockingbird.get_session_state(session_id)
         if state.is_busy():
             logger.info(
@@ -290,7 +306,7 @@ NATURAL SPEECH (when NOT using tools):
         is_partial: bool,
         start_time: float
     ) -> Dict:
-        """Process transcript - ✅ Breaks immediately after tool call"""
+        """Process transcript"""
         
         word_count = len(text.strip().split())
         
@@ -326,7 +342,7 @@ NATURAL SPEECH (when NOT using tools):
                 user_message=text,
                 history=history
             ):
-                # ✅ CRITICAL FIX: Handle tool calls and break immediately
+                # Handle tool calls and break immediately
                 if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
                     tool_name = chunk['tool_name']
                     logger.info(f"🔧 Tool called: {tool_name}")
@@ -340,9 +356,6 @@ NATURAL SPEECH (when NOT using tools):
                     )
                     
                     tool_executed = True
-                    
-                    # ✅ CRITICAL: Stop processing immediately
-                    # Don't continue the loop - tool handles everything
                     break
                 
                 # Handle text tokens (only if no tool was called)
@@ -468,7 +481,7 @@ NATURAL SPEECH (when NOT using tools):
                 contents=full_prompt,
                 config=config
             ):
-                # ✅ CRITICAL: Check for tool calls FIRST
+                # Check for tool calls FIRST
                 if hasattr(chunk, 'function_calls') and chunk.function_calls:
                     for func_call in chunk.function_calls:
                         if not tool_call_seen:
@@ -478,7 +491,6 @@ NATURAL SPEECH (when NOT using tools):
                                 "tool_name": func_call.name,
                                 "tool_args": dict(func_call.args) if func_call.args else {}
                             }
-                            # ✅ CRITICAL: Return immediately after first tool call
                             return
                 
                 # Only yield text if we haven't seen a tool call
@@ -496,31 +508,34 @@ NATURAL SPEECH (when NOT using tools):
         session_id: str,
         room_name: str
     ) -> None:
-        """Execute Mockingbird tool"""
+        """Execute Mockingbird tool - ✅ FIX: Use cloned voice for responses"""
         try:
             logger.info(f"🔧 Executing tool: {tool_name}")
+            
+            # ✅ FIX: Get current voice BEFORE calling tool
+            current_voice = self.mockingbird.get_current_voice_id(session_id)
             
             if tool_name == "enable_mockingbird":
                 result = await self.mockingbird.enable(session_id, room_name)
                 
                 # Tool returns TTS message - send it
                 if "tts_message" in result:
-                    await self._send_tts(room_name, result["tts_message"], "default")
+                    # ✅ FIX: For "already active" message, use cloned voice
+                    voice_to_use = "default" if result["status"] == "awaiting_sample" else current_voice
+                    await self._send_tts(room_name, result["tts_message"], voice_to_use)
                 
             elif tool_name == "disable_mockingbird":
                 result = await self.mockingbird.disable(session_id)
                 
-                # Tool returns TTS message - send it
+                # Tool returns TTS message - send it with current voice
                 if "tts_message" in result:
-                    current_voice = self.mockingbird.get_current_voice_id(session_id)
                     await self._send_tts(room_name, result["tts_message"], current_voice)
                 
             elif tool_name == "check_mockingbird_status":
                 result = self.mockingbird.check_status(session_id)
                 
-                # Tool returns TTS message - send it
+                # Tool returns TTS message - send it with current voice
                 if "tts_message" in result:
-                    current_voice = self.mockingbird.get_current_voice_id(session_id)
                     await self._send_tts(room_name, result["tts_message"], current_voice)
             else:
                 logger.error(f"❌ Unknown tool: {tool_name}")
