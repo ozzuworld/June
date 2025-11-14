@@ -55,10 +55,10 @@ RUN python3.11 -m pip install \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install Chatterbox TTS
-RUN python3.11 -m pip install chatterbox-tts
+# Install numpy first (required for chatterbox-tts build dependencies)
+RUN python3.11 -m pip install "numpy<2.0.0"
 
-# Install core ML dependencies
+# Install core ML dependencies (needed before chatterbox-tts)
 RUN python3.11 -m pip install \
     transformers>=4.36.0 \
     accelerate>=0.25.0 \
@@ -66,12 +66,14 @@ RUN python3.11 -m pip install \
     vector-quantize-pytorch>=1.14.0 \
     natsort>=8.4.0 \
     soundfile>=0.12.1 \
-    "numpy<2.0.0" \
     scipy>=1.11.4 \
     librosa>=0.10.1 \
     loguru>=0.7.0 \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
+
+# Install Chatterbox TTS (after numpy and dependencies)
+RUN python3.11 -m pip install chatterbox-tts
 
 # Install FastAPI and server dependencies
 RUN python3.11 -m pip install \
