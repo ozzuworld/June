@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Fish Speech HTTP API Wrapper
-Simplified version that uses Fish Speech's built-in API server
+June TTS Service - Chatterbox TTS Integration
+Multilingual TTS with voice cloning and emotion control
 """
 import asyncio
+import io
 import logging
 import os
-import time
 import tempfile
-import io
-from typing import Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
-import torch
-import httpx
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-from livekit import rtc
 import soundfile as sf
+import torch
+import torchaudio as ta
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
+from livekit import rtc
+from pydantic import BaseModel, Field
 import asyncpg
 
 # -----------------------------------------------------------------------------
@@ -29,7 +30,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("june-tts-fish-speech")
+logger = logging.getLogger("june-tts-chatterbox")
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -38,8 +39,12 @@ LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 
-# Fish Speech API (running locally)
-FISH_SPEECH_API = "http://127.0.0.1:9880"
+# Chatterbox settings
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+USE_MULTILINGUAL = os.getenv("USE_MULTILINGUAL", "1") == "1"
+WARMUP_ON_STARTUP = os.getenv("WARMUP_ON_STARTUP", "1") == "1"
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
 
 # PostgreSQL
 DB_HOST = os.getenv("DB_HOST", "100.64.0.1")
@@ -49,7 +54,7 @@ DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
 # Audio settings
-FISH_SPEECH_SAMPLE_RATE = 44100
+CHATTERBOX_SAMPLE_RATE = 24000  # Chatterbox default
 LIVEKIT_SAMPLE_RATE = 48000
 LIVEKIT_FRAME_SIZE = 960  # 20ms @ 48kHz
 FRAME_PERIOD_S = 0.020
@@ -58,14 +63,18 @@ FRAME_PERIOD_S = 0.020
 # FastAPI app
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="June TTS (Fish Speech API Wrapper)",
-    version="5.0.0",
-    description="Fish Speech TTS with LiveKit streaming"
+    title="June TTS (Chatterbox)",
+    version="6.0.0",
+    description="Chatterbox TTS with LiveKit streaming, 23 languages, emotion control"
 )
 
 # -----------------------------------------------------------------------------
 # Global state
 # -----------------------------------------------------------------------------
+model = None
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+voice_cache = {}
+
 livekit_room = None
 livekit_audio_source = None
 livekit_connected = False
@@ -73,7 +82,7 @@ livekit_connected = False
 db_pool = None
 
 current_voice_id: Optional[str] = None
-current_reference_audio: Optional[bytes] = None
+current_reference_audio_path: Optional[str] = None
 
 _gpu_resampler = None
 
@@ -81,13 +90,13 @@ _gpu_resampler = None
 # Schemas
 # -----------------------------------------------------------------------------
 class SynthesizeRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     room_name: str = Field(..., description="LiveKit room name")
-    language: str = Field(default="en")
     voice_id: str = Field(default="default")
-    temperature: float = Field(default=0.5, ge=0.1, le=1.0)  # Lower for consistency
-    top_p: float = Field(default=0.7, ge=0.1, le=1.0)
-    repetition_penalty: float = Field(default=1.2, ge=1.0, le=2.0)
+    language: str = Field(default="en", description="Language code for multilingual model")
+    exaggeration: float = Field(default=0.5, ge=0.0, le=2.0, description="Emotion intensity (0.0=flat, 2.0=very expressive)")
+    cfg_weight: float = Field(default=0.5, ge=0.0, le=1.0, description="Voice adherence (lower=better pacing)")
+    temperature: float = Field(default=0.9, ge=0.1, le=2.0, description="Sampling temperature")
 
 # -----------------------------------------------------------------------------
 # Database
@@ -124,88 +133,122 @@ async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
     logger.warning(f"⚠️ Voice '{voice_id}' not found in DB")
     return None
 
-async def load_voice_reference(voice_id: str = "default"):
-    global current_voice_id, current_reference_audio
+async def load_voice_reference(voice_id: str = "default") -> Optional[str]:
+    """Load voice reference and return path to temp file"""
+    global current_voice_id, current_reference_audio_path
 
-    if voice_id == current_voice_id and current_reference_audio is not None:
-        return True
+    # Check cache
+    if voice_id in voice_cache:
+        current_voice_id = voice_id
+        current_reference_audio_path = voice_cache[voice_id]
+        return current_reference_audio_path
 
     logger.info(f"📁 Loading voice reference '{voice_id}'...")
+
+    # Try database
     audio_bytes = await get_voice_from_db(voice_id)
 
-    if audio_bytes:
-        current_reference_audio = audio_bytes
-        current_voice_id = voice_id
-        logger.info(f"✅ Voice '{voice_id}' loaded")
-        return True
-    else:
+    if not audio_bytes:
+        # Try default reference file
         default_ref = Path("/app/references/June.wav")
         if default_ref.exists():
-            with open(default_ref, 'rb') as f:
-                current_reference_audio = f.read()
+            voice_cache[voice_id] = str(default_ref)
             current_voice_id = voice_id
+            current_reference_audio_path = str(default_ref)
             logger.info(f"✅ Using default reference audio")
-            return True
+            return current_reference_audio_path
         else:
             logger.warning(f"⚠️ No reference audio for '{voice_id}'")
-            current_reference_audio = None
-            return False
+            return None
+
+    # Save to temp file for Chatterbox
+    temp_path = f"/tmp/voice_{voice_id}.wav"
+    with open(temp_path, 'wb') as f:
+        f.write(audio_bytes)
+
+    voice_cache[voice_id] = temp_path
+    current_voice_id = voice_id
+    current_reference_audio_path = temp_path
+    logger.info(f"✅ Voice '{voice_id}' loaded to {temp_path}")
+    return temp_path
 
 # -----------------------------------------------------------------------------
-# Fish Speech API Client
+# Chatterbox Model Management
 # -----------------------------------------------------------------------------
-async def synthesize_with_fish_speech_api(
-    text: str,
-    reference_audio: Optional[bytes] = None,
-    temperature: float = 0.5,
-    top_p: float = 0.7,
-    repetition_penalty: float = 1.2,
-) -> bytes:
-    """Call Fish Speech HTTP API for synthesis
+async def load_model():
+    """Load Chatterbox model on startup"""
+    global model
 
-    NOTE: Self-hosted Fish Speech API doesn't support temperature/top_p/repetition_penalty
-    parameters in the HTTP API. These are only available in the Python inference code.
-    """
-
-    # Save reference audio to temp file if provided
-    reference_path = None
-    if reference_audio:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            reference_path = tmp.name
-            tmp.write(reference_audio)
-        logger.info(f"📎 Using reference audio: {len(reference_audio)} bytes")
-    else:
-        logger.warning("⚠️  No reference audio provided - voice may vary!")
+    logger.info("=" * 80)
+    logger.info("🚀 Loading Chatterbox TTS Model")
+    logger.info(f"   Device: {DEVICE}")
+    logger.info(f"   Multilingual: {USE_MULTILINGUAL}")
+    logger.info("=" * 80)
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # Prepare multipart form data
-            files = {}
-            data = {'text': text}
+        if USE_MULTILINGUAL:
+            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+            model = ChatterboxMultilingualTTS.from_pretrained(device=DEVICE)
+            logger.info("✅ Multilingual model loaded (23 languages)")
+        else:
+            from chatterbox.tts import ChatterboxTTS
+            model = ChatterboxTTS.from_pretrained(device=DEVICE)
+            logger.info("✅ English model loaded")
 
-            if reference_path:
-                with open(reference_path, 'rb') as f:
-                    files['reference_audio'] = ('reference.wav', f.read(), 'audio/wav')
+        global CHATTERBOX_SAMPLE_RATE
+        CHATTERBOX_SAMPLE_RATE = model.sr
+        logger.info(f"   Sample Rate: {CHATTERBOX_SAMPLE_RATE} Hz")
 
-            # Call Fish Speech API (simple format without advanced parameters)
-            response = await client.post(
-                f"{FISH_SPEECH_API}/v1/tts",
-                files=files if files else None,
-                data=data
-            )
+        # Warmup generation (first generation triggers compilation)
+        if WARMUP_ON_STARTUP:
+            logger.info("⏱️  Warming up model (may take 2-4 minutes for compilation)...")
+            start = time.time()
+            warmup_text = "This is a warmup generation to compile the model."
+            _ = model.generate(warmup_text)
+            elapsed = time.time() - start
+            logger.info(f"✅ Warmup complete ({elapsed:.1f}s)")
 
-            if response.status_code == 200:
-                # Return complete audio file (WAV format)
-                return response.content
-            else:
-                raise RuntimeError(f"Fish Speech API error: {response.status_code}")
+        logger.info("✅ Model ready for inference")
+        return True
 
-    finally:
-        if reference_path and os.path.exists(reference_path):
-            try:
-                os.unlink(reference_path)
-            except:
-                pass
+    except Exception as e:
+        logger.error(f"❌ Failed to load model: {e}", exc_info=True)
+        return False
+
+async def generate_async(
+    text: str,
+    audio_prompt_path: Optional[str] = None,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.5,
+    temperature: float = 0.9,
+    language_id: Optional[str] = None
+):
+    """Run synchronous generate() in thread pool"""
+    loop = asyncio.get_event_loop()
+
+    def _generate():
+        try:
+            kwargs = {
+                "exaggeration": exaggeration,
+                "cfg_weight": cfg_weight,
+                "temperature": temperature
+            }
+
+            if audio_prompt_path and os.path.exists(audio_prompt_path):
+                kwargs["audio_prompt_path"] = audio_prompt_path
+
+            if USE_MULTILINGUAL and language_id:
+                kwargs["language_id"] = language_id
+
+            wav = model.generate(text, **kwargs)
+            return wav
+
+        except Exception as e:
+            logger.error(f"❌ Generation error: {e}", exc_info=True)
+            raise
+
+    wav = await loop.run_in_executor(executor, _generate)
+    return wav
 
 # -----------------------------------------------------------------------------
 # LiveKit
@@ -232,7 +275,7 @@ async def connect_livekit():
         await room.connect(ws_url, token)
 
         source = rtc.AudioSource(LIVEKIT_SAMPLE_RATE, 1)
-        track = rtc.LocalAudioTrack.create_audio_track("fish-speech-audio", source)
+        track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", source)
         opts = rtc.TrackPublishOptions()
         opts.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, opts)
@@ -252,7 +295,7 @@ def resample_audio_fast(audio: np.ndarray, input_sr: int, output_sr: int) -> np.
         return audio
 
     import torchaudio.transforms as T
-    if _gpu_resampler is None:
+    if _gpu_resampler is None or _gpu_resampler.orig_freq != input_sr or _gpu_resampler.new_freq != output_sr:
         _gpu_resampler = T.Resample(input_sr, output_sr)
         if torch.cuda.is_available():
             _gpu_resampler = _gpu_resampler.cuda()
@@ -321,42 +364,29 @@ async def stream_audio_to_livekit(audio_data: bytes):
 @app.on_event("startup")
 async def on_startup():
     logger.info("=" * 80)
-    logger.info("🚀 Fish Speech TTS Service (API Wrapper)")
+    logger.info("🚀 Chatterbox TTS Service Starting")
     logger.info("=" * 80)
 
-    # Wait for Fish Speech API to be ready (longer timeout for torch.compile)
-    compile_enabled = os.getenv("COMPILE", "1") == "1"
-    max_wait = 240 if compile_enabled else 60
-    logger.info(f"⏱️  Waiting up to {max_wait}s for Fish Speech API (compile={'ON' if compile_enabled else 'OFF'})")
-    if compile_enabled:
-        logger.info("⏱️  First startup includes warmup generation which triggers compilation (2-4 min)")
+    # Load model
+    await load_model()
 
-    for i in range(max_wait):
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{FISH_SPEECH_API}/health", timeout=2.0)
-                if response.status_code == 200:
-                    logger.info(f"✅ Fish Speech API is ready (took {i+1}s)")
-                    break
-        except:
-            if i == max_wait - 1:
-                logger.error(f"❌ Fish Speech API not available after {max_wait}s")
-                logger.error("⚠️  Service may not function correctly - check Fish Speech logs")
-                return
-            # Progress indicator every 10 seconds
-            if (i + 1) % 10 == 0:
-                logger.info(f"  ... still waiting ({i+1}/{max_wait}s)")
-            await asyncio.sleep(1)
-
+    # Initialize database
     await init_db_pool()
+
+    # Load default voice
     await load_voice_reference("default")
+
+    # Connect to LiveKit
     asyncio.create_task(connect_livekit())
+
     logger.info("✅ Service ready")
 
 @app.on_event("shutdown")
 async def on_shutdown():
     if db_pool:
         await db_pool.close()
+    executor.shutdown(wait=True)
+    torch.cuda.empty_cache()
 
 # -----------------------------------------------------------------------------
 # Health
@@ -364,11 +394,15 @@ async def on_shutdown():
 @app.get("/health")
 async def health():
     return {
-        "status": "ok",
-        "mode": "fish_speech_api_wrapper",
+        "status": "ok" if model is not None else "model_not_loaded",
+        "mode": "chatterbox_tts",
+        "model_type": "multilingual" if USE_MULTILINGUAL else "english",
+        "device": DEVICE,
+        "sample_rate": CHATTERBOX_SAMPLE_RATE if model else None,
         "livekit_connected": livekit_connected,
         "db_connected": db_pool is not None,
-        "current_voice": current_voice_id
+        "current_voice": current_voice_id,
+        "voices_cached": len(voice_cache)
     }
 
 # -----------------------------------------------------------------------------
@@ -385,8 +419,8 @@ async def clone_voice(voice_id: str = Form(...), voice_name: str = Form(...), fi
         try:
             audio, sr = sf.read(tmp_path)
             duration = len(audio) / sr
-            if duration < 3:
-                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 3s.")
+            if duration < 10:
+                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 10s for Chatterbox.")
             if duration > 60:
                 raise HTTPException(400, f"Audio too long ({duration:.1f}s). Maximum 60s.")
         finally:
@@ -421,45 +455,61 @@ async def list_voices():
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT voice_id, name, created_at FROM tts_voices ORDER BY created_at DESC")
     voices = [{"voice_id": r["voice_id"], "name": r["name"], "created_at": str(r["created_at"])} for r in rows]
-    return {"total": len(voices), "voices": voices, "current_voice": current_voice_id}
+    return {"total": len(voices), "voices": voices, "current_voice": current_voice_id, "cached_voices": list(voice_cache.keys())}
 
 # -----------------------------------------------------------------------------
 # TTS synthesis
 # -----------------------------------------------------------------------------
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    global current_voice_id, current_reference_audio
+    if model is None:
+        raise HTTPException(503, "Model not loaded")
 
     start_time = time.time()
 
-    if request.voice_id != current_voice_id:
-        await load_voice_reference(request.voice_id)
-
-    logger.info(f"🎙️ Synthesizing: '{request.text[:60]}...'")
-    logger.info(f"🎤 Voice: {request.voice_id}")
-    # Note: temperature/top_p parameters are accepted but not used by self-hosted Fish Speech HTTP API
-
     try:
-        # Call Fish Speech API with consistent parameters
-        audio_data = await synthesize_with_fish_speech_api(
+        logger.info(f"🎙️ Synthesizing: '{request.text[:60]}...'")
+        logger.info(f"   Voice: {request.voice_id}, Language: {request.language}")
+        logger.info(f"   Params: exaggeration={request.exaggeration}, cfg_weight={request.cfg_weight}")
+
+        # Load voice reference if different
+        voice_path = None
+        if request.voice_id != current_voice_id:
+            voice_path = await load_voice_reference(request.voice_id)
+        else:
+            voice_path = current_reference_audio_path
+
+        # Generate audio with Chatterbox
+        wav = await generate_async(
             text=request.text,
-            reference_audio=current_reference_audio,
+            audio_prompt_path=voice_path,
+            exaggeration=request.exaggeration,
+            cfg_weight=request.cfg_weight,
             temperature=request.temperature,
-            top_p=request.top_p,
-            repetition_penalty=request.repetition_penalty
+            language_id=request.language if USE_MULTILINGUAL else None
         )
 
+        # Convert to WAV bytes
+        buffer = io.BytesIO()
+        ta.save(buffer, wav, CHATTERBOX_SAMPLE_RATE, format="wav")
+        audio_bytes = buffer.getvalue()
+
         # Stream to LiveKit
-        await stream_audio_to_livekit(audio_data)
+        await stream_audio_to_livekit(audio_bytes)
 
         total_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Completed in {total_ms:.0f}ms")
+        audio_duration = len(wav[0]) / CHATTERBOX_SAMPLE_RATE
+
+        logger.info(f"✅ Generated {audio_duration:.2f}s audio in {total_ms:.0f}ms")
 
         return JSONResponse({
             "status": "success",
-            "mode": "fish_speech",
+            "mode": "chatterbox",
+            "model_type": "multilingual" if USE_MULTILINGUAL else "english",
             "total_time_ms": round(total_ms, 2),
-            "voice_id": request.voice_id
+            "audio_duration_seconds": round(audio_duration, 2),
+            "voice_id": request.voice_id,
+            "language": request.language
         })
     except Exception as e:
         logger.error(f"❌ Synthesis error: {e}", exc_info=True)

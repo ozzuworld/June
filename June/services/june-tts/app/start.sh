@@ -1,5 +1,9 @@
 #!/bin/bash
-# Start script for Fish Speech TTS service
+# Start script for Chatterbox TTS service
+
+echo "=" * 80
+echo "🚀 Starting Chatterbox TTS Service"
+echo "=" * 80
 
 # Login to Hugging Face if token is provided
 if [ -n "$HF_TOKEN" ]; then
@@ -7,73 +11,38 @@ if [ -n "$HF_TOKEN" ]; then
     huggingface-cli login --token "$HF_TOKEN"
 fi
 
-# Check if models exist, download if missing
-if [ ! -f "/app/checkpoints/openaudio-s1-mini/config.json" ]; then
-    echo "=== Models not found, downloading openaudio-s1-mini ==="
-    mkdir -p /app/checkpoints
-    huggingface-cli download fishaudio/openaudio-s1-mini \
-        --local-dir /app/checkpoints/openaudio-s1-mini \
-        --local-dir-use-symlinks False
+# Display configuration
+echo "=== Configuration ==="
+echo "   Device: ${DEVICE:-cuda}"
+echo "   Multilingual: ${USE_MULTILINGUAL:-1}"
+echo "   Warmup on startup: ${WARMUP_ON_STARTUP:-1}"
+echo "   Max workers: ${MAX_WORKERS:-2}"
+echo "   HuggingFace cache: ${HF_HOME:-/app/.cache/huggingface}"
 
-    echo "=== Verifying downloaded files ==="
-    ls -lah /app/checkpoints/openaudio-s1-mini/
-
-    if [ ! -f "/app/checkpoints/openaudio-s1-mini/config.json" ]; then
-        echo "ERROR: Model download failed!"
-        exit 1
-    fi
-    echo "✓ Models downloaded successfully"
+# Note about model download
+echo ""
+echo "=== Chatterbox Model Info ==="
+echo "   Models will be downloaded automatically on first use"
+if [ "${USE_MULTILINGUAL:-1}" = "1" ]; then
+    echo "   Model: ResembleAI/chatterbox-mtl (Multilingual - 23 languages)"
 else
-    echo "=== Models already exist, skipping download ==="
-    ls -lah /app/checkpoints/openaudio-s1-mini/
+    echo "   Model: ResembleAI/chatterbox (English only)"
 fi
+echo "   Location: ~/.cache/huggingface/hub/"
+echo "   First startup may take 5-10 minutes (model download + warmup compilation)"
+echo ""
 
-# Start Fish Speech API server in the background
-cd /opt/fish-speech
+# Create necessary directories
+mkdir -p /app/voices
+mkdir -p /app/references
+echo "✓ Directories created"
 
-# Configure compile flag (default: enabled for 10x speedup)
-COMPILE_FLAG=""
-if [ "${COMPILE:-1}" = "1" ]; then
-    COMPILE_FLAG="--compile"
-    echo "=== Torch compile ENABLED (10x speedup) ==="
-else
-    echo "=== Torch compile DISABLED ==="
-fi
-
-python3.12 -m tools.api_server \
-    --listen 127.0.0.1:9880 \
-    --llama-checkpoint-path /app/checkpoints/openaudio-s1-mini \
-    --decoder-checkpoint-path /app/checkpoints/openaudio-s1-mini/codec.pth \
-    --decoder-config-name modded_dac_vq \
-    $COMPILE_FLAG &
-
-# Wait for Fish Speech API to start (longer timeout for --compile)
-echo "Waiting for Fish Speech API to start..."
-if [ "${COMPILE:-1}" = "1" ]; then
-    echo "⏱️  Note: First startup with --compile takes 2-4 minutes for torch compilation + warmup"
-    MAX_WAIT=240
-else
-    MAX_WAIT=60
-fi
-
-for i in $(seq 1 $MAX_WAIT); do
-    if curl -s http://127.0.0.1:9880/docs > /dev/null 2>&1; then
-        echo "✓ Fish Speech API is ready! (took ${i}s)"
-        break
-    fi
-
-    # Progress indicator every 10 seconds
-    if [ $((i % 10)) -eq 0 ]; then
-        echo "  ... still waiting (${i}/${MAX_WAIT}s)"
-    fi
-
-    if [ $i -eq $MAX_WAIT ]; then
-        echo "⚠ Fish Speech API not ready after ${MAX_WAIT}s, starting wrapper anyway..."
-        echo "⚠ First request may fail - check logs for compilation errors"
-    fi
-    sleep 1
-done
-
-# Start our FastAPI wrapper
+# Start FastAPI service
 cd /app
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+echo "=" * 80
+echo "🎙️  Starting Chatterbox TTS FastAPI Server"
+echo "   Port: 8000"
+echo "   Workers: 1 (GPU-based, single model instance)"
+echo "=" * 80
+
+exec python3.11 -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
