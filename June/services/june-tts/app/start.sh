@@ -1,6 +1,18 @@
 #!/bin/bash
 # Start script for Fish Speech TTS service
 
+# Debug: Check if checkpoint directory exists
+echo "=== DEBUG: Checking checkpoint directory ==="
+ls -la /app/checkpoints/ || echo "ERROR: /app/checkpoints/ does not exist!"
+echo ""
+echo "=== DEBUG: Checking fish-speech-1.5 directory ==="
+ls -la /app/checkpoints/fish-speech-1.5/ || echo "ERROR: /app/checkpoints/fish-speech-1.5/ does not exist!"
+echo ""
+echo "=== DEBUG: Checking required files ==="
+test -f /app/checkpoints/fish-speech-1.5/config.json && echo "✓ config.json exists" || echo "✗ config.json MISSING"
+test -f /app/checkpoints/fish-speech-1.5/model.pth && echo "✓ model.pth exists" || echo "✗ model.pth MISSING"
+echo ""
+
 # Start Fish Speech API server in the background
 cd /opt/fish-speech
 python3.12 -m tools.api_server \
