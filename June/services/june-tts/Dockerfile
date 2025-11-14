@@ -104,12 +104,15 @@ RUN huggingface-cli download fishaudio/fish-speech-1.5 \
 # Copy application code
 COPY app/ /app/
 
-# Expose port
+# Make start script executable
+RUN chmod +x /app/start.sh
+
+# Expose ports (8000 for our API, 9880 for Fish Speech internal API)
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=240s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application with single worker for GPU efficiency
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run via start script (starts Fish Speech API + our wrapper)
+CMD ["/app/start.sh"]
