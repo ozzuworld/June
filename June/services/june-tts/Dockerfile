@@ -55,9 +55,8 @@ RUN python3.10 -m pip install \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install spacy-pkuseg (maintained fork with Python 3.10+ support)
-# This provides pre-built wheels, avoiding compilation issues with pkuseg
-RUN python3.10 -m pip install spacy-pkuseg
+# Install numpy first (required for pkuseg build in chatterbox-tts)
+RUN python3.10 -m pip install "numpy>=1.24,<1.26"
 
 # Install other core ML dependencies
 RUN python3.10 -m pip install \
@@ -73,8 +72,9 @@ RUN python3.10 -m pip install \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS (pkuseg already installed, so it will be skipped)
-RUN python3.10 -m pip install chatterbox-tts
+# Install Chatterbox TTS with --no-build-isolation
+# This allows pkuseg to see numpy during build, avoiding ModuleNotFoundError
+RUN python3.10 -m pip install --no-build-isolation chatterbox-tts
 
 # Install FastAPI and server dependencies
 RUN python3.10 -m pip install \
