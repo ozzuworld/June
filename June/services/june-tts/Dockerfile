@@ -55,24 +55,31 @@ RUN python3.10 -m pip install \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install core ML dependencies
+# Install core ML dependencies (required for Chatterbox inference)
 RUN python3.10 -m pip install \
     numpy \
-    transformers>=4.36.0 \
+    librosa \
+    s3tokenizer \
+    transformers \
+    diffusers \
+    safetensors \
+    spacy-pkuseg \
+    pykakasi \
+    resemble-perth \
+    conformer \
     accelerate>=0.25.0 \
     einops>=0.7.0 \
     vector-quantize-pytorch>=1.14.0 \
     natsort>=8.4.0 \
     soundfile>=0.12.1 \
     scipy>=1.11.4 \
-    librosa>=0.10.1 \
     loguru>=0.7.0 \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS from GitHub (master uses spacy-pkuseg, not old pkuseg)
-# PyPI version 0.1.4 has old pkuseg which fails to build on Python 3.10+
-RUN python3.10 -m pip install git+https://github.com/resemble-ai/chatterbox.git
+# Install Chatterbox TTS from GitHub without dependencies
+# We skip gradio and russian-text-stresser to avoid typer version conflicts (not needed for API)
+RUN python3.10 -m pip install --no-deps git+https://github.com/resemble-ai/chatterbox.git
 
 # Install FastAPI and server dependencies
 RUN python3.10 -m pip install \
