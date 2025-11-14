@@ -66,7 +66,7 @@ class TTSService:
         """Log network and DNS information for debugging"""
         try:
             logger.info("="*80)
-            logger.info("🔍 FISH SPEECH SERVICE NETWORK DEBUG")
+            logger.info("🔍 CHATTERBOX TTS SERVICE NETWORK DEBUG")
             logger.info("="*80)
             
             from urllib.parse import urlparse
