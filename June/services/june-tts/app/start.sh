@@ -30,11 +30,22 @@ fi
 
 # Start Fish Speech API server in the background
 cd /opt/fish-speech
+
+# Configure compile flag (default: enabled for 10x speedup)
+COMPILE_FLAG=""
+if [ "${COMPILE:-1}" = "1" ]; then
+    COMPILE_FLAG="--compile"
+    echo "=== Torch compile ENABLED (10x speedup) ==="
+else
+    echo "=== Torch compile DISABLED ==="
+fi
+
 python3.12 -m tools.api_server \
     --listen 127.0.0.1:9880 \
     --llama-checkpoint-path /app/checkpoints/openaudio-s1-mini \
     --decoder-checkpoint-path /app/checkpoints/openaudio-s1-mini/codec.pth \
-    --decoder-config-name modded_dac_vq &
+    --decoder-config-name modded_dac_vq \
+    $COMPILE_FLAG &
 
 # Wait for Fish Speech API to start
 echo "Waiting for Fish Speech API to start..."
