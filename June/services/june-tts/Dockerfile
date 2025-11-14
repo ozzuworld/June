@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y \
     python3.12 \
     python3.12-dev \
     python3.12-venv \
+    build-essential \
+    gcc \
+    g++ \
     git \
     ffmpeg \
     libsndfile1 \
