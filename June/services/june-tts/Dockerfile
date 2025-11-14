@@ -93,10 +93,13 @@ RUN python3.12 -m pip install --no-deps livekit==0.11.1
 # Create app directory
 WORKDIR /app
 
-# Create directories
+# Copy application code FIRST
+COPY app/ /app/
+
+# Create directories (after copying app code)
 RUN mkdir -p /app/checkpoints /app/references
 
-# Clear any cached downloads and download fish-speech-1.5 model
+# Download fish-speech-1.5 model AFTER copying app files
 RUN rm -rf /app/.cache/huggingface/hub && \
     huggingface-cli download fishaudio/fish-speech-1.5 \
     --local-dir /app/checkpoints/fish-speech-1.5 \
@@ -108,9 +111,6 @@ RUN rm -rf /app/.cache/huggingface/hub && \
     test -f /app/checkpoints/fish-speech-1.5/model.pth && echo "✓ model.pth found" || (echo "✗ model.pth MISSING" && exit 1) && \
     test -f /app/checkpoints/fish-speech-1.5/firefly-gan-vq-fsq-8x1024-21hz-generator.pth && echo "✓ decoder found" || (echo "✗ decoder MISSING" && exit 1) && \
     test -f /app/checkpoints/fish-speech-1.5/tokenizer.tiktoken && echo "✓ tokenizer found" || (echo "✗ tokenizer MISSING" && exit 1)
-
-# Copy application code
-COPY app/ /app/
 
 # Make start script executable
 RUN chmod +x /app/start.sh
