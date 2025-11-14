@@ -1,5 +1,10 @@
-# Fish Speech / OpenAudio S1 TTS Requirements
+# Chatterbox TTS Requirements
 # PyTorch (installed separately in Dockerfile for CUDA support)
+
+# Chatterbox TTS
+chatterbox-tts>=0.1.0
+
+# ML libraries
 transformers>=4.36.0
 accelerate>=0.25.0
 einops>=0.7.0
@@ -12,12 +17,10 @@ librosa>=0.10.1
 scipy>=1.11.4
 numpy<2.0.0
 
-# Fish Speech specific
-gradio>=4.0.0
+# Utilities
 loguru>=0.7.0
 hydra-core>=1.3.2
 omegaconf>=2.3.0
-wandb>=0.15.0
 
 # FastAPI and server
 fastapi==0.104.1
@@ -27,7 +30,7 @@ httpx==0.25.0
 
 # LiveKit support
 livekit==0.11.1
-protobuf>=4.21.0
+protobuf>=4.21.0,<5.0.0
 
 # Database and utilities
 asyncpg

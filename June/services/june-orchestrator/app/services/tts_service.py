@@ -1,24 +1,25 @@
-"""Fish Speech (OpenAudio S1) TTS Service Client - PostgreSQL Voice Integration
+"""Chatterbox TTS Service Client - PostgreSQL Voice Integration
 
-MIGRATION: XTTS v2 → Fish Speech (OpenAudio S1)
-- #1 on TTS-Arena leaderboard
-- 50+ emotion markers support
-- 150ms latency (vs 200ms XTTS)
-- Superior quality vs ElevenLabs
-- Uses voice cloning from reference audio
+MIGRATION: Fish Speech → Chatterbox (Resemble AI)
+- MIT License (truly open-source, commercial use allowed)
+- 23 languages supported (multilingual model)
+- Emotion control via exaggeration parameter
+- Beats ElevenLabs in blind tests (63.75% preference)
+- Uses voice cloning from reference audio (10-30s recommended)
 
 API COMPATIBILITY:
-- Same endpoints as XTTS
+- Same endpoints as previous TTS services
 - Same voice management (PostgreSQL)
-- Enhanced: Emotion marker support in text
-- Example: "(excited)Hello! (laughing)This is great!"
+- Enhanced: Emotion intensity control (exaggeration: 0.0-2.0)
+- Enhanced: Voice adherence control (cfg_weight: 0.0-1.0)
+- Enhanced: Language selection for multilingual model
 
-KEY IMPROVEMENTS:
-1. ✅ Increased HTTP read timeout from 60s to 90s
-2. ✅ Separate timeout configuration for connection/read/write
-3. ✅ Better error logging with text length
-4. ✅ Handles long sentences (~200 chars / 30s synthesis)
-5. ✅ Native emotion control via text markers
+KEY FEATURES:
+1. ✅ Truly open-source (MIT License, no user limits)
+2. ✅ 23 language support with zero-shot voice cloning
+3. ✅ Emotion/exaggeration control for expressive speech
+4. ✅ Production-grade quality
+5. ✅ No commercial restrictions
 """
 import logging
 import os
@@ -36,27 +37,29 @@ SERVICE_AUTH_TOKEN = os.getenv("SERVICE_AUTH_TOKEN", "")
 
 
 class TTSService:
-    """Fish Speech (OpenAudio S1) TTS service client with PostgreSQL voice storage
+    """Chatterbox TTS service client with PostgreSQL voice storage
 
-    Fish Speech uses voice cloning from reference audio (10-30s recommended).
-    Supports 50+ emotion markers: (excited), (happy), (sad), (laughing), etc.
+    Chatterbox uses voice cloning from reference audio (10-30s recommended).
+    Supports emotion control via exaggeration parameter (0.0-2.0).
+    Multilingual model supports 23 languages.
     Each voice has a unique voice_id stored in PostgreSQL.
     """
 
     def __init__(self):
         self.base_url = config.services.tts_base_url
-        
+
         # ✅ OPTIMIZED: Increased timeout with separate components
         self.timeout = httpx.Timeout(
             connect=10.0,   # Connection timeout - OK
-            read=90.0,      # ← CHANGED from 60.0 (allows long sentences)
+            read=120.0,     # ← Chatterbox may take longer than Fish Speech
             write=10.0,     # Write timeout - OK
             pool=None       # No pool timeout
         )
-        
-        logger.info(f"✅ Fish Speech (OpenAudio S1) service initialized: {self.base_url}")
-        logger.info(f"⏱️  Timeout config: connect=10s, read=90s, write=10s")
-        logger.info(f"🎭 Emotion support: 50+ markers available")
+
+        logger.info(f"✅ Chatterbox TTS service initialized: {self.base_url}")
+        logger.info(f"⏱️  Timeout config: connect=10s, read=120s, write=10s")
+        logger.info(f"🎭 Emotion support: exaggeration control (0.0-2.0)")
+        logger.info(f"🌍 Languages: 23 languages supported")
         self._log_network_debug()
 
     def _log_network_debug(self):
@@ -103,18 +106,22 @@ class TTSService:
         text: str,
         voice_id: str = "default",
         streaming: bool = True,
+        exaggeration: float = 0.5,
+        language: str = "en",
     ) -> bool:
         """
-        Publish Fish Speech audio to LiveKit room
+        Publish Chatterbox TTS audio to LiveKit room
 
-        Supports emotion markers in text: (excited), (happy), (sad), (laughing), etc.
-        Example: "(excited)Hello! (laughing)This is amazing!"
+        Supports emotion control via exaggeration parameter.
+        Supports 23 languages via language parameter.
 
         Args:
             room_name: LiveKit room name
-            text: Text to synthesize (can include emotion markers)
+            text: Text to synthesize
             voice_id: Voice ID from PostgreSQL database
-            streaming: Enable streaming synthesis
+            streaming: Legacy parameter (kept for compatibility)
+            exaggeration: Emotion intensity 0.0=flat, 0.5=normal, 2.0=very expressive
+            language: Language code (en, es, fr, de, it, pt, ru, ja, ko, zh, ar, hi, etc.)
 
         Returns:
             True if successful, False otherwise
@@ -130,22 +137,24 @@ class TTSService:
                 logger.warning(f"Text too long ({len(text)} chars), truncating to 1000")
                 text = text[:1000]
 
-            logger.info(f"📢 Fish Speech request for room '{room_name}': {text[:50]}...")
+            logger.info(f"📢 Chatterbox TTS request for room '{room_name}': {text[:50]}...")
             logger.info(f"📊 Text length: {len(text)} chars")
 
-            # Fish Speech payload format (same as XTTS, backward compatible)
+            # Chatterbox payload format (backward compatible with previous services)
             payload = {
                 "text": text,
                 "room_name": room_name,
                 "voice_id": voice_id,
+                "language": language,
+                "exaggeration": exaggeration,
             }
 
-            logger.info(f"🎤 Voice: {voice_id}, streaming: {streaming}")
+            logger.info(f"🎤 Voice: {voice_id}, Language: {language}, Exaggeration: {exaggeration}")
 
             full_url = f"{self.base_url}/api/tts/synthesize"
 
             logger.info("="*80)
-            logger.info("🚀 FISH SPEECH REQUEST")
+            logger.info("🚀 CHATTERBOX TTS REQUEST")
             logger.info(f"📍 URL: {full_url}")
             logger.info(f"📦 Payload: {json.dumps(payload, indent=2)}")
             
@@ -171,18 +180,19 @@ class TTSService:
                 if response.status_code == 200:
                     result = response.json()
                     total_time = (time.time() - request_start_time) * 1000
-                    logger.info(f"\n✅ FISH SPEECH SUCCESS:")
-                    logger.info(f"   Model: {result.get('model', 'OpenAudio S1')}")
+                    logger.info(f"\n✅ CHATTERBOX TTS SUCCESS:")
+                    logger.info(f"   Model: {result.get('mode', 'chatterbox')}")
+                    logger.info(f"   Type: {result.get('model_type', 'multilingual')}")
                     logger.info(f"   Synthesis: {result.get('total_time_ms', 0):.0f}ms")
                     logger.info(f"   Total: {total_time:.0f}ms")
                     logger.info("="*80)
                     return True
                 elif response.status_code == 503:
-                    logger.error(f"\n❌ Fish Speech unavailable (503)")
+                    logger.error(f"\n❌ Chatterbox TTS unavailable (503)")
                     logger.error("="*80)
                     return False
                 else:
-                    logger.error(f"\n❌ Fish Speech error: {response.status_code}")
+                    logger.error(f"\n❌ Chatterbox TTS error: {response.status_code}")
                     logger.error(f"   Detail: {response.text[:200]}")
                     logger.error("="*80)
                     return False
@@ -217,7 +227,7 @@ class TTSService:
         """
         Clone a voice and store in PostgreSQL
 
-        Fish Speech recommends 10-30 seconds of clear reference audio.
+        Chatterbox recommends 10-30 seconds of clear reference audio.
 
         Args:
             voice_id: Unique identifier for the voice
@@ -341,7 +351,7 @@ class TTSService:
             return False
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check Fish Speech service health"""
+        """Check Chatterbox TTS service health"""
         try:
             logger.info(f"🏥 Health check: {self.base_url}/health")
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -353,13 +363,13 @@ class TTSService:
                 if response.status_code == 200:
                     return {
                         "healthy": True,
-                        "service": "fish_speech",
+                        "service": "chatterbox_tts",
                         "details": response.json()
                     }
                 else:
                     return {
                         "healthy": False,
-                        "service": "fish_speech",
+                        "service": "chatterbox_tts",
                         "error": f"HTTP {response.status_code}"
                     }
 
@@ -367,12 +377,12 @@ class TTSService:
             logger.error(f"❌ Health check failed: {e}")
             return {
                 "healthy": False,
-                "service": "fish_speech",
+                "service": "chatterbox_tts",
                 "error": str(e)
             }
 
     async def get_stats(self) -> Optional[Dict[str, Any]]:
-        """Get Fish Speech service statistics"""
+        """Get Chatterbox TTS service statistics"""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
