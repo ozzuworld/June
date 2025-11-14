@@ -16,15 +16,15 @@ ENV USE_MULTILINGUAL=1
 ENV WARMUP_ON_STARTUP=1
 ENV MAX_WORKERS=2
 
-# Install system dependencies and add deadsnakes PPA for Python 3.10
+# Install system dependencies and add deadsnakes PPA for Python 3.9
 RUN apt-get update && apt-get install -y \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
     && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
-    python3.10-venv \
+    python3.9 \
+    python3.9-dev \
+    python3.9-venv \
     build-essential \
     gcc \
     g++ \
@@ -38,25 +38,25 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.10 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
+# Set Python 3.9 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 1
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.9 1
 
-# Install pip for Python 3.10
+# Install pip for Python 3.9
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
-    python3.10 get-pip.py && \
+    python3.9 get-pip.py && \
     rm get-pip.py && \
-    python3.10 -m pip install --upgrade pip setuptools wheel
+    python3.9 -m pip install --upgrade pip setuptools wheel
 
 # Install PyTorch 2.1.0 with CUDA 12.1
-RUN python3.10 -m pip install \
+RUN python3.9 -m pip install \
     torch==2.1.0 \
     torchvision==0.16.0 \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # Install numpy and core ML dependencies first
-RUN python3.10 -m pip install \
+RUN python3.9 -m pip install \
     "numpy<2.0.0" \
     transformers>=4.36.0 \
     accelerate>=0.25.0 \
@@ -71,10 +71,10 @@ RUN python3.10 -m pip install \
     omegaconf>=2.3.0
 
 # Install Chatterbox TTS (--no-build-isolation allows it to see numpy during build)
-RUN python3.10 -m pip install --no-build-isolation chatterbox-tts
+RUN python3.9 -m pip install --no-build-isolation chatterbox-tts
 
 # Install FastAPI and server dependencies
-RUN python3.10 -m pip install \
+RUN python3.9 -m pip install \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
@@ -83,10 +83,10 @@ RUN python3.10 -m pip install \
     python-multipart
 
 # Install LiveKit Python SDK with compatible protobuf
-RUN python3.10 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
+RUN python3.9 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
 
 # Install Hugging Face CLI for model downloads
-RUN python3.10 -m pip install huggingface-hub[cli]
+RUN python3.9 -m pip install huggingface-hub[cli]
 
 # Create app directory
 WORKDIR /app
