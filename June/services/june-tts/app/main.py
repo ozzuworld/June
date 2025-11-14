@@ -204,7 +204,10 @@ async def load_model():
             logger.info("⏱️  Warming up model (may take 2-4 minutes for compilation)...")
             start = time.time()
             warmup_text = "This is a warmup generation to compile the model."
-            _ = model.generate(warmup_text)
+            if USE_MULTILINGUAL:
+                _ = model.generate(warmup_text, language_id="en")
+            else:
+                _ = model.generate(warmup_text)
             elapsed = time.time() - start
             logger.info(f"✅ Warmup complete ({elapsed:.1f}s)")
 
