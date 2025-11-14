@@ -45,6 +45,55 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
     return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
 
 
+def estimate_confidence(text: str, speech_duration: float, silence_before: float) -> float:
+    """
+    Estimate transcription confidence based on heuristics.
+
+    NOTE: This is a heuristic until we can access Whisper's actual confidence scores
+    from the streaming processor. The whisper_online library doesn't currently expose
+    per-segment probabilities in the streaming API.
+
+    Args:
+        text: Transcribed text
+        speech_duration: Duration of speech in seconds
+        silence_before: Silence duration before speech (from VAD)
+
+    Returns:
+        Confidence score from 0.0 to 1.0
+    """
+    confidence = 1.0
+
+    # Factor 1: Text length (very short may be noise/hallucination)
+    word_count = len(text.split())
+    if word_count == 1:
+        confidence *= 0.7  # Single words less reliable
+    elif word_count == 2:
+        confidence *= 0.85
+
+    # Factor 2: Speech duration (very short clips may be noise)
+    if speech_duration < 0.3:  # Less than 300ms
+        confidence *= 0.6
+    elif speech_duration < 0.5:  # Less than 500ms
+        confidence *= 0.8
+
+    # Factor 3: Character length (very short text suspicious)
+    if len(text) < 3:
+        confidence *= 0.5
+    elif len(text) < 5:
+        confidence *= 0.7
+
+    # Factor 4: Silence before speech (clearer boundaries = higher confidence)
+    if silence_before > 1.0:  # Clear pause before speech
+        confidence *= 1.0  # No penalty
+    elif silence_before > 0.5:
+        confidence *= 0.95
+    else:
+        confidence *= 0.85  # Might be mid-sentence or unclear boundary
+
+    # Cap at reasonable minimum
+    return max(confidence, 0.5)  # Never go below 50%
+
+
 # ---------------------------------------------------------------------------
 # Per-Participant State Management
 # ---------------------------------------------------------------------------
@@ -58,6 +107,8 @@ class ParticipantState:
     # Timing
     last_segment_end: float = 0.0
     last_final_time: float = 0.0
+    speech_start_time: float = 0.0  # When speech started for confidence estimation
+    last_silence_duration: float = 0.0  # Silence before last speech for confidence
 
     # Deduplication
     last_sent_partial: str = ""
@@ -78,7 +129,8 @@ class ParticipantState:
         self.last_partial_text = ""
         self.silence_counter = 0
         self.final_sent_for_utterance = False  # ← Critical reset
-        # NOTE: last_sent_final is NOT reset - we keep it to detect duplicate text
+        self.speech_start_time = 0.0
+        # NOTE: last_sent_final and last_silence_duration NOT reset - kept for detection
 
 
 # Global participant state tracking
@@ -194,7 +246,8 @@ async def send_to_orchestrator(
     participant: str,
     text: str,
     is_partial: bool = False,
-    attempt: int = 1
+    attempt: int = 1,
+    confidence: float = 1.0
 ) -> bool:
     """
     Send transcription to orchestrator webhook
@@ -208,6 +261,7 @@ async def send_to_orchestrator(
         text: Transcription text
         is_partial: Whether this is a partial or final transcript
         attempt: Current retry attempt number (for logging)
+        confidence: Confidence score from 0.0 to 1.0
     """
     try:
         orchestrator_url = os.getenv(
@@ -241,7 +295,7 @@ async def send_to_orchestrator(
             "participant": participant,
             "text": text,
             "language": detected_lang,
-            "confidence": 1.0,
+            "confidence": confidence,  # ✅ Now uses actual confidence score
             "timestamp": datetime.utcnow().isoformat(),
             "partial": is_partial,
             "segments": []
@@ -300,7 +354,8 @@ async def send_final_with_retry(
     room_name: str,
     participant: str,
     text: str,
-    max_retries: int = 3
+    max_retries: int = 3,
+    confidence: float = 1.0
 ) -> bool:
     """
     Send FINAL transcript with retry logic and exponential backoff
@@ -315,6 +370,7 @@ async def send_final_with_retry(
         participant: Participant identity
         text: Final transcription text
         max_retries: Maximum number of retry attempts
+        confidence: Confidence score from 0.0 to 1.0
 
     Returns:
         True if delivered successfully, False if all retries failed
@@ -326,7 +382,8 @@ async def send_final_with_retry(
                 participant=participant,
                 text=text,
                 is_partial=False,
-                attempt=attempt
+                attempt=attempt,
+                confidence=confidence
             )
 
             if success:
@@ -461,7 +518,14 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                                 f"🆕 New utterance detected (similarity: {similarity:.2f}), resetting state"
                             )
                             state.reset_for_new_utterance()
-                    
+                            # Track silence before this new speech
+                            state.last_silence_duration = state.silence_counter * 0.5  # 500ms chunks
+
+                    # Track speech start time for first segment
+                    if state.speech_start_time == 0.0:
+                        state.speech_start_time = current_time
+                        state.last_silence_duration = state.silence_counter * 0.5  # 500ms chunks
+
                     # ✅ Check cooldown period after FINAL
                     time_since_final = current_time - state.last_final_time
                     if time_since_final < FINAL_COOLDOWN_SECONDS:
@@ -556,20 +620,30 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                             should_send_final = False
 
                     if should_send_final:
-                        logger.info(
-                            "[LiveKit FINAL after silence] %s: %s",
-                            participant.identity,
-                            state.accumulated_text,
-                        )
-
                         # Track what we're sending
                         final_text = state.accumulated_text
 
-                        # ✅ Send FINAL with retry logic
+                        # ✅ Calculate confidence score
+                        speech_duration = end if 'end' in locals() else (current_time - state.speech_start_time)
+                        confidence = estimate_confidence(
+                            text=final_text,
+                            speech_duration=speech_duration,
+                            silence_before=state.last_silence_duration
+                        )
+
+                        logger.info(
+                            "[LiveKit FINAL after silence] %s: %s (confidence: %.2f)",
+                            participant.identity,
+                            state.accumulated_text,
+                            confidence
+                        )
+
+                        # ✅ Send FINAL with retry logic and confidence
                         success = await send_final_with_retry(
                             room_name=room_name,
                             participant=participant.identity,
-                            text=final_text
+                            text=final_text,
+                            confidence=confidence
                         )
 
                         if success:
@@ -602,12 +676,21 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                 else:
                     state.accumulated_text = text
 
+                # ✅ Calculate confidence score
+                speech_duration = end - beg
+                confidence = estimate_confidence(
+                    text=state.accumulated_text,
+                    speech_duration=speech_duration,
+                    silence_before=state.last_silence_duration
+                )
+
                 logger.info(
-                    "[LiveKit FINAL on track end] %s %.2f–%.2fs: %s",
+                    "[LiveKit FINAL on track end] %s %.2f–%.2fs: %s (confidence: %.2f)",
                     participant.identity,
                     beg,
                     end,
                     state.accumulated_text,
+                    confidence
                 )
 
                 # ✅ CRITICAL: Only send if not already sent AND text is substantially different
@@ -627,7 +710,8 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     success = await send_final_with_retry(
                         room_name=room_name,
                         participant=participant.identity,
-                        text=state.accumulated_text
+                        text=state.accumulated_text,
+                        confidence=confidence
                     )
 
                     if success:
@@ -654,16 +738,26 @@ async def _handle_audio_track(asr_service, track: rtc.Track, participant: rtc.Re
                     should_send_final = False
 
             if should_send_final:
+                # ✅ Calculate confidence score
+                speech_duration = time.time() - state.speech_start_time if state.speech_start_time > 0 else 1.0
+                confidence = estimate_confidence(
+                    text=state.accumulated_text,
+                    speech_duration=speech_duration,
+                    silence_before=state.last_silence_duration
+                )
+
                 logger.info(
-                    "[LiveKit FINAL from accumulated on track end] %s: %s",
+                    "[LiveKit FINAL from accumulated on track end] %s: %s (confidence: %.2f)",
                     participant.identity,
                     state.accumulated_text,
+                    confidence
                 )
 
                 success = await send_final_with_retry(
                     room_name=room_name,
                     participant=participant.identity,
-                    text=state.accumulated_text
+                    text=state.accumulated_text,
+                    confidence=confidence
                 )
 
                 if success:
