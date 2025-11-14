@@ -40,19 +40,28 @@ WHISPER_DEVICE=auto                 # Options: auto, cpu, cuda
 
 ## Quantization Options
 
-Quantization reduces model precision to improve inference speed with minimal accuracy loss.
+⚠️ **Current Status:** Configuration is in place but not yet fully applied due to `whisper_online` library limitations.
 
-### Compute Types
+**What's Working:**
+- ✅ faster-whisper CTranslate2 backend (already 10x faster than PyTorch Whisper)
+- ✅ Auto-quantization based on device (float16 on GPU, int8 on CPU)
+- ✅ Environment configuration ready for future use
 
-| Compute Type | Speed Gain | Accuracy | Memory | Recommendation |
-|--------------|------------|----------|--------|----------------|
-| `float32` | Baseline | 100% | High | Reference only |
-| `float16` | ~15% | 99.5% | Medium | Good balance |
-| **`int8_float16`** | **~25%** | **99%** | **Low** | **✅ Recommended** |
-| `int8_float32` | ~25% | 99% | Medium | Alternative |
-| `int8` | ~30% | 98% | Very Low | Maximum speed |
+**What's Pending:**
+- ⏳ Explicit int8_float16 quantization (requires whisper_online library update)
+- ⏳ Manual compute_type selection (requires direct faster-whisper integration)
 
-**Recommendation:** Use `int8_float16` for best balance of speed and accuracy (currently enabled).
+### Compute Types (For Future Use)
+
+| Compute Type | Speed Gain | Accuracy | Memory | Status |
+|--------------|------------|----------|--------|--------|
+| `float32` | Baseline | 100% | High | Reference |
+| `float16` | ~15% | 99.5% | Medium | ⚠️ Partial (GPU auto) |
+| **`int8_float16`** | **~25%** | **99%** | **Low** | ⏳ **Pending** |
+| `int8_float32` | ~25% | 99% | Medium | ⏳ Pending |
+| `int8` | ~30% | 98% | Very Low | ⚠️ Partial (CPU auto) |
+
+**Current Performance:** Already faster than base Whisper due to CTranslate2, but explicit quantization would provide additional 10-15% speedup.
 
 ### Expected Performance Impact
 
@@ -268,8 +277,67 @@ Key metrics to watch:
 
 ---
 
+## Enabling Explicit Quantization (Future Work)
+
+To fully enable int8_float16 quantization, one of these approaches is needed:
+
+### Option 1: Update whisper_online Library
+
+Modify `whisper_online` to expose `compute_type` parameter:
+
+```python
+# In whisper_online/whisper_online_server.py (or similar)
+class FasterWhisperASR(ASRBase):
+    def __init__(self, lan, modelsize, cache_dir, model_dir, compute_type="float16", device="auto"):
+        from faster_whisper import WhisperModel
+        self.model = WhisperModel(
+            modelsize,
+            device=device,
+            compute_type=compute_type,  # ✅ Add this
+            download_root=cache_dir or model_dir
+        )
+```
+
+### Option 2: Direct faster-whisper Integration
+
+Bypass whisper_online and use faster-whisper directly:
+
+```python
+from faster_whisper import WhisperModel
+
+# Direct initialization with quantization
+model = WhisperModel(
+    "large-v2",
+    device="cuda",
+    compute_type="int8_float16"
+)
+
+# Then adapt streaming logic from whisper_online
+```
+
+### Option 3: Monkeypatch (Temporary)
+
+Patch FasterWhisperASR at runtime (not recommended for production):
+
+```python
+# Before initialization
+import whisper_online
+original_init = whisper_online.FasterWhisperASR.__init__
+
+def patched_init(self, *args, compute_type="int8_float16", **kwargs):
+    # Custom initialization with compute_type
+    ...
+
+whisper_online.FasterWhisperASR.__init__ = patched_init
+```
+
+**Recommended:** Option 1 (update library) or Option 2 (direct integration)
+
+---
+
 ## Future Enhancements
 
+- [ ] **Enable explicit int8_float16 quantization** (10-15% additional speedup)
 - [ ] Deepgram Nova-3 integration for sub-300ms latency
 - [ ] AssemblyAI Universal-2 option for maximum accuracy
 - [ ] Automatic model selection based on load
