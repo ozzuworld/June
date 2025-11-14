@@ -51,7 +51,7 @@ RUN python3.12 -m pip install \
     vector-quantize-pytorch>=1.14.0 \
     natsort>=8.4.0 \
     soundfile>=0.12.1 \
-    numpy<2.0.0 \
+    "numpy<2.0.0" \
     scipy>=1.11.4 \
     librosa>=0.10.1 \
     gradio>=4.0.0 \
