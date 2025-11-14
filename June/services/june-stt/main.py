@@ -89,23 +89,31 @@ class ASRService:
             raise RuntimeError("whisper_online is not installed inside the container")
 
         logger.info(
-            "Loading Whisper %s model for %s (compute_type=%s, device=%s)...",
+            "Loading Whisper %s model for %s...",
             self.config.model,
             self.config.language,
-            self.config.compute_type,
-            self.config.device,
         )
 
-        # ✅ Initialize with quantization support for faster inference
-        # The FasterWhisperASR class accepts compute_type and device parameters
-        # that are passed through to the underlying faster-whisper WhisperModel
+        # NOTE: Quantization support via compute_type requires modifying whisper_online library
+        # For now, faster-whisper uses default settings (float16 on GPU, int8 on CPU)
+        # The whisper_online FasterWhisperASR wrapper doesn't expose compute_type parameter yet
+        #
+        # TODO: To enable int8_float16 quantization:
+        # 1. Update whisper_online library to support compute_type parameter, OR
+        # 2. Use faster-whisper WhisperModel directly instead of whisper_online wrapper
+        #
+        # Current performance: Uses faster-whisper default quantization (still faster than base Whisper)
+
         self.asr = FasterWhisperASR(
             lan=self.config.language,
             modelsize=self.config.model,
             cache_dir=None,
             model_dir=None,
-            compute_type=self.config.compute_type,
-            device=self.config.device,
+        )
+
+        logger.info(
+            "Note: Using faster-whisper default quantization (auto-detected). "
+            "For explicit int8_float16 quantization, whisper_online library needs update."
         )
 
         if self.config.task == "translate":
@@ -201,10 +209,13 @@ async def startup_event() -> None:
     asr_service = ASRService(config)
     await asr_service.initialize()
     logger.info(
-        "✅ ASR Microservice started successfully (model=%s, compute_type=%s, device=%s)",
+        "✅ ASR Microservice started successfully (model=%s)",
         model_name,
+    )
+    logger.info(
+        "⚠️  Note: Quantization config (compute_type=%s) not yet applied - whisper_online library limitation. "
+        "Using faster-whisper defaults (still faster than base Whisper).",
         compute_type,
-        device,
     )
 
     # Start LiveKit worker in the background
@@ -243,12 +254,15 @@ async def get_config():
         "use_vac": asr_service.config.use_vac,
         "min_chunk_size": asr_service.config.min_chunk_size,
         "sampling_rate": SAMPLING_RATE,
-        # ✅ Quantization settings (new)
-        "compute_type": asr_service.config.compute_type,
-        "device": asr_service.config.device,
+        # ✅ Quantization settings (configured but not yet applied)
+        "compute_type_configured": asr_service.config.compute_type,
+        "device_configured": asr_service.config.device,
         "optimization": {
-            "quantization_enabled": asr_service.config.compute_type != "float32",
-            "expected_speedup": "20-30%" if "int8" in asr_service.config.compute_type else "10-15%",
+            "quantization_status": "configured_pending_library_update",
+            "note": "Using faster-whisper defaults (auto-quantization based on device)",
+            "whisper_online_limitation": "Library doesn't expose compute_type parameter yet",
+            "current_performance": "Still faster than base Whisper due to CTranslate2",
+            "configured_speedup": "20-30%" if "int8" in asr_service.config.compute_type else "10-15%",
         },
     }
 
