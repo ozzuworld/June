@@ -55,12 +55,9 @@ RUN python3.10 -m pip install \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install numpy with specific version (required for pkuseg build)
-RUN python3.10 -m pip install "numpy>=1.24,<1.26"
-
-# Install pkuseg separately with --no-build-isolation (BEFORE chatterbox-tts)
-# This is the key to avoiding build failures
-RUN python3.10 -m pip install --no-build-isolation "pkuseg==0.0.25"
+# Install spacy-pkuseg (maintained fork with Python 3.10+ support)
+# This provides pre-built wheels, avoiding compilation issues with pkuseg
+RUN python3.10 -m pip install spacy-pkuseg
 
 # Install other core ML dependencies
 RUN python3.10 -m pip install \
