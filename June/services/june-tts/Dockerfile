@@ -57,7 +57,7 @@ RUN python3.10 -m pip install \
 
 # Install core ML dependencies (required for Chatterbox inference)
 RUN python3.10 -m pip install \
-    numpy \
+    "numpy<2" \
     librosa \
     s3tokenizer \
     transformers \
