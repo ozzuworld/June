@@ -50,8 +50,8 @@ python3.12 -m tools.api_server \
 # Wait for Fish Speech API to start (longer timeout for --compile)
 echo "Waiting for Fish Speech API to start..."
 if [ "${COMPILE:-1}" = "1" ]; then
-    echo "⏱️  Note: First startup with --compile takes 60-120s for torch compilation"
-    MAX_WAIT=120
+    echo "⏱️  Note: First startup with --compile takes 2-4 minutes for torch compilation + warmup"
+    MAX_WAIT=240
 else
     MAX_WAIT=60
 fi
