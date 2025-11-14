@@ -86,6 +86,10 @@ WORKDIR /opt/fish-speech
 # Install Fish Speech dependencies
 RUN python3.12 -m pip install -e .
 
+# Force reinstall protobuf 4.x and livekit (Fish Speech may have upgraded protobuf to 5.x)
+RUN python3.12 -m pip install --force-reinstall --no-deps "protobuf>=4.21.0,<5.0.0"
+RUN python3.12 -m pip install --no-deps livekit==0.11.1
+
 # Create app directory
 WORKDIR /app
 
