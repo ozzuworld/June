@@ -323,8 +323,10 @@ async def on_startup():
 
     # Wait for Fish Speech API to be ready (longer timeout for torch.compile)
     compile_enabled = os.getenv("COMPILE", "1") == "1"
-    max_wait = 120 if compile_enabled else 60
+    max_wait = 240 if compile_enabled else 60
     logger.info(f"⏱️  Waiting up to {max_wait}s for Fish Speech API (compile={'ON' if compile_enabled else 'OFF'})")
+    if compile_enabled:
+        logger.info("⏱️  First startup includes warmup generation which triggers compilation (2-4 min)")
 
     for i in range(max_wait):
         try:
