@@ -7,10 +7,15 @@ ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda-12.6
 ENV HF_HOME=/app/.cache/huggingface
 
-# Install system dependencies
+# Install system dependencies and add deadsnakes PPA for Python 3.12
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update \
+    && apt-get install -y \
     python3.12 \
     python3.12-dev \
+    python3.12-distutils \
     python3-pip \
     git \
     ffmpeg \
@@ -25,18 +30,19 @@ RUN apt-get update && apt-get install -y \
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip setuptools wheel
+# Install pip for Python 3.12 and upgrade
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
+RUN python3.12 -m pip install --upgrade pip setuptools wheel
 
 # Install PyTorch 2.5+ with CUDA 12.6
-RUN pip3 install \
+RUN python3.12 -m pip install \
     torch==2.5.1 \
     torchvision==0.20.1 \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu126
 
 # Install core dependencies
-RUN pip3 install \
+RUN python3.12 -m pip install \
     transformers>=4.36.0 \
     accelerate>=0.25.0 \
     einops>=0.7.0 \
@@ -53,7 +59,7 @@ RUN pip3 install \
     wandb>=0.15.0
 
 # Install FastAPI and server dependencies
-RUN pip3 install \
+RUN python3.12 -m pip install \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
@@ -62,10 +68,10 @@ RUN pip3 install \
     python-multipart
 
 # Install LiveKit Python SDK
-RUN pip3 install livekit==0.11.1
+RUN python3.12 -m pip install livekit==0.11.1
 
 # Install Hugging Face CLI for model downloads
-RUN pip3 install huggingface-hub[cli]
+RUN python3.12 -m pip install huggingface-hub[cli]
 
 # Clone Fish Speech repository
 WORKDIR /opt
@@ -73,7 +79,7 @@ RUN git clone https://github.com/fishaudio/fish-speech.git
 WORKDIR /opt/fish-speech
 
 # Install Fish Speech dependencies
-RUN pip3 install -e .
+RUN python3.12 -m pip install -e .
 
 # Create app directory
 WORKDIR /app
