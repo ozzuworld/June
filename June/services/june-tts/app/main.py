@@ -3,10 +3,15 @@
 June TTS Service - Chatterbox TTS Integration
 Multilingual TTS with voice cloning and emotion control
 """
+import os
+
+# Force eager attention implementation for transformers (required for Chatterbox)
+# SDPA doesn't support output_attentions=True which Chatterbox needs
+os.environ.setdefault("TRANSFORMERS_ATTN_IMPLEMENTATION", "eager")
+
 import asyncio
 import io
 import logging
-import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor

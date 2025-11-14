@@ -16,6 +16,9 @@ ENV USE_MULTILINGUAL=1
 ENV WARMUP_ON_STARTUP=1
 ENV MAX_WORKERS=2
 
+# Transformers attention implementation (force eager for output_attentions support)
+ENV TRANSFORMERS_ATTN_IMPLEMENTATION=eager
+
 # Install system dependencies and add deadsnakes PPA for Python 3.10
 RUN apt-get update && apt-get install -y \
     software-properties-common \
