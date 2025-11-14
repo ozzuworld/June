@@ -48,11 +48,11 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
     rm get-pip.py && \
     python3.10 -m pip install --upgrade pip setuptools wheel
 
-# Install PyTorch 2.1.0 with CUDA 12.1
+# Install PyTorch 2.4.0 with CUDA 12.1 (compatible with latest transformers)
 RUN python3.10 -m pip install \
-    torch==2.1.0 \
-    torchvision==0.16.0 \
-    torchaudio==2.1.0 \
+    torch==2.4.0 \
+    torchvision==0.19.0 \
+    torchaudio==2.4.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # Install core ML dependencies (required for Chatterbox inference)
