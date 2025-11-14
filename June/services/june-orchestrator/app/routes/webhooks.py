@@ -79,13 +79,31 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             logger.error(f"❌ Invalid room_name: {room_name}")
             raise HTTPException(status_code=400, detail="room_name is required")
 
+        # ✅ Check confidence score (only for FINAL transcripts)
+        # Partials don't need high confidence, but finals should be reliable
+        confidence = float(payload.get("confidence", 1.0))
+        MIN_CONFIDENCE_THRESHOLD = 0.6  # Configurable threshold
+
+        if not is_partial and confidence < MIN_CONFIDENCE_THRESHOLD:
+            logger.warning(
+                f"⚠️ Low confidence FINAL rejected (confidence: {confidence:.2f} < {MIN_CONFIDENCE_THRESHOLD}): '{text[:30]}...'"
+            )
+            return {
+                "status": "skipped",
+                "reason": "low_confidence",
+                "confidence": confidence,
+                "text": text,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
         # Log incoming request
         status_label = "PARTIAL" if is_partial else "FINAL"
+        confidence_str = f" (conf: {confidence:.2f})" if confidence < 1.0 else ""
         logger.info(
             f"📥 [{status_label}] "
             f"Session: {session_id[:8]}... "
             f"Room: {room_name} "
-            f"Text: '{text[:50]}...'"
+            f"Text: '{text[:50]}...'{confidence_str}"
         )
 
         # ✅ CRITICAL: Register participant with ConversationManager

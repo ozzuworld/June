@@ -115,6 +115,11 @@ class SimpleVoiceAssistant:
         self._processing_tasks: Dict[str, asyncio.Task] = {}
         self._interrupted_sessions: set = set()
 
+        # Quick acknowledgment settings
+        self.quick_ack_enabled = True
+        self.quick_ack_delay = 2.0  # Send acknowledgment if no response in 2 seconds
+        self._ack_sent: Dict[str, bool] = {}  # Track if acknowledgment sent per session
+
         # Turn management - track when assistant is responding
         self._assistant_responding: Dict[str, bool] = {}
         self._last_response_time: Dict[str, float] = {}
@@ -384,7 +389,77 @@ NATURAL SPEECH (when NOT using tools):
 • Show emotion when appropriate
 • Sound like a real person talking
 """
-    
+
+    async def _send_quick_acknowledgment(
+        self,
+        session_id: str,
+        room_name: str,
+        voice_id: str
+    ):
+        """
+        Send a quick acknowledgment response for complex queries.
+
+        This provides immediate feedback to the user while processing happens,
+        making the conversation feel more responsive.
+
+        Args:
+            session_id: Session identifier
+            room_name: LiveKit room name
+            voice_id: Voice ID to use for synthesis
+        """
+        import random
+
+        # Varied acknowledgments to sound natural
+        acknowledgments = [
+            "Let me think about that...",
+            "One moment...",
+            "Hmm, let me see...",
+            "Give me just a second...",
+            "Let me check...",
+            "Interesting question, one sec...",
+        ]
+
+        ack_text = random.choice(acknowledgments)
+
+        logger.info(f"💬 Sending quick acknowledgment: '{ack_text}'")
+
+        try:
+            # Send to TTS (non-blocking)
+            await self.tts.publish_to_room(
+                room_name=room_name,
+                text=ack_text,
+                voice_id=voice_id
+            )
+            self._ack_sent[session_id] = True
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to send quick acknowledgment: {e}")
+
+    async def _schedule_quick_ack(
+        self,
+        session_id: str,
+        room_name: str,
+        voice_id: str
+    ):
+        """
+        Schedule a quick acknowledgment if processing takes too long.
+
+        Waits for quick_ack_delay seconds, then sends acknowledgment if
+        no actual response has been generated yet.
+
+        Args:
+            session_id: Session identifier
+            room_name: LiveKit room name
+            voice_id: Voice ID to use
+        """
+        if not self.quick_ack_enabled:
+            return
+
+        await asyncio.sleep(self.quick_ack_delay)
+
+        # Only send if we haven't already sent acknowledgment or actual response
+        if not self._ack_sent.get(session_id, False):
+            await self._send_quick_acknowledgment(session_id, room_name, voice_id)
+
     async def handle_transcript(
         self,
         session_id: str,
@@ -499,14 +574,23 @@ NATURAL SPEECH (when NOT using tools):
 
             # Build system prompt with conversation style
             system_prompt = self._build_system_prompt(conversation_style=conversation_style)
-            
+
+            # ✅ Reset acknowledgment flag for new request
+            self._ack_sent[session_id] = False
+
+            # ✅ Schedule quick acknowledgment if processing takes > 2 seconds
+            # This makes the assistant feel more responsive
+            ack_task = asyncio.create_task(
+                self._schedule_quick_ack(session_id, room_name, current_voice_id)
+            )
+
             # Stream from LLM with tool support
             full_response = ""
             sentence_buffer = ""
             sentence_count = 0
             tool_executed = False
             tool_name = None
-            
+
             logger.info(f"🧠 Starting LLM stream...")
             
             async for chunk in self._stream_gemini(
@@ -543,6 +627,11 @@ NATURAL SPEECH (when NOT using tools):
 
                 # Handle text tokens (only if no tool was called)
                 if not tool_executed and isinstance(chunk, str):
+                    # ✅ Cancel quick acknowledgment - we got an actual response
+                    if sentence_count == 0 and not self._ack_sent.get(session_id, False):
+                        self._ack_sent[session_id] = True  # Prevent ack from sending
+                        ack_task.cancel()  # Cancel pending ack task
+
                     logger.info(f"📝 Processing text chunk: '{chunk[:50]}', tool_executed={tool_executed}")
                     full_response += chunk
                     sentence_buffer += chunk
@@ -631,6 +720,10 @@ NATURAL SPEECH (when NOT using tools):
             return {"status": "error", "error": str(e)}
 
         finally:
+            # ✅ Clean up quick acknowledgment task
+            if 'ack_task' in locals() and not ack_task.done():
+                ack_task.cancel()
+
             # Clear responding flag - assistant's turn is over
             self._assistant_responding[session_id] = False
             logger.info(f"✅ Assistant turn complete for {session_id[:8]}...")
