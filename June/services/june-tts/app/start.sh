@@ -34,18 +34,17 @@ python3.12 -m tools.api_server \
     --listen 127.0.0.1:9880 \
     --llama-checkpoint-path /app/checkpoints/openaudio-s1-mini \
     --decoder-checkpoint-path /app/checkpoints/openaudio-s1-mini/codec.pth \
-    --decoder-config-name modded_dac_vq \
-    --compile &
+    --decoder-config-name modded_dac_vq &
 
 # Wait for Fish Speech API to start
-echo "Waiting for Fish Speech API to start (this may take 30-60s for compilation)..."
-for i in {1..60}; do
-    if curl -s http://127.0.0.1:9880/health > /dev/null 2>&1; then
+echo "Waiting for Fish Speech API to start..."
+for i in {1..30}; do
+    if curl -s http://127.0.0.1:9880/docs > /dev/null 2>&1; then
         echo "✓ Fish Speech API is ready!"
         break
     fi
-    if [ $i -eq 60 ]; then
-        echo "⚠ Fish Speech API health check timeout, starting wrapper anyway..."
+    if [ $i -eq 30 ]; then
+        echo "⚠ Fish Speech API not ready after 30s, starting wrapper anyway..."
     fi
     sleep 1
 done
