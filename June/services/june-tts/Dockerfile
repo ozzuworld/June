@@ -72,8 +72,8 @@ RUN python3.12 -m pip install \
     asyncpg \
     python-multipart
 
-# Install LiveKit Python SDK
-RUN python3.12 -m pip install livekit==0.11.1
+# Install LiveKit Python SDK with compatible protobuf
+RUN python3.12 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
 
 # Install Hugging Face CLI for model downloads
 RUN python3.12 -m pip install huggingface-hub[cli]
