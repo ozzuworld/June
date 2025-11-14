@@ -45,4 +45,4 @@ echo "   Port: 8000"
 echo "   Workers: 1 (GPU-based, single model instance)"
 echo "=" * 80
 
-exec python3.11 -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+exec python3.10 -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
