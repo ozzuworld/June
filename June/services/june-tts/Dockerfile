@@ -7,6 +7,11 @@ ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda-12.6
 ENV HF_HOME=/app/.cache/huggingface
 
+# GPU optimization settings
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+ENV CUDA_LAUNCH_BLOCKING=0
+ENV COMPILE=1
+
 # Install system dependencies and add deadsnakes PPA for Python 3.12
 RUN apt-get update && apt-get install -y \
     software-properties-common \

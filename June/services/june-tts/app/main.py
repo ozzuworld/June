@@ -177,7 +177,7 @@ async def synthesize_with_fish_speech_api(
 
             data = {
                 'text': text,
-                'streaming': 'false'  # Get full audio at once
+                'streaming': 'true'  # Enable streaming for lower latency
             }
 
             # Call Fish Speech API
@@ -188,7 +188,12 @@ async def synthesize_with_fish_speech_api(
             )
 
             if response.status_code == 200:
-                return response.content
+                # Collect streaming chunks for full audio
+                # This enables faster API response while maintaining compatibility
+                audio_chunks = []
+                async for chunk in response.aiter_bytes():
+                    audio_chunks.append(chunk)
+                return b''.join(audio_chunks)
             else:
                 raise RuntimeError(f"Fish Speech API error: {response.status_code}")
 
