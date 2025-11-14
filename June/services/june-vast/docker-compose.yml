@@ -60,7 +60,8 @@ services:
       - REFERENCES_DIR=/app/references
       - FISH_SPEECH_TIMEOUT=180
     volumes:
-      - ./services/june-tts/references:/app/references
+      - ../june-tts/references:/app/references
+      - ../june-tts/checkpoints:/app/checkpoints
       - tts-cache:/root/.cache
     ports:
       - "8000:8000"

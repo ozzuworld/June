@@ -1,17 +1,26 @@
 #!/bin/bash
 # Start script for Fish Speech TTS service
 
-# Debug: Check if checkpoint directory exists
-echo "=== DEBUG: Checking checkpoint directory ==="
-ls -la /app/checkpoints/ || echo "ERROR: /app/checkpoints/ does not exist!"
-echo ""
-echo "=== DEBUG: Checking fish-speech-1.5 directory ==="
-ls -la /app/checkpoints/fish-speech-1.5/ || echo "ERROR: /app/checkpoints/fish-speech-1.5/ does not exist!"
-echo ""
-echo "=== DEBUG: Checking required files ==="
-test -f /app/checkpoints/fish-speech-1.5/config.json && echo "✓ config.json exists" || echo "✗ config.json MISSING"
-test -f /app/checkpoints/fish-speech-1.5/model.pth && echo "✓ model.pth exists" || echo "✗ model.pth MISSING"
-echo ""
+# Check if models exist, download if missing
+if [ ! -f "/app/checkpoints/fish-speech-1.5/config.json" ]; then
+    echo "=== Models not found, downloading fish-speech-1.5 ==="
+    mkdir -p /app/checkpoints
+    huggingface-cli download fishaudio/fish-speech-1.5 \
+        --local-dir /app/checkpoints/fish-speech-1.5 \
+        --local-dir-use-symlinks False
+
+    echo "=== Verifying downloaded files ==="
+    ls -lah /app/checkpoints/fish-speech-1.5/
+
+    if [ ! -f "/app/checkpoints/fish-speech-1.5/config.json" ]; then
+        echo "ERROR: Model download failed!"
+        exit 1
+    fi
+    echo "✓ Models downloaded successfully"
+else
+    echo "=== Models already exist, skipping download ==="
+    ls -lah /app/checkpoints/fish-speech-1.5/
+fi
 
 # Start Fish Speech API server in the background
 cd /opt/fish-speech
