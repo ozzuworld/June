@@ -55,11 +55,9 @@ RUN python3.10 -m pip install \
     torchaudio==2.1.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install numpy first (required for pkuseg build in chatterbox-tts)
-RUN python3.10 -m pip install "numpy>=1.24,<1.26"
-
-# Install other core ML dependencies
+# Install core ML dependencies
 RUN python3.10 -m pip install \
+    numpy \
     transformers>=4.36.0 \
     accelerate>=0.25.0 \
     einops>=0.7.0 \
@@ -72,9 +70,9 @@ RUN python3.10 -m pip install \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS with --no-build-isolation
-# This allows pkuseg to see numpy during build, avoiding ModuleNotFoundError
-RUN python3.10 -m pip install --no-build-isolation chatterbox-tts
+# Install Chatterbox TTS from GitHub (master uses spacy-pkuseg, not old pkuseg)
+# PyPI version 0.1.4 has old pkuseg which fails to build on Python 3.10+
+RUN python3.10 -m pip install git+https://github.com/resemble-ai/chatterbox.git
 
 # Install FastAPI and server dependencies
 RUN python3.10 -m pip install \
