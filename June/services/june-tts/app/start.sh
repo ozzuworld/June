@@ -47,15 +47,29 @@ python3.12 -m tools.api_server \
     --decoder-config-name modded_dac_vq \
     $COMPILE_FLAG &
 
-# Wait for Fish Speech API to start
+# Wait for Fish Speech API to start (longer timeout for --compile)
 echo "Waiting for Fish Speech API to start..."
-for i in {1..30}; do
+if [ "${COMPILE:-1}" = "1" ]; then
+    echo "⏱️  Note: First startup with --compile takes 60-120s for torch compilation"
+    MAX_WAIT=120
+else
+    MAX_WAIT=60
+fi
+
+for i in $(seq 1 $MAX_WAIT); do
     if curl -s http://127.0.0.1:9880/docs > /dev/null 2>&1; then
-        echo "✓ Fish Speech API is ready!"
+        echo "✓ Fish Speech API is ready! (took ${i}s)"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "⚠ Fish Speech API not ready after 30s, starting wrapper anyway..."
+
+    # Progress indicator every 10 seconds
+    if [ $((i % 10)) -eq 0 ]; then
+        echo "  ... still waiting (${i}/${MAX_WAIT}s)"
+    fi
+
+    if [ $i -eq $MAX_WAIT ]; then
+        echo "⚠ Fish Speech API not ready after ${MAX_WAIT}s, starting wrapper anyway..."
+        echo "⚠ First request may fail - check logs for compilation errors"
     fi
     sleep 1
 done

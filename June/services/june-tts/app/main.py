@@ -321,18 +321,26 @@ async def on_startup():
     logger.info("🚀 Fish Speech TTS Service (API Wrapper)")
     logger.info("=" * 80)
 
-    # Wait for Fish Speech API to be ready
-    for i in range(30):
+    # Wait for Fish Speech API to be ready (longer timeout for torch.compile)
+    compile_enabled = os.getenv("COMPILE", "1") == "1"
+    max_wait = 120 if compile_enabled else 60
+    logger.info(f"⏱️  Waiting up to {max_wait}s for Fish Speech API (compile={'ON' if compile_enabled else 'OFF'})")
+
+    for i in range(max_wait):
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{FISH_SPEECH_API}/health", timeout=2.0)
                 if response.status_code == 200:
-                    logger.info("✅ Fish Speech API is ready")
+                    logger.info(f"✅ Fish Speech API is ready (took {i+1}s)")
                     break
         except:
-            if i == 29:
-                logger.error("❌ Fish Speech API not available")
+            if i == max_wait - 1:
+                logger.error(f"❌ Fish Speech API not available after {max_wait}s")
+                logger.error("⚠️  Service may not function correctly - check Fish Speech logs")
                 return
+            # Progress indicator every 10 seconds
+            if (i + 1) % 10 == 0:
+                logger.info(f"  ... still waiting ({i+1}/{max_wait}s)")
             await asyncio.sleep(1)
 
     await init_db_pool()
