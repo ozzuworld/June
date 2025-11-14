@@ -85,7 +85,7 @@ class SynthesizeRequest(BaseModel):
     room_name: str = Field(..., description="LiveKit room name")
     language: str = Field(default="en")
     voice_id: str = Field(default="default")
-    temperature: float = Field(default=0.7, ge=0.1, le=1.0)
+    temperature: float = Field(default=0.5, ge=0.1, le=1.0)  # Lower for consistency
     top_p: float = Field(default=0.7, ge=0.1, le=1.0)
     repetition_penalty: float = Field(default=1.2, ge=1.0, le=2.0)
 
@@ -157,6 +157,9 @@ async def load_voice_reference(voice_id: str = "default"):
 async def synthesize_with_fish_speech_api(
     text: str,
     reference_audio: Optional[bytes] = None,
+    temperature: float = 0.5,
+    top_p: float = 0.7,
+    repetition_penalty: float = 1.2,
 ) -> bytes:
     """Call Fish Speech HTTP API for synthesis"""
 
@@ -166,6 +169,9 @@ async def synthesize_with_fish_speech_api(
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             reference_path = tmp.name
             tmp.write(reference_audio)
+        logger.info(f"📎 Using reference audio: {len(reference_audio)} bytes")
+    else:
+        logger.warning("⚠️  No reference audio provided - voice may vary!")
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -177,8 +183,13 @@ async def synthesize_with_fish_speech_api(
 
             data = {
                 'text': text,
-                'streaming': 'false'  # Get complete audio file
+                'streaming': 'false',  # Get complete audio file
+                'temperature': str(temperature),
+                'top_p': str(top_p),
+                'repetition_penalty': str(repetition_penalty),
             }
+
+            logger.info(f"🎛️  Synthesis params: temp={temperature}, top_p={top_p}, rep_penalty={repetition_penalty}")
 
             # Call Fish Speech API
             response = await client.post(
@@ -429,12 +440,16 @@ async def synthesize_speech(request: SynthesizeRequest):
         await load_voice_reference(request.voice_id)
 
     logger.info(f"🎙️ Synthesizing: '{request.text[:60]}...'")
+    logger.info(f"🎤 Voice: {request.voice_id}, Params: temp={request.temperature}, top_p={request.top_p}")
 
     try:
-        # Call Fish Speech API
+        # Call Fish Speech API with consistent parameters
         audio_data = await synthesize_with_fish_speech_api(
             text=request.text,
-            reference_audio=current_reference_audio
+            reference_audio=current_reference_audio,
+            temperature=request.temperature,
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty
         )
 
         # Stream to LiveKit
