@@ -1,6 +1,12 @@
 #!/bin/bash
 # Start script for Fish Speech TTS service
 
+# Login to Hugging Face if token is provided
+if [ -n "$HF_TOKEN" ]; then
+    echo "=== Logging in to Hugging Face ==="
+    huggingface-cli login --token "$HF_TOKEN"
+fi
+
 # Check if models exist, download if missing
 if [ ! -f "/app/checkpoints/openaudio-s1-mini/config.json" ]; then
     echo "=== Models not found, downloading openaudio-s1-mini ==="
