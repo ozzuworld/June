@@ -38,8 +38,17 @@ python3.12 -m tools.api_server \
     --compile &
 
 # Wait for Fish Speech API to start
-echo "Waiting for Fish Speech API to start..."
-sleep 10
+echo "Waiting for Fish Speech API to start (this may take 30-60s for compilation)..."
+for i in {1..60}; do
+    if curl -s http://127.0.0.1:9880/health > /dev/null 2>&1; then
+        echo "✓ Fish Speech API is ready!"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "⚠ Fish Speech API health check timeout, starting wrapper anyway..."
+    fi
+    sleep 1
+done
 
 # Start our FastAPI wrapper
 cd /app
