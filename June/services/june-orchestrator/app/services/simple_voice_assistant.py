@@ -101,6 +101,18 @@ class SimpleVoiceAssistant:
         self.max_sentence_chars = 180
         self.min_chunk_size = 15  # ✅ FIX: Reduced from 50 to allow shorter responses
         self.sentence_end = re.compile(r'[.!?。！？]+\s+')
+
+        # ✅ Semantic chunking patterns for natural prosody
+        # These help break at natural phrase boundaries, not mid-thought
+        self.clause_boundaries = re.compile(
+            r'(,\s+(?:and|but|or|yet|so|nor|for|because|although|though|while|if|when|where|as)\s+)'
+        )
+        self.breath_groups = re.compile(
+            r'(,\s+(?:however|therefore|moreover|furthermore|nevertheless|meanwhile|consequently)\s*,?\s+)'
+        )
+        self.prepositional_phrases = re.compile(
+            r'(\s+(?:in|on|at|by|for|with|from|to|of|about|after|before|during|through)\s+(?:the|a|an|this|that|these|those|my|your|his|her|its|our|their)\s+)'
+        )
         
         # Metrics
         self.total_requests = 0
@@ -243,30 +255,85 @@ class SimpleVoiceAssistant:
         return text.strip()
     
     def _extract_complete_sentence(self, text_buffer: str) -> tuple[str, str]:
-        """Extract complete sentence from buffer"""
+        """
+        Extract complete sentence from buffer using semantic chunking.
+
+        ✅ IMPROVED: Uses semantic boundaries for natural prosody instead of
+        arbitrary character limits. Respects clause structure and breath groups.
+
+        Priority order:
+        1. Complete sentences (. ! ?)
+        2. Semantic clause boundaries (conjunctions after commas)
+        3. Breath groups (transitional adverbs)
+        4. Natural pauses (commas, semicolons)
+
+        Args:
+            text_buffer: Accumulated text buffer
+
+        Returns:
+            (sentence, remaining_buffer) tuple
+        """
         if len(text_buffer) < self.min_chunk_size:
             return "", text_buffer
-        
-        # Look for sentence ending
+
+        # Priority 1: Look for sentence ending
         match = self.sentence_end.search(text_buffer)
-        
+
         if match:
             sentence = text_buffer[:match.end()].strip()
             remaining = text_buffer[match.end():].strip()
-            
+
             if len(sentence) >= self.min_chunk_size:
                 return sentence, remaining
-        
-        # If buffer is too long, force a break at natural pause
+
+        # Priority 2: If buffer is getting long (>140 chars), look for semantic boundaries
+        # This prevents awkward mid-phrase breaks
+        if len(text_buffer) >= 140:
+            # Try breath groups first (strongest semantic boundary after sentence end)
+            match = self.breath_groups.search(text_buffer)
+            if match:
+                # Break after the transitional phrase
+                break_point = match.end()
+                if break_point > self.min_chunk_size:
+                    sentence = text_buffer[:break_point].strip()
+                    remaining = text_buffer[break_point:].strip()
+                    logger.debug(f"📐 Semantic break (breath group): '{sentence[-30:]}'")
+                    return sentence, remaining
+
+            # Try clause boundaries (conjunctions after commas)
+            match = self.clause_boundaries.search(text_buffer)
+            if match:
+                # Break before the conjunction to keep it with the next clause
+                break_point = match.start()
+                if break_point > self.min_chunk_size:
+                    sentence = text_buffer[:break_point].strip()
+                    remaining = text_buffer[break_point:].strip()
+                    logger.debug(f"📐 Semantic break (clause boundary): '{sentence[-30:]}'")
+                    return sentence, remaining
+
+        # Priority 3: If buffer is at max length, force a break at natural pause
         if len(text_buffer) >= self.max_sentence_chars:
-            # Find last comma or semicolon
-            for char in [', ', '; ', ': ']:
-                last_idx = text_buffer.rfind(char)
+            # Try to find a good break point working backwards from the end
+            # Prefer commas, semicolons, colons - but not mid-phrase
+
+            # Find all commas in the last 50% of the buffer
+            search_start = len(text_buffer) // 2
+            for char in ['; ', ': ', ', ']:
+                last_idx = text_buffer.rfind(char, search_start)
                 if last_idx > self.min_chunk_size:
                     sentence = text_buffer[:last_idx + len(char)].strip()
                     remaining = text_buffer[last_idx + len(char):].strip()
+                    logger.debug(f"📐 Forced break at punctuation: '{sentence[-30:]}'")
                     return sentence, remaining
-        
+
+            # Last resort: break at last space if no punctuation found
+            last_space = text_buffer.rfind(' ', search_start)
+            if last_space > self.min_chunk_size:
+                sentence = text_buffer[:last_space].strip()
+                remaining = text_buffer[last_space:].strip()
+                logger.debug(f"📐 Emergency break at space: '{sentence[-30:]}'")
+                return sentence, remaining
+
         return "", text_buffer
     
     def _should_enable_tools(self, text: str) -> bool:
