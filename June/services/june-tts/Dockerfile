@@ -15,8 +15,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y \
     python3.12 \
     python3.12-dev \
-    python3.12-distutils \
-    python3-pip \
+    python3.12-venv \
     git \
     ffmpeg \
     libsndfile1 \
@@ -24,15 +23,18 @@ RUN apt-get update && apt-get install -y \
     portaudio19-dev \
     wget \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python 3.12 as default
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
 
-# Install pip for Python 3.12 and upgrade
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
-RUN python3.12 -m pip install --upgrade pip setuptools wheel
+# Install pip for Python 3.12
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
+    python3.12 get-pip.py && \
+    rm get-pip.py && \
+    python3.12 -m pip install --upgrade pip setuptools wheel
 
 # Install PyTorch 2.5+ with CUDA 12.6
 RUN python3.12 -m pip install \
