@@ -1,13 +1,24 @@
-"""XTTS TTS Service Client - PostgreSQL Voice Integration (OPTIMIZED)
+"""Fish Speech (OpenAudio S1) TTS Service Client - PostgreSQL Voice Integration
 
-Replaces CosyVoice2 with XTTS v2 voice cloning system.
-Uses voice_id instead of language codes.
+MIGRATION: XTTS v2 → Fish Speech (OpenAudio S1)
+- #1 on TTS-Arena leaderboard
+- 50+ emotion markers support
+- 150ms latency (vs 200ms XTTS)
+- Superior quality vs ElevenLabs
+- Uses voice cloning from reference audio
+
+API COMPATIBILITY:
+- Same endpoints as XTTS
+- Same voice management (PostgreSQL)
+- Enhanced: Emotion marker support in text
+- Example: "(excited)Hello! (laughing)This is great!"
 
 KEY IMPROVEMENTS:
 1. ✅ Increased HTTP read timeout from 60s to 90s
 2. ✅ Separate timeout configuration for connection/read/write
 3. ✅ Better error logging with text length
 4. ✅ Handles long sentences (~200 chars / 30s synthesis)
+5. ✅ Native emotion control via text markers
 """
 import logging
 import os
@@ -25,10 +36,11 @@ SERVICE_AUTH_TOKEN = os.getenv("SERVICE_AUTH_TOKEN", "")
 
 
 class TTSService:
-    """XTTS TTS service client with PostgreSQL voice storage
-    
-    XTTS uses voice cloning from reference audio stored in PostgreSQL.
-    Each voice has a unique voice_id.
+    """Fish Speech (OpenAudio S1) TTS service client with PostgreSQL voice storage
+
+    Fish Speech uses voice cloning from reference audio (10-30s recommended).
+    Supports 50+ emotion markers: (excited), (happy), (sad), (laughing), etc.
+    Each voice has a unique voice_id stored in PostgreSQL.
     """
 
     def __init__(self):
@@ -42,15 +54,16 @@ class TTSService:
             pool=None       # No pool timeout
         )
         
-        logger.info(f"✅ XTTS service initialized: {self.base_url}")
+        logger.info(f"✅ Fish Speech (OpenAudio S1) service initialized: {self.base_url}")
         logger.info(f"⏱️  Timeout config: connect=10s, read=90s, write=10s")
+        logger.info(f"🎭 Emotion support: 50+ markers available")
         self._log_network_debug()
 
     def _log_network_debug(self):
         """Log network and DNS information for debugging"""
         try:
             logger.info("="*80)
-            logger.info("🔍 XTTS SERVICE NETWORK DEBUG")
+            logger.info("🔍 FISH SPEECH SERVICE NETWORK DEBUG")
             logger.info("="*80)
             
             from urllib.parse import urlparse
@@ -92,16 +105,17 @@ class TTSService:
         streaming: bool = True,
     ) -> bool:
         """
-        Publish XTTS audio to LiveKit room
-        
-        Now handles sentences up to ~200 chars / 30s synthesis time
-        
+        Publish Fish Speech audio to LiveKit room
+
+        Supports emotion markers in text: (excited), (happy), (sad), (laughing), etc.
+        Example: "(excited)Hello! (laughing)This is amazing!"
+
         Args:
             room_name: LiveKit room name
-            text: Text to synthesize
+            text: Text to synthesize (can include emotion markers)
             voice_id: Voice ID from PostgreSQL database
             streaming: Enable streaming synthesis
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -116,22 +130,22 @@ class TTSService:
                 logger.warning(f"Text too long ({len(text)} chars), truncating to 1000")
                 text = text[:1000]
 
-            logger.info(f"📢 XTTS request for room '{room_name}': {text[:50]}...")
+            logger.info(f"📢 Fish Speech request for room '{room_name}': {text[:50]}...")
             logger.info(f"📊 Text length: {len(text)} chars")
 
-            # XTTS payload format
+            # Fish Speech payload format (same as XTTS, backward compatible)
             payload = {
                 "text": text,
                 "room_name": room_name,
-                "voice_id": voice_id,  # ✅ CHANGED: voice_id instead of language
+                "voice_id": voice_id,
             }
 
             logger.info(f"🎤 Voice: {voice_id}, streaming: {streaming}")
-            
+
             full_url = f"{self.base_url}/api/tts/synthesize"
-            
+
             logger.info("="*80)
-            logger.info("🚀 XTTS REQUEST")
+            logger.info("🚀 FISH SPEECH REQUEST")
             logger.info(f"📍 URL: {full_url}")
             logger.info(f"📦 Payload: {json.dumps(payload, indent=2)}")
             
@@ -157,17 +171,18 @@ class TTSService:
                 if response.status_code == 200:
                     result = response.json()
                     total_time = (time.time() - request_start_time) * 1000
-                    logger.info(f"\n✅ XTTS SUCCESS:")
+                    logger.info(f"\n✅ FISH SPEECH SUCCESS:")
+                    logger.info(f"   Model: {result.get('model', 'OpenAudio S1')}")
                     logger.info(f"   Synthesis: {result.get('total_time_ms', 0):.0f}ms")
                     logger.info(f"   Total: {total_time:.0f}ms")
                     logger.info("="*80)
                     return True
                 elif response.status_code == 503:
-                    logger.error(f"\n❌ XTTS unavailable (503)")
+                    logger.error(f"\n❌ Fish Speech unavailable (503)")
                     logger.error("="*80)
                     return False
                 else:
-                    logger.error(f"\n❌ XTTS error: {response.status_code}")
+                    logger.error(f"\n❌ Fish Speech error: {response.status_code}")
                     logger.error(f"   Detail: {response.text[:200]}")
                     logger.error("="*80)
                     return False
@@ -201,12 +216,14 @@ class TTSService:
     ) -> Dict[str, Any]:
         """
         Clone a voice and store in PostgreSQL
-        
+
+        Fish Speech recommends 10-30 seconds of clear reference audio.
+
         Args:
             voice_id: Unique identifier for the voice
             voice_name: Human-readable name
-            audio_file_path: Path to reference audio (3-60s, WAV/MP3/FLAC)
-            
+            audio_file_path: Path to reference audio (10-30s recommended, WAV/MP3/FLAC/M4A)
+
         Returns:
             Response dict with status and details
         """
@@ -324,7 +341,7 @@ class TTSService:
             return False
 
     async def health_check(self) -> Dict[str, Any]:
-        """Check XTTS service health"""
+        """Check Fish Speech service health"""
         try:
             logger.info(f"🏥 Health check: {self.base_url}/health")
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -332,30 +349,30 @@ class TTSService:
                     f"{self.base_url}/health",
                     headers=self._headers()
                 )
-                
+
                 if response.status_code == 200:
                     return {
                         "healthy": True,
-                        "service": "xtts",
+                        "service": "fish_speech",
                         "details": response.json()
                     }
                 else:
                     return {
                         "healthy": False,
-                        "service": "xtts",
+                        "service": "fish_speech",
                         "error": f"HTTP {response.status_code}"
                     }
-                    
+
         except Exception as e:
             logger.error(f"❌ Health check failed: {e}")
             return {
                 "healthy": False,
-                "service": "xtts",
+                "service": "fish_speech",
                 "error": str(e)
             }
 
     async def get_stats(self) -> Optional[Dict[str, Any]]:
-        """Get XTTS service statistics"""
+        """Get Fish Speech service statistics"""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(

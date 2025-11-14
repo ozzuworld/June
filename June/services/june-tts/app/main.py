@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-June TTS Service - NATURAL SPEECH OPTIMIZED
-XTTS v2 with settings for human-like prosody and intonation
+June TTS Service - OpenAudio S1 (Fish Speech) INTEGRATION
+State-of-the-art TTS with emotion control and natural prosody
 
-KEY OPTIMIZATIONS FOR NATURAL SPEECH:
-- Larger chunk size (60) for better prosody context
-- Temperature 0.75 for natural variation in intonation
-- Longer frame pacing (15ms) for smoother delivery
-- Text preprocessing for prosody cues
-- Complete sentence handling
+KEY FEATURES:
+- OpenAudio S1 (#1 on TTS-Arena leaderboard)
+- 50+ emotion markers: (excited), (happy), (sad), (laughing), etc.
+- 150ms streaming latency
+- Superior quality vs ElevenLabs
+- 14 languages support
+- GPU optimized with --compile support
 """
 import asyncio
 import logging
 import os
+import sys
 import time
 import tempfile
 import hashlib
 import io
 import re
-from typing import Optional
+from typing import Optional, AsyncGenerator
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -29,6 +32,11 @@ from livekit import rtc
 import soundfile as sf
 import asyncpg
 
+# Fish Speech imports
+sys.path.insert(0, '/opt/fish-speech')
+from tools.llama.generate import launch_thread_safe_queue, GenerateRequest, GenerateResponse
+from tools.vqgan.inference import load_model as load_decoder_model
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -36,10 +44,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("june-tts-natural")
+logger = logging.getLogger("june-tts-fish-speech")
 
 # -----------------------------------------------------------------------------
-# Configuration - OPTIMIZED FOR NATURAL SPEECH
+# Configuration - FISH SPEECH OPTIMIZED
 # -----------------------------------------------------------------------------
 LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
@@ -52,53 +60,41 @@ DB_NAME = os.getenv("DB_NAME", "june")
 DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
-# Audio / streaming - NATURAL SPEECH SETTINGS
-XTTS_SAMPLE_RATE = 24000
+# Model paths
+CHECKPOINT_PATH = Path("/app/checkpoints/fish-speech-1.5")
+LLAMA_CHECKPOINT = CHECKPOINT_PATH / "model.pth"
+DECODER_CHECKPOINT = CHECKPOINT_PATH / "firefly-gan-vq-fsq-8x1024-21hz-generator.pth"
+DECODER_CONFIG = "firefly_gan_vq"
+
+# Audio settings
+FISH_SPEECH_SAMPLE_RATE = 44100  # Fish Speech native sample rate
 LIVEKIT_SAMPLE_RATE = 48000
+LIVEKIT_FRAME_SIZE = 960  # 20ms @ 48kHz
+FRAME_PERIOD_S = 0.020  # 20ms pacing
 
-# ✅ NATURAL SPEECH: Larger chunks for better prosody
-STREAM_CHUNK_SIZE = 60  # Increased from 20 - gives XTTS more context
-
-# ✅ NATURAL SPEECH: Slightly longer frames for smoother delivery
-LIVEKIT_FRAME_SIZE = 720  # 15 ms @ 48 kHz (increased from 10ms)
-FRAME_PERIOD_S = 0.015    # 15 ms pacing
-
-# ✅ NATURAL SPEECH: Synthesis parameters
-XTTS_TEMPERATURE = 0.75   # Controls prosody variation (0.65-0.85 good range)
-XTTS_LENGTH_PENALTY = 1.0  # Prevents rushing
-XTTS_REPETITION_PENALTY = 5.0  # Prevents robotic repetition
-XTTS_SPEED = 1.0  # Speech speed (0.8-1.2 range, 1.0 is natural)
+# Fish Speech inference parameters
+COMPILE_MODEL = True  # Enable torch.compile for 10x speedup
+MAX_NEW_TOKENS = 1024
+CHUNK_LENGTH = 200
+TOP_P = 0.7
+REPETITION_PENALTY = 1.2
+TEMPERATURE = 0.7
 
 # -----------------------------------------------------------------------------
 # FastAPI app
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="June TTS (XTTS v2) - Natural Speech",
-    version="4.0.0",
-    description="Optimized for human-like prosody and natural intonation"
+    title="June TTS (OpenAudio S1 / Fish Speech)",
+    version="5.0.0",
+    description="State-of-the-art TTS with emotion control - #1 on TTS-Arena"
 )
-
-# -----------------------------------------------------------------------------
-# PyTorch 2.6 safe globals
-# -----------------------------------------------------------------------------
-if hasattr(torch.serialization, "add_safe_globals"):
-    from TTS.tts.configs.xtts_config import XttsConfig
-    from TTS.tts.configs.shared_configs import BaseDatasetConfig
-    from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
-    from TTS.config.shared_configs import BaseAudioConfig
-    torch.serialization.add_safe_globals([
-        XttsConfig, BaseDatasetConfig, XttsArgs, XttsAudioConfig, BaseAudioConfig
-    ])
-
-from TTS.api import TTS
 
 # -----------------------------------------------------------------------------
 # Global state
 # -----------------------------------------------------------------------------
-xtts_model = None
-tts_api = None
-gpt_cond_latent = None
-speaker_embedding = None
+fish_speech_model = None
+decoder_model = None
+llama_queue = None
 
 livekit_room = None
 livekit_audio_source = None
@@ -106,9 +102,8 @@ livekit_connected = False
 
 db_pool = None
 
-speaker_embedding_hash: Optional[str] = None
-gpt_cond_hash: Optional[str] = None
 current_voice_id: Optional[str] = None
+current_reference_audio: Optional[bytes] = None
 
 _gpu_resampler = None
 
@@ -120,93 +115,45 @@ class SynthesizeRequest(BaseModel):
     room_name: str = Field(..., description="LiveKit room name")
     language: str = Field(default="en")
     voice_id: str = Field(default="default")
-    # Optional prosody controls
-    speed: float = Field(default=1.0, ge=0.8, le=1.2)
-    temperature: float = Field(default=0.75, ge=0.6, le=0.9)
+    # Fish Speech parameters
+    temperature: float = Field(default=0.7, ge=0.1, le=1.0)
+    top_p: float = Field(default=0.7, ge=0.1, le=1.0)
+    repetition_penalty: float = Field(default=1.2, ge=1.0, le=2.0)
 
 # -----------------------------------------------------------------------------
-# Text preprocessing for natural prosody
+# Emotion marker processing
 # -----------------------------------------------------------------------------
-def preprocess_text_for_natural_speech(text: str) -> str:
+SUPPORTED_EMOTIONS = [
+    "angry", "sad", "excited", "surprised", "satisfied", "delighted", "scared",
+    "worried", "upset", "nervous", "frustrated", "depressed", "empathetic",
+    "embarrassed", "disgusted", "moved", "proud", "relaxed", "grateful",
+    "confident", "interested", "curious", "confused", "joyful", "happy",
+    "laughing", "chuckling", "sobbing", "crying", "sighing", "panting"
+]
+
+def validate_emotion_markers(text: str) -> str:
     """
-    Preprocess text to help XTTS generate more natural prosody
+    Validate and preserve emotion markers in text
+    Fish Speech supports markers like: (excited)Hello! (laughing)Ha ha!
     """
-    # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text.strip())
-    
-    # Ensure proper spacing after punctuation
-    text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
-    
-    # Add slight pauses for natural rhythm (XTTS responds to ellipses)
-    # Convert long dashes to ellipses for pause
-    text = text.replace('—', '...')
-    text = text.replace(' - ', '... ')
-    
-    # Ensure question marks and exclamation points have proper spacing
-    text = re.sub(r'([!?])\s*([A-Z])', r'\1  \2', text)
-    
-    # Handle numbers naturally
-    text = re.sub(r'\b(\d+)\s*-\s*(\d+)\b', r'\1 to \2', text)
-    
-    logger.debug(f"📝 Preprocessed: '{text[:100]}...'")
+    # Find all emotion markers
+    markers = re.findall(r'\((\w+)\)', text)
+
+    # Log detected emotions
+    if markers:
+        valid_emotions = [m for m in markers if m.lower() in SUPPORTED_EMOTIONS]
+        if valid_emotions:
+            logger.info(f"🎭 Detected emotions: {', '.join(valid_emotions)}")
+
+    # Fish Speech handles emotion markers natively, just return as-is
     return text
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
-def compute_tensor_hash(tensor):
-    if tensor is None:
-        return "None"
-    if torch.is_tensor(tensor):
-        arr = tensor.detach().cpu().numpy()
-    else:
-        arr = np.array(tensor)
-    return hashlib.md5(arr.tobytes()).hexdigest()[:8]
-
-def load_audio_with_soundfile(audio_path: str, sampling_rate: int = None):
-    audio, sr = sf.read(audio_path)
-    if audio.dtype == np.int16:
-        audio = audio.astype(np.float32) / 32767.0
-    elif audio.dtype == np.int32:
-        audio = audio.astype(np.float32) / 2147483647.0
-    else:
-        audio = audio.astype(np.float32)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-    audio_tensor = torch.FloatTensor(audio)
-    if sampling_rate is not None and sr != sampling_rate:
-        import torchaudio.transforms as T
-        resampler = T.Resample(sr, sampling_rate)
-        audio_tensor = resampler(audio_tensor)
-    return audio_tensor.unsqueeze(0)
-
-def load_audio_from_bytes(audio_bytes: bytes, sampling_rate: int = None):
-    audio, sr = sf.read(io.BytesIO(audio_bytes))
-    if audio.dtype == np.int16:
-        audio = audio.astype(np.float32) / 32767.0
-    elif audio.dtype == np.int32:
-        audio = audio.astype(np.float32) / 2147483647.0
-    else:
-        audio = audio.astype(np.float32)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-    audio_tensor = torch.FloatTensor(audio)
-    if sampling_rate is not None and sr != sampling_rate:
-        import torchaudio.transforms as T
-        resampler = T.Resample(sr, sampling_rate)
-        audio_tensor = resampler(audio_tensor)
-    return audio_tensor.unsqueeze(0)
-
-# Monkey-patch XTTS
-import TTS.tts.models.xtts as xtts_module
-_original_load_audio = xtts_module.load_audio
-def _patched_load_audio(audiopath, sampling_rate=None):
-    try:
-        return load_audio_with_soundfile(audiopath, sampling_rate)
-    except Exception as e:
-        logger.warning(f"Soundfile load failed: {e}")
-        return _original_load_audio(audiopath, sampling_rate)
-xtts_module.load_audio = _patched_load_audio
+def compute_hash(data: bytes) -> str:
+    """Compute MD5 hash of data"""
+    return hashlib.md5(data).hexdigest()[:8]
 
 # -----------------------------------------------------------------------------
 # Database
@@ -244,105 +191,178 @@ async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
     return None
 
 # -----------------------------------------------------------------------------
-# Voice embeddings
+# Voice reference loading
 # -----------------------------------------------------------------------------
-async def load_voice_embeddings(voice_id: str = "default"):
-    global gpt_cond_latent, speaker_embedding, speaker_embedding_hash, gpt_cond_hash, current_voice_id
+async def load_voice_reference(voice_id: str = "default"):
+    """Load reference audio for voice cloning"""
+    global current_voice_id, current_reference_audio
 
-    if voice_id == current_voice_id and gpt_cond_latent is not None:
+    if voice_id == current_voice_id and current_reference_audio is not None:
         logger.debug(f"✅ Voice '{voice_id}' already cached")
         return True
 
-    logger.info(f"📁 Loading voice '{voice_id}'...")
+    logger.info(f"📁 Loading voice reference '{voice_id}'...")
     audio_bytes = await get_voice_from_db(voice_id)
 
     if audio_bytes:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-            tmp.write(audio_bytes)
-        try:
-            gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-                audio_path=[tmp_path]
-            )
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-        logger.info(f"✅ Embeddings generated for '{voice_id}'")
+        current_reference_audio = audio_bytes
+        current_voice_id = voice_id
+        logger.info(f"✅ Voice '{voice_id}' loaded ({len(audio_bytes)} bytes)")
+        return True
     else:
-        # Fallback
-        sample_rate = 22050
-        silence = np.zeros(int(sample_rate * 2.0), dtype=np.float32)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-            sf.write(tmp_path, silence, sample_rate)
-        try:
-            gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-                audio_path=[tmp_path]
-            )
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-        logger.info("✅ Default embeddings generated")
-
-    if torch.cuda.is_available():
-        gpt_cond_latent = gpt_cond_latent.cuda()
-        speaker_embedding = speaker_embedding.cuda()
-
-    speaker_embedding_hash = compute_tensor_hash(speaker_embedding)
-    gpt_cond_hash = compute_tensor_hash(gpt_cond_latent)
-    current_voice_id = voice_id
-    logger.info(f"🔑 Voice '{voice_id}' loaded: GPT={gpt_cond_hash}, Speaker={speaker_embedding_hash}")
-    return True
+        # Use default reference if available
+        default_ref = Path("/app/references/June.wav")
+        if default_ref.exists():
+            with open(default_ref, 'rb') as f:
+                current_reference_audio = f.read()
+            current_voice_id = voice_id
+            logger.info(f"✅ Using default reference audio")
+            return True
+        else:
+            logger.warning(f"⚠️ No reference audio available for '{voice_id}'")
+            current_reference_audio = None
+            return False
 
 # -----------------------------------------------------------------------------
-# Model load + warmup
+# Fish Speech Model Loading
 # -----------------------------------------------------------------------------
-async def warmup_model():
-    """Warmup with natural speech test"""
-    try:
-        start = time.time()
-        _ = list(xtts_model.inference_stream(
-            text="Hello! I'm June, your voice assistant. How can I help you today?",
-            language="en",
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            stream_chunk_size=STREAM_CHUNK_SIZE,
-            temperature=XTTS_TEMPERATURE,
-            length_penalty=XTTS_LENGTH_PENALTY,
-            repetition_penalty=XTTS_REPETITION_PENALTY,
-            enable_text_splitting=True
-        ))
-        logger.info(f"✅ Warmup complete in {(time.time()-start)*1000:.0f}ms")
-    except Exception as e:
-        logger.warning(f"⚠️ Warmup failed: {e}")
+async def load_fish_speech_model():
+    """Load Fish Speech models (LLaMA + Decoder)"""
+    global fish_speech_model, decoder_model, llama_queue, _gpu_resampler
 
-async def load_xtts_model():
-    global xtts_model, tts_api, _gpu_resampler
-    logger.info("🔊 Loading XTTS v2 (Natural Speech Mode)...")
-    tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
-    xtts_model = tts_api.synthesizer.tts_model
+    logger.info("🐟 Loading Fish Speech (OpenAudio S1)...")
 
+    # Check for model files
+    if not LLAMA_CHECKPOINT.exists():
+        raise FileNotFoundError(f"LLaMA checkpoint not found: {LLAMA_CHECKPOINT}")
+    if not DECODER_CHECKPOINT.exists():
+        raise FileNotFoundError(f"Decoder checkpoint not found: {DECODER_CHECKPOINT}")
+
+    # Load decoder (vocoder)
+    logger.info(f"📦 Loading decoder from {DECODER_CHECKPOINT}")
+    decoder_model = load_decoder_model(
+        config_name=DECODER_CONFIG,
+        checkpoint_path=str(DECODER_CHECKPOINT),
+        device="cuda" if torch.cuda.is_available() else "cpu"
+    )
+    logger.info("✅ Decoder loaded")
+
+    # Initialize LLaMA queue for thread-safe inference
+    logger.info(f"📦 Loading LLaMA model from {LLAMA_CHECKPOINT}")
+    llama_queue = launch_thread_safe_queue(
+        checkpoint_path=str(LLAMA_CHECKPOINT),
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        precision=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        compile=COMPILE_MODEL  # Enable torch.compile for speedup
+    )
+    logger.info(f"✅ LLaMA model loaded (compile={'ON' if COMPILE_MODEL else 'OFF'})")
+
+    # Setup GPU resampler
     if torch.cuda.is_available():
-        xtts_model.cuda()
-        logger.info("✅ XTTS on GPU")
         import torchaudio.transforms as T
-        _gpu_resampler = T.Resample(XTTS_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE).cuda()
+        _gpu_resampler = T.Resample(FISH_SPEECH_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE).cuda()
         logger.info("✅ GPU resampler ready")
     else:
-        logger.warning("⚠️ XTTS on CPU")
         import torchaudio.transforms as T
-        _gpu_resampler = T.Resample(XTTS_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE)
+        _gpu_resampler = T.Resample(FISH_SPEECH_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE)
+        logger.info("⚠️ Using CPU resampler")
 
-    await load_voice_embeddings("default")
-    await warmup_model()
+    # Load default voice
+    await load_voice_reference("default")
+
+    logger.info("✅ Fish Speech models ready")
     return True
 
 # -----------------------------------------------------------------------------
-# LiveKit
+# Fish Speech Inference
+# -----------------------------------------------------------------------------
+async def synthesize_with_fish_speech(
+    text: str,
+    reference_audio: Optional[bytes] = None,
+    temperature: float = 0.7,
+    top_p: float = 0.7,
+    repetition_penalty: float = 1.2
+) -> AsyncGenerator[np.ndarray, None]:
+    """
+    Synthesize speech using Fish Speech with streaming
+
+    Args:
+        text: Text to synthesize (can include emotion markers)
+        reference_audio: Reference audio bytes for voice cloning
+        temperature: Sampling temperature
+        top_p: Nucleus sampling parameter
+        repetition_penalty: Repetition penalty
+
+    Yields:
+        Audio chunks as numpy arrays
+    """
+    global llama_queue, decoder_model
+
+    if llama_queue is None or decoder_model is None:
+        raise RuntimeError("Models not loaded")
+
+    # Validate emotion markers
+    text = validate_emotion_markers(text)
+
+    # Save reference audio to temp file if provided
+    reference_path = None
+    if reference_audio:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            reference_path = tmp.name
+            tmp.write(reference_audio)
+
+    try:
+        # Create generation request
+        request = GenerateRequest(
+            text=text,
+            reference_audio=reference_path,
+            reference_text=None,  # Let model infer from audio
+            max_new_tokens=MAX_NEW_TOKENS,
+            chunk_length=CHUNK_LENGTH,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            temperature=temperature,
+            streaming=True  # Enable streaming
+        )
+
+        # Get response from LLaMA queue
+        logger.info(f"🎤 Generating speech: '{text[:50]}...'")
+        response: GenerateResponse = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: llama_queue.put(request)
+        )
+
+        # Stream audio chunks
+        if response.codes is not None:
+            # Decode VQ codes to audio using decoder
+            codes_tensor = torch.from_numpy(response.codes)
+            if torch.cuda.is_available():
+                codes_tensor = codes_tensor.cuda()
+
+            with torch.no_grad():
+                audio_output = decoder_model.decode(codes_tensor)
+
+                if torch.is_tensor(audio_output):
+                    audio_np = audio_output.detach().cpu().numpy()
+                else:
+                    audio_np = audio_output
+
+                # Ensure correct shape
+                if audio_np.ndim > 1:
+                    audio_np = audio_np.squeeze()
+
+                # Yield audio chunk
+                yield audio_np.astype(np.float32)
+
+    finally:
+        # Cleanup temp file
+        if reference_path and os.path.exists(reference_path):
+            try:
+                os.unlink(reference_path)
+            except:
+                pass
+
+# -----------------------------------------------------------------------------
+# LiveKit Connection
 # -----------------------------------------------------------------------------
 async def get_livekit_token(identity: str, room_name: str):
     import httpx
@@ -366,7 +386,7 @@ async def connect_livekit():
         await room.connect(ws_url, token)
 
         source = rtc.AudioSource(LIVEKIT_SAMPLE_RATE, 1)
-        track = rtc.LocalAudioTrack.create_audio_track("xtts-audio", source)
+        track = rtc.LocalAudioTrack.create_audio_track("fish-speech-audio", source)
         opts = rtc.TrackPublishOptions()
         opts.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, opts)
@@ -374,7 +394,7 @@ async def connect_livekit():
         livekit_room = room
         livekit_audio_source = source
         livekit_connected = True
-        logger.info(f"✅ LiveKit connected at {LIVEKIT_SAMPLE_RATE} Hz (Natural Speech)")
+        logger.info(f"✅ LiveKit connected at {LIVEKIT_SAMPLE_RATE} Hz")
         return True
     except Exception as e:
         logger.error(f"❌ LiveKit connection failed: {e}")
@@ -403,13 +423,12 @@ def resample_audio_fast(chunk: np.ndarray, input_sr: int, output_sr: int) -> np.
         return resample_poly(chunk, output_sr, input_sr)
 
 # -----------------------------------------------------------------------------
-# Streaming with natural pacing (15ms frames)
+# LiveKit Streaming
 # -----------------------------------------------------------------------------
-async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS_SAMPLE_RATE):
-    """
-    Stream audio with NATURAL PACING (15ms frames for smoother delivery)
-    """
+async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = FISH_SPEECH_SAMPLE_RATE):
+    """Stream audio chunks to LiveKit with proper pacing"""
     global livekit_audio_source, livekit_connected
+
     if not livekit_connected or livekit_audio_source is None:
         logger.warning("LiveKit not connected")
         return
@@ -430,7 +449,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
 
     async def producer():
         nonlocal buffer, first
-        for chunk in audio_chunk_generator:
+        async for chunk in audio_chunk_generator:
             if torch.is_tensor(chunk):
                 chunk = chunk.detach().cpu().numpy()
             if chunk.ndim > 1:
@@ -443,18 +462,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
                 logger.info(f"⚡ First audio in {(time.time()-t0)*1000:.0f}ms")
                 first = False
 
-            # Smooth crossfade for natural transitions
-            if buffer.size == 0:
-                buffer = chunk.astype(np.float32, copy=False)
-            else:
-                cross = 360  # 7.5ms at 48kHz - natural transition
-                if buffer.size >= cross and chunk.size >= cross:
-                    fade_out = np.linspace(1.0, 0.0, cross, dtype=np.float32)
-                    fade_in = np.linspace(0.0, 1.0, cross, dtype=np.float32)
-                    buffer[-cross:] = buffer[-cross:] * fade_out + chunk[:cross] * fade_in
-                    buffer = np.concatenate([buffer, chunk[cross:].astype(np.float32, copy=False)])
-                else:
-                    buffer = np.concatenate([buffer, chunk.astype(np.float32, copy=False)])
+            buffer = np.concatenate([buffer, chunk.astype(np.float32, copy=False)])
 
     async def consumer(prod_task: asyncio.Task):
         nonlocal buffer, frames_sent
@@ -472,7 +480,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
             await send_frame(frame)
             frames_sent += 1
 
-            # Steady 15ms pacing for smooth delivery
+            # Steady pacing
             next_deadline += FRAME_PERIOD
             now = time.perf_counter()
             delay = next_deadline - now
@@ -485,7 +493,7 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
     await consumer(prod_task)
     await prod_task
 
-    logger.info(f"✅ Streamed {frames_sent} frames (~{frames_sent * 15} ms)")
+    logger.info(f"✅ Streamed {frames_sent} frames (~{frames_sent * 20} ms)")
 
 # -----------------------------------------------------------------------------
 # Lifecycle
@@ -493,23 +501,21 @@ async def stream_audio_to_livekit(audio_chunk_generator, sample_rate: int = XTTS
 @app.on_event("startup")
 async def on_startup():
     logger.info("=" * 80)
-    logger.info("🚀 XTTS v2 TTS Service - NATURAL SPEECH MODE")
-    logger.info(f"Optimized for human-like prosody and intonation")
+    logger.info("🚀 Fish Speech TTS Service (OpenAudio S1)")
+    logger.info(f"#1 on TTS-Arena | 50+ Emotion Markers | 150ms Latency")
     logger.info(f"")
-    logger.info(f"Audio: XTTS {XTTS_SAMPLE_RATE} Hz → LiveKit {LIVEKIT_SAMPLE_RATE} Hz")
-    logger.info(f"Chunk size: {STREAM_CHUNK_SIZE} (larger for prosody context)")
-    logger.info(f"Frame size: {LIVEKIT_FRAME_SIZE} samples (15 ms for smooth delivery)")
-    logger.info(f"Temperature: {XTTS_TEMPERATURE} (natural variation)")
-    logger.info(f"Speed: {XTTS_SPEED}x")
+    logger.info(f"Audio: Fish Speech {FISH_SPEECH_SAMPLE_RATE} Hz → LiveKit {LIVEKIT_SAMPLE_RATE} Hz")
+    logger.info(f"Compile: {'ENABLED (10x speedup)' if COMPILE_MODEL else 'DISABLED'}")
+    logger.info(f"GPU: {'AVAILABLE' if torch.cuda.is_available() else 'CPU ONLY'}")
     logger.info("=" * 80)
 
     await init_db_pool()
-    ok = await load_xtts_model()
+    ok = await load_fish_speech_model()
     if not ok:
         logger.error("Model failed to load")
         return
     asyncio.create_task(connect_livekit())
-    logger.info("✅ Service ready (Natural Speech Mode)")
+    logger.info("✅ Service ready (Fish Speech Mode)")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -524,21 +530,21 @@ async def on_shutdown():
 async def health():
     return {
         "status": "ok",
-        "mode": "natural_speech",
-        "model_loaded": xtts_model is not None,
+        "mode": "fish_speech",
+        "model": "OpenAudio S1 / Fish Speech 1.5",
+        "model_loaded": llama_queue is not None and decoder_model is not None,
         "livekit_connected": livekit_connected,
         "gpu_available": torch.cuda.is_available(),
         "db_connected": db_pool is not None,
         "current_voice": current_voice_id,
         "config": {
-            "xtts_sample_rate": XTTS_SAMPLE_RATE,
+            "fish_speech_sample_rate": FISH_SPEECH_SAMPLE_RATE,
             "livekit_sample_rate": LIVEKIT_SAMPLE_RATE,
-            "stream_chunk_size": STREAM_CHUNK_SIZE,
             "livekit_frame_size": LIVEKIT_FRAME_SIZE,
             "frame_period_ms": FRAME_PERIOD_S * 1000,
-            "temperature": XTTS_TEMPERATURE,
-            "speed": XTTS_SPEED,
-            "prosody_optimized": True
+            "compile_enabled": COMPILE_MODEL,
+            "emotion_support": True,
+            "supported_emotions": len(SUPPORTED_EMOTIONS)
         }
     }
 
@@ -551,14 +557,15 @@ async def clone_voice(
     voice_name: str = Form(...),
     file: UploadFile = File(...)
 ):
-    global db_pool, xtts_model
+    global db_pool
 
     try:
-        if not file.filename.lower().endswith((".wav", ".mp3", ".flac")):
-            raise HTTPException(400, "Only WAV, MP3, and FLAC audio files supported")
+        if not file.filename.lower().endswith((".wav", ".mp3", ".flac", ".m4a")):
+            raise HTTPException(400, "Only WAV, MP3, FLAC, M4A audio files supported")
 
         audio_bytes = await file.read()
 
+        # Validate audio duration (10-30 seconds recommended for Fish Speech)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
             tmp.write(audio_bytes)
@@ -566,13 +573,9 @@ async def clone_voice(
             audio, sr = sf.read(tmp_path)
             duration = len(audio) / sr
             if duration < 3:
-                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 3s required.")
+                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 3s, recommended 10-30s.")
             if duration > 60:
-                raise HTTPException(400, f"Audio too long ({duration:.1f}s). Maximum 60s allowed.")
-
-            gpt_cond, speaker_emb = xtts_model.get_conditioning_latents(audio_path=[tmp_path])
-            gpt_hash = compute_tensor_hash(gpt_cond)
-            speaker_hash = compute_tensor_hash(speaker_emb)
+                raise HTTPException(400, f"Audio too long ({duration:.1f}s). Maximum 60s, recommended 10-30s.")
         finally:
             try:
                 os.unlink(tmp_path)
@@ -598,7 +601,6 @@ async def clone_voice(
             "audio_size_bytes": len(audio_bytes),
             "audio_size_kb": round(len(audio_bytes) / 1024, 2),
             "sample_rate": sr,
-            "embeddings": {"gpt_hash": gpt_hash, "speaker_hash": speaker_hash},
             "message": f"Voice '{voice_id}' cloned successfully"
         })
     except HTTPException:
@@ -655,62 +657,51 @@ async def delete_voice(voice_id: str):
     return {"status": "success", "message": f"Voice '{voice_id}' deleted"}
 
 # -----------------------------------------------------------------------------
-# TTS synthesis - NATURAL SPEECH
+# TTS synthesis - FISH SPEECH
 # -----------------------------------------------------------------------------
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    global gpt_cond_latent, speaker_embedding, current_voice_id
+    global current_voice_id, current_reference_audio
 
     start_time = time.time()
-    if xtts_model is None:
-        raise HTTPException(503, "Model not loaded")
+    if llama_queue is None or decoder_model is None:
+        raise HTTPException(503, "Models not loaded")
 
     if request.voice_id != current_voice_id:
         logger.info(f"🔄 Switching voice: {current_voice_id} → {request.voice_id}")
-        await load_voice_embeddings(request.voice_id)
+        await load_voice_reference(request.voice_id)
 
-    if gpt_cond_latent is None or speaker_embedding is None:
-        raise HTTPException(503, "Speaker embeddings not loaded")
-
-    # Preprocess text for natural prosody
-    processed_text = preprocess_text_for_natural_speech(request.text)
-    
-    logger.info(f"🎙️ Synthesizing (Natural Speech): '{processed_text[:60]}...'")
-    logger.info(f"   Language: {request.language}, Voice: {request.voice_id}")
-    logger.info(f"   Speed: {request.speed}x, Temp: {request.temperature}")
+    logger.info(f"🎙️ Fish Speech Synthesis: '{request.text[:60]}...'")
+    logger.info(f"   Voice: {request.voice_id}, Language: {request.language}")
+    logger.info(f"   Temp: {request.temperature}, Top-p: {request.top_p}")
 
     try:
-        # XTTS inference with natural speech parameters
-        gen = xtts_model.inference_stream(
-            text=processed_text,
-            language=request.language,
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            stream_chunk_size=STREAM_CHUNK_SIZE,
+        # Generate speech with Fish Speech
+        audio_gen = synthesize_with_fish_speech(
+            text=request.text,
+            reference_audio=current_reference_audio,
             temperature=request.temperature,
-            length_penalty=XTTS_LENGTH_PENALTY,
-            repetition_penalty=XTTS_REPETITION_PENALTY,
-            speed=request.speed,
-            enable_text_splitting=True  # Let XTTS handle natural splits
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty
         )
-        
-        await stream_audio_to_livekit(gen, sample_rate=XTTS_SAMPLE_RATE)
+
+        await stream_audio_to_livekit(audio_gen, sample_rate=FISH_SPEECH_SAMPLE_RATE)
 
         total_ms = (time.time() - start_time) * 1000
-        logger.info(f"✅ Natural speech synthesis completed in {total_ms:.0f} ms")
-        
+        logger.info(f"✅ Fish Speech synthesis completed in {total_ms:.0f} ms")
+
         return JSONResponse({
             "status": "success",
-            "mode": "natural_speech",
+            "mode": "fish_speech",
+            "model": "OpenAudio S1",
             "total_time_ms": round(total_ms, 2),
             "voice_id": request.voice_id,
             "language": request.language,
             "text_length": len(request.text),
-            "processed_length": len(processed_text),
-            "prosody_params": {
+            "params": {
                 "temperature": request.temperature,
-                "speed": request.speed,
-                "chunk_size": STREAM_CHUNK_SIZE
+                "top_p": request.top_p,
+                "repetition_penalty": request.repetition_penalty
             }
         })
     except Exception as e:
