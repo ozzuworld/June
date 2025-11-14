@@ -36,11 +36,11 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
     rm get-pip.py && \
     python3.12 -m pip install --upgrade pip setuptools wheel
 
-# Install PyTorch 2.5+ with CUDA 12.6
+# Install PyTorch 2.6.0 with CUDA 12.6 (earliest version with cu126 support)
 RUN python3.12 -m pip install \
-    torch==2.5.1 \
-    torchvision==0.20.1 \
-    torchaudio==2.5.1 \
+    torch==2.6.0+cu126 \
+    torchvision==0.21.0+cu126 \
+    torchaudio==2.6.0+cu126 \
     --index-url https://download.pytorch.org/whl/cu126
 
 # Install core dependencies
