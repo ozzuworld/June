@@ -161,7 +161,11 @@ async def synthesize_with_fish_speech_api(
     top_p: float = 0.7,
     repetition_penalty: float = 1.2,
 ) -> bytes:
-    """Call Fish Speech HTTP API for synthesis"""
+    """Call Fish Speech HTTP API for synthesis
+
+    NOTE: Self-hosted Fish Speech API doesn't support temperature/top_p/repetition_penalty
+    parameters in the HTTP API. These are only available in the Python inference code.
+    """
 
     # Save reference audio to temp file if provided
     reference_path = None
@@ -175,23 +179,15 @@ async def synthesize_with_fish_speech_api(
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            # Prepare request
+            # Prepare multipart form data
             files = {}
+            data = {'text': text}
+
             if reference_path:
                 with open(reference_path, 'rb') as f:
-                    files['reference_audio'] = f.read()
+                    files['reference_audio'] = ('reference.wav', f.read(), 'audio/wav')
 
-            data = {
-                'text': text,
-                'streaming': 'false',  # Get complete audio file
-                'temperature': str(temperature),
-                'top_p': str(top_p),
-                'repetition_penalty': str(repetition_penalty),
-            }
-
-            logger.info(f"🎛️  Synthesis params: temp={temperature}, top_p={top_p}, rep_penalty={repetition_penalty}")
-
-            # Call Fish Speech API
+            # Call Fish Speech API (simple format without advanced parameters)
             response = await client.post(
                 f"{FISH_SPEECH_API}/v1/tts",
                 files=files if files else None,
@@ -440,7 +436,8 @@ async def synthesize_speech(request: SynthesizeRequest):
         await load_voice_reference(request.voice_id)
 
     logger.info(f"🎙️ Synthesizing: '{request.text[:60]}...'")
-    logger.info(f"🎤 Voice: {request.voice_id}, Params: temp={request.temperature}, top_p={request.top_p}")
+    logger.info(f"🎤 Voice: {request.voice_id}")
+    # Note: temperature/top_p parameters are accepted but not used by self-hosted Fish Speech HTTP API
 
     try:
         # Call Fish Speech API with consistent parameters
