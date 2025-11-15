@@ -237,12 +237,24 @@ async def load_model():
         # Set CFG scale via environment variable (required by vLLM port)
         os.environ["CHATTERBOX_CFG_SCALE"] = str(CHATTERBOX_CFG_SCALE)
 
+        # Download the Chatterbox model from HuggingFace first
+        logger.info("📥 Downloading Chatterbox model from HuggingFace...")
+        from huggingface_hub import snapshot_download
+        from pathlib import Path
+
+        model_cache_dir = snapshot_download(
+            repo_id="ResembleAI/chatterbox",
+            cache_dir=os.getenv("HF_HOME", "/app/.cache/huggingface")
+        )
+        logger.info(f"✅ Model downloaded to: {model_cache_dir}")
+
         from chatterbox_vllm.tts import ChatterboxTTS
 
-        # ChatterboxTTS.from_pretrained() handles model download from HuggingFace internally
-        # It will use HF_HOME environment variable for caching
-        logger.info("📦 Initializing vLLM engine (will download model if needed)...")
-        model = ChatterboxTTS.from_pretrained(
+        # Use from_local() with the downloaded model path
+        logger.info("📦 Initializing vLLM engine from local model...")
+        model = ChatterboxTTS.from_local(
+            Path(model_cache_dir),
+            variant="english",
             gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
             max_model_len=VLLM_MAX_MODEL_LEN,
             enforce_eager=VLLM_ENFORCE_EAGER,
