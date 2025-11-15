@@ -241,10 +241,10 @@ async def load_model():
         logger.info(f"   Sample Rate: {CHATTERBOX_SAMPLE_RATE} Hz")
 
         # Phase 1 Optimization 1: Enable FP16 mixed precision
+        # Note: Chatterbox doesn't support .half() directly, so we use torch.cuda.amp.autocast() instead
         if USE_FP16:
-            logger.info("⚡ Converting model to FP16...")
-            model = model.half()
-            logger.info("✅ FP16 enabled (2x speedup expected)")
+            logger.info("⚡ FP16 mixed precision enabled via autocast")
+            logger.info("✅ FP16 will be applied during inference (2x speedup expected)")
 
         # Phase 1 Optimization 2: Apply torch.compile()
         if USE_TORCH_COMPILE:
