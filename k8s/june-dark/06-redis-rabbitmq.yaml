@@ -142,15 +142,19 @@ spec:
               command:
                 - rabbitmq-diagnostics
                 - ping
-            initialDelaySeconds: 60
+            initialDelaySeconds: 90     # RabbitMQ takes ~13s to start, give extra buffer
             periodSeconds: 30
+            timeoutSeconds: 10          # Give diagnostics command time to respond
+            failureThreshold: 5         # Allow 5 failures before restarting (2.5 minutes)
           readinessProbe:
             exec:
               command:
                 - rabbitmq-diagnostics
-                - ping
+                - check_running
             initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5           # Give diagnostics command time to respond
+            failureThreshold: 3         # Allow 3 failures before marking unready
       volumes:
         - name: data
           persistentVolumeClaim:
