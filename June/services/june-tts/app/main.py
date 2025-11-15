@@ -241,10 +241,9 @@ async def load_model():
         # This ensures the model files are in the cache before vLLM tries to use them
         logger.info("📥 Downloading Chatterbox model from HuggingFace...")
         from huggingface_hub import snapshot_download
-        model_path = snapshot_download(
-            repo_id="ResembleAI/chatterbox",
-            cache_dir="/app/.cache/huggingface"
-        )
+        # Note: Don't specify cache_dir - use default HF_HOME which is set to /app/.cache/huggingface
+        # This ensures the correct directory structure (hub/models--...) that vLLM expects
+        model_path = snapshot_download(repo_id="ResembleAI/chatterbox")
         logger.info(f"✅ Model downloaded to: {model_path}")
 
         from chatterbox_vllm.tts import ChatterboxTTS
