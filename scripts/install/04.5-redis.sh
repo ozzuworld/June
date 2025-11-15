@@ -1,4 +1,3 @@
-@@ -0,0 +1,38 @@
 #!/bin/bash
 # June Platform - Phase 4.5: Redis Deployment
 # Deploy Redis using Bitnami Helm chart into june-services namespace
