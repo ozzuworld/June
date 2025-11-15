@@ -304,12 +304,16 @@ async def load_model():
 
         # Now call from_local() with the HF cache directory
         logger.info("📦 Initializing vLLM engine from local model...")
+        # Note: from_local() calculates gpu_memory_utilization internally based on
+        # max_batch_size and max_model_len. We can't override it directly.
+        # The 'compile' parameter controls enforce_eager (compile=False → enforce_eager=True)
         model = ChatterboxTTS.from_local(
             Path(local_path).parent,
             variant="english",
-            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
             max_model_len=VLLM_MAX_MODEL_LEN,
-            enforce_eager=VLLM_ENFORCE_EAGER,
+            compile=not VLLM_ENFORCE_EAGER,  # compile=False means enforce_eager=True
+            max_batch_size=10,  # Default from library, affects GPU memory calculation
+            # gpu_memory_utilization is calculated automatically - cannot be overridden
         )
         logger.info("✅ Chatterbox vLLM model loaded")
 
