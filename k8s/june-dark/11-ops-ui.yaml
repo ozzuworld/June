@@ -27,6 +27,7 @@ spec:
       labels:
         app: ops-ui
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with app config
       containers:
         - name: ops-ui
           image: ghcr.io/ozzuworld/june-dark-ops-ui:latest

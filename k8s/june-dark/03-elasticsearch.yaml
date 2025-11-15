@@ -31,6 +31,7 @@ spec:
       labels:
         app: elasticsearch
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with ES config
       initContainers:
         - name: set-vm-max-map-count
           image: busybox:latest

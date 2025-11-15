@@ -29,6 +29,7 @@ spec:
       labels:
         app: neo4j
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with Neo4j config
       containers:
         - name: neo4j
           image: neo4j:5.15-community

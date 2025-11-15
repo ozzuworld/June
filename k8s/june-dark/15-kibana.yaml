@@ -26,6 +26,7 @@ spec:
       labels:
         app: kibana
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with Kibana config
       containers:
         - name: kibana
           image: docker.elastic.co/kibana/kibana:8.12.2
