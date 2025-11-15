@@ -13,7 +13,7 @@ ENV CUDA_LAUNCH_BLOCKING=0
 
 # Chatterbox settings
 ENV USE_MULTILINGUAL=1
-ENV WARMUP_ON_STARTUP=1
+ENV WARMUP_ON_STARTUP=0
 ENV MAX_WORKERS=2
 
 # Transformers attention implementation (force eager for output_attentions support)
