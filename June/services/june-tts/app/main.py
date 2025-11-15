@@ -292,6 +292,10 @@ async def load_model():
         logger.info(f"✅ Copied tokenizer.json to model directory")
 
         from chatterbox_vllm.tts import ChatterboxTTS
+        # Import the t3 module to trigger custom tokenizer registrations
+        # This MUST happen before vLLM tries to load the model
+        import chatterbox_vllm.models.t3
+        logger.info("✅ Custom tokenizers registered (EnTokenizer, MtlTokenizer)")
 
         # Now call from_local() with the HF cache directory
         logger.info("📦 Initializing vLLM engine from local model...")
