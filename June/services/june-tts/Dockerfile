@@ -55,12 +55,15 @@ RUN python3.11 -m pip install \
     torchaudio==2.4.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
+# Install transformers with the EXACT version chatterbox needs (4.46.3)
+# This is critical - newer versions have stricter SDPA checks that break chatterbox
+RUN python3.11 -m pip install transformers==4.46.3
+
 # Install core ML dependencies (required for Chatterbox inference)
 RUN python3.11 -m pip install \
     "numpy<2" \
     librosa \
     s3tokenizer \
-    transformers \
     diffusers \
     safetensors \
     spacy-pkuseg \
@@ -77,8 +80,8 @@ RUN python3.11 -m pip install \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS from GitHub without dependencies
-# We skip gradio and russian-text-stresser to avoid typer version conflicts (not needed for API)
+# Install Chatterbox TTS from GitHub without deps (we installed them above)
+# Skip gradio/russian-text-stresser to avoid typer conflicts (not needed for API)
 RUN python3.11 -m pip install --no-deps git+https://github.com/resemble-ai/chatterbox.git
 
 # Install FastAPI and server dependencies
