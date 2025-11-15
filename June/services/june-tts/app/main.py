@@ -291,12 +291,15 @@ async def load_model():
             json.dump(config_json, f, indent=2)
         logger.info(f"✅ Created config.json: {config_path}")
 
-        # Copy tokenizer.json to the model directory
+        # Copy tokenizer.json to where EnTokenizer expects it
+        # EnTokenizer.from_pretrained() looks for tokenizer.json in its own package directory
         import shutil
+        import chatterbox_vllm.models.t3.entokenizer
         tokenizer_src = Path(local_path).parent / "tokenizer.json"
-        tokenizer_dst = t3_model_dir / "tokenizer.json"
+        entokenizer_dir = Path(chatterbox_vllm.models.t3.entokenizer.__file__).parent
+        tokenizer_dst = entokenizer_dir / "tokenizer.json"
         shutil.copy2(tokenizer_src, tokenizer_dst)
-        logger.info(f"✅ Copied tokenizer.json to model directory")
+        logger.info(f"✅ Copied tokenizer.json to: {tokenizer_dst}")
 
         from chatterbox_vllm.tts import ChatterboxTTS
         # Note: Custom tokenizers (EnTokenizer, MtlTokenizer) are registered at module level
