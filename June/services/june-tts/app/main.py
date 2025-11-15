@@ -3,10 +3,10 @@
 June TTS Service - Chatterbox TTS Integration
 Multilingual TTS with voice cloning and emotion control
 """
-import os
 import asyncio
 import io
 import logging
+import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -22,35 +22,6 @@ from fastapi.responses import JSONResponse
 from livekit import rtc
 from pydantic import BaseModel, Field
 import asyncpg
-
-# ============================================================================
-# CRITICAL FIX: Force eager attention for Chatterbox compatibility
-# ============================================================================
-# Chatterbox needs output_attentions=True, which SDPA doesn't support.
-# We monkey-patch transformers to force eager mode before any models load.
-import transformers
-from functools import wraps
-
-# Store original from_pretrained methods
-_original_automodel_from_pretrained = transformers.AutoModel.from_pretrained
-_original_causal_from_pretrained = transformers.AutoModelForCausalLM.from_pretrained
-
-def make_eager_wrapper(original_method):
-    """Create a wrapper that forces eager attention"""
-    @wraps(original_method)
-    def wrapper(*args, **kwargs):
-        # Force eager attention implementation
-        kwargs['attn_implementation'] = 'eager'
-        return original_method(*args, **kwargs)
-    return wrapper
-
-# Apply patches
-transformers.AutoModel.from_pretrained = classmethod(make_eager_wrapper(_original_automodel_from_pretrained.__func__))
-transformers.AutoModelForCausalLM.from_pretrained = classmethod(make_eager_wrapper(_original_causal_from_pretrained.__func__))
-
-# Early logging (before logging config)
-print("✅ Patched transformers to use eager attention (required for Chatterbox)")
-# ============================================================================
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -223,30 +194,6 @@ async def load_model():
             from chatterbox.tts import ChatterboxTTS
             model = ChatterboxTTS.from_pretrained(device=DEVICE)
             logger.info("✅ English model loaded")
-
-        # CRITICAL FIX: Force eager attention on the loaded model
-        # Recursively patch all transformer models inside Chatterbox
-        logger.info("🔧 Patching model attention to 'eager' mode...")
-        def patch_model_attention(obj, path="model"):
-            """Recursively find and patch all transformer models"""
-            if hasattr(obj, 'config') and hasattr(obj.config, '_attn_implementation'):
-                logger.info(f"   Patching {path}: {obj.config._attn_implementation} → eager")
-                obj.config._attn_implementation = 'eager'
-                obj.config._attn_implementation_internal = 'eager'
-
-            # Recursively check all attributes
-            for attr_name in dir(obj):
-                if attr_name.startswith('_'):
-                    continue
-                try:
-                    attr = getattr(obj, attr_name)
-                    if hasattr(attr, 'config'):
-                        patch_model_attention(attr, f"{path}.{attr_name}")
-                except:
-                    pass
-
-        patch_model_attention(model)
-        logger.info("✅ Model attention patched to eager mode")
 
         global CHATTERBOX_SAMPLE_RATE
         CHATTERBOX_SAMPLE_RATE = model.sr
