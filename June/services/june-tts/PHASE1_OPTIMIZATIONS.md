@@ -21,19 +21,21 @@ Phase 1 implements quick-win optimizations to improve TTS inference performance 
 
 ### 1. ✅ FP16 Mixed Precision (2x speedup)
 
-**What:** Convert model to half-precision (FP16) for inference
+**What:** Use automatic mixed precision (AMP) for FP16 inference
 **Impact:** ~2x faster on GPUs with Tensor Cores (RTX 4090, A100, etc.)
-**Memory:** 50% reduction in GPU memory usage
+**Memory:** Moderate reduction in GPU memory usage
 **Quality:** Minimal degradation (<1% difference)
 
 **Implementation:**
 ```python
-# In load_model()
-if USE_FP16:
-    model = model.half()
+# Note: Chatterbox doesn't support .half() directly
+# We use torch.cuda.amp.autocast() for automatic mixed precision
 
 # In generate_async()
-with torch.cuda.amp.autocast():
+if USE_FP16:
+    with torch.cuda.amp.autocast():
+        wav = model.generate(text, **kwargs)
+else:
     wav = model.generate(text, **kwargs)
 ```
 
@@ -306,7 +308,7 @@ If torch.compile warmup takes >5 minutes:
 
 ### Out of Memory (OOM) Errors
 
-If GPU runs out of memory with FP16:
+If GPU runs out of memory:
 
 1. Check GPU memory:
    ```bash
@@ -318,7 +320,12 @@ If GPU runs out of memory with FP16:
    MAX_WORKERS=1
    ```
 
-3. FP16 should **reduce** memory usage; if OOM occurs, it's likely a different issue
+3. Disable FP16 if needed (though it should help, not hurt):
+   ```bash
+   USE_FP16=0
+   ```
+
+**Note:** Chatterbox uses automatic mixed precision (AMP) for FP16, not explicit model conversion. Memory savings are moderate, not 50% as with full FP16 conversion.
 
 ### Quality Degradation
 
