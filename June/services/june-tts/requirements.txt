@@ -1,10 +1,13 @@
-# Chatterbox TTS Requirements
+# Chatterbox TTS Requirements (vLLM Port for 4-10x speedup)
 # PyTorch (installed separately in Dockerfile for CUDA support)
 
-# Chatterbox TTS
-chatterbox-tts>=0.1.0
+# vLLM inference engine (required version 0.9.2)
+vllm==0.9.2
 
-# ML libraries
+# Chatterbox TTS vLLM port (installed from GitHub in Dockerfile)
+# git+https://github.com/randombk/chatterbox-vllm.git
+
+# ML libraries (some used by vLLM/Chatterbox)
 transformers>=4.36.0
 accelerate>=0.25.0
 einops>=0.7.0

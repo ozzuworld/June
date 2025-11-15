@@ -17,11 +17,17 @@ ENV USE_MULTILINGUAL=1
 ENV WARMUP_ON_STARTUP=1
 ENV MAX_WORKERS=2
 
-# Phase 1 Optimization settings
-ENV USE_FP16=1
+# Phase 1 Optimization settings (legacy - FP16 handled by vLLM)
+ENV USE_FP16=0
 ENV USE_TORCH_COMPILE=0
 ENV TORCH_COMPILE_MODE=reduce-overhead
 ENV TORCHINDUCTOR_CACHE_DIR=/app/.cache/torch_compile
+
+# vLLM Optimization settings (4-10x speedup)
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.6
+ENV VLLM_MAX_MODEL_LEN=1000
+ENV VLLM_ENFORCE_EAGER=1
+ENV CHATTERBOX_CFG_SCALE=0.3
 
 # Install system dependencies and add deadsnakes PPA for Python 3.11
 RUN apt-get update && apt-get install -y \
@@ -62,11 +68,14 @@ RUN python3.11 -m pip install \
     torchaudio==2.4.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install transformers with the EXACT version chatterbox needs (4.46.3)
-# This is critical - newer versions have stricter SDPA checks that break chatterbox
-RUN python3.11 -m pip install transformers==4.46.3
+# Install vLLM 0.9.2 (required for chatterbox-vllm)
+# This provides 4-10x speedup over original chatterbox implementation
+RUN python3.11 -m pip install vllm==0.9.2
 
-# Install core ML dependencies (required for Chatterbox inference)
+# Install transformers (vLLM compatible version)
+RUN python3.11 -m pip install transformers>=4.36.0
+
+# Install core ML dependencies (required for Chatterbox vLLM inference)
 RUN python3.11 -m pip install \
     "numpy<2" \
     librosa \
@@ -87,9 +96,8 @@ RUN python3.11 -m pip install \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS from GitHub without deps (we installed them above)
-# Skip gradio/russian-text-stresser to avoid typer conflicts (not needed for API)
-RUN python3.11 -m pip install --no-deps git+https://github.com/resemble-ai/chatterbox.git
+# Install Chatterbox TTS vLLM port from GitHub (4-10x faster than original)
+RUN python3.11 -m pip install git+https://github.com/randombk/chatterbox-vllm.git
 
 # Install FastAPI and server dependencies
 RUN python3.11 -m pip install \
