@@ -96,8 +96,9 @@ RUN python3.11 -m pip install \
     hydra-core>=1.3.2 \
     omegaconf>=2.3.0
 
-# Install Chatterbox TTS vLLM port from GitHub (4-10x faster than original)
-RUN python3.11 -m pip install git+https://github.com/randombk/chatterbox-vllm.git
+# Install Chatterbox TTS vLLM port - version 0.1.3 which works with vLLM 0.9.2
+# v0.2.x requires vLLM 0.10.0, but 0.1.3 was benchmarked with 0.9.2
+RUN python3.11 -m pip install chatterbox-vllm==0.1.3
 
 # Install FastAPI and server dependencies
 RUN python3.11 -m pip install \

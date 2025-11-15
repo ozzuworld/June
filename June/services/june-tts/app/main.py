@@ -23,6 +23,13 @@ from livekit import rtc
 from pydantic import BaseModel, Field
 import asyncpg
 
+# CRITICAL: Import chatterbox_vllm models to register custom tokenizers BEFORE vLLM multiprocessing
+# vLLM uses multiprocessing spawn mode, so tokenizers must be registered at module level
+try:
+    import chatterbox_vllm.models.t3  # Registers EnTokenizer and MtlTokenizer
+except ImportError:
+    pass  # Will fail gracefully during model load if chatterbox-vllm not installed
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -292,10 +299,8 @@ async def load_model():
         logger.info(f"✅ Copied tokenizer.json to model directory")
 
         from chatterbox_vllm.tts import ChatterboxTTS
-        # Import the t3 module to trigger custom tokenizer registrations
-        # This MUST happen before vLLM tries to load the model
-        import chatterbox_vllm.models.t3
-        logger.info("✅ Custom tokenizers registered (EnTokenizer, MtlTokenizer)")
+        # Note: Custom tokenizers (EnTokenizer, MtlTokenizer) are registered at module level
+        # to ensure they're available in vLLM's multiprocessing subprocesses
 
         # Now call from_local() with the HF cache directory
         logger.info("📦 Initializing vLLM engine from local model...")
