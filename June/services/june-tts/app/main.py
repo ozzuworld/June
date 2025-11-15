@@ -224,6 +224,30 @@ async def load_model():
             model = ChatterboxTTS.from_pretrained(device=DEVICE)
             logger.info("✅ English model loaded")
 
+        # CRITICAL FIX: Force eager attention on the loaded model
+        # Recursively patch all transformer models inside Chatterbox
+        logger.info("🔧 Patching model attention to 'eager' mode...")
+        def patch_model_attention(obj, path="model"):
+            """Recursively find and patch all transformer models"""
+            if hasattr(obj, 'config') and hasattr(obj.config, '_attn_implementation'):
+                logger.info(f"   Patching {path}: {obj.config._attn_implementation} → eager")
+                obj.config._attn_implementation = 'eager'
+                obj.config._attn_implementation_internal = 'eager'
+
+            # Recursively check all attributes
+            for attr_name in dir(obj):
+                if attr_name.startswith('_'):
+                    continue
+                try:
+                    attr = getattr(obj, attr_name)
+                    if hasattr(attr, 'config'):
+                        patch_model_attention(attr, f"{path}.{attr_name}")
+                except:
+                    pass
+
+        patch_model_attention(model)
+        logger.info("✅ Model attention patched to eager mode")
+
         global CHATTERBOX_SAMPLE_RATE
         CHATTERBOX_SAMPLE_RATE = model.sr
         logger.info(f"   Sample Rate: {CHATTERBOX_SAMPLE_RATE} Hz")
