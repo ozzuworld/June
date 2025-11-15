@@ -30,7 +30,7 @@ spec:
       enableServiceLinks: false  # Prevent K8s service env vars from interfering with app config
       containers:
         - name: enricher
-          image: ghcr.io/ozzuworld/june-dark-enricher:latest
+          image: ozzuworld/june-dark-enricher:latest
           imagePullPolicy: Always
           envFrom:
             - configMapRef:

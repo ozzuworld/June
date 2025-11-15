@@ -15,7 +15,7 @@ warn() { echo -e "${YELLOW}⚠️${NC} $1"; }
 error() { echo -e "${RED}❌${NC} $1"; exit 1; }
 
 # Configuration
-REGISTRY="${DOCKER_REGISTRY:-ghcr.io/ozzuworld}"
+REGISTRY="${DOCKER_REGISTRY:-ozzuworld}"
 TAG="${DOCKER_TAG:-latest}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
