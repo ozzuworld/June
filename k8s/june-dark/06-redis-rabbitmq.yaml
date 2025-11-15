@@ -28,6 +28,7 @@ spec:
       labels:
         app: redis
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with Redis config
       containers:
         - name: redis
           image: redis:7-alpine
@@ -110,6 +111,7 @@ spec:
       labels:
         app: rabbitmq
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with RabbitMQ config
       containers:
         - name: rabbitmq
           image: rabbitmq:3.13-management-alpine

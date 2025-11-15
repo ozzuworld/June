@@ -14,6 +14,7 @@ spec:
       labels:
         app: collector
     spec:
+      enableServiceLinks: false  # Prevent K8s service env vars from interfering with app config
       containers:
         - name: collector
           image: ghcr.io/ozzuworld/june-dark-collector:latest
