@@ -1,0 +1,33 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: june-dark
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      containers:
+        - name: collector
+          image: ghcr.io/ozzuworld/june-dark-collector:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: june-dark-config
+          env:
+            - name: ORCHESTRATOR_URL
+              value: "http://orchestrator:8080"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"

@@ -1,0 +1,57 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: june-dark-ingress
+  namespace: june-dark
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+    - secretName: WILDCARD_SECRET_NAME  # Will be replaced by deployment script
+      hosts:
+        - june.DOMAIN  # Will be replaced by deployment script
+        - kibana.DOMAIN
+        - neo4j.DOMAIN
+  rules:
+    - host: june.DOMAIN
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator
+                port:
+                  number: 8080
+          - path: /dashboard
+            pathType: Prefix
+            backend:
+              service:
+                name: ops-ui
+                port:
+                  number: 8090
+    - host: kibana.DOMAIN
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kibana
+                port:
+                  number: 5601
+    - host: neo4j.DOMAIN
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: neo4j
+                port:
+                  number: 7474

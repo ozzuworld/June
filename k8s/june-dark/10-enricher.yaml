@@ -1,0 +1,60 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enricher
+  namespace: june-dark
+spec:
+  ports:
+    - port: 9010
+      targetPort: 9010
+  selector:
+    app: enricher
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enricher
+  namespace: june-dark
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: enricher
+  template:
+    metadata:
+      labels:
+        app: enricher
+    spec:
+      containers:
+        - name: enricher
+          image: ghcr.io/ozzuworld/june-dark-enricher:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: june-dark-config
+          env:
+            - name: NEO4J_PASSWORD
+              value: "juneN3o4j2024"
+          ports:
+            - containerPort: 9010
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9010
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9010
+            initialDelaySeconds: 30
+            periodSeconds: 10
