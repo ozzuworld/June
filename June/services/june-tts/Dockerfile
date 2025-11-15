@@ -123,6 +123,9 @@ COPY app/ /app/
 # Create directories for voices, references, and cache
 RUN mkdir -p /app/voices /app/references /app/.cache/torch_compile /app/.cache/huggingface
 
+# Create vLLM model directories (required for symlink creation)
+RUN mkdir -p /app/t3-model /app/s3gen-model
+
 # Make start script executable
 RUN chmod +x /app/start.sh
 
