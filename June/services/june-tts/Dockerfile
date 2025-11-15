@@ -120,6 +120,11 @@ RUN python3.11 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
 # Install Hugging Face CLI for model downloads
 RUN python3.11 -m pip install huggingface-hub[cli]
 
+# CRITICAL: Install sitecustomize.py for automatic tokenizer registration
+# This ensures custom tokenizers are registered in ALL Python processes,
+# including vLLM's multiprocessing worker subprocesses
+COPY sitecustomize.py /usr/local/lib/python3.11/site-packages/sitecustomize.py
+
 # Create app directory
 WORKDIR /app
 
