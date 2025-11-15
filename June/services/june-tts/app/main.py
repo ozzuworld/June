@@ -4,11 +4,6 @@ June TTS Service - Chatterbox TTS Integration
 Multilingual TTS with voice cloning and emotion control
 """
 import os
-
-# Force eager attention implementation for transformers (required for Chatterbox)
-# SDPA doesn't support output_attentions=True which Chatterbox needs
-os.environ.setdefault("TRANSFORMERS_ATTN_IMPLEMENTATION", "eager")
-
 import asyncio
 import io
 import logging
@@ -27,6 +22,35 @@ from fastapi.responses import JSONResponse
 from livekit import rtc
 from pydantic import BaseModel, Field
 import asyncpg
+
+# ============================================================================
+# CRITICAL FIX: Force eager attention for Chatterbox compatibility
+# ============================================================================
+# Chatterbox needs output_attentions=True, which SDPA doesn't support.
+# We monkey-patch transformers to force eager mode before any models load.
+import transformers
+from functools import wraps
+
+# Store original from_pretrained methods
+_original_automodel_from_pretrained = transformers.AutoModel.from_pretrained
+_original_causal_from_pretrained = transformers.AutoModelForCausalLM.from_pretrained
+
+def make_eager_wrapper(original_method):
+    """Create a wrapper that forces eager attention"""
+    @wraps(original_method)
+    def wrapper(*args, **kwargs):
+        # Force eager attention implementation
+        kwargs['attn_implementation'] = 'eager'
+        return original_method(*args, **kwargs)
+    return wrapper
+
+# Apply patches
+transformers.AutoModel.from_pretrained = classmethod(make_eager_wrapper(_original_automodel_from_pretrained.__func__))
+transformers.AutoModelForCausalLM.from_pretrained = classmethod(make_eager_wrapper(_original_causal_from_pretrained.__func__))
+
+# Early logging (before logging config)
+print("✅ Patched transformers to use eager attention (required for Chatterbox)")
+# ============================================================================
 
 # -----------------------------------------------------------------------------
 # Logging
