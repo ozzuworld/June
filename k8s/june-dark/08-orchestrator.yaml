@@ -30,7 +30,7 @@ spec:
       enableServiceLinks: false  # Prevent K8s service env vars from interfering with app config
       containers:
         - name: orchestrator
-          image: ghcr.io/ozzuworld/june-dark-orchestrator:latest
+          image: ozzuworld/june-dark-orchestrator:latest
           imagePullPolicy: Always
           envFrom:
             - configMapRef:
