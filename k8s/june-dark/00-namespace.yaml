@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: june-dark
+  labels:
+    name: june-dark
+    app: june-osint

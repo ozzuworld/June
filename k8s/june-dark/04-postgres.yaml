@@ -1,0 +1,88 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: june-dark
+spec:
+  ports:
+    - port: 5432
+  selector:
+    app: postgres
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: june-dark
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: "juneadmin"
+            - name: POSTGRES_PASSWORD
+              value: "juneP@ssw0rd2024"
+            - name: POSTGRES_DB
+              value: "june_osint"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          args:
+            - "-c"
+            - "max_connections=200"
+            - "-c"
+            - "shared_buffers=2GB"
+            - "-c"
+            - "effective_cache_size=6GB"
+            - "-c"
+            - "work_mem=16MB"
+            - "-c"
+            - "maintenance_work_mem=512MB"
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - juneadmin
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - juneadmin
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init-sql
+          configMap:
+            name: postgres-init-sql

@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-sql
+  namespace: june-dark
+data:
+  init.sql: |
+    -- June Dark OSINT Framework Database Schema
+
+    -- Create tables for artifact management
+    CREATE TABLE IF NOT EXISTS artifacts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        source_url TEXT NOT NULL,
+        artifact_type VARCHAR(50) NOT NULL,
+        mime_type VARCHAR(100),
+        file_size BIGINT,
+        minio_path TEXT,
+        status VARCHAR(50) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT NOW(),
+        processed_at TIMESTAMP,
+        metadata JSONB
+    );
+
+    -- Create tables for watchlists
+    CREATE TABLE IF NOT EXISTS watchlists (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        watchlist_type VARCHAR(50) NOT NULL,
+        pattern TEXT NOT NULL,
+        is_regex BOOLEAN DEFAULT false,
+        priority VARCHAR(20) DEFAULT 'medium',
+        alert_enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        metadata JSONB
+    );
+
+    -- Create tables for alerts
+    CREATE TABLE IF NOT EXISTS alerts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        watchlist_id UUID REFERENCES watchlists(id),
+        alert_type VARCHAR(50) NOT NULL,
+        severity VARCHAR(20) DEFAULT 'medium',
+        title VARCHAR(500) NOT NULL,
+        description TEXT,
+        artifact_id UUID REFERENCES artifacts(id),
+        source_url TEXT,
+        matched_pattern TEXT,
+        confidence_score FLOAT DEFAULT 0.5,
+        status VARCHAR(50) DEFAULT 'new',
+        created_at TIMESTAMP DEFAULT NOW(),
+        acknowledged_at TIMESTAMP,
+        resolved_at TIMESTAMP,
+        metadata JSONB
+    );
+
+    -- Create tables for crawl jobs
+    CREATE TABLE IF NOT EXISTS crawl_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        job_name VARCHAR(255) NOT NULL,
+        target_url TEXT NOT NULL,
+        crawl_type VARCHAR(50) DEFAULT 'standard',
+        status VARCHAR(50) DEFAULT 'pending',
+        max_depth INTEGER DEFAULT 3,
+        max_pages INTEGER DEFAULT 100,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        artifacts_collected INTEGER DEFAULT 0,
+        errors_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        metadata JSONB
+    );
+
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
+    CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+    CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_crawl_jobs_status ON crawl_jobs(status);
+
+    -- Insert sample watchlist
+    INSERT INTO watchlists (name, description, watchlist_type, pattern, is_regex, priority)
+    VALUES
+        ('API Keys', 'Detect exposed API keys', 'secret', 'api[_-]?key', true, 'high'),
+        ('Credit Cards', 'Detect credit card numbers', 'pii', '\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b', true, 'critical'),
+        ('Private Keys', 'Detect private SSH/PGP keys', 'secret', '-----BEGIN (RSA |DSA |EC )?PRIVATE KEY-----', true, 'critical')
+    ON CONFLICT DO NOTHING;
