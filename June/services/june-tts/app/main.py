@@ -237,23 +237,37 @@ async def load_model():
         # Set CFG scale via environment variable (required by vLLM port)
         os.environ["CHATTERBOX_CFG_SCALE"] = str(CHATTERBOX_CFG_SCALE)
 
-        # Download the Chatterbox model from HuggingFace first
-        logger.info("📥 Downloading Chatterbox model from HuggingFace...")
-        from huggingface_hub import snapshot_download
+        # Manually replicate what ChatterboxTTS.from_pretrained() is supposed to do
+        # The library has a bug where it doesn't create the ./t3-model directory before
+        # trying to create a symlink inside it
+        logger.info("📥 Downloading Chatterbox model files from HuggingFace...")
+        from huggingface_hub import hf_hub_download
         from pathlib import Path
 
-        model_cache_dir = snapshot_download(
-            repo_id="ResembleAI/chatterbox",
-            cache_dir=os.getenv("HF_HOME", "/app/.cache/huggingface")
-        )
-        logger.info(f"✅ Model downloaded to: {model_cache_dir}")
+        REPO_ID = "ResembleAI/chatterbox"
+        REVISION = "1b475dffa71fb191cb6d5901215eb6f55635a9b6"
+
+        # Download required files (same as library's from_pretrained)
+        for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
+            local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, revision=REVISION)
+
+        logger.info(f"✅ Model files downloaded to HF cache")
+
+        # Create symlink structure that vLLM expects (fixing the library bug)
+        t3_cfg_path = Path(local_path).parent / "t3_cfg.safetensors"
+        t3_model_dir = Path("/app/t3-model")
+        t3_model_dir.mkdir(exist_ok=True)  # This is what the library forgot to do!
+        model_safetensors_path = t3_model_dir / "model.safetensors"
+        model_safetensors_path.unlink(missing_ok=True)
+        model_safetensors_path.symlink_to(t3_cfg_path)
+        logger.info(f"✅ Created symlink: {model_safetensors_path} -> {t3_cfg_path}")
 
         from chatterbox_vllm.tts import ChatterboxTTS
 
-        # Use from_local() with the downloaded model path
+        # Now call from_local() with the HF cache directory
         logger.info("📦 Initializing vLLM engine from local model...")
         model = ChatterboxTTS.from_local(
-            Path(model_cache_dir),
+            Path(local_path).parent,
             variant="english",
             gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
             max_model_len=VLLM_MAX_MODEL_LEN,
