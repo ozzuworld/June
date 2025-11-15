@@ -1,0 +1,112 @@
+# June Platform - Optimized Helm Values
+# Configured for: 64GB RAM, 8 GPU, 250GB SSD, 1TB HDD
+# Last Updated: $(date)
+
+# Global Configuration
+global:
+  domain: ozzu.world
+  environment: production
+
+# Domain Configuration
+domains:
+  primary: ozzu.world
+  api: api.ozzu.world
+  idp: idp.ozzu.world
+  stt: stt.ozzu.world  # External deployment
+  tts: tts.ozzu.world  # External deployment
+  turn: turn.ozzu.world
+
+# Certificate Configuration
+certificate:
+  enabled: true
+  issuer: letsencrypt-prod
+  email: admin@ozzu.world
+  secretName: ozzu-world-wildcard-tls
+  useBackup: false
+
+# PostgreSQL Database
+postgresql:
+  enabled: true
+  database: keycloak
+  username: keycloak
+  password: Pokemon123!  # CHANGE IN PRODUCTION
+  storageClass: fast-ssd  # Use SSD for database
+  storage: 10Gi
+  hostPath: /mnt/ssd/postgresql
+
+# Keycloak Identity Provider
+keycloak:
+  enabled: true
+  adminUsername: admin
+  adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
+  realm: june-realm
+
+# LiveKit WebRTC Server
+livekit:
+  enabled: false  # Deployed via k8s/livekit/ manifests
+  namespace: media
+
+# June Orchestrator Service
+orchestrator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-orchestrator
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 200m
+    limits:
+      memory: 1Gi
+      cpu: 500m
+
+# Speech-to-Text Service - DISABLED (deployed elsewhere)
+stt:
+  enabled: false  # ⚠️ DISABLED - Deploying on separate GPU instance
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-stt
+    tag: latest
+    pullPolicy: Always
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: 6Gi
+      cpu: "1"
+    limits:
+      memory: 6Gi
+      cpu: "2"
+
+# Text-to-Speech Service - DISABLED (deployed elsewhere)
+tts:
+  enabled: false  # ⚠️ DISABLED - Deploying on separate GPU instance
+  replicas: 1
+  image:
+    repository: docker.io/ozzuworld/june-tts
+    tag: latest
+    pullPolicy: Always
+  gpu:
+    enabled: true
+    count: 1
+  resources:
+    requests:
+      memory: 4Gi
+      cpu: "1"
+    limits:
+      memory: 6Gi
+      cpu: "2"
+
+# STUNner Configuration
+stunner:
+  enabled: false  # Deployed via k8s/stunner/ manifests
+  username: june-user
+  password: Pokemon123!
+
+# Secrets
+secrets:
+  geminiApiKey: ""  # Set via --set or environment
+  cloudflareToken: ""  # Set via --set or environment
