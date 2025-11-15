@@ -262,6 +262,35 @@ async def load_model():
         model_safetensors_path.symlink_to(t3_cfg_path)
         logger.info(f"✅ Created symlink: {model_safetensors_path} -> {t3_cfg_path}")
 
+        # Create config.json for vLLM (another missing piece)
+        # vLLM needs this to identify the model architecture and configuration
+        import json
+        config_json = {
+            "architectures": ["ChatterboxT3"],  # Registered custom model class
+            "model_type": "llama",
+            "hidden_size": 1024,  # From T3Config.n_channels
+            "intermediate_size": 2752,  # Llama_520M config
+            "num_attention_heads": 16,
+            "num_hidden_layers": 24,
+            "num_key_value_heads": 16,
+            "vocab_size": 704,  # English tokenizer size
+            "max_position_embeddings": 2048,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 10000.0,
+            "torch_dtype": "float16"
+        }
+        config_path = t3_model_dir / "config.json"
+        with open(config_path, 'w') as f:
+            json.dump(config_json, f, indent=2)
+        logger.info(f"✅ Created config.json: {config_path}")
+
+        # Copy tokenizer.json to the model directory
+        import shutil
+        tokenizer_src = Path(local_path).parent / "tokenizer.json"
+        tokenizer_dst = t3_model_dir / "tokenizer.json"
+        shutil.copy2(tokenizer_src, tokenizer_dst)
+        logger.info(f"✅ Copied tokenizer.json to model directory")
+
         from chatterbox_vllm.tts import ChatterboxTTS
 
         # Now call from_local() with the HF cache directory
