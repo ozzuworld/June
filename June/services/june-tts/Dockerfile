@@ -13,21 +13,18 @@ ENV CUDA_LAUNCH_BLOCKING=0
 
 # Chatterbox settings
 ENV USE_MULTILINGUAL=1
-ENV WARMUP_ON_STARTUP=0
+ENV WARMUP_ON_STARTUP=1
 ENV MAX_WORKERS=2
 
-# Transformers attention implementation (force eager for output_attentions support)
-ENV TRANSFORMERS_ATTN_IMPLEMENTATION=eager
-
-# Install system dependencies and add deadsnakes PPA for Python 3.10
+# Install system dependencies and add deadsnakes PPA for Python 3.11
 RUN apt-get update && apt-get install -y \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
     && apt-get install -y \
-    python3.10 \
-    python3.10-dev \
-    python3.10-venv \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
     build-essential \
     gcc \
     g++ \
@@ -41,25 +38,25 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Python 3.10 as default
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
-# Install pip for Python 3.10
+# Install pip for Python 3.11
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
-    python3.10 get-pip.py && \
+    python3.11 get-pip.py && \
     rm get-pip.py && \
-    python3.10 -m pip install --upgrade pip setuptools wheel
+    python3.11 -m pip install --upgrade pip setuptools wheel
 
 # Install PyTorch 2.4.0 with CUDA 12.1 (compatible with latest transformers)
-RUN python3.10 -m pip install \
+RUN python3.11 -m pip install \
     torch==2.4.0 \
     torchvision==0.19.0 \
     torchaudio==2.4.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # Install core ML dependencies (required for Chatterbox inference)
-RUN python3.10 -m pip install \
+RUN python3.11 -m pip install \
     "numpy<2" \
     librosa \
     s3tokenizer \
@@ -82,10 +79,10 @@ RUN python3.10 -m pip install \
 
 # Install Chatterbox TTS from GitHub without dependencies
 # We skip gradio and russian-text-stresser to avoid typer version conflicts (not needed for API)
-RUN python3.10 -m pip install --no-deps git+https://github.com/resemble-ai/chatterbox.git
+RUN python3.11 -m pip install --no-deps git+https://github.com/resemble-ai/chatterbox.git
 
 # Install FastAPI and server dependencies
-RUN python3.10 -m pip install \
+RUN python3.11 -m pip install \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     pydantic==2.5.0 \
@@ -94,10 +91,10 @@ RUN python3.10 -m pip install \
     python-multipart
 
 # Install LiveKit Python SDK with compatible protobuf
-RUN python3.10 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
+RUN python3.11 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
 
 # Install Hugging Face CLI for model downloads
-RUN python3.10 -m pip install huggingface-hub[cli]
+RUN python3.11 -m pip install huggingface-hub[cli]
 
 # Create app directory
 WORKDIR /app
