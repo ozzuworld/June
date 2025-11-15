@@ -82,15 +82,17 @@ PHASES=(
     "02.5-gpu"
     "03-kubernetes"
     "04-infrastructure"
+    "04.1-storage-setup"      # NEW: Create optimized SSD/HDD storage structure
     "05-helm"                 # Ensure helm is installed
     "04.4-local-pv-redis"     # New: pre-create local PVs with storageClassName: ""
     "04.5-redis"              # Redis Helm install
     "03.5-gpu-operator"       # After Helm is installed
     "06-certificates"
-    "04.6-headscale"   
+    "04.6-headscale"
     "04.7-headscale-client"
     "07-stunner"
-    "07.1-opencti" 
+    "07.1-opencti"
+    "07.2-june-dark-opencti"  # NEW: June Dark + OpenCTI integration
     "08-livekit"
     "08.5-jellyfin"           # NEW
     "08.6-prowlarr"           # NEW
