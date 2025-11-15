@@ -29,9 +29,9 @@ postgresql:
   database: keycloak
   username: keycloak
   password: Pokemon123!  # CHANGE IN PRODUCTION
-  storageClass: local-storage
+  storageClass: fast-ssd  # Use SSD for database performance
   storage: 10Gi
-  hostPath: /opt/june-postgresql-data
+  hostPath: /mnt/ssd/postgresql
 
 # Keycloak Identity Provider
 keycloak:
@@ -63,9 +63,9 @@ orchestrator:
       memory: 1Gi
       cpu: 500m
 
-# Speech-to-Text Service
+# Speech-to-Text Service - DISABLED (deploy on separate GPU instance)
 stt:
-  enabled: true
+  enabled: false  # ⚠️ Disabled by default - deploy separately for GPU optimization
   replicas: 1
   image:
     repository: docker.io/ozzuworld/june-stt
@@ -82,9 +82,9 @@ stt:
       memory: 6Gi
       cpu: "2"
 
-# Text-to-Speech Service
+# Text-to-Speech Service - DISABLED (deploy on separate GPU instance)
 tts:
-  enabled: true
+  enabled: false  # ⚠️ Disabled by default - deploy separately for GPU optimization
   replicas: 1
   image:
     repository: docker.io/ozzuworld/june-tts

@@ -38,11 +38,11 @@ spec:
             - name: NEO4J_ACCEPT_LICENSE_AGREEMENT
               value: "yes"
             - name: NEO4J_server_memory_heap_initial__size
-              value: "1g"  # Reduced from 2g
+              value: "2g"
             - name: NEO4J_server_memory_heap_max__size
-              value: "2g"  # Reduced from 4g
+              value: "4g"
             - name: NEO4J_server_memory_pagecache_size
-              value: "512m"  # Reduced from 1g
+              value: "1g"
             - name: NEO4J_dbms_security_procedures_unrestricted
               value: "apoc.*,gds.*"
             - name: NEO4J_dbms_security_procedures_allowlist
@@ -59,11 +59,11 @@ spec:
               mountPath: /data
           resources:
             requests:
-              memory: "2Gi"    # Reduced from 4Gi
-              cpu: "500m"      # Reduced from 1000m
+              memory: "4Gi"
+              cpu: "1000m"
             limits:
-              memory: "3Gi"    # Reduced from 8Gi
-              cpu: "1000m"     # Reduced from 2000m
+              memory: "8Gi"
+              cpu: "2000m"
           livenessProbe:
             httpGet:
               path: /
