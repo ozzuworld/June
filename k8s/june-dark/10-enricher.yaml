@@ -42,11 +42,11 @@ spec:
             - containerPort: 9010
           resources:
             requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
               memory: "1Gi"
               cpu: "500m"
-            limits:
-              memory: "2Gi"
-              cpu: "1000m"
           livenessProbe:
             httpGet:
               path: /health
