@@ -307,13 +307,14 @@ async def load_model():
         # Note: from_local() calculates gpu_memory_utilization internally based on
         # max_batch_size and max_model_len. We can't override it directly.
         # The 'compile' parameter controls enforce_eager (compile=False → enforce_eager=True)
+        # Using minimal parameters to avoid API version incompatibilities
         model = ChatterboxTTS.from_local(
-            Path(local_path).parent,
-            variant="english",
+            str(Path(local_path).parent),  # ckpt_dir - use string path for compatibility
+            target_device="cuda" if DEVICE == "cuda" else "cpu",
             max_model_len=VLLM_MAX_MODEL_LEN,
             compile=not VLLM_ENFORCE_EAGER,  # compile=False means enforce_eager=True
             max_batch_size=10,  # Default from library, affects GPU memory calculation
-            # gpu_memory_utilization is calculated automatically - cannot be overridden
+            # Note: variant defaults to "english" in the library, which is what we want
         )
         logger.info("✅ Chatterbox vLLM model loaded")
 
