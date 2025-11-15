@@ -48,7 +48,7 @@ MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
 
 # Phase 1 Optimization settings
 USE_FP16 = os.getenv("USE_FP16", "1") == "1" and DEVICE == "cuda"
-USE_TORCH_COMPILE = os.getenv("USE_TORCH_COMPILE", "1") == "1"
+USE_TORCH_COMPILE = os.getenv("USE_TORCH_COMPILE", "0") == "1"  # Disabled by default - Chatterbox not compatible
 TORCH_COMPILE_MODE = os.getenv("TORCH_COMPILE_MODE", "reduce-overhead")  # reduce-overhead, max-autotune, default
 
 # PostgreSQL
@@ -70,7 +70,7 @@ FRAME_PERIOD_S = 0.020
 app = FastAPI(
     title="June TTS (Chatterbox)",
     version="6.1.0-phase1",
-    description="Chatterbox TTS with Phase 1 optimizations: FP16, torch.compile, optimized parameters (3-4x faster)"
+    description="Chatterbox TTS with Phase 1 optimizations: FP16 AMP, optimized parameters (2-2.5x faster)"
 )
 
 # -----------------------------------------------------------------------------

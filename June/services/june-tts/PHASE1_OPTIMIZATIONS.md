@@ -2,18 +2,20 @@
 
 **Date:** 2025-11-15
 **Version:** 6.1.0-phase1
-**Target:** 3-4x speed improvement over baseline
+**Target:** 2-2.5x speed improvement over baseline
 
 ---
 
 ## Overview
 
-Phase 1 implements quick-win optimizations to improve TTS inference performance from **3x slower than real-time** to approximately **0.7-1.0x real-time** (3-4x speedup).
+Phase 1 implements quick-win optimizations to improve TTS inference performance from **3x slower than real-time** to approximately **1.2-1.5x real-time** (2-2.5x speedup).
 
 ### Current Performance Target
 - **Baseline:** RTF 3.0 (3 seconds to generate 1 second of audio)
-- **Phase 1 Goal:** RTF 0.7-1.0 (0.7-1.0 seconds to generate 1 second of audio)
-- **Expected Improvement:** 3-4x faster inference
+- **Phase 1 Goal:** RTF 1.2-1.5 (1.2-1.5 seconds to generate 1 second of audio)
+- **Expected Improvement:** 2-2.5x faster inference
+
+**Note:** torch.compile() is not compatible with Chatterbox's architecture and has been disabled.
 
 ---
 
@@ -44,31 +46,30 @@ else:
 USE_FP16=1  # Enabled by default on CUDA devices
 ```
 
-### 2. ✅ PyTorch Model Compilation (2-4x speedup)
+### 2. ❌ PyTorch Model Compilation (NOT COMPATIBLE)
 
-**What:** Apply `torch.compile()` to optimize model graph
-**Impact:** 2-4x faster inference after warmup compilation
-**Mode:** `reduce-overhead` (optimized for repeated inference)
-**Trade-off:** First generation takes 2-4 minutes (compilation time)
+**Status:** Disabled - Chatterbox model is not compatible with torch.compile()
 
-**Implementation:**
+**Issue:** Chatterbox's architecture uses custom model wrappers that are not standard PyTorch nn.Module objects, causing `torch.compile()` to fail with:
+```
+AssertionError: assert callable(fn)
+```
+
+**Attempted Implementation:**
 ```python
-# In load_model()
+# In load_model() - DOES NOT WORK with Chatterbox:
 if USE_TORCH_COMPILE:
     model = torch.compile(model, mode=TORCH_COMPILE_MODE)
 ```
 
 **Configuration:**
 ```bash
-USE_TORCH_COMPILE=1
-TORCH_COMPILE_MODE=reduce-overhead  # Options: reduce-overhead, max-autotune, default
+USE_TORCH_COMPILE=0  # Disabled by default (not compatible)
+TORCH_COMPILE_MODE=reduce-overhead  # Options preserved for future
 TORCHINDUCTOR_CACHE_DIR=/app/.cache/torch_compile
 ```
 
-**Compilation Modes:**
-- `reduce-overhead` (default): Best for repeated inference, minimal warmup overhead
-- `max-autotune`: Longer compilation, maximum performance (use for production)
-- `default`: Balanced approach
+**Alternative:** Phase 2 will explore streaming and batching for additional speedup.
 
 ### 3. ✅ Optimized Inference Parameters (1.15x speedup)
 
@@ -410,15 +411,15 @@ Phase 1 achieves 3-4x speedup. For further optimization:
 
 ## Summary
 
-| Optimization | Speedup | Implementation Effort | Risk |
-|--------------|---------|----------------------|------|
-| FP16 | 2x | Low (1 hour) | Low |
-| torch.compile | 2-4x | Low (1 hour) | Medium (compilation time) |
-| Parameter tuning | 1.15x | Low (30 min) | Low |
-| Voice pre-caching | Instant switching | Low (1 hour) | None |
-| **Total Phase 1** | **3-4x** | **3-4 hours** | **Low** |
+| Optimization | Speedup | Implementation Effort | Status |
+|--------------|---------|----------------------|--------|
+| FP16 (AMP) | ~2x | Low (1 hour) | ✅ Working |
+| torch.compile | N/A | N/A | ❌ Not compatible |
+| Parameter tuning | ~1.15x | Low (30 min) | ✅ Working |
+| Voice pre-caching | Instant switching | Low (1 hour) | ✅ Working |
+| **Total Phase 1** | **2-2.5x** | **2-3 hours** | **✅ Complete** |
 
-**Status:** ✅ Complete and ready for deployment
+**Status:** ✅ Complete and ready for deployment (torch.compile disabled due to incompatibility)
 
 ---
 
