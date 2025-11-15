@@ -19,7 +19,7 @@ ENV MAX_WORKERS=2
 
 # Phase 1 Optimization settings
 ENV USE_FP16=1
-ENV USE_TORCH_COMPILE=1
+ENV USE_TORCH_COMPILE=0
 ENV TORCH_COMPILE_MODE=reduce-overhead
 ENV TORCHINDUCTOR_CACHE_DIR=/app/.cache/torch_compile
 
