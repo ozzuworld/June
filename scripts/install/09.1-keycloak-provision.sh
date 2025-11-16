@@ -116,16 +116,156 @@ else
   fi
 fi
 
-success "Keycloak realm provisioned"
+# Function to create confidential client with secret
+create_client_with_secret() {
+  local CLIENT_ID=$1
+  local ROOT_URL=$2
+  local REDIRECT_URIS=$3
+
+  log "Creating client '$CLIENT_ID'..."
+
+  # Check if client exists
+  CLIENT_CHECK=$(curl -k -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
+
+  CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+
+  if [ -n "$CLIENT_UUID" ]; then
+    warn "Client '$CLIENT_ID' already exists (ID: $CLIENT_UUID)"
+  else
+    # Create client
+    CREATE_CLIENT=$(curl -k -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"clientId\": \"$CLIENT_ID\",
+        \"enabled\": true,
+        \"protocol\": \"openid-connect\",
+        \"publicClient\": false,
+        \"serviceAccountsEnabled\": true,
+        \"directAccessGrantsEnabled\": true,
+        \"standardFlowEnabled\": true,
+        \"implicitFlowEnabled\": false,
+        \"rootUrl\": \"$ROOT_URL\",
+        \"redirectUris\": $REDIRECT_URIS,
+        \"webOrigins\": [\"*\"],
+        \"attributes\": {
+          \"access.token.lifespan\": \"3600\",
+          \"client.secret.creation.time\": \"$(date +%s)\"
+        }
+      }")
+
+    HTTP_CODE=$(echo "$CREATE_CLIENT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+
+    if [ "$HTTP_CODE" = "201" ]; then
+      success "Client '$CLIENT_ID' created"
+      sleep 2
+      CLIENT_CHECK=$(curl -k -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+        "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
+      CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+    else
+      error "Failed to create client '$CLIENT_ID' (HTTP $HTTP_CODE)"
+    fi
+  fi
+
+  # Get client secret
+  if [ -n "$CLIENT_UUID" ]; then
+    SECRET_RESPONSE=$(curl -k -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+      "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret")
+
+    SECRET=$(echo "$SECRET_RESPONSE" | jq -r '.value // empty')
+
+    if [ -n "$SECRET" ]; then
+      success "Secret retrieved for '$CLIENT_ID'"
+      echo "$CLIENT_UUID|$SECRET"
+    else
+      error "Failed to get secret for '$CLIENT_ID'"
+    fi
+  fi
+}
+
+# Function to create public PKCE client (for mobile app)
+create_public_pkce_client() {
+  local CLIENT_ID=$1
+  local REDIRECT_URIS=$2
+
+  log "Creating public PKCE client '$CLIENT_ID'..."
+
+  # Check if client exists
+  CLIENT_CHECK=$(curl -k -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$CLIENT_ID")
+  CLIENT_UUID=$(echo "$CLIENT_CHECK" | jq -r '.[0].id // empty')
+
+  if [ -n "$CLIENT_UUID" ]; then
+    warn "Client '$CLIENT_ID' already exists (ID: $CLIENT_UUID)"
+  else
+    CREATE_CLIENT=$(curl -k -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms/$REALM/clients" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"clientId\": \"$CLIENT_ID\",
+        \"enabled\": true,
+        \"protocol\": \"openid-connect\",
+        \"publicClient\": true,
+        \"standardFlowEnabled\": true,
+        \"directAccessGrantsEnabled\": false,
+        \"serviceAccountsEnabled\": false,
+        \"redirectUris\": $REDIRECT_URIS,
+        \"webOrigins\": [\"https://auth.expo.io\"],
+        \"attributes\": {
+          \"pkce.code.challenge.method\": \"S256\"
+        }
+      }")
+
+    HTTP_CODE=$(echo "$CREATE_CLIENT" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+    if [ "$HTTP_CODE" = "201" ]; then
+      success "Public PKCE client '$CLIENT_ID' created"
+    else
+      error "Failed to create public client '$CLIENT_ID' (HTTP $HTTP_CODE)"
+    fi
+  fi
+}
+
+# Create June service clients
+log "Creating June service clients..."
+
+# June Orchestrator
+ORCH_RESULT=$(create_client_with_secret "june-orchestrator" "https://api.${DOMAIN}" \
+  "[\"https://api.${DOMAIN}/*\", \"http://localhost:8080/*\", \"http://june-orchestrator.june-services.svc.cluster.local:8080/*\"]")
+ORCH_SECRET=$(echo "$ORCH_RESULT" | cut -d'|' -f2)
+
+# June STT
+STT_RESULT=$(create_client_with_secret "june-stt" "https://stt.${DOMAIN}" \
+  "[\"https://stt.${DOMAIN}/*\", \"http://localhost:8000/*\", \"http://june-stt.june-services.svc.cluster.local:8000/*\"]")
+STT_SECRET=$(echo "$STT_RESULT" | cut -d'|' -f2)
+
+# June TTS
+TTS_RESULT=$(create_client_with_secret "june-tts" "https://tts.${DOMAIN}" \
+  "[\"https://tts.${DOMAIN}/*\", \"http://localhost:8000/*\", \"http://june-tts.june-services.svc.cluster.local:8000/*\"]")
+TTS_SECRET=$(echo "$TTS_RESULT" | cut -d'|' -f2)
+
+# June Mobile App (PKCE public client)
+create_public_pkce_client "june-mobile-app" "[\"june://auth/callback\", \"exp://localhost:8081\", \"https://auth.expo.io/@your-username/your-app\"]"
+
+success "Keycloak realm and base clients provisioned"
 echo ""
 echo "🔐 Keycloak Configuration:"
 echo "  URL: $KEYCLOAK_URL"
 echo "  Realm: $REALM"
 echo "  Admin User: $KEYCLOAK_ADMIN_USER"
 echo ""
-echo "✅ Realm '$REALM' is ready"
+echo "✅ June Service Clients Created:"
+echo "  - june-orchestrator"
+echo "  - june-stt"
+echo "  - june-tts"
+echo "  - june-mobile-app (PKCE)"
+echo ""
+echo "📝 Client Secrets (save these securely):"
+echo "  june-orchestrator: $ORCH_SECRET"
+echo "  june-stt: $STT_SECRET"
+echo "  june-tts: $TTS_SECRET"
 echo ""
 echo "📝 Next Steps:"
-echo "  Media stack SSO clients (Jellyfin, Jellyseerr) will be created in phase 09.5"
-echo "  For mobile app clients, run: bash scripts/keycloak/setup-fresh-install.sh"
+echo "  1. Update Kubernetes secrets with client secrets"
+echo "  2. Media stack SSO clients will be created in phase 09.5"
 echo ""
