@@ -418,29 +418,29 @@ class JellyseerrSetupAutomator:
 
         time.sleep(2)
 
-        # Step 8: Mark setup as initialized/complete
-        self.log("Marking setup as complete...")
+        # Step 8: Complete initialization (mark setup as done)
+        self.log("Completing initialization...")
         try:
-            # Update main settings to mark as initialized
-            main_settings = {
-                "initialized": True
-            }
-
+            # The /settings/initialize endpoint marks setup as complete
+            # This must be called AFTER auth and configuration
             response = self.session.post(
-                f"{self.base_url}/api/v1/settings/main",
-                json=main_settings,
+                f"{self.base_url}/api/v1/settings/initialize",
                 headers={"Content-Type": "application/json"},
                 timeout=15
             )
 
             if response.status_code in [200, 201, 204]:
-                self.success("Setup marked as complete - Jellyseerr is now initialized!")
+                self.success("Setup initialization completed - Jellyseerr is now ready!")
+            elif response.status_code == 401:
+                self.warn("Not authenticated to complete initialization")
+                self.warn("Setup wizard may still show - try logging in and clicking Finish")
             else:
-                self.warn(f"Could not mark as initialized: {response.status_code} - {response.text}")
-                self.warn("You may need to complete the setup wizard manually")
+                self.warn(f"Initialize endpoint returned {response.status_code}: {response.text}")
+                self.warn("You may need to click 'Finish' in the setup wizard UI")
 
         except Exception as e:
-            self.warn(f"Error marking setup as complete: {e}")
+            self.warn(f"Error completing initialization: {e}")
+            self.warn("Configuration is complete - just click 'Finish' in the UI")
 
         print("")
         self.success("Jellyseerr setup wizard completed!")
