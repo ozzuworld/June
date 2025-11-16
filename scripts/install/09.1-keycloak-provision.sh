@@ -57,44 +57,75 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     error "Keycloak did not become ready in time"
 fi
 
-# Export variables for the Keycloak setup script
-export KEYCLOAK_URL
-export KEYCLOAK_REALM
-export KEYCLOAK_ADMIN_USER
-export KEYCLOAK_ADMIN_PASSWORD
-export DOMAIN
-
-# Run the Keycloak setup script non-interactively
+# Provision Keycloak realm and clients directly via API
 log "Running Keycloak realm and client provisioning..."
 
-KEYCLOAK_SCRIPT="${ROOT_DIR}/scripts/keycloak/setup-fresh-install.sh"
+# Set defaults
+REALM="${KEYCLOAK_REALM:-allsafe}"
+ADMIN_USER="${KEYCLOAK_ADMIN_USER}"
+ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD}"
 
-if [ ! -f "$KEYCLOAK_SCRIPT" ]; then
-    error "Keycloak setup script not found: $KEYCLOAK_SCRIPT"
+# Verify jq is installed
+if ! command -v jq &> /dev/null; then
+    error "jq is not installed. Install with: apt-get install jq"
 fi
 
-# Make it executable
-chmod +x "$KEYCLOAK_SCRIPT"
+# Get admin token
+log "Getting admin access token..."
+TOKEN_RESPONSE=$(curl -k -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=$ADMIN_USER" \
+  -d "password=$ADMIN_PASSWORD" \
+  -d "grant_type=password" \
+  -d "client_id=admin-cli")
 
-# Run with all defaults (non-interactive mode)
-# The script will use the exported environment variables
-echo -e "\n\n\n\n\n\n\n" | bash "$KEYCLOAK_SCRIPT" || {
-    warn "Keycloak setup may have partial failures - continuing anyway"
-}
+ADMIN_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+
+if [ -z "$ADMIN_TOKEN" ]; then
+  error "Failed to get admin token. Response: $TOKEN_RESPONSE"
+fi
+
+success "Admin token obtained"
+
+# Create realm if it doesn't exist
+log "Creating realm '$REALM'..."
+REALM_CHECK=$(curl -k -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "$KEYCLOAK_URL/admin/realms/$REALM")
+
+if echo "$REALM_CHECK" | jq -e '.realm' > /dev/null 2>&1; then
+  warn "Realm '$REALM' already exists"
+else
+  CREATE_REALM=$(curl -k -s -w "\nHTTP_CODE:%{http_code}" -X POST "$KEYCLOAK_URL/admin/realms" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"realm\": \"$REALM\",
+      \"enabled\": true,
+      \"displayName\": \"June AI Platform\",
+      \"accessTokenLifespan\": 3600,
+      \"ssoSessionIdleTimeout\": 1800,
+      \"ssoSessionMaxLifespan\": 36000
+    }")
+
+  HTTP_CODE=$(echo "$CREATE_REALM" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+
+  if [ "$HTTP_CODE" = "201" ]; then
+    success "Realm '$REALM' created"
+  else
+    error "Failed to create realm (HTTP $HTTP_CODE): $CREATE_REALM"
+  fi
+fi
 
 success "Keycloak realm provisioned"
 echo ""
 echo "🔐 Keycloak Configuration:"
 echo "  URL: $KEYCLOAK_URL"
-echo "  Realm: ${KEYCLOAK_REALM:-allsafe}"
+echo "  Realm: $REALM"
 echo "  Admin User: $KEYCLOAK_ADMIN_USER"
 echo ""
-echo "✅ Base June service clients created:"
-echo "  - june-orchestrator"
-echo "  - june-stt"
-echo "  - june-tts"
-echo "  - june-mobile-app (PKCE)"
+echo "✅ Realm '$REALM' is ready"
 echo ""
 echo "📝 Next Steps:"
-echo "  Media stack SSO clients will be created in phase 09.5"
+echo "  Media stack SSO clients (Jellyfin, Jellyseerr) will be created in phase 09.5"
+echo "  For mobile app clients, run: bash scripts/keycloak/setup-fresh-install.sh"
 echo ""
