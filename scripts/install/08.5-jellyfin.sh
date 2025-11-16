@@ -86,6 +86,25 @@ spec:
     type: DirectoryOrCreate
 EOF
 
+# Create persistent volume for Jellyfin media
+log "Creating Jellyfin media storage..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jellyfin-media-pv
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /mnt/jellyfin/media
+    type: DirectoryOrCreate
+EOF
+
 # Create values file for Jellyfin with proper volume mounts
 log "Creating Jellyfin Helm values..."
 cat > /tmp/jellyfin-values.yaml <<EOF
@@ -94,29 +113,10 @@ persistence:
     enabled: true
     storageClass: ""
     size: 5Gi
-
-# Additional volumes for media directories
-extraVolumes:
-  - name: media-movies
-    hostPath:
-      path: /mnt/jellyfin/media/movies
-      type: DirectoryOrCreate
-  - name: media-tv
-    hostPath:
-      path: /mnt/jellyfin/media/tv
-      type: DirectoryOrCreate
-  - name: media-downloads
-    hostPath:
-      path: /mnt/jellyfin/media/downloads
-      type: DirectoryOrCreate
-
-extraVolumeMounts:
-  - name: media-movies
-    mountPath: /media/movies
-  - name: media-tv
-    mountPath: /media/tv
-  - name: media-downloads
-    mountPath: /media/downloads
+  media:
+    enabled: true
+    storageClass: ""
+    size: 100Gi
 
 # Set correct user ID
 podSecurityContext:
@@ -161,10 +161,9 @@ EOF
 log "Generated Jellyfin configuration:"
 log "  Hostname: tv.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
-log "  Media Mounts:"
-log "    - /media/movies → /mnt/jellyfin/media/movies"
-log "    - /media/tv → /mnt/jellyfin/media/tv"
-log "    - /media/downloads → /mnt/jellyfin/media/downloads"
+log "  Storage:"
+log "    - Config: /config → /mnt/jellyfin/config (5Gi)"
+log "    - Media: /media → /mnt/jellyfin/media (100Gi)"
 
 # Verify wildcard certificate exists
 if kubectl get secret "$WILDCARD_SECRET_NAME" -n june-services &>/dev/null; then
@@ -205,15 +204,14 @@ echo "  First-time setup: Navigate to URL and complete setup wizard"
 echo ""
 echo "📁 Storage Locations (inside container):"
 echo "  Config: /config"
-echo "  Movies: /media/movies"
-echo "  TV Shows: /media/tv"
-echo "  Downloads: /media/downloads"
+echo "  Media: /media"
 echo ""
 echo "📁 Host Storage Locations:"
 echo "  Config: /mnt/jellyfin/config"
-echo "  Movies: /mnt/jellyfin/media/movies"
-echo "  TV Shows: /mnt/jellyfin/media/tv"
-echo "  Downloads: /mnt/jellyfin/media/downloads"
+echo "  Media: /mnt/jellyfin/media"
+echo "    - Movies: /mnt/jellyfin/media/movies"
+echo "    - TV Shows: /mnt/jellyfin/media/tv"
+echo "    - Downloads: /mnt/jellyfin/media/downloads"
 echo ""
 echo "📚 Library Setup:"
 echo "  After first login, add these libraries in Dashboard → Libraries:"
@@ -227,6 +225,8 @@ echo ""
 echo "🔍 Verify deployment:"
 echo "  kubectl get pods -n june-services | grep jellyfin"
 echo "  kubectl get ingress -n june-services | grep jellyfin"
+echo "  kubectl get pv | grep jellyfin"
+echo "  kubectl get pvc -n june-services | grep jellyfin"
 echo ""
 echo "🔧 Verify mounts inside container:"
 echo "  kubectl exec -n june-services deployment/jellyfin -- ls -la /media/"
