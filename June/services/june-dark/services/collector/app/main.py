@@ -78,10 +78,13 @@ class CollectorWorker:
             self.channel = await self.connection.channel()
             await self.channel.set_qos(prefetch_count=settings.CONCURRENT_REQUESTS)
             
-            # Declare queue
+            # Declare queue with TTL
             self.queue = await self.channel.declare_queue(
                 "crawl.requests",
-                durable=True
+                durable=True,
+                arguments={
+                    "x-message-ttl": 86400000  # 24 hours in milliseconds
+                }
             )
             logger.info("✓ RabbitMQ connected")
             
