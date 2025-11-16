@@ -128,7 +128,7 @@ class JellyseerrSetupAutomator:
                     "urlBase": parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else "",
                     "username": self.jellyfin_user,
                     "password": self.jellyfin_pass,
-                    "email": f"{self.jellyfin_user}@{self.domain}",
+                    "email": f"mail@{self.domain}",  # Use mail@ prefix for admin email
                     "serverType": 2  # MediaServerType.JELLYFIN = 2 (PLEX=1, JELLYFIN=2, EMBY=3)
                 }
 
@@ -353,14 +353,17 @@ class JellyseerrSetupAutomator:
         self.log("Triggering Jellyfin library sync...")
         try:
             response = self.session.post(
-                f"{self.base_url}/api/v1/settings/jellyfin/library",
+                f"{self.base_url}/api/v1/settings/jellyfin/sync",
                 headers={"Content-Type": "application/json"},
                 timeout=30
             )
             if response.status_code in [200, 201, 204]:
-                self.success("Jellyfin library sync triggered")
+                sync_data = response.json() if response.content else {}
+                self.success(f"Jellyfin library sync triggered successfully")
+                if sync_data:
+                    self.log(f"Sync status: {sync_data}")
             else:
-                self.warn(f"Library sync returned {response.status_code}, continuing...")
+                self.warn(f"Library sync returned {response.status_code}: {response.text}")
         except Exception as e:
             self.warn(f"Could not trigger library sync: {e}")
 
