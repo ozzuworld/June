@@ -69,38 +69,58 @@ class JellyseerrSetupAutomator:
 
     def authenticate_with_jellyfin(self):
         """Authenticate Jellyseerr with Jellyfin server and create admin user"""
-        self.log(f"Authenticating with Jellyfin server at {self.jellyfin_url}...")
 
-        try:
-            auth_data = {
-                "authToken": "",  # Empty for username/password auth
-                "hostname": self.jellyfin_url,
-                "username": self.jellyfin_user,
-                "password": self.jellyfin_pass,
-                "email": f"{self.jellyfin_user}@{self.domain}"
-            }
+        # If a custom URL was provided, use it
+        if self.jellyfin_url != "http://jellyfin.june-services.svc.cluster.local:8096":
+            urls_to_try = [self.jellyfin_url]
+        else:
+            # Try multiple common service name patterns for Helm-deployed Jellyfin
+            urls_to_try = [
+                "http://jellyfin-jellyfin.june-services.svc.cluster.local:8096",  # Helm pattern: release-chart
+                "http://jellyfin.june-services.svc.cluster.local:8096",           # Simple pattern
+                f"https://tv.{self.domain}"                                        # External URL fallback
+            ]
 
-            response = self.session.post(
-                f"{self.base_url}/api/v1/auth/jellyfin",
-                json=auth_data,
-                headers={"Content-Type": "application/json"},
-                timeout=15
-            )
+        last_error = None
+        for jellyfin_url in urls_to_try:
+            self.log(f"Trying Jellyfin server at {jellyfin_url}...")
 
-            if response.status_code == 200:
-                data = response.json()
-                self.success(f"Authenticated with Jellyfin as admin user: {self.jellyfin_user}")
+            try:
+                auth_data = {
+                    "authToken": "",  # Empty for username/password auth
+                    "hostname": jellyfin_url,
+                    "username": self.jellyfin_user,
+                    "password": self.jellyfin_pass,
+                    "email": f"{self.jellyfin_user}@{self.domain}"
+                }
 
-                # Extract session cookie for subsequent requests
-                # The session should now be authenticated
-                return True
-            else:
-                self.error(f"Jellyfin authentication failed: {response.status_code} - {response.text}")
-                return False
+                response = self.session.post(
+                    f"{self.base_url}/api/v1/auth/jellyfin",
+                    json=auth_data,
+                    headers={"Content-Type": "application/json"},
+                    timeout=15
+                )
 
-        except Exception as e:
-            self.error(f"Error authenticating with Jellyfin: {e}")
-            return False
+                if response.status_code == 200:
+                    data = response.json()
+                    self.success(f"Authenticated with Jellyfin as admin user: {self.jellyfin_user}")
+                    self.success(f"Connected using URL: {jellyfin_url}")
+                    self.jellyfin_url = jellyfin_url  # Save the working URL
+                    return True
+                else:
+                    last_error = f"{response.status_code} - {response.text}"
+                    self.warn(f"Failed with {jellyfin_url}: {last_error}")
+                    continue
+
+            except Exception as e:
+                last_error = str(e)
+                self.warn(f"Failed with {jellyfin_url}: {e}")
+                continue
+
+        # All URLs failed
+        self.error(f"Could not authenticate with any Jellyfin URL")
+        self.error(f"Last error: {last_error}")
+        return False
 
     def read_api_key(self, service):
         """Read API key from file"""
