@@ -41,7 +41,10 @@ MAX_ATTEMPTS=30
 ATTEMPT=0
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    if curl -k -s -f "$KEYCLOAK_URL/health/ready" > /dev/null 2>&1; then
+    # Check if Keycloak responds (try health endpoints or main page)
+    if curl -k -s -f "$KEYCLOAK_URL/health/ready" > /dev/null 2>&1 || \
+       curl -k -s -f "$KEYCLOAK_URL/health" > /dev/null 2>&1 || \
+       curl -k -s "$KEYCLOAK_URL/realms/master" | grep -q "realm" 2>/dev/null; then
         success "Keycloak is ready"
         break
     fi
