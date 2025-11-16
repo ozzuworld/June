@@ -62,6 +62,18 @@ fi
 
 log_success "Admin token obtained"
 
+# Verify realm exists
+log_info "Verifying realm '$REALM' exists..."
+REALM_CHECK=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "$KEYCLOAK_URL/admin/realms/$REALM")
+
+if echo "$REALM_CHECK" | jq -e '.realm' > /dev/null 2>&1; then
+  log_success "Realm '$REALM' found"
+else
+  log_error "Realm '$REALM' does not exist. Run phase 09.1-keycloak-provision first."
+  exit 1
+fi
+
 # Function to create confidential OIDC client
 create_oidc_client() {
   local CLIENT_ID=$1

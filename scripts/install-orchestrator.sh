@@ -109,7 +109,8 @@ PHASES=(
     "08.10-qbittorrent"       # NEW
     "08.11-configure-media"   # NEW - Auto-configures everything
     "09-june-platform"
-    "09.5-keycloak-media-sso" # NEW - Keycloak SSO (after Keycloak install)
+    "09.1-keycloak-provision" # NEW - Provision Keycloak realm & base clients
+    "09.5-keycloak-media-sso" # NEW - Keycloak SSO for media stack
     "10-final-setup"
 )
 
