@@ -349,7 +349,46 @@ class JellyseerrSetupAutomator:
 
         time.sleep(2)
 
-        # Step 4: Trigger Jellyfin library sync
+        # Step 4: Get and enable Jellyfin libraries
+        self.log("Configuring Jellyfin libraries...")
+        try:
+            # Get available libraries
+            response = self.session.get(
+                f"{self.base_url}/api/v1/settings/jellyfin/library",
+                timeout=15
+            )
+
+            if response.status_code == 200:
+                libraries = response.json()
+                self.log(f"Found {len(libraries)} Jellyfin libraries")
+
+                # Enable all libraries (or filter for Movies/TV Shows)
+                library_ids = [lib['id'] for lib in libraries if lib.get('id')]
+
+                if library_ids:
+                    # Enable libraries by passing their IDs
+                    enable_params = {"enable": ",".join(library_ids)}
+                    response = self.session.get(
+                        f"{self.base_url}/api/v1/settings/jellyfin/library",
+                        params=enable_params,
+                        timeout=15
+                    )
+
+                    if response.status_code == 200:
+                        self.success(f"Enabled {len(library_ids)} Jellyfin libraries")
+                    else:
+                        self.warn(f"Library enable returned {response.status_code}: {response.text}")
+                else:
+                    self.warn("No library IDs found to enable")
+            else:
+                self.warn(f"Could not get libraries: {response.status_code} - {response.text}")
+
+        except Exception as e:
+            self.warn(f"Error configuring libraries: {e}")
+
+        time.sleep(2)
+
+        # Step 5: Trigger Jellyfin library sync
         self.log("Triggering Jellyfin library sync...")
         try:
             response = self.session.post(
@@ -369,13 +408,39 @@ class JellyseerrSetupAutomator:
 
         time.sleep(2)
 
-        # Step 5: Configure Radarr
+        # Step 6: Configure Radarr
         radarr_success = self.configure_radarr()
 
         time.sleep(1)
 
-        # Step 6: Configure Sonarr
+        # Step 7: Configure Sonarr
         sonarr_success = self.configure_sonarr()
+
+        time.sleep(2)
+
+        # Step 8: Mark setup as initialized/complete
+        self.log("Marking setup as complete...")
+        try:
+            # Update main settings to mark as initialized
+            main_settings = {
+                "initialized": True
+            }
+
+            response = self.session.post(
+                f"{self.base_url}/api/v1/settings/main",
+                json=main_settings,
+                headers={"Content-Type": "application/json"},
+                timeout=15
+            )
+
+            if response.status_code in [200, 201, 204]:
+                self.success("Setup marked as complete - Jellyseerr is now initialized!")
+            else:
+                self.warn(f"Could not mark as initialized: {response.status_code} - {response.text}")
+                self.warn("You may need to complete the setup wizard manually")
+
+        except Exception as e:
+            self.warn(f"Error marking setup as complete: {e}")
 
         print("")
         self.success("Jellyseerr setup wizard completed!")
