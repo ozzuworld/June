@@ -43,7 +43,7 @@ mkdir -p /mnt/hdd/jellyfin-media/downloads/complete
 
 # Pre-create qBittorrent config with username, password, and download paths
 log "Pre-setting qBittorrent Web UI credentials and download paths..."
-cat > /mnt/ssd/media-configs/qbittorrent/qBittorrent.conf <<EOF
+cat > /mnt/ssd/media-configs/qbittorrent/qBittorrent/config/qBittorrent.conf <<EOF
 [LegalNotice]
 Accepted=true
 
@@ -210,8 +210,8 @@ success "qBittorrent installed!"
 echo ""
 echo "📥 qBittorrent Access:"
 echo "  URL: https://qbittorrent.${DOMAIN}"
-echo "  Default Username: admin"
-echo "  Default Password: adminadmin"
+echo "  Username: admin"
+echo "  Password: Pokemon123!"
 echo ""
 echo "📁 Storage:"
 echo "  Config: /mnt/ssd/media-configs/qbittorrent (fast-ssd, on SSD)"
@@ -222,10 +222,8 @@ echo "⚙️  Configuration:"
 echo "  qBittorrent will be connected to Sonarr/Radarr automatically"
 echo "  by the 08.11-configure-media.sh script"
 echo ""
-echo "🔗 Connection Details (for manual setup):"
+echo "🔗 Connection Details (for Sonarr/Radarr):"
 echo "  Host: qbittorrent.june-services.svc.cluster.local"
 echo "  Port: 8080"
 echo "  Username: admin"
-echo "  Password: adminadmin"
-echo ""
-echo "⚠️  IMPORTANT: Change the default password in Tools > Options > Web UI"
+echo "  Password: Pokemon123!"
