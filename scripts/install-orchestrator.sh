@@ -53,7 +53,14 @@ export LETSENCRYPT_EMAIL
 export GEMINI_API_KEY
 export CLOUDFLARE_TOKEN
 export POSTGRESQL_PASSWORD
+export KEYCLOAK_URL
+export KEYCLOAK_REALM
+export KEYCLOAK_ADMIN_USER
 export KEYCLOAK_ADMIN_PASSWORD
+export JELLYFIN_USERNAME
+export JELLYFIN_PASSWORD
+export MEDIA_STACK_USERNAME
+export MEDIA_STACK_PASSWORD
 export TURN_USERNAME
 export STUNNER_PASSWORD
 export GPU_TIMESLICING_REPLICAS
@@ -101,6 +108,7 @@ PHASES=(
     "08.9-jellyseerr"         # NEW
     "08.10-qbittorrent"       # NEW
     "08.11-configure-media"   # NEW - Auto-configures everything
+    "08.12-keycloak-media-sso" # NEW - Keycloak SSO for Jellyfin/Jellyseerr
     "09-june-platform"
     "10-final-setup"
 )
@@ -236,6 +244,18 @@ main() {
     echo "🎮 WebRTC Services:"
     echo "  LiveKit:    livekit-livekit-server.june-services.svc.cluster.local"
     echo "  TURN:       turn:${EXTERNAL_IP}:3478"
+    echo ""
+    echo "🎬 Media Stack (SSO Enabled):"
+    echo "  Jellyfin:   https://tv.$DOMAIN"
+    echo "  Jellyseerr: https://requests.$DOMAIN"
+    echo "  Sonarr:     https://sonarr.$DOMAIN"
+    echo "  Radarr:     https://radarr.$DOMAIN"
+    echo "  Prowlarr:   https://prowlarr.$DOMAIN"
+    echo "  qBittorrent: https://qbittorrent.$DOMAIN"
+    echo ""
+    echo "🔐 SSO Login:"
+    echo "  All services use Keycloak SSO"
+    echo "  Manage users/roles in Keycloak admin"
     echo ""
     echo "🌐 DNS Configuration:"
     echo "  Point these records to: $EXTERNAL_IP"
