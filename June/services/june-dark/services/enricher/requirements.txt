@@ -12,3 +12,5 @@ neo4j>=5.14.0
 elasticsearch>=8.11.0
 redis>=5.0.0
 trafilatura>=1.6.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
