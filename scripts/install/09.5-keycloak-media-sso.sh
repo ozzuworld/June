@@ -33,6 +33,11 @@ fi
 [ -z "$KEYCLOAK_ADMIN_USER" ] && error "KEYCLOAK_ADMIN_USER variable is not set."
 [ -z "$KEYCLOAK_ADMIN_PASSWORD" ] && error "KEYCLOAK_ADMIN_PASSWORD variable is not set."
 
+# Verify jq is installed
+if ! command -v jq &> /dev/null; then
+    error "jq is not installed. Install with: apt-get install jq"
+fi
+
 AUTOMATION_DIR="${ROOT_DIR}/scripts/automation-media-stack"
 
 log "Setting up Media Stack SSO for domain: $DOMAIN"
@@ -42,6 +47,35 @@ echo "=================================="
 echo "  Domain: $DOMAIN"
 echo "  Keycloak: $KEYCLOAK_URL"
 echo "  Realm: ${KEYCLOAK_REALM:-allsafe}"
+echo ""
+
+# Wait for Keycloak to be ready (in case it was just installed)
+log "Verifying Keycloak is ready..."
+MAX_ATTEMPTS=30
+ATTEMPT=0
+
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+    # Try to get admin token to verify Keycloak is ready
+    TEST_TOKEN=$(curl -k -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "username=$KEYCLOAK_ADMIN_USER" \
+      -d "password=$KEYCLOAK_ADMIN_PASSWORD" \
+      -d "grant_type=password" \
+      -d "client_id=admin-cli" 2>/dev/null)
+
+    if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
+        success "Keycloak is ready and accepting API calls"
+        break
+    fi
+
+    ATTEMPT=$((ATTEMPT + 1))
+    log "Attempt $ATTEMPT/$MAX_ATTEMPTS - Waiting for Keycloak..."
+    sleep 10
+done
+
+if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+    error "Keycloak is not ready. Please ensure phase 09.1 completed successfully."
+fi
 echo ""
 
 # Verify required scripts exist
