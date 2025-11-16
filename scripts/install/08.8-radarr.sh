@@ -39,43 +39,21 @@ log "Installing Radarr for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
-# Create config directory and media folders
-mkdir -p /mnt/media/configs/radarr
-mkdir -p /mnt/jellyfin/media/movies
-mkdir -p /mnt/jellyfin/media/downloads
-chown -R 1000:1000 /mnt/jellyfin/media/movies /mnt/jellyfin/media/downloads
-
-# Generate API key
-RADARR_API_KEY=$(openssl rand -hex 16)
-
-# Pre-create config.xml with authentication
-log "Creating Radarr config with pre-configured authentication..."
-cat > /mnt/media/configs/radarr/config.xml <<EOF
-<Config>
-  <LogLevel>info</LogLevel>
-  <UpdateMechanism>Docker</UpdateMechanism>
-  <Branch>master</Branch>
-  <BindAddress>*</BindAddress>
-  <Port>7878</Port>
-  <SslPort>7878</SslPort>
-  <EnableSsl>False</EnableSsl>
-  <LaunchBrowser>True</LaunchBrowser>
-  <ApiKey>$RADARR_API_KEY</ApiKey>
-  <AuthenticationMethod>Forms</AuthenticationMethod>
-  <AuthenticationRequired>Enabled</AuthenticationRequired>
-  <Username>$MEDIA_STACK_USERNAME</Username>
-  <Password>$MEDIA_STACK_PASSWORD</Password>
-  <AnalyticsEnabled>False</AnalyticsEnabled>
-  <UrlBase></UrlBase>
-  <InstanceName>Radarr</InstanceName>
-</Config>
-EOF
+# Create config directory on SSD and media folders on HDD
+log "Creating Radarr directories..."
+mkdir -p /mnt/ssd/media-configs/radarr
+mkdir -p /mnt/hdd/jellyfin-media/movies
+mkdir -p /mnt/hdd/jellyfin-media/downloads
 
 # Set proper ownership
-chown -R 1000:1000 /mnt/media/configs/radarr
+chown -R 1000:1000 /mnt/ssd/media-configs/radarr
+chown -R 1000:1000 /mnt/hdd/jellyfin-media/movies /mnt/hdd/jellyfin-media/downloads
 
-# Create PV for Radarr config
-log "Creating Radarr storage..."
+# NOTE: API key will be auto-generated on first start
+# Authentication will be configured via API after startup (see 08.11-configure-media.sh)
+
+# Create PV for Radarr config on SSD
+log "Creating Radarr persistent volume on SSD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -87,9 +65,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   hostPath:
-    path: /mnt/media/configs/radarr
+    path: /mnt/ssd/media-configs/radarr
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -100,7 +78,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   resources:
     requests:
       storage: 2Gi
@@ -159,11 +137,11 @@ spec:
           claimName: radarr-config
       - name: movies
         hostPath:
-          path: /mnt/jellyfin/media/movies
+          path: /mnt/hdd/jellyfin-media/movies
           type: DirectoryOrCreate
       - name: downloads
         hostPath:
-          path: /mnt/jellyfin/media/downloads
+          path: /mnt/hdd/jellyfin-media/downloads
           type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -207,12 +185,16 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=radarr -n june-services --timeout=300s || warn "Radarr not ready yet"
 
-success "Radarr installed with authentication pre-configured!"
+success "Radarr installed successfully!"
 echo ""
 echo "🎬 Radarr Access:"
 echo "  URL: https://radarr.${DOMAIN}"
-echo "  Username: $MEDIA_STACK_USERNAME"
-echo "  Password: $MEDIA_STACK_PASSWORD"
-echo "  API Key: $RADARR_API_KEY"
 echo ""
-echo "$RADARR_API_KEY" > /root/.radarr-api-key
+echo "📁 Storage:"
+echo "  Config: /mnt/ssd/media-configs/radarr (fast-ssd, on SSD)"
+echo "  Movies: /mnt/hdd/jellyfin-media/movies (on HDD)"
+echo "  Downloads: /mnt/hdd/jellyfin-media/downloads (on HDD)"
+echo ""
+echo "⚙️  Configuration:"
+echo "  Download client, indexers, and quality profiles will be configured"
+echo "  automatically by the 08.11-configure-media.sh script"

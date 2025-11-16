@@ -39,40 +39,18 @@ log "Installing Prowlarr for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
-# Create config directory
-mkdir -p /mnt/media/configs/prowlarr
-
-# Generate API key
-PROWLARR_API_KEY=$(openssl rand -hex 16)
-
-# Pre-create config.xml with authentication
-log "Creating Prowlarr config with pre-configured authentication..."
-cat > /mnt/media/configs/prowlarr/config.xml <<EOF
-<Config>
-  <LogLevel>info</LogLevel>
-  <UpdateMechanism>Docker</UpdateMechanism>
-  <Branch>master</Branch>
-  <BindAddress>*</BindAddress>
-  <Port>9696</Port>
-  <SslPort>9696</SslPort>
-  <EnableSsl>False</EnableSsl>
-  <LaunchBrowser>True</LaunchBrowser>
-  <ApiKey>$PROWLARR_API_KEY</ApiKey>
-  <AuthenticationMethod>Forms</AuthenticationMethod>
-  <AuthenticationRequired>Enabled</AuthenticationRequired>
-  <Username>$MEDIA_STACK_USERNAME</Username>
-  <Password>$MEDIA_STACK_PASSWORD</Password>
-  <AnalyticsEnabled>False</AnalyticsEnabled>
-  <UrlBase></UrlBase>
-  <InstanceName>Prowlarr</InstanceName>
-</Config>
-EOF
+# Create config directory on SSD
+log "Creating Prowlarr config directory on SSD..."
+mkdir -p /mnt/ssd/media-configs/prowlarr
 
 # Set proper ownership
-chown -R 1000:1000 /mnt/media/configs/prowlarr
+chown -R 1000:1000 /mnt/ssd/media-configs/prowlarr
 
-# Create PV for Prowlarr config
-log "Creating Prowlarr storage..."
+# NOTE: API key will be auto-generated on first start
+# Authentication will be configured via API after startup (see 08.11-configure-media.sh)
+
+# Create PV for Prowlarr config on SSD
+log "Creating Prowlarr persistent volume on SSD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -84,9 +62,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   hostPath:
-    path: /mnt/media/configs/prowlarr
+    path: /mnt/ssd/media-configs/prowlarr
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -97,7 +75,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   resources:
     requests:
       storage: 1Gi
@@ -193,13 +171,19 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=prowlarr -n june-services --timeout=300s || warn "Prowlarr not ready yet"
 
-success "Prowlarr installed with authentication pre-configured!"
+success "Prowlarr installed successfully!"
 echo ""
 echo "🔍 Prowlarr Access:"
 echo "  URL: https://prowlarr.${DOMAIN}"
-echo "  Username: $MEDIA_STACK_USERNAME"
-echo "  Password: $MEDIA_STACK_PASSWORD"
-echo "  API Key: $PROWLARR_API_KEY"
 echo ""
-echo "Credentials saved to: /root/.media-stack-credentials"
-echo "$PROWLARR_API_KEY" > /root/.prowlarr-api-key
+echo "📁 Storage:"
+echo "  Config: /mnt/ssd/media-configs/prowlarr (fast-ssd, on SSD)"
+echo ""
+echo "⚙️  Configuration:"
+echo "  Authentication and indexers will be configured automatically"
+echo "  by the 08.11-configure-media.sh script"
+echo ""
+echo "  Or configure manually:"
+echo "  1. Go to https://prowlarr.${DOMAIN}"
+echo "  2. Complete initial setup wizard"
+echo "  3. Add indexers in Settings → Indexers"

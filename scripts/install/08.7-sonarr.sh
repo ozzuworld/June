@@ -39,43 +39,21 @@ log "Installing Sonarr for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
-# Create config directory and media folders
-mkdir -p /mnt/media/configs/sonarr
-mkdir -p /mnt/jellyfin/media/tv
-mkdir -p /mnt/jellyfin/media/downloads
-chown -R 1000:1000 /mnt/jellyfin/media/tv /mnt/jellyfin/media/downloads
-
-# Generate API key
-SONARR_API_KEY=$(openssl rand -hex 16)
-
-# Pre-create config.xml with authentication
-log "Creating Sonarr config with pre-configured authentication..."
-cat > /mnt/media/configs/sonarr/config.xml <<EOF
-<Config>
-  <LogLevel>info</LogLevel>
-  <UpdateMechanism>Docker</UpdateMechanism>
-  <Branch>main</Branch>
-  <BindAddress>*</BindAddress>
-  <Port>8989</Port>
-  <SslPort>8989</SslPort>
-  <EnableSsl>False</EnableSsl>
-  <LaunchBrowser>True</LaunchBrowser>
-  <ApiKey>$SONARR_API_KEY</ApiKey>
-  <AuthenticationMethod>Forms</AuthenticationMethod>
-  <AuthenticationRequired>Enabled</AuthenticationRequired>
-  <Username>$MEDIA_STACK_USERNAME</Username>
-  <Password>$MEDIA_STACK_PASSWORD</Password>
-  <AnalyticsEnabled>False</AnalyticsEnabled>
-  <UrlBase></UrlBase>
-  <InstanceName>Sonarr</InstanceName>
-</Config>
-EOF
+# Create config directory on SSD and media folders on HDD
+log "Creating Sonarr directories..."
+mkdir -p /mnt/ssd/media-configs/sonarr
+mkdir -p /mnt/hdd/jellyfin-media/tv
+mkdir -p /mnt/hdd/jellyfin-media/downloads
 
 # Set proper ownership
-chown -R 1000:1000 /mnt/media/configs/sonarr
+chown -R 1000:1000 /mnt/ssd/media-configs/sonarr
+chown -R 1000:1000 /mnt/hdd/jellyfin-media/tv /mnt/hdd/jellyfin-media/downloads
 
-# Create PV for Sonarr config
-log "Creating Sonarr storage..."
+# NOTE: API key will be auto-generated on first start
+# Authentication will be configured via API after startup (see 08.11-configure-media.sh)
+
+# Create PV for Sonarr config on SSD
+log "Creating Sonarr persistent volume on SSD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -87,9 +65,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   hostPath:
-    path: /mnt/media/configs/sonarr
+    path: /mnt/ssd/media-configs/sonarr
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -100,7 +78,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   resources:
     requests:
       storage: 2Gi
@@ -159,11 +137,11 @@ spec:
           claimName: sonarr-config
       - name: tv
         hostPath:
-          path: /mnt/jellyfin/media/tv
+          path: /mnt/hdd/jellyfin-media/tv
           type: DirectoryOrCreate
       - name: downloads
         hostPath:
-          path: /mnt/jellyfin/media/downloads
+          path: /mnt/hdd/jellyfin-media/downloads
           type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -207,12 +185,16 @@ EOF
 
 kubectl wait --for=condition=ready pod -l app=sonarr -n june-services --timeout=300s || warn "Sonarr not ready yet"
 
-success "Sonarr installed with authentication pre-configured!"
+success "Sonarr installed successfully!"
 echo ""
 echo "📺 Sonarr Access:"
 echo "  URL: https://sonarr.${DOMAIN}"
-echo "  Username: $MEDIA_STACK_USERNAME"
-echo "  Password: $MEDIA_STACK_PASSWORD"
-echo "  API Key: $SONARR_API_KEY"
 echo ""
-echo "$SONARR_API_KEY" > /root/.sonarr-api-key
+echo "📁 Storage:"
+echo "  Config: /mnt/ssd/media-configs/sonarr (fast-ssd, on SSD)"
+echo "  TV Shows: /mnt/hdd/jellyfin-media/tv (on HDD)"
+echo "  Downloads: /mnt/hdd/jellyfin-media/downloads (on HDD)"
+echo ""
+echo "⚙️  Configuration:"
+echo "  Download client, indexers, and quality profiles will be configured"
+echo "  automatically by the 08.11-configure-media.sh script"
