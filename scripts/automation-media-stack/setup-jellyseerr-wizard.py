@@ -67,6 +67,27 @@ class JellyseerrSetupAutomator:
             self.warn(f"Initialize request failed: {e}, continuing anyway...")
             return True
 
+    def test_jellyfin_connectivity(self, jellyfin_url):
+        """Test if Jellyfin server is reachable"""
+        try:
+            # Try to reach the Jellyfin system info endpoint (doesn't require auth)
+            test_session = requests.Session()
+            test_session.verify = False
+            response = test_session.get(
+                f"{jellyfin_url}/System/Info/Public",
+                timeout=5
+            )
+            if response.status_code == 200:
+                return True, "Server reachable"
+            else:
+                return False, f"Server returned {response.status_code}"
+        except requests.exceptions.ConnectionError as e:
+            return False, f"Connection refused: {e}"
+        except requests.exceptions.Timeout:
+            return False, "Connection timeout"
+        except Exception as e:
+            return False, f"Error: {e}"
+
     def authenticate_with_jellyfin(self):
         """Authenticate Jellyseerr with Jellyfin server and create admin user"""
 
@@ -74,16 +95,24 @@ class JellyseerrSetupAutomator:
         if self.jellyfin_url != "http://jellyfin.june-services.svc.cluster.local:8096":
             urls_to_try = [self.jellyfin_url]
         else:
-            # Try multiple common service name patterns for Helm-deployed Jellyfin
+            # Try multiple common service name patterns for deployed Jellyfin
             urls_to_try = [
-                "http://jellyfin-jellyfin.june-services.svc.cluster.local:8096",  # Helm pattern: release-chart
-                "http://jellyfin.june-services.svc.cluster.local:8096",           # Simple pattern
+                "http://jellyfin.june-services.svc.cluster.local:8096",           # Standard service name
                 f"https://tv.{self.domain}"                                        # External URL fallback
             ]
 
         last_error = None
         for jellyfin_url in urls_to_try:
             self.log(f"Trying Jellyfin server at {jellyfin_url}...")
+
+            # First test if we can reach Jellyfin
+            reachable, msg = self.test_jellyfin_connectivity(jellyfin_url)
+            if not reachable:
+                self.warn(f"Jellyfin not reachable: {msg}")
+                last_error = msg
+                continue
+            else:
+                self.log(f"Jellyfin reachable: {msg}")
 
             try:
                 auth_data = {
