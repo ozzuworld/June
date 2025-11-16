@@ -92,11 +92,11 @@ echo ""
 
 # Step 4: Auto-configure Jellyseerr
 log "Step 4: Configuring Jellyseerr..."
-python3 "${AUTOMATION_DIR}/setup-jellyseerr-wizard.py" \
-  --url "https://requests.${DOMAIN}" \
-  --domain "${DOMAIN}" \
-  --jellyfin-user "$JELLYFIN_USERNAME" \
-  --jellyfin-pass "$JELLYFIN_PASSWORD" || \
+log "Running setup from inside Jellyseerr pod for network access..."
+bash "${AUTOMATION_DIR}/setup-jellyseerr-from-pod.sh" \
+  "${DOMAIN}" \
+  "$JELLYFIN_USERNAME" \
+  "$JELLYFIN_PASSWORD" || \
   warn "Failed to auto-configure Jellyseerr - manual setup may be required"
 
 echo ""

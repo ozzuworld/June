@@ -153,16 +153,26 @@ class JellyseerrSetupAutomator:
 
     def read_api_key(self, service):
         """Read API key from file"""
-        key_file = f"/root/.{service}-api-key"
-        try:
-            with open(key_file, 'r') as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            self.warn(f"API key file not found: {key_file}")
-            return None
-        except Exception as e:
-            self.warn(f"Error reading API key: {e}")
-            return None
+        # Try multiple locations (host vs pod)
+        key_files = [
+            f"/tmp/{service}-api-key",      # Inside pod
+            f"/root/.{service}-api-key"     # On host
+        ]
+
+        for key_file in key_files:
+            try:
+                with open(key_file, 'r') as f:
+                    api_key = f.read().strip()
+                    if api_key:
+                        return api_key
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                self.warn(f"Error reading {key_file}: {e}")
+                continue
+
+        self.warn(f"API key file not found for {service}")
+        return None
 
     def configure_radarr(self):
         """Add Radarr service to Jellyseerr"""
