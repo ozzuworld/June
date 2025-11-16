@@ -13,11 +13,13 @@ import os
 requests.packages.urllib3.disable_warnings()
 
 class JellyseerrSetupAutomator:
-    def __init__(self, jellyseerr_url, domain, jellyfin_user, jellyfin_pass):
+    def __init__(self, jellyseerr_url, domain, jellyfin_user, jellyfin_pass, jellyfin_internal_url=None):
         self.base_url = jellyseerr_url.rstrip('/')
         self.domain = domain
         self.jellyfin_user = jellyfin_user
         self.jellyfin_pass = jellyfin_pass
+        # Use internal Kubernetes service URL for Jellyfin if not specified
+        self.jellyfin_url = jellyfin_internal_url or "http://jellyfin.june-services.svc.cluster.local:8096"
         self.session = requests.Session()
         self.session.verify = False
         self.api_token = None
@@ -67,12 +69,12 @@ class JellyseerrSetupAutomator:
 
     def authenticate_with_jellyfin(self):
         """Authenticate Jellyseerr with Jellyfin server and create admin user"""
-        self.log(f"Authenticating with Jellyfin server at https://tv.{self.domain}...")
+        self.log(f"Authenticating with Jellyfin server at {self.jellyfin_url}...")
 
         try:
             auth_data = {
                 "authToken": "",  # Empty for username/password auth
-                "hostname": f"https://tv.{self.domain}",
+                "hostname": self.jellyfin_url,
                 "username": self.jellyfin_user,
                 "password": self.jellyfin_pass,
                 "email": f"{self.jellyfin_user}@{self.domain}"
@@ -264,7 +266,7 @@ class JellyseerrSetupAutomator:
 
         if radarr_success and sonarr_success:
             print(f"✅ Services Connected:")
-            print(f"  - Jellyfin: https://tv.{self.domain}")
+            print(f"  - Jellyfin: {self.jellyfin_url} (internal) / https://tv.{self.domain} (external)")
             print(f"  - Radarr: https://radarr.{self.domain}")
             print(f"  - Sonarr: https://sonarr.{self.domain}")
         else:
@@ -286,6 +288,8 @@ def main():
     parser.add_argument('--domain', required=True, help='Base domain (e.g., example.com)')
     parser.add_argument('--jellyfin-user', required=True, help='Jellyfin admin username')
     parser.add_argument('--jellyfin-pass', required=True, help='Jellyfin admin password')
+    parser.add_argument('--jellyfin-url', required=False,
+                       help='Jellyfin internal URL (default: http://jellyfin.june-services.svc.cluster.local:8096)')
 
     args = parser.parse_args()
 
@@ -293,7 +297,8 @@ def main():
         args.url,
         args.domain,
         args.jellyfin_user,
-        args.jellyfin_pass
+        args.jellyfin_pass,
+        args.jellyfin_url
     )
 
     if automator.run_setup():
