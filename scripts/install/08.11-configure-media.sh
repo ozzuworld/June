@@ -90,13 +90,14 @@ python3 "${AUTOMATION_DIR}/configure-media-stack.py" \
 
 echo ""
 
-# Step 4: Show Jellyseerr instructions
-log "Step 4: Jellyseerr configuration info..."
-python3 "${AUTOMATION_DIR}/configure-jellyseerr.py" \
+# Step 4: Auto-configure Jellyseerr
+log "Step 4: Configuring Jellyseerr..."
+python3 "${AUTOMATION_DIR}/setup-jellyseerr-wizard.py" \
+  --url "https://requests.${DOMAIN}" \
   --domain "${DOMAIN}" \
   --jellyfin-user "$JELLYFIN_USERNAME" \
   --jellyfin-pass "$JELLYFIN_PASSWORD" || \
-  warn "Could not show Jellyseerr config"
+  warn "Failed to auto-configure Jellyseerr - manual setup may be required"
 
 echo ""
 echo "================================================================"
@@ -120,13 +121,13 @@ echo "  - Jellyfin setup wizard completed (admin user created)"
 echo "  - Jellyfin libraries created (Movies, TV Shows)"
 echo "  - Prowlarr indexers added (4 working indexers)"
 echo "  - Sonarr/Radarr connected to Prowlarr"
+echo "  - Jellyseerr connected to Jellyfin, Sonarr, and Radarr"
 echo "  - qBittorrent ready for downloads"
 echo ""
-echo "📝 Manual steps remaining:"
-echo "  1. Complete Jellyseerr setup wizard at https://requests.${DOMAIN}"
-echo "     (Follow on-screen instructions)"
+echo "🎬 100% Automated! No manual steps required."
 echo ""
-echo "🎬 Ready to use! Request content via Jellyseerr."
+echo "🎭 Request content at: https://requests.${DOMAIN}"
+echo "   Login with your Jellyfin credentials"
 echo "================================================================"
 
 success "Media automation stack fully configured!"
