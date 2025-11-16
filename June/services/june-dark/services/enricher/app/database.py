@@ -37,24 +37,39 @@ class DatabaseManager:
     async def connect_all(self):
         """Connect to all databases"""
         # PostgreSQL
-        self.pg_pool = await asyncpg.create_pool(
-            self.postgres_dsn,
-            min_size=5,
-            max_size=20
-        )
-        logger.info("✓ PostgreSQL connected")
-        
+        try:
+            logger.info(f"Connecting to PostgreSQL: {self.postgres_dsn.split('@')[1] if '@' in self.postgres_dsn else self.postgres_dsn}")
+            self.pg_pool = await asyncpg.create_pool(
+                self.postgres_dsn,
+                min_size=5,
+                max_size=20
+            )
+            logger.info("✓ PostgreSQL connected")
+        except Exception as e:
+            logger.error(f"✗ PostgreSQL connection failed: {e}", exc_info=True)
+            raise
+
         # Neo4j
-        self.neo4j_driver = AsyncGraphDatabase.driver(
-            self.neo4j_uri,
-            auth=(self.neo4j_user, self.neo4j_password)
-        )
-        logger.info("✓ Neo4j connected")
-        
+        try:
+            logger.info(f"Connecting to Neo4j: {self.neo4j_uri}")
+            self.neo4j_driver = AsyncGraphDatabase.driver(
+                self.neo4j_uri,
+                auth=(self.neo4j_user, self.neo4j_password)
+            )
+            logger.info("✓ Neo4j connected")
+        except Exception as e:
+            logger.error(f"✗ Neo4j connection failed: {e}", exc_info=True)
+            raise
+
         # Elasticsearch
-        self.es_client = AsyncElasticsearch([self.elastic_url])
-        await self.es_client.ping()
-        logger.info("✓ Elasticsearch connected")
+        try:
+            logger.info(f"Connecting to Elasticsearch: {self.elastic_url}")
+            self.es_client = AsyncElasticsearch([self.elastic_url])
+            await self.es_client.ping()
+            logger.info("✓ Elasticsearch connected")
+        except Exception as e:
+            logger.error(f"✗ Elasticsearch connection failed: {e}", exc_info=True)
+            raise
     
     async def close_all(self):
         """Close all connections"""

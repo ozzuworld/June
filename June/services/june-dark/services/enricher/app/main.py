@@ -120,7 +120,7 @@ class EnricherWorker:
                 await asyncio.sleep(1)
         
         except Exception as e:
-            logger.error(f"Failed to start worker: {e}")
+            logger.error(f"Failed to start worker: {e}", exc_info=True)
             raise
     
     async def process_message(self, message: aio_pika.IncomingMessage):
