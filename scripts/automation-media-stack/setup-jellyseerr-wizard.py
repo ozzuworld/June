@@ -128,7 +128,8 @@ class JellyseerrSetupAutomator:
                     "urlBase": parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else "",
                     "username": self.jellyfin_user,
                     "password": self.jellyfin_pass,
-                    "email": f"{self.jellyfin_user}@{self.domain}"
+                    "email": f"{self.jellyfin_user}@{self.domain}",
+                    "serverType": 1  # MediaServerType.JELLYFIN = 1 (PLEX=0, JELLYFIN=1, EMBY=2)
                 }
 
                 self.log(f"Sending auth with hostname={auth_data['hostname']}, port={auth_data['port']}, useSsl={auth_data['useSsl']}")
