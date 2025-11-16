@@ -35,15 +35,15 @@ log "Installing qBittorrent for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
-# FIXED: Create directories FIRST, before writing config
+# Create directories on SSD for config, HDD for downloads
 log "Creating directory structure..."
-mkdir -p /mnt/media/configs/qbittorrent/qBittorrent/config
-mkdir -p /mnt/jellyfin/media/downloads/incomplete
-mkdir -p /mnt/jellyfin/media/downloads/complete
+mkdir -p /mnt/ssd/media-configs/qbittorrent/qBittorrent/config
+mkdir -p /mnt/hdd/jellyfin-media/downloads/incomplete
+mkdir -p /mnt/hdd/jellyfin-media/downloads/complete
 
 # Pre-create qBittorrent config with username, password, and download paths
 log "Pre-setting qBittorrent Web UI credentials and download paths..."
-cat > /mnt/media/configs/qbittorrent/qBittorrent.conf <<EOF
+cat > /mnt/ssd/media-configs/qbittorrent/qBittorrent.conf <<EOF
 [LegalNotice]
 Accepted=true
 
@@ -59,11 +59,11 @@ Downloads\\UseIncompleteExtension=false
 EOF
 
 # Set ownership
-chown -R 1000:1000 /mnt/media/configs/qbittorrent
-chown -R 1000:1000 /mnt/jellyfin/media/downloads
+chown -R 1000:1000 /mnt/ssd/media-configs/qbittorrent
+chown -R 1000:1000 /mnt/hdd/jellyfin-media/downloads
 
-# Create PV for qBittorrent config
-log "Creating qBittorrent storage..."
+# Create PV for qBittorrent config on SSD
+log "Creating qBittorrent persistent volume on SSD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -75,9 +75,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   hostPath:
-    path: /mnt/media/configs/qbittorrent
+    path: /mnt/ssd/media-configs/qbittorrent
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -88,7 +88,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   resources:
     requests:
       storage: 1Gi
@@ -153,7 +153,7 @@ spec:
           claimName: qbittorrent-config
       - name: downloads
         hostPath:
-          path: /mnt/jellyfin/media/downloads
+          path: /mnt/hdd/jellyfin-media/downloads
           type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -213,19 +213,19 @@ echo "  URL: https://qbittorrent.${DOMAIN}"
 echo "  Default Username: admin"
 echo "  Default Password: adminadmin"
 echo ""
-echo "📂 Download Paths:"
-echo "  Complete: /downloads/complete"
-echo "  Incomplete: /downloads/incomplete"
-echo "  Host Path: /mnt/jellyfin/media/downloads"
+echo "📁 Storage:"
+echo "  Config: /mnt/ssd/media-configs/qbittorrent (fast-ssd, on SSD)"
+echo "  Downloads (container): /downloads/complete & /downloads/incomplete"
+echo "  Downloads (host): /mnt/hdd/jellyfin-media/downloads (on HDD)"
 echo ""
-echo "📝 Setup Instructions:"
-echo " 1. Go to https://qbittorrent.${DOMAIN}"
-echo " 2. Login with the credentials above"
-echo " 3. Change password in Tools > Options > Web UI"
-echo " 4. Use these credentials to connect Sonarr/Radarr"
+echo "⚙️  Configuration:"
+echo "  qBittorrent will be connected to Sonarr/Radarr automatically"
+echo "  by the 08.11-configure-media.sh script"
 echo ""
-echo "🔗 Connection Details for Sonarr/Radarr:"
+echo "🔗 Connection Details (for manual setup):"
 echo "  Host: qbittorrent.june-services.svc.cluster.local"
 echo "  Port: 8080"
 echo "  Username: admin"
 echo "  Password: adminadmin"
+echo ""
+echo "⚠️  IMPORTANT: Change the default password in Tools > Options > Web UI"

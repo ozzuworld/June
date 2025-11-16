@@ -35,7 +35,12 @@ log "Installing Jellyseerr for domain: $DOMAIN"
 WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
-log "Creating Jellyseerr storage..."
+# Create config directory on SSD
+log "Creating Jellyseerr config directory on SSD..."
+mkdir -p /mnt/ssd/media-configs/jellyseerr
+chown -R 1000:1000 /mnt/ssd/media-configs/jellyseerr
+
+log "Creating Jellyseerr persistent volume on SSD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -47,9 +52,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   hostPath:
-    path: /mnt/media/configs/jellyseerr
+    path: /mnt/ssd/media-configs/jellyseerr
     type: DirectoryOrCreate
 ---
 apiVersion: v1
@@ -60,7 +65,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   resources:
     requests:
       storage: 1Gi
@@ -155,9 +160,15 @@ echo ""
 echo "🎭 Jellyseerr Access:"
 echo "  URL: https://requests.${DOMAIN}"
 echo ""
-echo "📝 Setup Instructions:"
+echo "📁 Storage:"
+echo "  Config: /mnt/ssd/media-configs/jellyseerr (fast-ssd, on SSD)"
+echo ""
+echo "⚙️  Configuration:"
+echo "  Connections to Jellyfin, Sonarr, and Radarr will be configured"
+echo "  automatically by the 08.11-configure-media.sh script"
+echo ""
+echo "  Or configure manually:"
 echo "  1. Navigate to https://requests.${DOMAIN}"
 echo "  2. Connect to Jellyfin: https://tv.${DOMAIN}"
 echo "  3. Add Sonarr: https://sonarr.${DOMAIN}"
 echo "  4. Add Radarr: https://radarr.${DOMAIN}"
-echo "  5. Users can now request content!"
