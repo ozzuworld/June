@@ -318,12 +318,29 @@ class JellyseerrSetupAutomator:
 
         time.sleep(2)
 
-        # Step 3: Configure Radarr
+        # Step 3: Trigger Jellyfin library sync
+        self.log("Triggering Jellyfin library sync...")
+        try:
+            response = self.session.post(
+                f"{self.base_url}/api/v1/settings/jellyfin/library",
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            if response.status_code in [200, 201, 204]:
+                self.success("Jellyfin library sync triggered")
+            else:
+                self.warn(f"Library sync returned {response.status_code}, continuing...")
+        except Exception as e:
+            self.warn(f"Could not trigger library sync: {e}")
+
+        time.sleep(2)
+
+        # Step 4: Configure Radarr
         radarr_success = self.configure_radarr()
 
         time.sleep(1)
 
-        # Step 4: Configure Sonarr
+        # Step 5: Configure Sonarr
         sonarr_success = self.configure_sonarr()
 
         print("")
