@@ -48,6 +48,12 @@ echo ""
 log "Waiting for services to be ready..."
 sleep 20
 
+# Extract API keys from running pods (auto-generated on first start)
+log "Extracting API keys from media stack pods..."
+"${AUTOMATION_DIR}/extract-api-keys.sh" || warn "Some API keys could not be extracted"
+
+echo ""
+
 # Step 1: Configure Jellyfin Libraries
 log "Step 1: Configuring Jellyfin libraries..."
 python3 "${AUTOMATION_DIR}/configure-jellyfin-libraries.py" \
