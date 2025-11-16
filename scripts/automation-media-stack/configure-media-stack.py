@@ -54,7 +54,7 @@ class CompleteMediaConfigurator:
         try:
             headers = {"X-Api-Key": self.prowlarr_api_key}
             implementation = "Sonarr" if "sonarr" in app_name.lower() else "Radarr"
-            
+
             payload = {
                 "syncLevel": "fullSync",
                 "name": app_name,
@@ -67,13 +67,13 @@ class CompleteMediaConfigurator:
                 "implementation": implementation.lower(),
                 "configContract": f"{implementation}Settings",
             }
-            
+
             response = self.session.post(
                 f"{self.prowlarr_url}/api/v1/applications",
                 headers=headers,
                 json=payload
             )
-            
+
             if response.status_code in [200, 201]:
                 self.success(f"{app_name} connected to Prowlarr")
                 return True
@@ -83,30 +83,95 @@ class CompleteMediaConfigurator:
         except Exception as e:
             self.error(f"Failed to connect {app_name}: {e}")
         return False
+
+    def add_qbittorrent_to_service(self, service_name, service_url, api_key):
+        """Add qBittorrent as download client to Sonarr/Radarr"""
+        self.log(f"Adding qBittorrent to {service_name}...")
+        try:
+            headers = {"X-Api-Key": api_key}
+
+            payload = {
+                "enable": True,
+                "protocol": "torrent",
+                "priority": 1,
+                "removeCompletedDownloads": False,
+                "removeFailedDownloads": True,
+                "name": "qBittorrent",
+                "fields": [
+                    {"name": "host", "value": "qbittorrent.june-services.svc.cluster.local"},
+                    {"name": "port", "value": 8080},
+                    {"name": "useSsl", "value": False},
+                    {"name": "urlBase"},
+                    {"name": "username", "value": "admin"},
+                    {"name": "password", "value": "Pokemon123!"},
+                    {"name": "movieCategory", "value": "radarr"},
+                    {"name": "tvCategory", "value": "sonarr"},
+                    {"name": "recentMoviePriority", "value": 0},
+                    {"name": "recentTvPriority", "value": 0},
+                    {"name": "olderMoviePriority", "value": 0},
+                    {"name": "olderTvPriority", "value": 0},
+                    {"name": "initialState", "value": 0},
+                    {"name": "sequentialOrder", "value": False},
+                    {"name": "firstAndLast", "value": False}
+                ],
+                "implementationName": "qBittorrent",
+                "implementation": "QBittorrent",
+                "configContract": "QBittorrentSettings",
+                "tags": []
+            }
+
+            response = self.session.post(
+                f"{service_url}/api/v3/downloadclient",
+                headers=headers,
+                json=payload
+            )
+
+            if response.status_code in [200, 201]:
+                self.success(f"qBittorrent added to {service_name}")
+                return True
+            elif response.status_code == 400 and "unique" in response.text.lower():
+                self.success(f"qBittorrent already configured in {service_name}")
+                return True
+            else:
+                self.error(f"Failed to add qBittorrent to {service_name}: {response.status_code} - {response.text}")
+        except Exception as e:
+            self.error(f"Error adding qBittorrent to {service_name}: {e}")
+        return False
     
     def run(self):
         print("=" * 60)
         print("Complete Media Stack Configuration")
         print("=" * 60)
         print()
-        
+
         # Add root folders
         self.add_root_folder(self.sonarr_url, self.sonarr_api_key, "Sonarr", "/tv")
         self.add_root_folder(self.radarr_url, self.radarr_api_key, "Radarr", "/movies")
         print()
-        
+
         # Connect to Prowlarr
         self.connect_to_prowlarr("Sonarr", self.sonarr_url, self.sonarr_api_key)
         self.connect_to_prowlarr("Radarr", self.radarr_url, self.radarr_api_key)
         print()
-        
+
+        # Add qBittorrent as download client
+        self.add_qbittorrent_to_service("Sonarr", self.sonarr_url, self.sonarr_api_key)
+        self.add_qbittorrent_to_service("Radarr", self.radarr_url, self.radarr_api_key)
+        print()
+
         print("=" * 60)
         print("✅ Configuration Complete!")
         print("=" * 60)
         print()
-        print(f"Prowlarr: {self.prowlarr_url}")
-        print(f"Sonarr:   {self.sonarr_url}")
-        print(f"Radarr:   {self.radarr_url}")
+        print(f"Prowlarr:    {self.prowlarr_url}")
+        print(f"Sonarr:      {self.sonarr_url}")
+        print(f"Radarr:      {self.radarr_url}")
+        print(f"qBittorrent: https://torrent.{self.domain}")
+        print()
+        print("✅ All services connected:")
+        print("  - Root folders configured")
+        print("  - Prowlarr sync enabled")
+        print("  - qBittorrent download client added")
         print()
         print("Next: Add indexers to Prowlarr")
 
