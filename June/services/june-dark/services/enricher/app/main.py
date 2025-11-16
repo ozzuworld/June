@@ -104,7 +104,7 @@ class EnricherWorker:
                 durable=True,
                 arguments={
                     "x-message-ttl": 86400000,  # 24 hours in milliseconds
-                    "x-max-length": 10000  # Maximum queue length
+                    "x-max-length": 50000  # Maximum queue length
                 }
             )
             logger.info("✓ RabbitMQ connected")
