@@ -148,11 +148,11 @@ ingress:
 
 resources:
   requests:
-    memory: 1Gi
-    cpu: 500m
+    memory: 512Mi
+    cpu: 100m
   limits:
-    memory: 4Gi
-    cpu: 2000m
+    memory: 2Gi
+    cpu: 1000m
 EOF
 
 # Show the generated values for verification
