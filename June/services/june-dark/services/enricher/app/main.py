@@ -98,12 +98,13 @@ class EnricherWorker:
             self.channel = await self.connection.channel()
             await self.channel.set_qos(prefetch_count=settings.BATCH_SIZE)
             
-            # Declare queue with TTL
+            # Declare queue with TTL and max length
             self.queue = await self.channel.declare_queue(
                 "enrichment.requests",
                 durable=True,
                 arguments={
-                    "x-message-ttl": 86400000  # 24 hours in milliseconds
+                    "x-message-ttl": 86400000,  # 24 hours in milliseconds
+                    "x-max-length": 10000  # Maximum queue length
                 }
             )
             logger.info("✓ RabbitMQ connected")
