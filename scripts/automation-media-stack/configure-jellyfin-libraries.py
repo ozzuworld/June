@@ -23,38 +23,64 @@ class JellyfinLibraryConfigurator:
     def success(self, msg): print(f"[SUCCESS] ✅ {msg}")
     def error(self, msg): print(f"[ERROR] ❌ {msg}")
     
+    def check_initial_setup(self):
+        """Check if Jellyfin needs initial setup"""
+        try:
+            response = self.session.get(f"{self.base_url}/Startup/User", timeout=5)
+            # If this endpoint is accessible, Jellyfin needs initial setup
+            if response.status_code == 200:
+                return True
+            return False
+        except:
+            return False
+
     def authenticate(self):
         """Authenticate and get API token"""
         self.log("Authenticating with Jellyfin...")
-        
+
+        # Check if Jellyfin needs initial setup
+        if self.check_initial_setup():
+            self.error("Jellyfin requires initial setup")
+            self.error("Please visit the Jellyfin web UI and complete the setup wizard")
+            self.error("Then re-run this script to configure libraries")
+            return False
+
         try:
             # Login to get access token
             auth_data = {
                 "Username": self.username,
                 "Pw": self.password
             }
-            
+
             headers = {
                 "Content-Type": "application/json",
                 "X-Emby-Authorization": 'MediaBrowser Client="Jellyfin CLI", Device="Script", DeviceId="script-001", Version="1.0.0"'
             }
-            
+
             response = self.session.post(
                 f"{self.base_url}/Users/AuthenticateByName",
                 json=auth_data,
-                headers=headers
+                headers=headers,
+                timeout=10
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
                 self.api_key = data['AccessToken']
                 self.user_id = data['User']['Id']
                 self.success("Authenticated successfully!")
                 return True
+            elif response.status_code == 401:
+                self.error("Invalid username or password")
+                self.error("Make sure you completed Jellyfin setup with these credentials")
+                return False
             else:
                 self.error(f"Authentication failed: {response.text}")
                 return False
-                
+
+        except requests.exceptions.Timeout:
+            self.error("Connection timeout - Jellyfin may not be ready yet")
+            return False
         except Exception as e:
             self.error(f"Authentication error: {e}")
             return False
