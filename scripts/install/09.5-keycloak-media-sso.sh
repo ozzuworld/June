@@ -101,72 +101,74 @@ fi
 
 # Step 3: Install Jellyfin SSO plugin
 if [ "$SKIP_JELLYFIN_SSO" != "true" ]; then
-    log "Step 3: Installing Jellyfin SSO plugin..."
+    log "Step 3: Jellyfin SSO plugin setup..."
     echo ""
 
-    kubectl exec -n june-services deployment/jellyfin -- python3 - <<EOF
-import sys
-sys.path.insert(0, '/tmp')
-exec(open('/tmp/install-jellyfin-sso-plugin.py').read())
-EOF
-
-    # Copy script to pod and run
-    JELLYFIN_POD=$(kubectl get pod -n june-services -l app=jellyfin -o jsonpath='{.items[0].metadata.name}')
-    kubectl cp "$AUTOMATION_DIR/install-jellyfin-sso-plugin.py" "june-services/$JELLYFIN_POD:/tmp/install-sso.py"
-
-    log "Running SSO plugin installation inside Jellyfin pod..."
-    kubectl exec -n june-services "$JELLYFIN_POD" -- python3 /tmp/install-sso.py \
-        --url "http://localhost:8096" \
-        --api-key "$JELLYFIN_API_KEY" || warn "Plugin installation may require manual verification"
-
-    success "Jellyfin SSO plugin installation completed"
+    warn "Jellyfin SSO plugin requires manual installation"
     echo ""
-
-    # Step 4: Configure Jellyfin SSO
-    log "Step 4: Configuring Jellyfin SSO with Keycloak..."
+    echo "📝 Manual Jellyfin SSO Plugin Setup:"
     echo ""
-
-    kubectl cp "$AUTOMATION_DIR/configure-jellyfin-sso.py" "june-services/$JELLYFIN_POD:/tmp/configure-sso.py"
-
-    kubectl exec -n june-services "$JELLYFIN_POD" -- python3 /tmp/configure-sso.py \
-        --jellyfin-url "http://localhost:8096" \
-        --api-key "$JELLYFIN_API_KEY" \
-        --keycloak-url "$KEYCLOAK_URL" \
-        --realm "$REALM" \
-        --client-id "$JELLYFIN_CLIENT_ID" \
-        --client-secret "$JELLYFIN_CLIENT_SECRET" \
-        --domain "$DOMAIN" || warn "SSO configuration may require manual verification"
-
-    success "Jellyfin SSO configured"
+    echo "1. Login to Jellyfin: https://tv.${DOMAIN}"
+    echo "   Username: ${JELLYFIN_USERNAME}"
+    echo "   Password: ${JELLYFIN_PASSWORD}"
     echo ""
-else
-    warn "Skipped Jellyfin SSO plugin installation"
+    echo "2. Go to: Dashboard > Plugins > Repositories"
+    echo ""
+    echo "3. Click '+' and add repository:"
+    echo "   https://raw.githubusercontent.com/9p4/jellyfin-plugin-sso/manifest-release/manifest.json"
+    echo ""
+    echo "4. Go to: Dashboard > Plugins > Catalog"
+    echo ""
+    echo "5. Find 'SSO-Auth' plugin and click Install"
+    echo ""
+    echo "6. Restart Jellyfin when prompted"
+    echo ""
+    echo "7. After restart, go to: Dashboard > Plugins > SSO-Auth"
+    echo ""
+    echo "8. Configure OIDC Provider 'keycloak':"
+    echo "   - OID Endpoint: ${KEYCLOAK_URL}/realms/${REALM}"
+    echo "   - Client ID: jellyfin"
+    echo "   - Client Secret: ${JELLYFIN_CLIENT_SECRET}"
+    echo "   - Enabled: ✓"
+    echo "   - Enable Authorization: ✓"
+    echo "   - Enable All Folders: ✓"
+    echo "   - Admin Roles: jellyfin-admin"
+    echo "   - Roles: jellyfin-user"
+    echo "   - Role Claim: realm_access.roles"
+    echo ""
+    echo "9. Save settings"
+    echo ""
+    warn "Complete these steps before proceeding to assign users roles in Keycloak"
     echo ""
 fi
 
 # Step 5: Configure Jellyseerr OIDC
-log "Step 5: Configuring Jellyseerr OIDC..."
+log "Step 5: Jellyseerr OIDC setup..."
 echo ""
 
-JELLYSEERR_POD=$(kubectl get pod -n june-services -l app=jellyseerr -o jsonpath='{.items[0].metadata.name}')
-kubectl cp "$AUTOMATION_DIR/configure-jellyseerr-oidc.py" "june-services/$JELLYSEERR_POD:/tmp/configure-oidc.py"
-
-# Get Jellyseerr admin credentials from previous setup
-JELLYSEERR_ADMIN_EMAIL="${JELLYSEERR_ADMIN_EMAIL:-mail@${DOMAIN}}"
-JELLYSEERR_ADMIN_PASS="${JELLYFIN_PASSWORD:-Pokemon123!}"
-
-log "Running Jellyseerr OIDC configuration..."
-kubectl exec -n june-services "$JELLYSEERR_POD" -- python3 /tmp/configure-oidc.py \
-    --url "http://localhost:5055" \
-    --keycloak-url "$KEYCLOAK_URL" \
-    --realm "$REALM" \
-    --client-id "$JELLYSEERR_CLIENT_ID" \
-    --client-secret "$JELLYSEERR_CLIENT_SECRET" \
-    --domain "$DOMAIN" \
-    --admin-email "$JELLYSEERR_ADMIN_EMAIL" \
-    --admin-pass "$JELLYSEERR_ADMIN_PASS" || warn "Jellyseerr OIDC configuration may require manual setup"
-
-success "Jellyseerr OIDC configured"
+warn "Jellyseerr OIDC configuration requires manual setup"
+echo ""
+echo "📝 Manual Jellyseerr OIDC Setup:"
+echo ""
+echo "1. Login to Jellyseerr: https://requests.${DOMAIN}"
+echo "   Email: mail@${DOMAIN}"
+echo "   Password: ${JELLYFIN_PASSWORD}"
+echo ""
+echo "2. Go to: Settings > General"
+echo ""
+echo "3. Scroll to 'Authentication' section"
+echo ""
+echo "4. Enable 'Enable OIDC Sign-In'"
+echo ""
+echo "5. Configure OIDC settings:"
+echo "   - OIDC Issuer URL: ${KEYCLOAK_URL}/realms/${REALM}"
+echo "   - OIDC Client ID: jellyseerr"
+echo "   - OIDC Client Secret: ${JELLYSEERR_CLIENT_SECRET}"
+echo "   - Button Text: Sign in with Keycloak"
+echo ""
+echo "6. Save settings"
+echo ""
+warn "Note: Jellyseerr preview-OIDC build may have different UI - check Settings > Authentication"
 echo ""
 
 # Summary
