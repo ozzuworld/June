@@ -67,27 +67,10 @@ log "Adding Jellyfin Helm repository..."
 helm repo add jellyfin https://jellyfin.github.io/jellyfin-helm 2>/dev/null || true
 helm repo update
 
-# Create persistent volume for Jellyfin config
-log "Creating Jellyfin configuration storage..."
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: jellyfin-config-pv
-spec:
-  capacity:
-    storage: 5Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  hostPath:
-    path: /mnt/jellyfin/config
-    type: DirectoryOrCreate
-EOF
-
-# Create persistent volume for Jellyfin media
-log "Creating Jellyfin media storage..."
+# Create persistent volume for Jellyfin media on HDD
+# Config will use fast-ssd storageClass (auto-provisioned on SSD)
+# Media uses hostPath on HDD for large storage
+log "Creating Jellyfin media storage on HDD..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -95,7 +78,7 @@ metadata:
   name: jellyfin-media-pv
 spec:
   capacity:
-    storage: 100Gi
+    storage: 500Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -111,12 +94,12 @@ cat > /tmp/jellyfin-values.yaml <<EOF
 persistence:
   config:
     enabled: true
-    storageClass: ""
+    storageClass: "fast-ssd"
     size: 5Gi
   media:
     enabled: true
     storageClass: ""
-    size: 100Gi
+    size: 500Gi
 
 # Set correct user ID
 podSecurityContext:
@@ -162,8 +145,8 @@ log "Generated Jellyfin configuration:"
 log "  Hostname: tv.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
 log "  Storage:"
-log "    - Config: /config → /mnt/jellyfin/config (5Gi)"
-log "    - Media: /media → /mnt/jellyfin/media (100Gi)"
+log "    - Config: /config → fast-ssd storageClass (5Gi, on SSD)"
+log "    - Media: /media → /mnt/jellyfin/media (500Gi, on HDD)"
 
 # Verify wildcard certificate exists
 if kubectl get secret "$WILDCARD_SECRET_NAME" -n june-services &>/dev/null; then
@@ -203,12 +186,12 @@ echo "  URL: https://tv.${DOMAIN}"
 echo "  First-time setup: Navigate to URL and complete setup wizard"
 echo ""
 echo "📁 Storage Locations (inside container):"
-echo "  Config: /config"
-echo "  Media: /media"
+echo "  Config: /config (fast-ssd, on SSD)"
+echo "  Media: /media (hostPath, on HDD)"
 echo ""
 echo "📁 Host Storage Locations:"
-echo "  Config: /mnt/jellyfin/config"
-echo "  Media: /mnt/jellyfin/media"
+echo "  Config: Auto-provisioned on SSD (fast-ssd storageClass)"
+echo "  Media: /mnt/jellyfin/media (on HDD)"
 echo "    - Movies: /mnt/jellyfin/media/movies"
 echo "    - TV Shows: /mnt/jellyfin/media/tv"
 echo "    - Downloads: /mnt/jellyfin/media/downloads"
