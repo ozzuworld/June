@@ -115,13 +115,23 @@ class JellyseerrSetupAutomator:
                 self.log(f"Jellyfin reachable: {msg}")
 
             try:
+                # Parse the URL into components Jellyseerr expects
+                from urllib.parse import urlparse
+                parsed = urlparse(jellyfin_url)
+
+                # Jellyseerr expects separate hostname, port, useSsl fields
                 auth_data = {
                     "authToken": "",  # Empty for username/password auth
-                    "hostname": jellyfin_url,
+                    "hostname": parsed.hostname,
+                    "port": parsed.port or (8920 if parsed.scheme == 'https' else 8096),
+                    "useSsl": parsed.scheme == 'https',
+                    "urlBase": parsed.path.rstrip('/') if parsed.path and parsed.path != '/' else "",
                     "username": self.jellyfin_user,
                     "password": self.jellyfin_pass,
                     "email": f"{self.jellyfin_user}@{self.domain}"
                 }
+
+                self.log(f"Sending auth with hostname={auth_data['hostname']}, port={auth_data['port']}, useSsl={auth_data['useSsl']}")
 
                 response = self.session.post(
                     f"{self.base_url}/api/v1/auth/jellyfin",
