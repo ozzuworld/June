@@ -10,6 +10,7 @@ aio_pika>=9.3.0
 httpx>=0.25.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+lxml_html_clean>=0.1.0
 redis>=5.0.0
 trafilatura>=1.6.0
 python-magic>=0.4.27
