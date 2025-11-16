@@ -108,8 +108,8 @@ PHASES=(
     "08.9-jellyseerr"         # NEW
     "08.10-qbittorrent"       # NEW
     "08.11-configure-media"   # NEW - Auto-configures everything
-    "08.12-keycloak-media-sso" # NEW - Keycloak SSO for Jellyfin/Jellyseerr
     "09-june-platform"
+    "09.5-keycloak-media-sso" # NEW - Keycloak SSO (after Keycloak install)
     "10-final-setup"
 )
 
