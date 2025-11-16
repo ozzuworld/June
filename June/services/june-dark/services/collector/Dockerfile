@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     gcc \
     libpq-dev \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
