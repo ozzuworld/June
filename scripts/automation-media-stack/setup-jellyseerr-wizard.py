@@ -129,7 +129,7 @@ class JellyseerrSetupAutomator:
                     "username": self.jellyfin_user,
                     "password": self.jellyfin_pass,
                     "email": f"{self.jellyfin_user}@{self.domain}",
-                    "serverType": 1  # MediaServerType.JELLYFIN = 1 (PLEX=0, JELLYFIN=1, EMBY=2)
+                    "serverType": 2  # MediaServerType.JELLYFIN = 2 (PLEX=1, JELLYFIN=2, EMBY=3)
                 }
 
                 self.log(f"Sending auth with hostname={auth_data['hostname']}, port={auth_data['port']}, useSsl={auth_data['useSsl']}")
