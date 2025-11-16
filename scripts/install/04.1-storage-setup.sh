@@ -21,15 +21,15 @@ log "Setting up optimized storage structure..."
 
 # Step 1: Create SSD directory structure (250GB)
 log "Creating SSD directories (/mnt/ssd)..."
-mkdir -p /mnt/ssd/{postgresql,redis,elasticsearch,neo4j,rabbitmq,opensearch}
-chown -R 1000:1000 /mnt/ssd/{elasticsearch,neo4j,opensearch}
+mkdir -p /mnt/ssd/{postgresql,redis,elasticsearch,neo4j,rabbitmq,opensearch,jellyfin-config}
+chown -R 1000:1000 /mnt/ssd/{elasticsearch,neo4j,opensearch,jellyfin-config}
 chown -R 999:999 /mnt/ssd/{postgresql,rabbitmq}
 chmod -R 755 /mnt/ssd
 success "SSD directories created"
 
 # Step 2: Create HDD directory structure (1TB)
 log "Creating HDD directories (/mnt/hdd)..."
-mkdir -p /mnt/hdd/{jellyfin-media,jellyfin-config,minio-artifacts,backups,logs}
+mkdir -p /mnt/hdd/{jellyfin-media,minio-artifacts,backups,logs}
 chown -R 1000:1000 /mnt/hdd/*
 chmod -R 755 /mnt/hdd
 success "HDD directories created"
@@ -89,7 +89,7 @@ kubectl get sc
 
 log "Storage structure:"
 echo "  SSD (250GB): /mnt/ssd/"
-echo "    - postgresql, redis, elasticsearch, neo4j, rabbitmq, opensearch"
+echo "    - postgresql, redis, elasticsearch, neo4j, rabbitmq, opensearch, jellyfin-config"
 echo ""
 echo "  HDD (1TB): /mnt/hdd/"
 echo "    - jellyfin-media, minio-artifacts, backups, logs"

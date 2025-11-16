@@ -50,28 +50,43 @@ log "Using existing wildcard certificate: $WILDCARD_SECRET_NAME"
 kubectl get namespace june-services &>/dev/null || kubectl create namespace june-services
 
 # Create directory structure on host
-log "Creating media directory structure..."
-mkdir -p /mnt/jellyfin/config
-mkdir -p /mnt/jellyfin/media/movies
-mkdir -p /mnt/jellyfin/media/tv
-mkdir -p /mnt/jellyfin/media/downloads/complete
-mkdir -p /mnt/jellyfin/media/downloads/incomplete
+# Config on SSD, Media on HDD (matching 04.1-storage-setup.sh)
+log "Creating Jellyfin directory structure..."
+mkdir -p /mnt/ssd/jellyfin-config
+mkdir -p /mnt/hdd/jellyfin-media/movies
+mkdir -p /mnt/hdd/jellyfin-media/tv
+mkdir -p /mnt/hdd/jellyfin-media/downloads/complete
+mkdir -p /mnt/hdd/jellyfin-media/downloads/incomplete
 
 # Set proper ownership (UID 1000 matches Jellyfin container user)
-chown -R 1000:1000 /mnt/jellyfin/config
-chown -R 1000:1000 /mnt/jellyfin/media
-chmod -R 755 /mnt/jellyfin/media
+chown -R 1000:1000 /mnt/ssd/jellyfin-config
+chown -R 1000:1000 /mnt/hdd/jellyfin-media
+chmod -R 755 /mnt/hdd/jellyfin-media
 
 # Add Jellyfin Helm repository
 log "Adding Jellyfin Helm repository..."
 helm repo add jellyfin https://jellyfin.github.io/jellyfin-helm 2>/dev/null || true
 helm repo update
 
-# Create persistent volume for Jellyfin media on HDD
-# Config will use fast-ssd storageClass (auto-provisioned on SSD)
-# Media uses hostPath on HDD for large storage
-log "Creating Jellyfin media storage on HDD..."
+# Create persistent volumes for both config and media
+# Config PV on SSD, Media PV on HDD
+log "Creating Jellyfin persistent volumes..."
 cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jellyfin-config-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: "fast-ssd"
+  hostPath:
+    path: /mnt/ssd/jellyfin-config
+    type: DirectoryOrCreate
+---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -82,9 +97,9 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "slow-hdd"
   hostPath:
-    path: /mnt/jellyfin/media
+    path: /mnt/hdd/jellyfin-media
     type: DirectoryOrCreate
 EOF
 
@@ -98,7 +113,7 @@ persistence:
     size: 5Gi
   media:
     enabled: true
-    storageClass: ""
+    storageClass: "slow-hdd"
     size: 500Gi
 
 # Set correct user ID
@@ -145,8 +160,8 @@ log "Generated Jellyfin configuration:"
 log "  Hostname: tv.${DOMAIN}"
 log "  TLS Secret: ${WILDCARD_SECRET_NAME}"
 log "  Storage:"
-log "    - Config: /config → fast-ssd storageClass (5Gi, on SSD)"
-log "    - Media: /media → /mnt/jellyfin/media (500Gi, on HDD)"
+log "    - Config: /config → fast-ssd storageClass (5Gi, on SSD at /mnt/ssd/jellyfin-config)"
+log "    - Media: /media → slow-hdd storageClass (500Gi, on HDD at /mnt/hdd/jellyfin-media)"
 
 # Verify wildcard certificate exists
 if kubectl get secret "$WILDCARD_SECRET_NAME" -n june-services &>/dev/null; then
@@ -186,15 +201,15 @@ echo "  URL: https://tv.${DOMAIN}"
 echo "  First-time setup: Navigate to URL and complete setup wizard"
 echo ""
 echo "📁 Storage Locations (inside container):"
-echo "  Config: /config (fast-ssd, on SSD)"
-echo "  Media: /media (hostPath, on HDD)"
+echo "  Config: /config (fast-ssd storageClass, on SSD)"
+echo "  Media: /media (slow-hdd storageClass, on HDD)"
 echo ""
 echo "📁 Host Storage Locations:"
-echo "  Config: Auto-provisioned on SSD (fast-ssd storageClass)"
-echo "  Media: /mnt/jellyfin/media (on HDD)"
-echo "    - Movies: /mnt/jellyfin/media/movies"
-echo "    - TV Shows: /mnt/jellyfin/media/tv"
-echo "    - Downloads: /mnt/jellyfin/media/downloads"
+echo "  Config: /mnt/ssd/jellyfin-config (on 250GB SSD)"
+echo "  Media: /mnt/hdd/jellyfin-media (on 1TB HDD)"
+echo "    - Movies: /mnt/hdd/jellyfin-media/movies"
+echo "    - TV Shows: /mnt/hdd/jellyfin-media/tv"
+echo "    - Downloads: /mnt/hdd/jellyfin-media/downloads"
 echo ""
 echo "📚 Library Setup:"
 echo "  After first login, add these libraries in Dashboard → Libraries:"
