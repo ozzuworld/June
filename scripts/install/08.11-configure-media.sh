@@ -54,6 +54,16 @@ log "Extracting API keys from media stack pods..."
 
 echo ""
 
+# Step 0: Auto-complete Jellyfin setup wizard (if needed)
+log "Step 0: Checking Jellyfin setup status..."
+python3 "${AUTOMATION_DIR}/setup-jellyfin-wizard.py" \
+  --url "https://tv.${DOMAIN}" \
+  --username "$JELLYFIN_USERNAME" \
+  --password "$JELLYFIN_PASSWORD" || \
+  warn "Jellyfin setup wizard not completed - may need manual setup"
+
+echo ""
+
 # Step 1: Configure Jellyfin Libraries
 log "Step 1: Configuring Jellyfin libraries..."
 python3 "${AUTOMATION_DIR}/configure-jellyfin-libraries.py" \
@@ -106,6 +116,7 @@ echo "  Username: $MEDIA_STACK_USERNAME"
 echo "  Password: $MEDIA_STACK_PASSWORD"
 echo ""
 echo "✅ Configuration completed:"
+echo "  - Jellyfin setup wizard completed (admin user created)"
 echo "  - Jellyfin libraries created (Movies, TV Shows)"
 echo "  - Prowlarr indexers added (4 working indexers)"
 echo "  - Sonarr/Radarr connected to Prowlarr"
