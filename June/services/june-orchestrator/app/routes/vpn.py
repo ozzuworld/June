@@ -40,11 +40,10 @@ class DeviceRegistrationResponse(BaseModel):
     """Response model for successful device registration"""
     success: bool
     message: str
-    device_id: Optional[str] = None
-    device_name: Optional[str] = None
-    vpn_ip: Optional[str] = None
-    headscale_url: str
-    auth_url: str
+    device_name: str
+    login_server: str
+    pre_auth_key: str
+    expiration: str
     instructions: Dict[str, str]
 
 
@@ -54,29 +53,139 @@ class HeadscaleClient:
     def __init__(self):
         self.base_url = os.getenv("HEADSCALE_URL", "http://headscale.headscale.svc.cluster.local:8080")
         self.external_url = os.getenv("HEADSCALE_EXTERNAL_URL", "https://headscale.ozzu.world")
+        self.api_key = os.getenv("HEADSCALE_API_KEY", "")  # Will be set if available
 
-    async def create_preauth_key(self, user_email: str) -> Optional[str]:
+    async def _exec_headscale_cli(self, command: list) -> tuple[bool, str]:
+        """
+        Execute headscale CLI command via kubectl exec
+
+        Args:
+            command: List of command arguments (e.g., ['users', 'list'])
+
+        Returns:
+            Tuple of (success: bool, output: str)
+        """
+        import subprocess
+
+        namespace = "headscale"
+        deployment = "headscale"
+
+        # Build kubectl exec command
+        kubectl_cmd = [
+            "kubectl", "exec", "-n", namespace,
+            f"deployment/{deployment}", "--",
+            "headscale"
+        ] + command
+
+        try:
+            result = subprocess.run(
+                kubectl_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                return True, result.stdout
+            else:
+                logger.error(f"Headscale CLI error: {result.stderr}")
+                return False, result.stderr
+
+        except subprocess.TimeoutExpired:
+            logger.error("Headscale CLI command timed out")
+            return False, "Command timed out"
+        except Exception as e:
+            logger.error(f"Failed to execute headscale CLI: {e}")
+            return False, str(e)
+
+    async def ensure_user_exists(self, user_email: str) -> bool:
+        """
+        Ensure a Headscale user exists (create if doesn't exist)
+
+        Args:
+            user_email: User's email address (will be used as username)
+
+        Returns:
+            True if user exists or was created successfully
+        """
+        # Sanitize email for use as username (remove @ and .)
+        username = user_email.replace("@", "-").replace(".", "-")
+
+        # Check if user exists
+        success, output = await self._exec_headscale_cli(["users", "list", "--output", "json"])
+
+        if success:
+            # Parse JSON output to check if user exists
+            import json
+            try:
+                users = json.loads(output)
+                if any(u.get("name") == username for u in users):
+                    logger.info(f"User {username} already exists in Headscale")
+                    return True
+            except json.JSONDecodeError:
+                # If not JSON, try simple string check
+                if username in output:
+                    logger.info(f"User {username} already exists in Headscale")
+                    return True
+
+        # User doesn't exist, create it
+        logger.info(f"Creating Headscale user: {username}")
+        success, output = await self._exec_headscale_cli(["users", "create", username])
+
+        if success or "already exists" in output.lower():
+            logger.info(f"User {username} created or already exists")
+            return True
+        else:
+            logger.error(f"Failed to create user {username}: {output}")
+            return False
+
+    async def create_preauth_key(self, user_email: str, expiration: str = "24h", reusable: bool = False) -> Optional[str]:
         """
         Create a pre-authentication key for a user
 
-        Note: This requires headscale CLI access or API key
-        For production, use OIDC flow instead (no preauth needed)
+        Args:
+            user_email: User's email address
+            expiration: Key expiration (e.g., "24h", "7d")
+            reusable: Whether the key can be reused
+
+        Returns:
+            Pre-auth key string or None if failed
         """
-        # In production with OIDC, preauth keys aren't needed
-        # The user will authenticate directly with Keycloak via OIDC
-        logger.info(f"OIDC-based registration for user: {user_email}")
-        return None
+        # Sanitize email for username
+        username = user_email.replace("@", "-").replace(".", "-")
 
-    async def get_user_devices(self, user_email: str) -> list:
-        """Get all devices for a user"""
-        # TODO: Implement if Headscale API supports this
-        # For now, users can check via Tailscale client
-        return []
+        # Ensure user exists first
+        if not await self.ensure_user_exists(user_email):
+            logger.error(f"Cannot create preauth key: user {username} doesn't exist")
+            return None
 
-    async def check_device_status(self, device_id: str) -> Optional[Dict[str, Any]]:
-        """Check if a device is registered and get its status"""
-        # TODO: Implement when Headscale API is available
-        return None
+        # Build command
+        cmd = ["preauthkeys", "create", "--user", username, "--expiration", expiration]
+        if reusable:
+            cmd.append("--reusable")
+
+        # Execute command
+        success, output = await self._exec_headscale_cli(cmd)
+
+        if not success:
+            logger.error(f"Failed to create preauth key: {output}")
+            return None
+
+        # Extract the key from output
+        # Output format is typically: "Pre-authentication key created: <key>"
+        lines = output.strip().split("\n")
+        for line in lines:
+            line = line.strip()
+            # Look for the actual key (starts with alphanumeric chars)
+            if line and not line.startswith(("Pre-", "User", "Expiration", "Reusable", "Created")):
+                logger.info(f"Pre-auth key created for user {username}")
+                return line
+
+        # If we can't parse it, return the last non-empty line
+        key = lines[-1].strip() if lines else None
+        if key:
+            logger.info(f"Pre-auth key created for user {username}")
+        return key
 
 
 async def get_headscale_client() -> HeadscaleClient:
@@ -91,26 +200,24 @@ async def register_device(
     headscale: HeadscaleClient = Depends(get_headscale_client)
 ):
     """
-    Register a VPN device using Keycloak authentication + Headscale OIDC
+    Register a VPN device using Keycloak authentication - SEAMLESS FLOW
 
-    This endpoint provides the necessary information for the frontend to
-    initiate VPN connection via OIDC flow.
-
-    Flow:
+    This endpoint provides TRUE seamless VPN registration:
     1. User authenticates with Keycloak (gets bearer token)
     2. Frontend calls this endpoint with bearer token
-    3. Backend validates token and returns Headscale connection info
-    4. Frontend opens Headscale OIDC URL in browser
-    5. User approves (using existing Keycloak session - seamless!)
-    6. Device gets registered with Headscale
-    7. VPN connected!
+    3. Backend validates token
+    4. **Backend creates Headscale user** (if doesn't exist)
+    5. **Backend generates pre-auth key**
+    6. **Backend returns pre-auth key**
+    7. Frontend uses Tailscale SDK with pre-auth key
+    8. VPN connects automatically - NO BROWSER NEEDED!
 
     Args:
         request: Device registration details
         authorization: Bearer token from Keycloak
 
     Returns:
-        DeviceRegistrationResponse with Headscale connection URL
+        DeviceRegistrationResponse with pre-auth key for immediate connection
 
     Raises:
         HTTPException: 401 if unauthorized, 500 for server errors
@@ -129,7 +236,6 @@ async def register_device(
         auth_data = await require_user_auth(authorization)
         user_email = auth_data.get("email")
         user_id = extract_user_id(auth_data)
-        preferred_username = auth_data.get("preferred_username", user_email)
 
         logger.info(f"Device registration request from user: {user_email} (ID: {user_id})")
 
@@ -145,36 +251,53 @@ async def register_device(
             # Auto-generate from user email and device info
             username = user_email.split("@")[0]
             os_suffix = f"-{request.device_os}" if request.device_os else ""
-            device_name = f"{username}{os_suffix}"
+            import time
+            timestamp = int(time.time())
+            device_name = f"{username}{os_suffix}-{timestamp}"
 
         # Sanitize device name for Headscale (alphanumeric, hyphens, dots)
         device_name = "".join(c if c.isalnum() or c in "-." else "-" for c in device_name)
 
         logger.info(f"Device name: {device_name}")
 
-        # Build OIDC authentication URL
-        # The frontend will open this URL to complete device registration
-        headscale_external = headscale.external_url
+        # Create pre-authentication key via Headscale
+        # This is the key step that enables seamless registration!
+        logger.info(f"Generating pre-auth key for user: {user_email}")
+        pre_auth_key = await headscale.create_preauth_key(
+            user_email=user_email,
+            expiration="24h",
+            reusable=False  # Single-use for security
+        )
 
-        # For OIDC flow, the device registers via browser authentication
-        # No preauth key needed when OIDC is enabled
-        auth_url = f"{headscale_external}/oidc/register"
+        if not pre_auth_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate pre-authentication key. Please try again."
+            )
 
-        logger.info(f"Generated OIDC registration URL for {user_email}")
+        logger.info(f"Pre-auth key generated successfully for {user_email}")
 
         return DeviceRegistrationResponse(
             success=True,
-            message="Device registration prepared. Please complete OIDC authentication.",
+            message="Device registration ready. Use the pre-auth key to connect.",
             device_name=device_name,
-            headscale_url=headscale_external,
-            auth_url=auth_url,
+            login_server=headscale.external_url,
+            pre_auth_key=pre_auth_key,
+            expiration="24h",
             instructions={
-                "step_1": "Open the auth_url in your device's browser",
-                "step_2": "Login with your Keycloak credentials (if not already logged in)",
-                "step_3": "Approve the VPN connection",
-                "step_4": "Your device will be automatically registered",
-                "tailscale_command": f"tailscale up --login-server={headscale_external}",
-                "note": "Since you're already logged into Keycloak, the browser should auto-approve!"
+                "mobile_sdk": f"await Tailscale.up({{ loginServer: '{headscale.external_url}', authKey: '<pre_auth_key>' }})",
+                "cli": f"tailscale up --login-server={headscale.external_url} --authkey=<pre_auth_key>",
+                "react_native_example": """
+// In your React Native app:
+import Tailscale from '@tailscale/react-native';
+
+async function connectVPN(preAuthKey, loginServer) {
+  await Tailscale.configure({ controlURL: loginServer });
+  await Tailscale.up({ authKey: preAuthKey });
+  console.log('VPN Connected!');
+}
+                """.strip(),
+                "note": "No browser needed! The pre-auth key allows immediate connection via Tailscale SDK."
             }
         )
 
