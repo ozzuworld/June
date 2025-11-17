@@ -107,7 +107,7 @@ class CompleteMediaConfigurator:
                 "removeFailedDownloads": True,
                 "name": "qBittorrent",
                 "fields": [
-                    {"name": "host", "value": "qbittorrent.june-services.svc.cluster.local"},
+                    {"name": "host", "value": "qbittorrent.media-stack.svc.cluster.local"},
                     {"name": "port", "value": 8080},
                     {"name": "useSsl", "value": False},
                     {"name": "urlBase"},

@@ -53,16 +53,16 @@ extract_api_key() {
 }
 
 # Extract Prowlarr API key
-extract_api_key "prowlarr" "june-services" "/config/config.xml" "/root/.prowlarr-api-key"
+extract_api_key "prowlarr" "media-stack" "/config/config.xml" "/root/.prowlarr-api-key"
 
 # Extract Sonarr API key
-extract_api_key "sonarr" "june-services" "/config/config.xml" "/root/.sonarr-api-key"
+extract_api_key "sonarr" "media-stack" "/config/config.xml" "/root/.sonarr-api-key"
 
 # Extract Radarr API key
-extract_api_key "radarr" "june-services" "/config/config.xml" "/root/.radarr-api-key"
+extract_api_key "radarr" "media-stack" "/config/config.xml" "/root/.radarr-api-key"
 
 # Extract Lidarr API key
-extract_api_key "lidarr" "june-services" "/config/config.xml" "/root/.lidarr-api-key"
+extract_api_key "lidarr" "media-stack" "/config/config.xml" "/root/.lidarr-api-key"
 
 echo ""
 success "API key extraction complete!"
