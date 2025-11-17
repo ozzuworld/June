@@ -19,7 +19,7 @@ class JellyseerrSetupAutomator:
         self.jellyfin_user = jellyfin_user
         self.jellyfin_pass = jellyfin_pass
         # Use internal Kubernetes service URL for Jellyfin if not specified
-        self.jellyfin_url = jellyfin_internal_url or "http://jellyfin.june-services.svc.cluster.local:8096"
+        self.jellyfin_url = jellyfin_internal_url or "http://jellyfin.media-stack.svc.cluster.local:8096"
         self.session = requests.Session()
         self.session.verify = False
         self.api_token = None
@@ -92,12 +92,12 @@ class JellyseerrSetupAutomator:
         """Authenticate Jellyseerr with Jellyfin server and create admin user"""
 
         # If a custom URL was provided, use it
-        if self.jellyfin_url != "http://jellyfin.june-services.svc.cluster.local:8096":
+        if self.jellyfin_url != "http://jellyfin.media-stack.svc.cluster.local:8096":
             urls_to_try = [self.jellyfin_url]
         else:
             # Try multiple common service name patterns for deployed Jellyfin
             urls_to_try = [
-                "http://jellyfin.june-services.svc.cluster.local:8096",           # Standard service name
+                "http://jellyfin.media-stack.svc.cluster.local:8096",           # Standard service name
                 f"https://tv.{self.domain}"                                        # External URL fallback
             ]
 
@@ -197,7 +197,7 @@ class JellyseerrSetupAutomator:
         try:
             radarr_config = {
                 "name": "Radarr",
-                "hostname": "radarr.june-services.svc.cluster.local",
+                "hostname": "radarr.media-stack.svc.cluster.local",
                 "port": 7878,
                 "apiKey": radarr_api_key,
                 "useSsl": False,
@@ -243,7 +243,7 @@ class JellyseerrSetupAutomator:
         try:
             sonarr_config = {
                 "name": "Sonarr",
-                "hostname": "sonarr.june-services.svc.cluster.local",
+                "hostname": "sonarr.media-stack.svc.cluster.local",
                 "port": 8989,
                 "apiKey": sonarr_api_key,
                 "useSsl": False,
@@ -475,7 +475,7 @@ def main():
     parser.add_argument('--jellyfin-user', required=True, help='Jellyfin admin username')
     parser.add_argument('--jellyfin-pass', required=True, help='Jellyfin admin password')
     parser.add_argument('--jellyfin-url', required=False,
-                       help='Jellyfin internal URL (default: http://jellyfin.june-services.svc.cluster.local:8096)')
+                       help='Jellyfin internal URL (default: http://jellyfin.media-stack.svc.cluster.local:8096)')
 
     args = parser.parse_args()
 

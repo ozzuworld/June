@@ -22,7 +22,7 @@ print(f"1. Current status: initialized={resp.json().get('initialized')}\n")
 # Step 2: Authenticate with Jellyfin
 print("2. Authenticating with Jellyfin...")
 auth_data = {
-    "hostname": "jellyfin.june-services.svc.cluster.local",
+    "hostname": "jellyfin.media-stack.svc.cluster.local",
     "port": 8096,
     "useSsl": False,
     "urlBase": "",

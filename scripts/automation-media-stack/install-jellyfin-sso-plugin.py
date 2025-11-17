@@ -205,7 +205,7 @@ class JellyfinSSOInstaller:
                 self.restart_jellyfin()
             else:
                 print("\n📝 Manual restart required:")
-                print("   kubectl rollout restart deployment/jellyfin -n june-services")
+                print("   kubectl rollout restart deployment/jellyfin -n media-stack")
 
             return True
         else:
@@ -220,7 +220,7 @@ def main():
     parser.add_argument(
         '--url',
         required=True,
-        help='Jellyfin URL (e.g., http://jellyfin.june-services.svc.cluster.local:8096)'
+        help='Jellyfin URL (e.g., http://jellyfin.media-stack.svc.cluster.local:8096)'
     )
     parser.add_argument(
         '--api-key',
