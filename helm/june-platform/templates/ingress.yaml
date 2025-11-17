@@ -49,7 +49,6 @@ spec:
     - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
-    - livekit.{{ .Values.domains.primary }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
   {{- end }}
   rules:
@@ -63,23 +62,6 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  - host: livekit.{{ .Values.domains.primary }}
-    http:
-      paths:
-      - path: /rtc
-        pathType: Prefix
-        backend:
-          service:
-            name: livekit-backend
-            port:
-              number: 80
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: livekit-backend
-            port:
-              number: 80
   - host: {{ .Values.domains.idp }}
     http:
       paths:
