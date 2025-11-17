@@ -100,24 +100,6 @@ bash "${AUTOMATION_DIR}/setup-jellyseerr-from-pod.sh" \
   warn "Failed to auto-configure Jellyseerr - manual setup may be required"
 
 echo ""
-
-# Step 5: Auto-configure Ombi
-log "Step 5: Configuring Ombi (Unified Request Manager)..."
-log "Running Ombi setup wizard..."
-python3 "${AUTOMATION_DIR}/setup-ombi-wizard.py" \
-  --url "https://ombi.${DOMAIN}" \
-  --username "$MEDIA_STACK_USERNAME" \
-  --password "$MEDIA_STACK_PASSWORD" || \
-  warn "Failed to complete Ombi setup wizard"
-
-log "Connecting Ombi to Jellyfin, Sonarr, Radarr, and Lidarr..."
-python3 "${AUTOMATION_DIR}/configure-ombi.py" \
-  --domain "${DOMAIN}" \
-  --username "$MEDIA_STACK_USERNAME" \
-  --password "$MEDIA_STACK_PASSWORD" || \
-  warn "Failed to auto-configure Ombi connections"
-
-echo ""
 echo "================================================================"
 echo "✅ Media Stack Configuration Complete!"
 echo "================================================================"
@@ -125,7 +107,6 @@ echo ""
 echo "📺 Services Ready:"
 echo "  Jellyfin:    https://tv.${DOMAIN}"
 echo "  Jellyseerr:  https://requests.${DOMAIN} (Movies & TV)"
-echo "  Ombi:        https://ombi.${DOMAIN} (Movies, TV & Music)"
 echo "  Prowlarr:    https://prowlarr.${DOMAIN}"
 echo "  Sonarr:      https://sonarr.${DOMAIN}"
 echo "  Radarr:      https://radarr.${DOMAIN}"
@@ -142,14 +123,12 @@ echo "  - Jellyfin libraries created (Movies, TV Shows, Music)"
 echo "  - Prowlarr indexers added (4 working indexers)"
 echo "  - Sonarr/Radarr/Lidarr connected to Prowlarr"
 echo "  - Jellyseerr connected to Jellyfin, Sonarr, and Radarr"
-echo "  - Ombi connected to Jellyfin, Sonarr, Radarr, and Lidarr"
 echo "  - qBittorrent ready for downloads"
 echo ""
 echo "🎬 100% Automated! No manual steps required."
 echo ""
 echo "🎭 Request content at:"
-echo "   Jellyseerr: https://requests.${DOMAIN} (Movies & TV only)"
-echo "   Ombi:       https://ombi.${DOMAIN} (Movies, TV & Music)"
+echo "   Jellyseerr: https://requests.${DOMAIN} (Movies & TV)"
 echo "   Login with your media stack credentials"
 echo "================================================================"
 
