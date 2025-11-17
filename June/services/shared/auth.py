@@ -187,9 +187,25 @@ class AuthService:
 
             for key in jwks_data.get("keys", []):
                 if key.get("kid") == kid:
-                    # Convert JWK to PEM format for jwt library
-                    import json
-                    signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+                    # Convert JWK to RSA key using cryptography library
+                    from cryptography.hazmat.primitives import serialization
+                    from cryptography.hazmat.primitives.asymmetric import rsa
+                    from cryptography.hazmat.backends import default_backend
+                    import base64
+
+                    # Extract RSA components from JWK
+                    n = int.from_bytes(
+                        base64.urlsafe_b64decode(key['n'] + '=='),
+                        byteorder='big'
+                    )
+                    e = int.from_bytes(
+                        base64.urlsafe_b64decode(key['e'] + '=='),
+                        byteorder='big'
+                    )
+
+                    # Create RSA public key
+                    public_numbers = rsa.RSAPublicNumbers(e, n)
+                    signing_key = public_numbers.public_key(default_backend())
                     break
 
             if not signing_key:
