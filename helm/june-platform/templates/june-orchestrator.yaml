@@ -68,7 +68,7 @@ spec:
         - name: KEYCLOAK_URL
           value: "http://june-idp.{{ .Release.Namespace }}.svc.cluster.local:8080"
         - name: KEYCLOAK_REALM
-          value: {{ .Values.keycloak.realm }}
+          value: "allsafe"
         - name: KEYCLOAK_CLIENT_ID
           value: "june-orchestrator"
         
