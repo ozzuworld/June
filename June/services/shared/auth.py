@@ -188,8 +188,8 @@ class AuthService:
             for key in jwks_data.get("keys", []):
                 if key.get("kid") == kid:
                     # Convert JWK to PEM format for jwt library
-                    from jwt.algorithms import RSAAlgorithm
-                    signing_key = RSAAlgorithm.from_jwk(key)
+                    import json
+                    signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
                     break
 
             if not signing_key:
