@@ -107,7 +107,6 @@ PHASES=(
     "08.8-radarr"             # NEW
     "08.8a-lidarr"            # NEW - Music manager
     "08.9-jellyseerr"         # NEW
-    "08.9a-ombi"              # NEW - Unified request management (Movies/TV/Music)
     "08.10-qbittorrent"       # NEW
     "08.11-configure-media"   # NEW - Auto-configures everything
     "09-june-platform"
@@ -251,7 +250,6 @@ main() {
     echo "🎬 Media Stack (SSO Enabled):"
     echo "  Jellyfin:   https://tv.$DOMAIN"
     echo "  Jellyseerr: https://requests.$DOMAIN (Movies & TV)"
-    echo "  Ombi:       https://ombi.$DOMAIN (Movies, TV & Music)"
     echo "  Sonarr:     https://sonarr.$DOMAIN"
     echo "  Radarr:     https://radarr.$DOMAIN"
     echo "  Lidarr:     https://lidarr.$DOMAIN"
