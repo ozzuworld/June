@@ -169,6 +169,11 @@ class JellyfinLibraryConfigurator:
                 "name": "TV Shows",
                 "type": "tvshows",
                 "path": "/tv"
+            },
+            {
+                "name": "Music",
+                "type": "music",
+                "path": "/music"
             }
         ]
         
@@ -187,6 +192,7 @@ class JellyfinLibraryConfigurator:
         print("Libraries created:")
         print("  - Movies (/movies)")
         print("  - TV Shows (/tv)")
+        print("  - Music (/music)")
         print()
         print("Next: Go back to Jellyseerr and click 'Sync Libraries'")
         
