@@ -5,8 +5,14 @@ set -e
 
 echo "🔨 Building june-orchestrator Docker image..."
 
+# Get the root directory (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+
+echo "Root directory: $ROOT_DIR"
+
 # Navigate to the build context
-cd /home/user/June/June/services
+cd "$ROOT_DIR/June/services"
 
 # Build the image (note: build context is services/, not june-orchestrator/)
 docker build \
