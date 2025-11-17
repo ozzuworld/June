@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-sync
+  namespace: june-services
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: cert-sync
+        spec:
+          serviceAccountName: cert-copier
+          restartPolicy: OnFailure
+          containers:
+          - name: cert-sync
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              #!/bin/sh
+              set -e
+
+              echo "Starting certificate sync from june-services to media-stack..."
+
+              # Get the wildcard certificate secret name dynamically
+              CERT_SECRET=$(kubectl get secrets -n june-services -o name | grep 'wildcard-tls' | head -n 1 | cut -d'/' -f2)
+
+              if [ -z "$CERT_SECRET" ]; then
+                echo "ERROR: No wildcard certificate found in june-services namespace"
+                exit 1
+              fi
+
+              echo "Found certificate: $CERT_SECRET"
+
+              # Check if media-stack namespace exists
+              if ! kubectl get namespace media-stack >/dev/null 2>&1; then
+                echo "ERROR: media-stack namespace does not exist"
+                exit 1
+              fi
+
+              # Copy the certificate secret to media-stack namespace
+              kubectl get secret "$CERT_SECRET" -n june-services -o yaml | \
+                sed "s/namespace: june-services/namespace: media-stack/" | \
+                kubectl apply -f -
+
+              echo "Certificate $CERT_SECRET successfully synced to media-stack namespace"
+
+              # Verify the secret exists in target namespace
+              if kubectl get secret "$CERT_SECRET" -n media-stack >/dev/null 2>&1; then
+                echo "✅ Verification successful: Certificate exists in media-stack"
+              else
+                echo "❌ Verification failed: Certificate not found in media-stack"
+                exit 1
+              fi

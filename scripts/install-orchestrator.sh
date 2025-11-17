@@ -89,29 +89,30 @@ PHASES=(
     "02.5-gpu"
     "03-kubernetes"
     "04-infrastructure"
-    "04.1-storage-setup"      # NEW: Create optimized SSD/HDD storage structure
+    "04.1-storage-setup"      # Create optimized SSD/HDD storage structure
     "05-helm"                 # Ensure helm is installed
-    "04.4-local-pv-redis"     # New: pre-create local PVs with storageClassName: ""
+    "04.4-local-pv-redis"     # Pre-create local PVs with storageClassName: ""
     "04.5-redis"              # Redis Helm install
     "03.5-gpu-operator"       # After Helm is installed
     "06-certificates"
     "04.6-headscale"
     "04.7-headscale-client"
-    "07-stunner"
     "07.1-opencti"
-    "07.2-june-dark-opencti"  # NEW: June Dark + OpenCTI integration
-    "08-livekit"
-    "08.5-jellyfin"           # NEW
-    "08.6-prowlarr"           # NEW
-    "08.7-sonarr"             # NEW
-    "08.8-radarr"             # NEW
-    "08.8a-lidarr"            # NEW - Music manager
-    "08.9-jellyseerr"         # NEW
-    "08.10-qbittorrent"       # NEW
-    "08.11-configure-media"   # NEW - Auto-configures everything
+    "07.2-june-dark-opencti"  # June Dark + OpenCTI integration
     "09-june-platform"
-    "09.1-keycloak-provision" # NEW - Provision Keycloak realm & base clients
-    "09.5-keycloak-media-sso" # NEW - Keycloak SSO for media stack
+    "09.1-keycloak-provision" # Provision Keycloak realm & base clients
+    "webrtc/01-stunner"       # STUNner WebRTC gateway
+    "webrtc/02-livekit"       # LiveKit WebRTC server in media-stack
+    "media-stack/00-setup-namespace"  # Setup media-stack namespace + cert sync
+    "media-stack/01-jellyfin"         # Jellyfin media server
+    "media-stack/02-prowlarr"         # Prowlarr indexer manager
+    "media-stack/03-sonarr"           # Sonarr TV shows
+    "media-stack/04-radarr"           # Radarr movies
+    "media-stack/05-lidarr"           # Lidarr music
+    "media-stack/06-qbittorrent"      # qBittorrent downloader
+    "media-stack/07-jellyseerr"       # Jellyseerr request manager
+    "08.11-configure-media"   # Auto-configure media stack integration
+    "09.5-keycloak-media-sso" # Keycloak SSO for media stack
     "10-final-setup"
 )
 
@@ -243,17 +244,17 @@ main() {
         echo "  TTS:        https://tts.$DOMAIN"
     fi
     echo ""
-    echo "🎮 WebRTC Services:"
-    echo "  LiveKit:    livekit-livekit-server.june-services.svc.cluster.local"
+    echo "🎮 WebRTC Services (media-stack namespace):"
+    echo "  LiveKit:    livekit-livekit-server.media-stack.svc.cluster.local"
     echo "  TURN:       turn:${EXTERNAL_IP}:3478"
     echo ""
-    echo "🎬 Media Stack (SSO Enabled):"
-    echo "  Jellyfin:   https://tv.$DOMAIN"
-    echo "  Jellyseerr: https://requests.$DOMAIN (Movies & TV)"
-    echo "  Sonarr:     https://sonarr.$DOMAIN"
-    echo "  Radarr:     https://radarr.$DOMAIN"
-    echo "  Lidarr:     https://lidarr.$DOMAIN"
-    echo "  Prowlarr:   https://prowlarr.$DOMAIN"
+    echo "🎬 Media Stack (media-stack namespace):"
+    echo "  Jellyfin:    https://tv.$DOMAIN"
+    echo "  Jellyseerr:  https://requests.$DOMAIN (Movies & TV)"
+    echo "  Sonarr:      https://sonarr.$DOMAIN"
+    echo "  Radarr:      https://radarr.$DOMAIN"
+    echo "  Lidarr:      https://lidarr.$DOMAIN"
+    echo "  Prowlarr:    https://prowlarr.$DOMAIN"
     echo "  qBittorrent: https://qbittorrent.$DOMAIN"
     echo ""
     echo "🔐 SSO Login:"
@@ -280,9 +281,11 @@ main() {
     echo "  Backup File: /root/.june-certs/${DOMAIN}-wildcard-tls-backup.yaml"
     echo ""
     echo "📊 Status Check:"
-    echo "  kubectl get pods -n june-services   # Core services & LiveKit"
-    echo "  kubectl get gateway -n stunner       # STUNner"
-    echo "  kubectl get certificates -n june-services # Certificates"
+    echo "  kubectl get pods -n june-services   # Core platform services"
+    echo "  kubectl get pods -n media-stack     # Media stack + LiveKit"
+    echo "  kubectl get gateway -n stunner      # STUNner"
+    echo "  kubectl get certificates -n june-services # Source certificates"
+    echo "  kubectl get certificates -n media-stack   # Synced certificates"
     echo ""
     echo "==========================================="
 }
