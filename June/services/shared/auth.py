@@ -160,7 +160,17 @@ class AuthService:
 
         issuer = oidc_config["issuer"]
         jwks_uri = oidc_config["jwks_uri"]
-        
+
+        # Rewrite external URLs to internal service URLs when inside K8s
+        # This handles cases where OIDC discovery returns external URLs
+        # but we're running inside the cluster
+        if "idp.ozzu.world" in jwks_uri or "idp.ozzu.world" in issuer:
+            # Replace external URL with internal service URL
+            internal_keycloak = self.config.keycloak_url
+            jwks_uri = jwks_uri.replace("http://idp.ozzu.world:8080", internal_keycloak)
+            jwks_uri = jwks_uri.replace("https://idp.ozzu.world", internal_keycloak)
+            logger.debug(f"Rewrote external JWKS URI to internal: {jwks_uri}")
+
         logger.debug(f"Using issuer: {issuer}, JWKS URI: {jwks_uri}")
 
         try:
