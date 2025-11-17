@@ -105,7 +105,37 @@ EOF
 
 create_config() {
     log "Creating Headscale configuration..."
-    
+
+    # Check if OIDC secret exists
+    OIDC_ENABLED="false"
+    OIDC_CONFIG=""
+
+    if kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" &>/dev/null; then
+        log "OIDC credentials found, enabling OIDC authentication..."
+        OIDC_ENABLED="true"
+
+        # Extract OIDC credentials from secret
+        OIDC_CLIENT_ID=$(kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" -o jsonpath='{.data.client-id}' | base64 -d)
+        OIDC_CLIENT_SECRET=$(kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" -o jsonpath='{.data.client-secret}' | base64 -d)
+        OIDC_ISSUER=$(kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" -o jsonpath='{.data.issuer}' | base64 -d)
+
+        OIDC_CONFIG="
+    oidc:
+      only_start_if_oidc_is_available: true
+      issuer: \"${OIDC_ISSUER}\"
+      client_id: \"${OIDC_CLIENT_ID}\"
+      client_secret: \"${OIDC_CLIENT_SECRET}\"
+      scope: [\"openid\", \"profile\", \"email\"]
+      strip_email_domain: false
+      use_expiry_from_token: false
+      expiry: 180d"
+
+        success "OIDC authentication enabled"
+    else
+        warn "OIDC secret not found, using pre-authentication keys only"
+        warn "Run 04.6.1-headscale-oidc.sh to enable SSO authentication"
+    fi
+
     cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -117,18 +147,18 @@ data:
     server_url: https://headscale.${DOMAIN}
     listen_addr: 0.0.0.0:8080
     metrics_listen_addr: 127.0.0.1:9090
-    
+
     grpc_listen_addr: 0.0.0.0:50443
     grpc_allow_insecure: false
-    
+
     private_key_path: /var/lib/headscale/private.key
     noise:
       private_key_path: /var/lib/headscale/noise_private.key
-    
+
     prefixes:
       v4: ${HEADSCALE_IPV4_PREFIX}
       v6: ${HEADSCALE_IPV6_PREFIX}
-    
+
     derp:
       server:
         enabled: ${HEADSCALE_DERP_ENABLED}
@@ -142,13 +172,13 @@ data:
       paths: []
       auto_update_enabled: true
       update_frequency: 24h
-    
+
     database:
       type: sqlite3
       sqlite:
         path: /var/lib/headscale/db.sqlite
         write_ahead_log: true
-    
+
     dns:
       nameservers:
         global:
@@ -158,18 +188,18 @@ data:
           svc.cluster.local:
             - 10.96.0.10
       magic_dns: false
-    
+
     log:
       format: text
       level: info
-    
+
     policy:
       mode: database
-    
+
     disable_check_updates: true
-    
+
     ephemeral_node_inactivity_timeout: 30m
-    node_update_check_interval: 10s
+    node_update_check_interval: 10s${OIDC_CONFIG}
 EOF
 
     success "Configuration created"
@@ -456,25 +486,38 @@ generate_preauth_key() {
 
 show_summary() {
     header "Headscale Installation Complete"
-    
+
     EXTERNAL_IP=$(curl -s http://checkip.amazonaws.com/ 2>/dev/null || hostname -I | awk '{print $1}')
-    
+
     echo "📡 Headscale VPN Server"
     echo "  Control Server:  https://headscale.${DOMAIN}"
     echo "  DERP Relay:      https://tail.${DOMAIN}"
     echo "  STUN Server:     ${EXTERNAL_IP}:30478 (UDP)"
     echo ""
+
+    # Check if OIDC is configured
+    if kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" &>/dev/null; then
+        echo "🔐 Authentication: OIDC (Keycloak SSO) + Pre-Auth Keys"
+        echo "  OIDC Issuer:     $(kubectl get secret headscale-oidc -n "${HEADSCALE_NAMESPACE}" -o jsonpath='{.data.issuer}' | base64 -d)"
+        echo ""
+        echo "💻 Connect with SSO (Recommended)"
+        echo "  Run on client:   tailscale up --login-server=https://headscale.${DOMAIN}"
+        echo "  → Browser opens → Login with Keycloak → Auto-connects to VPN"
+        echo ""
+    else
+        echo "⚠️  Authentication: Pre-Auth Keys only"
+        echo "  To enable OIDC SSO, run: ./scripts/install/04.6.1-headscale-oidc.sh"
+        echo ""
+    fi
+
     echo "👥 User Management"
     echo "  Create user:     kubectl exec -n ${HEADSCALE_NAMESPACE} deployment/headscale -- headscale users create <username>"
     echo "  List users:      kubectl exec -n ${HEADSCALE_NAMESPACE} deployment/headscale -- headscale users list"
     echo ""
-    echo "🔑 Pre-Auth Keys"
+    echo "🔑 Pre-Auth Keys (Manual Registration)"
     echo "  Generate key:    kubectl exec -n ${HEADSCALE_NAMESPACE} deployment/headscale -- headscale --user default preauthkeys create --reusable --expiration 24h"
     echo "  List keys:       kubectl exec -n ${HEADSCALE_NAMESPACE} deployment/headscale -- headscale --user default preauthkeys list"
-    echo ""
-    echo "💻 Connect Clients"
-    echo "  Linux/macOS:     tailscale up --login-server=https://headscale.${DOMAIN} --authkey=<key>"
-    echo "  Interactive:     tailscale up --login-server=https://headscale.${DOMAIN}"
+    echo "  Use key:         tailscale up --login-server=https://headscale.${DOMAIN} --authkey=<key>"
     echo ""
     echo "🌐 Manage Nodes"
     echo "  List nodes:      kubectl exec -n ${HEADSCALE_NAMESPACE} deployment/headscale -- headscale nodes list"
