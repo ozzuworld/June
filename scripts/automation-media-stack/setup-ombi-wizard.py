@@ -147,6 +147,19 @@ class OmbiSetupAutomator:
             self.warn(f"Verification failed: {e}")
             return True  # Don't fail, might still be okay
 
+    def check_if_wizard_accessible(self):
+        """Check if wizard endpoint is still accessible"""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/api/v1/wizard",
+                timeout=5
+            )
+            # If we get 200, wizard is accessible (first run)
+            # If we get 404/403, wizard is disabled (already set up)
+            return response.status_code == 200
+        except:
+            return False
+
     def run_setup(self):
         """Run complete setup automation"""
         print("============================================================")
@@ -174,6 +187,32 @@ class OmbiSetupAutomator:
 
         time.sleep(3)  # Give it a moment to fully initialize
 
+        # Check if wizard is still accessible
+        wizard_accessible = self.check_if_wizard_accessible()
+
+        if not wizard_accessible:
+            self.log("Wizard endpoint not accessible - Ombi appears to be already configured")
+            self.log("Testing authentication with provided credentials...")
+
+            if self.authenticate():
+                self.success("✅ Ombi is already set up and credentials work!")
+                self.success("No setup needed - Ombi is ready to use")
+                return True
+            else:
+                self.warn("⚠️ Ombi is already set up, but authentication failed")
+                print("")
+                print("This means Ombi has been configured previously.")
+                print("To reconfigure Ombi:")
+                print(f"  1. Delete the config: kubectl exec -n june-services deployment/ombi -- rm -rf /config/*")
+                print(f"  2. Restart Ombi: kubectl rollout restart -n june-services deployment/ombi")
+                print(f"  3. Wait 30 seconds and re-run this script")
+                print("")
+                print("Or manually access: {self.base_url}")
+                print("")
+                # Return True to not block the installation
+                self.warn("Continuing installation - you may need to configure Ombi manually")
+                return True
+
         # Check if setup is needed
         if not self.is_setup_required():
             self.log("Checking if we can authenticate with existing credentials...")
@@ -182,9 +221,8 @@ class OmbiSetupAutomator:
                 self.success("Successfully authenticated with existing credentials")
                 return True
             else:
-                self.warn("Ombi may already be set up, but could not authenticate")
-                self.warn("You may need to check credentials manually")
-                return False
+                self.log("Setup check indicates Ombi may need configuration")
+                # Continue to try creating user
 
         self.log("Ombi needs initial setup - starting automation...")
         print("")

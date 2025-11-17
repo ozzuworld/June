@@ -104,18 +104,22 @@ echo ""
 # Step 5: Auto-configure Ombi
 log "Step 5: Configuring Ombi (Unified Request Manager)..."
 log "Running Ombi setup wizard..."
-python3 "${AUTOMATION_DIR}/setup-ombi-wizard.py" \
+if python3 "${AUTOMATION_DIR}/setup-ombi-wizard.py" \
   --url "https://ombi.${DOMAIN}" \
   --username "$MEDIA_STACK_USERNAME" \
-  --password "$MEDIA_STACK_PASSWORD" || \
-  warn "Failed to complete Ombi setup wizard"
+  --password "$MEDIA_STACK_PASSWORD"; then
 
-log "Connecting Ombi to Jellyfin, Sonarr, Radarr, and Lidarr..."
-python3 "${AUTOMATION_DIR}/configure-ombi.py" \
-  --domain "${DOMAIN}" \
-  --username "$MEDIA_STACK_USERNAME" \
-  --password "$MEDIA_STACK_PASSWORD" || \
-  warn "Failed to auto-configure Ombi connections"
+  log "Ombi setup completed, connecting to services..."
+  python3 "${AUTOMATION_DIR}/configure-ombi.py" \
+    --domain "${DOMAIN}" \
+    --username "$MEDIA_STACK_USERNAME" \
+    --password "$MEDIA_STACK_PASSWORD" || \
+    warn "Ombi service configuration had issues - may need manual setup"
+else
+  warn "Ombi setup wizard had issues"
+  warn "Ombi may need manual configuration at: https://ombi.${DOMAIN}"
+  warn "To reset and retry: bash ${AUTOMATION_DIR}/reset-ombi.sh"
+fi
 
 echo ""
 echo "================================================================"

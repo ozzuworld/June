@@ -279,7 +279,21 @@ class OmbiConfigurator:
         # Authenticate
         if not self.authenticate():
             self.error("Failed to authenticate with Ombi")
-            return False
+            print()
+            print("Ombi configuration requires successful setup first.")
+            print("Please ensure:")
+            print("  1. Ombi setup wizard completed successfully")
+            print("  2. Credentials match what was configured")
+            print()
+            print("To reset Ombi:")
+            print("  kubectl exec -n june-services deployment/ombi -- rm -rf /config/*")
+            print("  kubectl rollout restart -n june-services deployment/ombi")
+            print()
+            self.warn("Skipping Ombi configuration - you can configure manually at:")
+            print(f"  {self.ombi_url}")
+            print()
+            # Return True to not block installation
+            return True
 
         print()
 
