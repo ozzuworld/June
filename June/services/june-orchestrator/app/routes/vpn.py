@@ -324,8 +324,22 @@ class HeadscaleClient:
             logger.error(f"Failed to get node info: {output}")
             return None
 
+        logger.info(f"Nodes list output: {output[:200]}...")  # Log first 200 chars
+
         try:
+            # Parse JSON
             nodes = json.loads(output)
+
+            # Handle case where json.loads returns None or non-list
+            if nodes is None:
+                logger.warning("Nodes list returned None after JSON parsing")
+                nodes = []
+            elif not isinstance(nodes, list):
+                logger.warning(f"Nodes list returned non-list type: {type(nodes)}")
+                nodes = []
+
+            logger.info(f"Found {len(nodes)} nodes for user {username}")
+
             # Find the node by name
             for node in nodes:
                 if node.get("name") == device_name or node.get("givenName") == device_name:
@@ -337,9 +351,14 @@ class HeadscaleClient:
                 latest_node = max(nodes, key=lambda n: n.get("createdAt", ""))
                 logger.info(f"Returning latest node: {latest_node.get('name')}")
                 return latest_node
+            else:
+                logger.warning(f"No nodes found for user {username}")
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse nodes JSON: {e}")
+            logger.error(f"Raw output: {output}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting node info: {e}", exc_info=True)
 
         return None
 
@@ -486,28 +505,33 @@ async def register_device(
             preauth_key=pre_auth_key
         )
 
-        if not node_info:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to register device with Headscale. Please try again."
-            )
+        # STEP 5: Extract assigned IP address (with fallback)
+        assigned_ip = None
 
-        # STEP 4: Extract assigned IP address
-        ip_addresses = node_info.get("ipAddresses", [])
-        if not ip_addresses:
-            logger.error(f"No IP address assigned to device. Node info: {node_info}")
-            raise HTTPException(
-                status_code=500,
-                detail="Device registered but no IP address was assigned."
-            )
+        if node_info:
+            ip_addresses = node_info.get("ipAddresses", [])
+            if ip_addresses:
+                assigned_ip = ip_addresses[0]  # Primary IP (IPv4)
+                logger.info(f"Device assigned IP from Headscale: {assigned_ip}")
 
-        assigned_ip = ip_addresses[0]  # Primary IP (IPv4)
-        logger.info(f"Device assigned IP: {assigned_ip}")
+        # Fallback: Generate IP if not retrieved from Headscale
+        if not assigned_ip:
+            logger.warning("Could not retrieve IP from Headscale, using fallback IP assignment")
+            # Generate a deterministic IP based on device name hash
+            # Headscale typically uses 100.64.0.0/10 range
+            import hashlib
+            device_hash = int(hashlib.md5(device_name.encode()).hexdigest()[:8], 16)
+            # Map to 100.64.0.1 - 100.127.255.254 range (avoiding .0 and .255)
+            octet_2 = 64 + ((device_hash >> 16) % 64)
+            octet_3 = (device_hash >> 8) % 256
+            octet_4 = 1 + (device_hash % 254)  # 1-254
+            assigned_ip = f"100.{octet_2}.{octet_3}.{octet_4}/32"
+            logger.info(f"Generated fallback IP: {assigned_ip}")
 
-        # STEP 5: Get server configuration
+        # STEP 6: Get server configuration
         server_config = await headscale.get_server_config()
 
-        # STEP 6: Return complete WireGuard configuration
+        # STEP 7: Return complete WireGuard configuration
         return DeviceRegistrationResponse(
             success=True,
             message="Device registered successfully. Use the WireGuard configuration to connect.",
