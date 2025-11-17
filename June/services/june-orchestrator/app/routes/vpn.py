@@ -97,6 +97,40 @@ class HeadscaleClient:
         logger.info("Generated WireGuard keypair")
         return private_key_b64, public_key_b64
 
+    def generate_machine_key(self) -> tuple[str, str]:
+        """
+        Generate a Headscale machine key (for control plane)
+
+        Returns:
+            Tuple of (private_key_hex, public_key_hex)
+        """
+        from cryptography.hazmat.primitives.asymmetric import x25519
+        from cryptography.hazmat.primitives import serialization
+
+        # Generate private key for machine (control plane)
+        private_key = x25519.X25519PrivateKey.generate()
+
+        # Get raw bytes
+        private_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+
+        # Get public key
+        public_key = private_key.public_key()
+        public_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+
+        # Encode to hex (Headscale expects hex, not base64)
+        private_key_hex = private_bytes.hex()
+        public_key_hex = public_bytes.hex()
+
+        logger.info("Generated machine key")
+        return private_key_hex, public_key_hex
+
     async def _exec_headscale_cli(self, command: list) -> tuple[bool, str]:
         """
         Execute headscale CLI command via kubectl exec
@@ -240,7 +274,7 @@ class HeadscaleClient:
         Args:
             device_name: Name for the device
             user_email: User's email
-            machine_key: WireGuard public key (node key)
+            machine_key: Machine key (hex-encoded public key) for control plane
             preauth_key: Pre-authentication key
 
         Returns:
@@ -250,11 +284,12 @@ class HeadscaleClient:
 
         # Use headscale debug create-node to register a node programmatically
         # Format: headscale debug create-node -u <user> -n <name> -k <machine-key>
+        # Machine key must be hex-encoded with mkey: prefix
         cmd = [
             "debug", "create-node",
             "--user", username,
             "--name", device_name,
-            "--key", f"nodekey:{machine_key}"
+            "--key", f"mkey:{machine_key}"
         ]
 
         logger.info(f"Registering node {device_name} for user {username}")
@@ -359,13 +394,14 @@ async def register_device(
     1. User authenticates with Keycloak (gets bearer token)
     2. Frontend calls this endpoint with bearer token
     3. Backend validates token
-    4. **Backend generates WireGuard keypair**
-    5. **Backend creates Headscale user** (if doesn't exist)
-    6. **Backend generates pre-auth key**
-    7. **Backend registers device with Headscale**
-    8. **Backend returns complete WireGuard configuration**
-    9. Frontend uses native WireGuard with the config
-    10. VPN connects automatically - NO BROWSER, NO TAILSCALE SDK!
+    4. **Backend generates WireGuard keypair** (for VPN tunnel)
+    5. **Backend generates machine key** (for Headscale control plane, hex-encoded)
+    6. **Backend creates Headscale user** (if doesn't exist)
+    7. **Backend generates pre-auth key**
+    8. **Backend registers device with Headscale** using machine key
+    9. **Backend returns complete WireGuard configuration**
+    10. Frontend uses native WireGuard with the config
+    11. VPN connects automatically - NO BROWSER, NO TAILSCALE SDK!
 
     Args:
         request: Device registration details
@@ -415,12 +451,17 @@ async def register_device(
 
         logger.info(f"Device name: {device_name}")
 
-        # STEP 1: Generate WireGuard keypair
+        # STEP 1: Generate WireGuard keypair (for VPN tunnel)
         logger.info("Generating WireGuard keypair...")
         private_key, public_key = headscale.generate_wireguard_keypair()
         logger.info(f"WireGuard keys generated. Public key: {public_key[:16]}...")
 
-        # STEP 2: Create pre-authentication key
+        # STEP 2: Generate machine key (for Headscale control plane)
+        logger.info("Generating machine key for Headscale...")
+        machine_priv, machine_pub = headscale.generate_machine_key()
+        logger.info(f"Machine key generated (hex): {machine_pub[:16]}...")
+
+        # STEP 3: Create pre-authentication key
         logger.info(f"Generating pre-auth key for user: {user_email}")
         pre_auth_key = await headscale.create_preauth_key(
             user_email=user_email,
@@ -436,12 +477,12 @@ async def register_device(
 
         logger.info(f"Pre-auth key generated successfully")
 
-        # STEP 3: Register the device with Headscale
+        # STEP 4: Register the device with Headscale using machine key
         logger.info(f"Registering device {device_name} with Headscale...")
         node_info = await headscale.register_node_with_preauth(
             device_name=device_name,
             user_email=user_email,
-            machine_key=public_key,
+            machine_key=machine_pub,  # Use machine key (hex), not WireGuard key
             preauth_key=pre_auth_key
         )
 
