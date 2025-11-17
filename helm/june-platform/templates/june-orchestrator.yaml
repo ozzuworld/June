@@ -1,6 +1,42 @@
 ---
 # helm/june-platform/templates/june-orchestrator.yaml
 {{- if .Values.orchestrator.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: june-orchestrator
+  namespace: {{ .Release.Namespace }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: headscale-exec
+  namespace: headscale
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec"]
+  verbs: ["get", "list", "create"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: june-orchestrator-headscale-exec
+  namespace: headscale
+subjects:
+- kind: ServiceAccount
+  name: june-orchestrator
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: headscale-exec
+  apiGroup: rbac.authorization.k8s.io
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,6 +61,7 @@ spec:
         app: june-orchestrator
         version: "3.0.0"
     spec:
+      serviceAccountName: june-orchestrator
       containers:
       - name: orchestrator
         image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
