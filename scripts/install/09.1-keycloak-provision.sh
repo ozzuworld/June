@@ -37,7 +37,7 @@ log "Provisioning Keycloak realm and base clients for domain: $DOMAIN"
 
 # Wait for Keycloak to be ready
 log "Waiting for Keycloak to be ready..."
-MAX_ATTEMPTS=30
+MAX_ATTEMPTS=60  # 10 minutes max wait for fresh installs
 ATTEMPT=0
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -45,8 +45,27 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     if curl -k -s -f "$KEYCLOAK_URL/health/ready" > /dev/null 2>&1 || \
        curl -k -s -f "$KEYCLOAK_URL/health" > /dev/null 2>&1 || \
        curl -k -s "$KEYCLOAK_URL/realms/master" | grep -q "realm" 2>/dev/null; then
-        success "Keycloak is ready"
-        break
+        success "Keycloak is responding"
+
+        # Give Keycloak extra time to fully initialize on fresh installs
+        log "Waiting 30 seconds for Keycloak to fully initialize..."
+        sleep 30
+
+        # Verify we can actually get an admin token before proceeding
+        log "Testing admin token endpoint..."
+        TEST_TOKEN=$(curl -k -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "username=$KEYCLOAK_ADMIN_USER" \
+          -d "password=$KEYCLOAK_ADMIN_PASSWORD" \
+          -d "grant_type=password" \
+          -d "client_id=admin-cli" 2>/dev/null)
+
+        if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
+            success "Keycloak is fully ready and accepting API calls"
+            break
+        else
+            log "Keycloak responded but admin API not ready yet, continuing to wait..."
+        fi
     fi
     ATTEMPT=$((ATTEMPT + 1))
     log "Attempt $ATTEMPT/$MAX_ATTEMPTS - Waiting for Keycloak..."
@@ -54,7 +73,7 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
 done
 
 if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-    error "Keycloak did not become ready in time"
+    error "Keycloak did not become ready in time (waited 10 minutes)"
 fi
 
 # Provision Keycloak realm and clients directly via API
