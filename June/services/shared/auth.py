@@ -164,12 +164,19 @@ class AuthService:
         # Rewrite external URLs to internal service URLs when inside K8s
         # This handles cases where OIDC discovery returns external URLs
         # but we're running inside the cluster
-        if "idp.ozzu.world" in jwks_uri or "idp.ozzu.world" in issuer:
+        if "idp.ozzu.world" in jwks_uri:
             # Replace external URL with internal service URL
             internal_keycloak = self.config.keycloak_url
             jwks_uri = jwks_uri.replace("http://idp.ozzu.world:8080", internal_keycloak)
             jwks_uri = jwks_uri.replace("https://idp.ozzu.world", internal_keycloak)
             logger.debug(f"Rewrote external JWKS URI to internal: {jwks_uri}")
+
+        # Use the issuer from the token itself for validation
+        # This handles cases where token issuer might be external URL
+        token_issuer = unverified_payload.get("iss")
+        if token_issuer:
+            issuer = token_issuer
+            logger.debug(f"Using token's issuer for validation: {issuer}")
 
         logger.debug(f"Using issuer: {issuer}, JWKS URI: {jwks_uri}")
 
