@@ -79,6 +79,14 @@ spec:
           value: "http://june-tts.{{ .Release.Namespace }}.svc.cluster.local:8000"
         - name: STT_SERVICE_URL
           value: "http://june-stt.{{ .Release.Namespace }}.svc.cluster.local:8080"
+
+        # ============================================
+        # HEADSCALE VPN CONFIGURATION
+        # ============================================
+        - name: HEADSCALE_URL
+          value: "http://headscale.headscale.svc.cluster.local:8080"
+        - name: HEADSCALE_EXTERNAL_URL
+          value: "https://headscale.{{ .Values.domains.primary }}"
         
         # ============================================
         # LIVEKIT WEBRTC (replaces Janus)
