@@ -129,6 +129,55 @@ class OmbiConfigurator:
             self.error(f"Error configuring Jellyfin: {e}")
             return False
 
+    def get_sonarr_profiles_and_folders(self):
+        """Get quality profiles and root folders from Sonarr"""
+        try:
+            sonarr_url = f"https://sonarr.{self.domain}"
+            headers = {"X-Api-Key": self.sonarr_api_key}
+
+            # Get quality profiles
+            profiles_response = self.session.get(
+                f"{sonarr_url}/api/v3/qualityprofile",
+                headers=headers,
+                timeout=10
+            )
+            quality_profile_id = None
+            if profiles_response.status_code == 200:
+                profiles = profiles_response.json()
+                if profiles:
+                    quality_profile_id = profiles[0]['id']  # Use first profile
+                    self.log(f"Found Sonarr quality profile: {profiles[0]['name']} (ID: {quality_profile_id})")
+
+            # Get root folders
+            folders_response = self.session.get(
+                f"{sonarr_url}/api/v3/rootfolder",
+                headers=headers,
+                timeout=10
+            )
+            root_path = "/tv"
+            if folders_response.status_code == 200:
+                folders = folders_response.json()
+                if folders:
+                    root_path = folders[0]['path']
+                    self.log(f"Found Sonarr root folder: {root_path}")
+
+            # Get language profiles
+            lang_response = self.session.get(
+                f"{sonarr_url}/api/v3/languageprofile",
+                headers=headers,
+                timeout=10
+            )
+            language_profile_id = 1
+            if lang_response.status_code == 200:
+                lang_profiles = lang_response.json()
+                if lang_profiles:
+                    language_profile_id = lang_profiles[0]['id']
+
+            return quality_profile_id, root_path, language_profile_id
+        except Exception as e:
+            self.warn(f"Could not load Sonarr profiles: {e}")
+            return None, "/tv", 1
+
     def configure_sonarr(self):
         """Configure Sonarr connection in Ombi"""
         if not self.sonarr_api_key:
@@ -136,6 +185,8 @@ class OmbiConfigurator:
             return False
 
         self.log("Configuring Sonarr connection...")
+        self.log("Loading quality profiles and root folders from Sonarr...")
+        quality_profile_id, root_path, language_profile_id = self.get_sonarr_profiles_and_folders()
 
         try:
             headers = {
@@ -150,9 +201,9 @@ class OmbiConfigurator:
                 "port": 443,
                 "ssl": True,
                 "subDir": "",
-                "qualityProfile": "HD-1080p",  # Will use default if not exists
-                "rootPath": "/tv",
-                "languageProfile": 1,
+                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
+                "rootPath": root_path,
+                "languageProfile": language_profile_id,
                 "seasonFolders": True,
                 "v3": True,
                 "addOnly": False,
@@ -177,6 +228,43 @@ class OmbiConfigurator:
             self.error(f"Error configuring Sonarr: {e}")
             return False
 
+    def get_radarr_profiles_and_folders(self):
+        """Get quality profiles and root folders from Radarr"""
+        try:
+            radarr_url = f"https://radarr.{self.domain}"
+            headers = {"X-Api-Key": self.radarr_api_key}
+
+            # Get quality profiles
+            profiles_response = self.session.get(
+                f"{radarr_url}/api/v3/qualityprofile",
+                headers=headers,
+                timeout=10
+            )
+            quality_profile_id = None
+            if profiles_response.status_code == 200:
+                profiles = profiles_response.json()
+                if profiles:
+                    quality_profile_id = profiles[0]['id']  # Use first profile
+                    self.log(f"Found Radarr quality profile: {profiles[0]['name']} (ID: {quality_profile_id})")
+
+            # Get root folders
+            folders_response = self.session.get(
+                f"{radarr_url}/api/v3/rootfolder",
+                headers=headers,
+                timeout=10
+            )
+            root_path = "/movies"
+            if folders_response.status_code == 200:
+                folders = folders_response.json()
+                if folders:
+                    root_path = folders[0]['path']
+                    self.log(f"Found Radarr root folder: {root_path}")
+
+            return quality_profile_id, root_path
+        except Exception as e:
+            self.warn(f"Could not load Radarr profiles: {e}")
+            return None, "/movies"
+
     def configure_radarr(self):
         """Configure Radarr connection in Ombi"""
         if not self.radarr_api_key:
@@ -184,6 +272,8 @@ class OmbiConfigurator:
             return False
 
         self.log("Configuring Radarr connection...")
+        self.log("Loading quality profiles and root folders from Radarr...")
+        quality_profile_id, root_path = self.get_radarr_profiles_and_folders()
 
         try:
             headers = {
@@ -198,8 +288,8 @@ class OmbiConfigurator:
                 "port": 443,
                 "ssl": True,
                 "subDir": "",
-                "qualityProfile": "HD-1080p",  # Will use default if not exists
-                "rootPath": "/movies",
+                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
+                "rootPath": root_path,
                 "minimumAvailability": "announced",
                 "addOnly": False,
                 "scanForAvailability": True
@@ -223,6 +313,55 @@ class OmbiConfigurator:
             self.error(f"Error configuring Radarr: {e}")
             return False
 
+    def get_lidarr_profiles_and_folders(self):
+        """Get quality profiles and root folders from Lidarr"""
+        try:
+            lidarr_url = f"https://lidarr.{self.domain}"
+            headers = {"X-Api-Key": self.lidarr_api_key}
+
+            # Get quality profiles
+            profiles_response = self.session.get(
+                f"{lidarr_url}/api/v1/qualityprofile",
+                headers=headers,
+                timeout=10
+            )
+            quality_profile_id = None
+            if profiles_response.status_code == 200:
+                profiles = profiles_response.json()
+                if profiles:
+                    quality_profile_id = profiles[0]['id']  # Use first profile
+                    self.log(f"Found Lidarr quality profile: {profiles[0]['name']} (ID: {quality_profile_id})")
+
+            # Get root folders
+            folders_response = self.session.get(
+                f"{lidarr_url}/api/v1/rootfolder",
+                headers=headers,
+                timeout=10
+            )
+            root_path = "/music"
+            if folders_response.status_code == 200:
+                folders = folders_response.json()
+                if folders:
+                    root_path = folders[0]['path']
+                    self.log(f"Found Lidarr root folder: {root_path}")
+
+            # Get metadata profiles
+            metadata_response = self.session.get(
+                f"{lidarr_url}/api/v1/metadataprofile",
+                headers=headers,
+                timeout=10
+            )
+            metadata_profile_id = 1
+            if metadata_response.status_code == 200:
+                metadata_profiles = metadata_response.json()
+                if metadata_profiles:
+                    metadata_profile_id = metadata_profiles[0]['id']
+
+            return quality_profile_id, root_path, metadata_profile_id
+        except Exception as e:
+            self.warn(f"Could not load Lidarr profiles: {e}")
+            return None, "/music", 1
+
     def configure_lidarr(self):
         """Configure Lidarr connection in Ombi"""
         if not self.lidarr_api_key:
@@ -230,6 +369,8 @@ class OmbiConfigurator:
             return False
 
         self.log("Configuring Lidarr connection...")
+        self.log("Loading quality profiles and root folders from Lidarr...")
+        quality_profile_id, root_path, metadata_profile_id = self.get_lidarr_profiles_and_folders()
 
         try:
             headers = {
@@ -244,9 +385,9 @@ class OmbiConfigurator:
                 "port": 443,
                 "ssl": True,
                 "subDir": "",
-                "qualityProfile": "Lossless",  # Will use default if not exists
-                "rootPath": "/music",
-                "metadataProfileId": 1,
+                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
+                "rootPath": root_path,
+                "metadataProfileId": metadata_profile_id,
                 "languageProfileId": 1,
                 "albumFolder": True,
                 "addOnly": False
