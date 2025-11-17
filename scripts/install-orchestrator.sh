@@ -101,9 +101,9 @@ PHASES=(
     "07.2-june-dark-opencti"  # June Dark + OpenCTI integration
     "09-june-platform"
     "09.1-keycloak-provision" # Provision Keycloak realm & base clients
+    "media-stack/00-setup-namespace"  # Setup media-stack namespace + cert sync (MUST BE BEFORE LIVEKIT)
     "webrtc/01-stunner"       # STUNner WebRTC gateway
     "webrtc/02-livekit"       # LiveKit WebRTC server in media-stack
-    "media-stack/00-setup-namespace"  # Setup media-stack namespace + cert sync
     "media-stack/01-jellyfin"         # Jellyfin media server
     "media-stack/02-prowlarr"         # Prowlarr indexer manager
     "media-stack/03-sonarr"           # Sonarr TV shows
