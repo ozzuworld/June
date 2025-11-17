@@ -8,14 +8,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY requirements.txt .
+COPY june-orchestrator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy shared modules
-COPY ../shared/ ./shared/
+# Copy shared modules (from services/shared)
+COPY shared/ ./shared/
 
 # Copy application
-COPY app/ ./app/
+COPY june-orchestrator/app/ ./app/
 
 # Create non-root user
 RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
