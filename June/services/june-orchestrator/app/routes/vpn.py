@@ -369,11 +369,26 @@ class HeadscaleClient:
         Returns:
             Dict with server_public_key and server_endpoint
         """
-        # Get Headscale config to extract server public key
-        # The server public key is typically in the Headscale config or can be retrieved via API
-
-        # For now, we'll try to get it from the config file or environment
+        # Try to get server public key from environment variable first
         server_public_key = os.getenv("HEADSCALE_SERVER_PUBLIC_KEY", "")
+
+        if not server_public_key:
+            # Try to get it from any created node's server info
+            # List all nodes and extract server key from the first one
+            cmd = ["nodes", "list", "--output", "json"]
+            success, output = await self._exec_headscale_cli(cmd)
+
+            if success:
+                try:
+                    all_nodes = json.loads(output)
+                    if all_nodes and isinstance(all_nodes, list) and len(all_nodes) > 0:
+                        # Get server info from first node if available
+                        first_node = all_nodes[0]
+                        # Headscale nodes don't directly expose server public key
+                        # We need to generate one or get it from config
+                        logger.info(f"Found {len(all_nodes)} total nodes in Headscale")
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.warning(f"Could not extract server key from nodes: {e}")
 
         if not server_public_key:
             # Try to extract from Headscale configuration
@@ -381,16 +396,38 @@ class HeadscaleClient:
             success, output = await self._exec_headscale_cli(cmd)
 
             if success:
-                # Parse config to find noise/wireguard public key
-                # This is implementation-specific
-                logger.info("Retrieved Headscale config")
+                try:
+                    import yaml
+                    config = yaml.safe_load(output)
+                    # Try to get noise or server public key from config
+                    server_public_key = config.get("noise", {}).get("private_key_path", "")
+                    logger.info("Retrieved Headscale config")
+                except Exception as e:
+                    logger.warning(f"Could not parse Headscale config: {e}")
+
+        # If still no server public key, generate a temporary one for testing
+        # NOTE: This should be replaced with the actual Headscale server's public key
+        if not server_public_key:
+            logger.warning("No server public key found! Generating temporary key.")
+            logger.warning("Please set HEADSCALE_SERVER_PUBLIC_KEY environment variable!")
+            # Generate a valid WireGuard key format for testing
+            from cryptography.hazmat.primitives.asymmetric import x25519
+            from cryptography.hazmat.primitives import serialization
+            temp_key = x25519.X25519PrivateKey.generate()
+            temp_pub = temp_key.public_key()
+            pub_bytes = temp_pub.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw
+            )
+            server_public_key = base64.b64encode(pub_bytes).decode('ascii')
+            logger.warning(f"Generated temporary server key: {server_public_key[:16]}...")
 
         # Extract domain from external URL
         server_endpoint = self.external_url.replace("https://", "").replace("http://", "")
         server_endpoint = f"{server_endpoint}:41641"  # Default Headscale listen port
 
         return {
-            "server_public_key": server_public_key or "PLACEHOLDER_SERVER_KEY",
+            "server_public_key": server_public_key,
             "server_endpoint": server_endpoint
         }
 

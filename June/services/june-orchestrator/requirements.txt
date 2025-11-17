@@ -9,3 +9,4 @@ python-multipart==0.0.6
 soundfile
 PyJWT>=2.8.0
 cryptography>=41.0.0
+PyYAML>=6.0
