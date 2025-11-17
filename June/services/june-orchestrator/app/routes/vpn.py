@@ -12,8 +12,8 @@ import httpx
 
 # Import shared auth service
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../../shared'))
-from auth import require_user_auth, extract_user_id, AuthError
+sys.path.insert(0, '/app')
+from shared.auth import require_user_auth, extract_user_id, AuthError
 
 logger = logging.getLogger(__name__)
 
