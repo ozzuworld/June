@@ -96,17 +96,21 @@ class OmbiConfigurator:
                 "Content-Type": "application/json"
             }
 
-            # Jellyfin uses EmbySettings model
+            # Jellyfin uses EmbySettings model (inherits from ExternalSettings)
             jellyfin_config = {
                 "enable": True,
                 "servers": [{
                     "serverId": "jellyfin-main",
                     "name": "Jellyfin",
-                    "apiKey": "",  # Empty for now, Jellyfin auth is separate
+                    "apiKey": "",  # Jellyfin requires separate auth setup
                     "administratorId": "",
-                    "serverHostname": f"https://tv.{self.domain}",  # Full URL required
                     "enableEpisodeSearching": True,
-                    "embySelectedLibraries": []
+                    "embySelectedLibraries": [],
+                    # ExternalSettings base properties
+                    "ip": f"tv.{self.domain}",  # Hostname/IP only
+                    "port": 443,
+                    "ssl": True,
+                    "subDir": ""
                 }]
             }
 
@@ -256,14 +260,15 @@ class OmbiConfigurator:
                 headers=headers,
                 timeout=10
             )
-            root_path = "/movies"
+            root_path_id = None
             if folders_response.status_code == 200:
                 folders = folders_response.json()
                 if folders:
+                    root_path_id = str(folders[0]['id'])  # Use ID as string
                     root_path = folders[0]['path']
-                    self.log(f"Found Radarr root folder: {root_path}")
+                    self.log(f"Found Radarr root folder: {root_path} (ID: {root_path_id})")
 
-            return quality_profile_id, root_path
+            return quality_profile_id, root_path_id if root_path_id else "/movies"
         except Exception as e:
             self.warn(f"Could not load Radarr profiles: {e}")
             return None, "/movies"
@@ -276,7 +281,7 @@ class OmbiConfigurator:
 
         self.log("Configuring Radarr connection...")
         self.log("Loading quality profiles and root folders from Radarr...")
-        quality_profile_id, root_path = self.get_radarr_profiles_and_folders()
+        quality_profile_id, root_path_id = self.get_radarr_profiles_and_folders()
 
         try:
             headers = {
@@ -288,8 +293,8 @@ class OmbiConfigurator:
             radarr_config = {
                 "enabled": True,  # Not "enable"
                 "apiKey": self.radarr_api_key,
-                "defaultQualityProfile": str(quality_profile_id) if quality_profile_id else "Any",  # String, not "qualityProfile"
-                "defaultRootPath": root_path,  # Not "rootPath"
+                "defaultQualityProfile": str(quality_profile_id) if quality_profile_id else "Any",
+                "defaultRootPath": root_path_id,  # Root folder ID, not path
                 "minimumAvailability": "announced",
                 "addOnly": False,
                 "scanForAvailability": True,
