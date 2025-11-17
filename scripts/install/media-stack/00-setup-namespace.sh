@@ -29,8 +29,18 @@ fi
 log "Creating media-stack namespace..."
 kubectl apply -f "${ROOT_DIR}/k8s/media-stack/00-namespace.yaml"
 
-# Wait for namespace to be active
-kubectl wait --for=condition=Active --timeout=60s namespace/media-stack
+# Wait for namespace to be active (with manual fallback)
+log "Waiting for namespace to be active..."
+if ! kubectl wait --for=condition=Active --timeout=60s namespace/media-stack 2>/dev/null; then
+    # Fallback: check if namespace exists manually
+    if kubectl get namespace media-stack &>/dev/null; then
+        log "Namespace exists, proceeding despite wait timeout..."
+        # Give it a few more seconds
+        sleep 5
+    else
+        error "Failed to create media-stack namespace"
+    fi
+fi
 
 success "media-stack namespace created"
 
