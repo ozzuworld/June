@@ -164,9 +164,26 @@ class AuthService:
         logger.debug(f"Using issuer: {issuer}, JWKS URI: {jwks_uri}")
 
         try:
-            # Use JWKS to pick the signing key
-            jwk_client = PyJWKClient(jwks_uri)
-            signing_key = jwk_client.get_signing_key_from_jwt(token).key
+            # Fetch JWKS using httpx (better timeout handling)
+            jwks_data = await self._fetch_jwks(jwks_uri)
+
+            # Find the signing key manually
+            signing_key = None
+            unverified_header = jwt.get_unverified_header(token)
+            kid = unverified_header.get("kid")
+
+            if not kid:
+                raise AuthError("Token missing 'kid' header")
+
+            for key in jwks_data.get("keys", []):
+                if key.get("kid") == kid:
+                    # Convert JWK to PEM format for jwt library
+                    from jwt.algorithms import RSAAlgorithm
+                    signing_key = RSAAlgorithm.from_jwk(key)
+                    break
+
+            if not signing_key:
+                raise AuthError(f"No matching key found for kid: {kid}")
 
             options = {"verify_aud": bool(self.config.required_audience)}
             decoded = jwt.decode(
@@ -177,7 +194,7 @@ class AuthService:
                 issuer=issuer,
                 options=options,
             )
-            
+
             logger.debug(f"Successfully validated token for user: {decoded.get('sub', 'unknown')}")
             return decoded
 
