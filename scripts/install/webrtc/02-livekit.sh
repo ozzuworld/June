@@ -109,6 +109,43 @@ spec:
           port: 7882
 EOF
 
+# Create HTTP/HTTPS ingress for LiveKit web interface
+log "Creating LiveKit HTTPS ingress..."
+WILDCARD_SECRET_NAME="${DOMAIN//\./-}-wildcard-tls"
+kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: livekit-ingress
+  namespace: $NAMESPACE
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/server-snippets: |
+      client_body_buffer_size 10M;
+      client_max_body_size 10M;
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - livekit.$DOMAIN
+    secretName: $WILDCARD_SECRET_NAME
+  rules:
+  - host: livekit.$DOMAIN
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-livekit-server
+            port:
+              number: 80
+EOF
+
 # Save credentials
 mkdir -p "${ROOT_DIR}/config/credentials"
 cat > "${ROOT_DIR}/config/credentials/livekit-credentials.yaml" <<EOF
@@ -121,8 +158,12 @@ EOF
 success "LiveKit installed successfully in $NAMESPACE namespace"
 echo ""
 echo "🎮 LiveKit Server:"
-echo "   URL: http://livekit-livekit-server.$NAMESPACE.svc.cluster.local"
+echo "   Web URL: https://livekit.$DOMAIN"
+echo "   Internal URL: http://livekit-livekit-server.$NAMESPACE.svc.cluster.local"
 echo "   API Key: $LIVEKIT_API_KEY"
 echo "   Namespace: $NAMESPACE"
 echo ""
 echo "🔗 Connected to TURN: turn.$DOMAIN:3478"
+echo ""
+echo "🔍 Verify ingress:"
+echo "   kubectl get ingress livekit-ingress -n $NAMESPACE"
