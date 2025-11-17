@@ -96,19 +96,18 @@ class OmbiConfigurator:
                 "Content-Type": "application/json"
             }
 
+            # Jellyfin uses EmbySettings model
             jellyfin_config = {
                 "enable": True,
                 "servers": [{
+                    "serverId": "jellyfin-main",
                     "name": "Jellyfin",
-                    "hostname": f"tv.{self.domain}",
-                    "port": 443,
-                    "ssl": True,
-                    "subDir": "",
-                    "administratorId": "admin",
-                    "apiKey": "",  # Jellyfin uses user auth, not API key
-                    "serverId": "jellyfin-server"
-                }],
-                "enableEpisodeSearching": True
+                    "apiKey": "",  # Empty for now, Jellyfin auth is separate
+                    "administratorId": "",
+                    "serverHostname": f"https://tv.{self.domain}",  # Full URL required
+                    "enableEpisodeSearching": True,
+                    "embySelectedLibraries": []
+                }]
             }
 
             response = self.session.post(
@@ -194,20 +193,24 @@ class OmbiConfigurator:
                 "Content-Type": "application/json"
             }
 
+            # SonarrSettings model (from ExternalSettings)
             sonarr_config = {
-                "enable": True,
+                "enabled": True,  # Not "enable"
                 "apiKey": self.sonarr_api_key,
-                "ip": f"sonarr.{self.domain}",
-                "port": 443,
+                "qualityProfile": str(quality_profile_id) if quality_profile_id else "Any",  # String
+                "rootPath": root_path,  # String (path or ID)
+                "languageProfile": language_profile_id,  # Int
+                "seasonFolders": True,
+                "addOnly": False,
+                "scanForAvailability": True,
+                "prioritizeArrAvailability": False,
+                "sendUserTags": False,
+                "tag": None,
+                # ExternalSettings base properties
                 "ssl": True,
                 "subDir": "",
-                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
-                "rootPath": root_path,
-                "languageProfile": language_profile_id,
-                "seasonFolders": True,
-                "v3": True,
-                "addOnly": False,
-                "scanForAvailability": True
+                "ip": f"sonarr.{self.domain}",
+                "port": 443
             }
 
             response = self.session.post(
@@ -281,18 +284,23 @@ class OmbiConfigurator:
                 "Content-Type": "application/json"
             }
 
+            # RadarrSettings model (from ExternalSettings)
             radarr_config = {
-                "enable": True,
+                "enabled": True,  # Not "enable"
                 "apiKey": self.radarr_api_key,
-                "ip": f"radarr.{self.domain}",
-                "port": 443,
-                "ssl": True,
-                "subDir": "",
-                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
-                "rootPath": root_path,
+                "defaultQualityProfile": str(quality_profile_id) if quality_profile_id else "Any",  # String, not "qualityProfile"
+                "defaultRootPath": root_path,  # Not "rootPath"
                 "minimumAvailability": "announced",
                 "addOnly": False,
-                "scanForAvailability": True
+                "scanForAvailability": True,
+                "prioritizeArrAvailability": False,
+                "sendUserTags": False,
+                "tag": None,
+                # ExternalSettings base properties
+                "ssl": True,
+                "subDir": "",
+                "ip": f"radarr.{self.domain}",
+                "port": 443
             }
 
             response = self.session.post(
@@ -378,19 +386,20 @@ class OmbiConfigurator:
                 "Content-Type": "application/json"
             }
 
+            # LidarrSettings model (from ExternalSettings)
             lidarr_config = {
-                "enable": True,
+                "enabled": True,  # Not "enable"
                 "apiKey": self.lidarr_api_key,
-                "ip": f"lidarr.{self.domain}",
-                "port": 443,
+                "defaultQualityProfile": str(quality_profile_id) if quality_profile_id else "Any",  # String, not "qualityProfile"
+                "defaultRootPath": root_path,  # Not "rootPath"
+                "metadataProfileId": metadata_profile_id,  # Int
+                "albumFolder": True,
+                "addOnly": False,
+                # ExternalSettings base properties
                 "ssl": True,
                 "subDir": "",
-                "qualityProfile": quality_profile_id if quality_profile_id else "Any",
-                "rootPath": root_path,
-                "metadataProfileId": metadata_profile_id,
-                "languageProfileId": 1,
-                "albumFolder": True,
-                "addOnly": False
+                "ip": f"lidarr.{self.domain}",
+                "port": 443
             }
 
             response = self.session.post(
