@@ -18,12 +18,14 @@ class CompleteMediaConfigurator:
         self.prowlarr_url = f"https://prowlarr.{domain}"
         self.sonarr_url = f"https://sonarr.{domain}"
         self.radarr_url = f"https://radarr.{domain}"
-        
+        self.lidarr_url = f"https://lidarr.{domain}"
+
         # Read API keys from saved files
         self.prowlarr_api_key = Path("/root/.prowlarr-api-key").read_text().strip()
         self.sonarr_api_key = Path("/root/.sonarr-api-key").read_text().strip()
         self.radarr_api_key = Path("/root/.radarr-api-key").read_text().strip()
-        
+        self.lidarr_api_key = Path("/root/.lidarr-api-key").read_text().strip()
+
         self.session = requests.Session()
         self.session.verify = False
     
@@ -49,11 +51,18 @@ class CompleteMediaConfigurator:
         return False
     
     def connect_to_prowlarr(self, app_name, app_url, app_api_key):
-        """Connect Sonarr/Radarr to Prowlarr"""
+        """Connect Sonarr/Radarr/Lidarr to Prowlarr"""
         self.log(f"Connecting {app_name} to Prowlarr...")
         try:
             headers = {"X-Api-Key": self.prowlarr_api_key}
-            implementation = "Sonarr" if "sonarr" in app_name.lower() else "Radarr"
+            if "sonarr" in app_name.lower():
+                implementation = "Sonarr"
+            elif "radarr" in app_name.lower():
+                implementation = "Radarr"
+            elif "lidarr" in app_name.lower():
+                implementation = "Lidarr"
+            else:
+                implementation = "Sonarr"
 
             payload = {
                 "syncLevel": "fullSync",
@@ -147,16 +156,19 @@ class CompleteMediaConfigurator:
         # Add root folders
         self.add_root_folder(self.sonarr_url, self.sonarr_api_key, "Sonarr", "/tv")
         self.add_root_folder(self.radarr_url, self.radarr_api_key, "Radarr", "/movies")
+        self.add_root_folder(self.lidarr_url, self.lidarr_api_key, "Lidarr", "/music")
         print()
 
         # Connect to Prowlarr
         self.connect_to_prowlarr("Sonarr", self.sonarr_url, self.sonarr_api_key)
         self.connect_to_prowlarr("Radarr", self.radarr_url, self.radarr_api_key)
+        self.connect_to_prowlarr("Lidarr", self.lidarr_url, self.lidarr_api_key)
         print()
 
         # Add qBittorrent as download client
         self.add_qbittorrent_to_service("Sonarr", self.sonarr_url, self.sonarr_api_key)
         self.add_qbittorrent_to_service("Radarr", self.radarr_url, self.radarr_api_key)
+        self.add_qbittorrent_to_service("Lidarr", self.lidarr_url, self.lidarr_api_key)
         print()
 
         print("=" * 60)
@@ -166,6 +178,7 @@ class CompleteMediaConfigurator:
         print(f"Prowlarr:    {self.prowlarr_url}")
         print(f"Sonarr:      {self.sonarr_url}")
         print(f"Radarr:      {self.radarr_url}")
+        print(f"Lidarr:      {self.lidarr_url}")
         print(f"qBittorrent: https://torrent.{self.domain}")
         print()
         print("✅ All services connected:")

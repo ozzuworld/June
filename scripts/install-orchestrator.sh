@@ -105,6 +105,7 @@ PHASES=(
     "08.6-prowlarr"           # NEW
     "08.7-sonarr"             # NEW
     "08.8-radarr"             # NEW
+    "08.8a-lidarr"            # NEW - Music manager
     "08.9-jellyseerr"         # NEW
     "08.10-qbittorrent"       # NEW
     "08.11-configure-media"   # NEW - Auto-configures everything
@@ -251,6 +252,7 @@ main() {
     echo "  Jellyseerr: https://requests.$DOMAIN"
     echo "  Sonarr:     https://sonarr.$DOMAIN"
     echo "  Radarr:     https://radarr.$DOMAIN"
+    echo "  Lidarr:     https://lidarr.$DOMAIN"
     echo "  Prowlarr:   https://prowlarr.$DOMAIN"
     echo "  qBittorrent: https://qbittorrent.$DOMAIN"
     echo ""

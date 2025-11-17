@@ -61,6 +61,9 @@ extract_api_key "sonarr" "june-services" "/config/config.xml" "/root/.sonarr-api
 # Extract Radarr API key
 extract_api_key "radarr" "june-services" "/config/config.xml" "/root/.radarr-api-key"
 
+# Extract Lidarr API key
+extract_api_key "lidarr" "june-services" "/config/config.xml" "/root/.lidarr-api-key"
+
 echo ""
 success "API key extraction complete!"
 echo ""
@@ -68,5 +71,6 @@ echo "📁 API keys saved to:"
 echo "  /root/.prowlarr-api-key"
 echo "  /root/.sonarr-api-key"
 echo "  /root/.radarr-api-key"
+echo "  /root/.lidarr-api-key"
 echo ""
 echo "These will be used by automation scripts to configure connections."
