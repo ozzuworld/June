@@ -213,17 +213,12 @@ async def load_model():
 
         from orpheus_tts import OrpheusModel
 
-        # Create model with vLLM parameters passed directly
-        # OrpheusModel accepts vLLM parameters in its constructor
-        logger.info(f"🔧 Initializing with max_model_len={VLLM_MAX_MODEL_LEN}, gpu_mem={VLLM_GPU_MEMORY_UTILIZATION}")
+        # Initialize OrpheusModel with just model_name
+        # The model uses vLLM defaults internally
+        logger.info(f"🔧 Initializing Orpheus model: {ORPHEUS_MODEL}")
 
-        orpheus_model = OrpheusModel(
-            model_name=ORPHEUS_MODEL,
-            max_model_len=VLLM_MAX_MODEL_LEN,
-            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-            quantization=VLLM_QUANTIZATION,
-        )
-        logger.info("✅ Orpheus model loaded")
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
+        logger.info("✅ Orpheus model loaded with vLLM defaults")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
         # The generate_speech() method returns ready-to-use audio chunks

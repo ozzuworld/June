@@ -212,31 +212,13 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
 
         from orpheus_tts import OrpheusModel
-        from vllm import LLM, SamplingParams
 
-        # Monkey-patch OrpheusModel._setup_engine to inject vLLM configuration
-        # CRITICAL: Use synchronous LLM class, not AsyncLLMEngine
-        # OrpheusModel.generate_speech() returns a sync generator
-        # Reference: https://github.com/canopyai/Orpheus-TTS/issues/13
-        def custom_setup_engine(self):
-            logger.info(f"🔧 Custom engine setup with max_model_len={VLLM_MAX_MODEL_LEN}")
+        # Initialize OrpheusModel with just model_name
+        # The model uses vLLM defaults internally
+        logger.info(f"🔧 Initializing Orpheus model: {ORPHEUS_MODEL}")
 
-            # Use synchronous LLM class
-            llm = LLM(
-                model=self.model_name,
-                dtype=self.dtype,
-                max_model_len=VLLM_MAX_MODEL_LEN,
-                gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-                quantization=VLLM_QUANTIZATION,
-            )
-            return llm
-
-        # Apply monkey patch before creating model instance
-        OrpheusModel._setup_engine = custom_setup_engine
-
-        # Create model (will use our patched _setup_engine method)
         orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
-        logger.info("✅ Orpheus model loaded")
+        logger.info("✅ Orpheus model loaded with vLLM defaults")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
         # The generate_speech() method returns ready-to-use audio chunks
