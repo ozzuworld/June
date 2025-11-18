@@ -212,9 +212,13 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
         from orpheus_tts import OrpheusModel
 
-        # Note: OrpheusModel only accepts model_name in initialization
-        # vLLM parameters are configured via environment variables or internal defaults
-        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
+        # OrpheusModel accepts vLLM engine parameters via **kwargs
+        # Pass max_model_len and gpu_memory_utilization to configure KV cache
+        orpheus_model = OrpheusModel(
+            model_name=ORPHEUS_MODEL,
+            max_model_len=VLLM_MAX_MODEL_LEN,  # Default 2048 - enough for TTS
+            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION  # 0.7-0.9 recommended
+        )
         logger.info("✅ Orpheus model loaded")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
@@ -250,7 +254,7 @@ async def load_model():
 
     except ImportError as e:
         logger.error(f"❌ Import error: {e}")
-        logger.error("   Make sure 'orpheus-speech' and 'snac' are installed")
+        logger.error("   Make sure 'orpheus-speech' is installed")
         return False
     except Exception as e:
         logger.error(f"❌ Failed to load Orpheus model: {e}", exc_info=True)
