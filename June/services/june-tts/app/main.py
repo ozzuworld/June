@@ -309,13 +309,17 @@ async def generate_async(
         def generate_and_collect():
             logger.info("🔧 DEBUG: Thread started, calling generate_speech()...")
 
+            # TEST: Use preset voice first - docs only show preset names, not file paths
+            test_voice = "zoe"
+            logger.info(f"🔧 DEBUG: Testing with PRESET voice '{test_voice}' (ignoring custom voice_path for now)")
+
             # Generate with Orpheus - returns iterator of audio chunks
             audio_chunks = orpheus_model.generate_speech(
                 prompt=text,
-                voice=voice_path,
+                voice=test_voice,  # Use preset voice name
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
-                max_tokens=2000,
+                max_tokens=500,  # Reduced from 2000
                 top_p=0.9
             )
 
