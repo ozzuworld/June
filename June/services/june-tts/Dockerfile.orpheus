@@ -108,9 +108,11 @@ RUN python3.11 -m pip install "huggingface-hub[cli]"
 WORKDIR /app
 
 # Copy application code
-COPY app/ /app/
+COPY app/main_orpheus.py /app/main_orpheus.py
+COPY app/start_orpheus.sh /app/start.sh
+COPY app/references/ /app/references/
 
-# Create directories for voices, references, and cache
+# Create directories for voices and cache
 RUN mkdir -p /app/voices /app/references /app/.cache/huggingface
 
 # Make start script executable
