@@ -54,4 +54,4 @@ echo "   Expected Latency: 100-200ms (streaming)"
 echo "================================================================================"
 echo ""
 
-exec python3.11 -m uvicorn main_orpheus:app --host 0.0.0.0 --port 8000 --workers 1
+exec python3.11 -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1

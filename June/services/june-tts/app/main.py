@@ -306,30 +306,20 @@ async def generate_async(
 
     def _generate():
         try:
-            # For finetuned model: use preset voice names ("zoe", "tara", etc.)
-            # For voice cloning with custom audio, use the pretrained model
-            # Default to "zoe" if no specific voice provided
-            voice = voice_path if voice_path and not voice_path.startswith('/') else "zoe"
-
-            logger.info(f"🔧 DEBUG: Generating with voice='{voice}'")
-
             # Generate with Orpheus - returns iterator of audio chunks
             audio_chunks = orpheus_model.generate_speech(
                 prompt=text,
-                voice=voice,
+                voice=voice_path,  # Can be file path or None for default
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
                 max_tokens=2000,
                 top_p=0.9
             )
 
-            # Collect all chunks
+            # Collect all chunks and combine into single audio bytes
             all_chunks = []
-            for i, chunk in enumerate(audio_chunks):
-                logger.info(f"🔧 DEBUG: Got chunk {i+1}, size: {len(chunk)} bytes")
+            for chunk in audio_chunks:
                 all_chunks.append(chunk)
-
-            logger.info(f"🔧 DEBUG: Generation complete! Total chunks: {len(all_chunks)}")
 
             # Concatenate all audio chunks
             complete_audio = b''.join(all_chunks)
