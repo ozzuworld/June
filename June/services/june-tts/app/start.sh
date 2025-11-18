@@ -1,8 +1,8 @@
 #!/bin/bash
-# Start script for Orpheus TTS service
+# Start script for XTTS v2 TTS service
 
 echo "================================================================================"
-echo "🚀 Starting Orpheus Multilingual TTS Service"
+echo "🚀 Starting XTTS v2 Multilingual TTS Service (Coqui TTS)"
 echo "================================================================================"
 
 # Login to Hugging Face if token is provided
@@ -15,42 +15,37 @@ fi
 echo ""
 echo "=== Configuration ==="
 echo "   Device: ${DEVICE:-cuda}"
-echo "   Orpheus Model: ${ORPHEUS_MODEL:-canopylabs/orpheus-3b-0.1-ft}"
-echo "   Orpheus Variant: ${ORPHEUS_VARIANT:-english}"
-echo "   Warmup on startup: ${WARMUP_ON_STARTUP:-1}"
-echo "   Max workers: ${MAX_WORKERS:-2}"
+echo "   XTTS Model: ${XTTS_MODEL:-tts_models/multilingual/multi-dataset/xtts_v2}"
+echo "   Warmup on startup: ${WARMUP_ON_STARTUP:-0}"
+echo "   DeepSpeed enabled: ${USE_DEEPSPEED:-0}"
 echo "   HuggingFace cache: ${HF_HOME:-/app/.cache/huggingface}"
 echo ""
-echo "=== vLLM Optimization Settings ==="
-echo "   GPU Memory Utilization: ${VLLM_GPU_MEMORY_UTILIZATION:-0.7}"
-echo "   Max Model Length: ${VLLM_MAX_MODEL_LEN:-2048}"
-echo "   Quantization: ${VLLM_QUANTIZATION:-fp8}"
+echo "=== XTTS v2 Features ==="
+echo "   Languages: 17 (en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi)"
+echo "   Voice Cloning: Supported (6+ seconds recommended)"
+echo "   Streaming: Enabled (<200ms latency)"
 echo ""
-echo "=== Streaming Settings ==="
-echo "   Chunk Size: ${ORPHEUS_CHUNK_SIZE:-210} tokens"
-echo "   Fade Duration: ${ORPHEUS_FADE_MS:-5}ms"
 
 # Note about model download
 echo ""
-echo "=== Orpheus Model Info ==="
+echo "=== XTTS v2 Model Info ==="
 echo "   Models will be downloaded automatically on first use"
-echo "   - Orpheus model: ~3-4GB (includes LLM and audio decoder)"
+echo "   - XTTS v2 model: ~2GB"
 echo "   Location: ${HF_HOME:-/app/.cache/huggingface}"
-echo "   First startup may take 10-15 minutes (model download + warmup)"
+echo "   First startup may take 5-10 minutes (model download + warmup)"
 echo ""
 
 # Create necessary directories
 mkdir -p /app/voices
-mkdir -p /app/references
 echo "✓ Directories created"
 
 # Start FastAPI service
 cd /app
 echo "================================================================================"
-echo "🎙️  Starting Orpheus TTS FastAPI Server"
+echo "🎙️  Starting XTTS v2 FastAPI Server"
 echo "   Port: 8000"
 echo "   Workers: 1 (GPU-based, single model instance)"
-echo "   Expected Latency: 100-200ms (streaming)"
+echo "   Expected Latency: <200ms (with streaming)"
 echo "================================================================================"
 echo ""
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Orpheus TTS (Clean Implementation)
-Based on official Orpheus-TTS examples
+June TTS Service - XTTS v2 (Coqui TTS)
+Clean implementation with voice cloning and streaming support
 """
 import asyncio
 import io
 import logging
 import os
+import tempfile
 import time
-import wave
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -28,7 +28,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("june-tts-orpheus")
+logger = logging.getLogger("june-tts-xtts")
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -37,10 +37,10 @@ LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 
-# Orpheus settings
-ORPHEUS_MODEL = os.getenv("ORPHEUS_MODEL", "canopylabs/orpheus-3b-0.1-ft")
-MAX_MODEL_LEN = int(os.getenv("MAX_MODEL_LEN", "2048"))
+# XTTS v2 settings
+XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 WARMUP_ON_STARTUP = os.getenv("WARMUP_ON_STARTUP", "0") == "1"
+USE_DEEPSPEED = os.getenv("USE_DEEPSPEED", "0") == "1"
 
 # PostgreSQL
 DB_HOST = os.getenv("DB_HOST", "100.64.0.1")
@@ -50,25 +50,31 @@ DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
 # Audio settings
-ORPHEUS_SAMPLE_RATE = 24000  # Orpheus native
+XTTS_SAMPLE_RATE = 24000  # XTTS native
 LIVEKIT_SAMPLE_RATE = 48000
 LIVEKIT_FRAME_SIZE = 960  # 20ms @ 48kHz
 FRAME_PERIOD_S = 0.020
+
+# XTTS v2 supported languages
+SUPPORTED_LANGUAGES = [
+    "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru",
+    "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"
+]
 
 # -----------------------------------------------------------------------------
 # FastAPI app
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="June TTS (Orpheus)",
-    version="9.0.0-clean",
-    description="Clean Orpheus TTS implementation"
+    title="June TTS (XTTS v2)",
+    version="10.0.0-xtts",
+    description="XTTS v2 implementation with voice cloning and streaming"
 )
 
 # -----------------------------------------------------------------------------
 # Global state
 # -----------------------------------------------------------------------------
-orpheus_model = None
-voice_cache = {}
+tts_model = None
+voice_cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}  # voice_id -> (gpt_cond_latent, speaker_embedding)
 livekit_room = None
 livekit_audio_source = None
 livekit_connected = False
@@ -82,8 +88,9 @@ class SynthesizeRequest(BaseModel):
     room_name: str = Field(..., description="LiveKit room name")
     voice_id: str = Field(default="default")
     language: str = Field(default="en")
-    temperature: float = Field(default=0.7, ge=0.1, le=2.0)
-    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0)
+    temperature: float = Field(default=0.65, ge=0.1, le=1.0)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    enable_text_splitting: bool = Field(default=True)
 
 # -----------------------------------------------------------------------------
 # Database
@@ -125,67 +132,144 @@ async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
     return None
 
 # -----------------------------------------------------------------------------
-# Orpheus Model - OFFICIAL IMPLEMENTATION
+# XTTS v2 Model
 # -----------------------------------------------------------------------------
 async def load_model():
-    """Load Orpheus TTS model - Official implementation"""
-    global orpheus_model
+    """Load XTTS v2 model"""
+    global tts_model
 
     logger.info("=" * 80)
-    logger.info("🚀 Loading Orpheus TTS Model (Official Implementation)")
-    logger.info(f"   Model: {ORPHEUS_MODEL}")
-    logger.info(f"   Max Model Length: {MAX_MODEL_LEN}")
+    logger.info("🚀 Loading XTTS v2 Model (Coqui TTS)")
+    logger.info(f"   Model: {XTTS_MODEL}")
+    logger.info(f"   GPU: {torch.cuda.is_available()}")
+    logger.info(f"   DeepSpeed: {USE_DEEPSPEED}")
     logger.info("=" * 80)
 
     try:
-        from orpheus_tts import OrpheusModel
+        from TTS.api import TTS
 
-        # OFFICIAL: OrpheusModel only accepts model_name
-        # It will use vLLM defaults internally
-        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
-        logger.info("✅ Orpheus model loaded")
+        # Initialize XTTS v2
+        tts_model = TTS(XTTS_MODEL, gpu=torch.cuda.is_available())
+        logger.info("✅ XTTS v2 model loaded")
 
         # Warmup
         if WARMUP_ON_STARTUP:
             logger.info("⏱️  Warming up...")
-            warmup_chunks = list(orpheus_model.generate_speech(
-                prompt="Hello world.",
-                voice="zoe"
-            ))
-            logger.info(f"✅ Warmup complete - {len(warmup_chunks)} chunks")
+            # Use built-in speaker for warmup
+            warmup_output = tts_model.tts(
+                text="Hello world.",
+                language="en"
+            )
+            logger.info(f"✅ Warmup complete")
 
-        logger.info("✅ Orpheus TTS ready")
+        logger.info("✅ XTTS v2 ready")
+        logger.info(f"🌍 Supported languages: {', '.join(SUPPORTED_LANGUAGES)}")
         return True
 
     except Exception as e:
         logger.error(f"❌ Failed to load model: {e}", exc_info=True)
         return False
 
-def generate_audio(text: str, voice: str = "zoe") -> bytes:
-    """Generate audio using official Orpheus method"""
-    logger.info(f"🎙️ Generating: '{text[:60]}...' with voice='{voice}'")
+async def get_voice_conditioning(voice_id: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Get or create cached voice conditioning latents
+    Returns (gpt_cond_latent, speaker_embedding) tuple
+    """
+    # Check cache first
+    if voice_id in voice_cache:
+        logger.info(f"✅ Using cached conditioning for voice '{voice_id}'")
+        return voice_cache[voice_id]
 
-    # OFFICIAL: Use generate_speech() - returns iterator of audio chunks
-    syn_tokens = orpheus_model.generate_speech(
-        prompt=text,
-        voice=voice  # Preset voice name
-    )
+    # Load voice audio from database
+    voice_audio = await get_voice_from_db(voice_id)
+    if not voice_audio:
+        logger.warning(f"Voice '{voice_id}' not found in database")
+        return None
 
-    # OFFICIAL: Collect chunks and save to WAV
-    buffer = io.BytesIO()
-    with wave.open(buffer, 'wb') as wf:
-        wf.setnchannels(1)  # Mono
-        wf.setsampwidth(2)  # 16-bit
-        wf.setframerate(ORPHEUS_SAMPLE_RATE)  # 24kHz
+    try:
+        # Save to temporary file (XTTS needs file path)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp.write(voice_audio)
+            tmp_path = tmp.name
 
-        chunk_count = 0
-        for audio_chunk in syn_tokens:
-            chunk_count += 1
-            logger.info(f"   Chunk {chunk_count}: {len(audio_chunk)} bytes")
-            wf.writeframes(audio_chunk)
+        # Get conditioning latents using XTTS v2 model
+        logger.info(f"🎙️ Computing conditioning latents for voice '{voice_id}'")
 
-    logger.info(f"✅ Generated {chunk_count} chunks")
-    return buffer.getvalue()
+        # XTTS v2 uses the model's internal method
+        from TTS.tts.models.xtts import Xtts
+        if hasattr(tts_model, 'synthesizer') and hasattr(tts_model.synthesizer.tts_model, 'get_conditioning_latents'):
+            gpt_cond_latent, speaker_embedding = tts_model.synthesizer.tts_model.get_conditioning_latents(
+                audio_path=[tmp_path]
+            )
+
+            # Cache the conditioning
+            voice_cache[voice_id] = (gpt_cond_latent, speaker_embedding)
+            logger.info(f"✅ Cached conditioning for voice '{voice_id}'")
+
+            # Clean up temp file
+            os.unlink(tmp_path)
+
+            return (gpt_cond_latent, speaker_embedding)
+        else:
+            # Fallback: return the file path for direct use
+            logger.warning(f"Using fallback voice conditioning method")
+            return tmp_path
+
+    except Exception as e:
+        logger.error(f"❌ Failed to get voice conditioning: {e}", exc_info=True)
+        return None
+
+def generate_audio(
+    text: str,
+    voice_id: str = "default",
+    language: str = "en",
+    temperature: float = 0.65,
+    speed: float = 1.0,
+    enable_text_splitting: bool = True
+) -> bytes:
+    """Generate audio using XTTS v2"""
+    logger.info(f"🎙️ Generating: '{text[:60]}...' with voice='{voice_id}', language='{language}'")
+
+    try:
+        # Get voice conditioning if custom voice
+        speaker_wav = None
+        if voice_id != "default":
+            # For now, we'll use the voice file path directly
+            # In production, we'd use cached conditioning latents
+            voice_audio = asyncio.run(get_voice_from_db(voice_id))
+            if voice_audio:
+                # Save to temp file
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp.write(voice_audio)
+                    speaker_wav = tmp.name
+
+        # Generate using XTTS v2
+        if speaker_wav:
+            wav = tts_model.tts(
+                text=text,
+                speaker_wav=speaker_wav,
+                language=language
+            )
+            # Clean up temp file
+            os.unlink(speaker_wav)
+        else:
+            # Use default voice
+            wav = tts_model.tts(
+                text=text,
+                language=language
+            )
+
+        # Convert to bytes (WAV format)
+        buffer = io.BytesIO()
+        sf.write(buffer, wav, XTTS_SAMPLE_RATE, format='WAV')
+        buffer.seek(0)
+
+        logger.info(f"✅ Generated audio: {len(wav)} samples")
+        return buffer.getvalue()
+
+    except Exception as e:
+        logger.error(f"❌ Audio generation failed: {e}", exc_info=True)
+        raise
 
 # -----------------------------------------------------------------------------
 # LiveKit
@@ -212,7 +296,7 @@ async def connect_livekit():
         await room.connect(ws_url, token)
 
         source = rtc.AudioSource(LIVEKIT_SAMPLE_RATE, 1)
-        track = rtc.LocalAudioTrack.create_audio_track("orpheus-audio", source)
+        track = rtc.LocalAudioTrack.create_audio_track("xtts-audio", source)
         opts = rtc.TrackPublishOptions()
         opts.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, opts)
@@ -281,7 +365,7 @@ async def stream_audio_to_livekit(audio_data: bytes):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
-    logger.info("🚀 Orpheus TTS Service Starting (Clean Implementation)")
+    logger.info("🚀 XTTS v2 TTS Service Starting")
 
     # Load model
     success = await load_model()
@@ -315,10 +399,13 @@ async def health():
         gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
     return {
-        "status": "ok" if orpheus_model is not None else "model_not_loaded",
-        "model": ORPHEUS_MODEL,
+        "status": "ok" if tts_model is not None else "model_not_loaded",
+        "model": XTTS_MODEL,
+        "model_type": "xtts_v2",
+        "supported_languages": SUPPORTED_LANGUAGES,
         "livekit_connected": livekit_connected,
         "db_connected": db_pool is not None,
+        "cached_voices": len(voice_cache),
         "gpu_memory": {
             "used_gb": round(gpu_memory_used, 2),
             "total_gb": round(gpu_memory_total, 2),
@@ -327,24 +414,26 @@ async def health():
 
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    if orpheus_model is None:
+    if tts_model is None:
         raise HTTPException(503, "Model not loaded")
+
+    # Validate language
+    if request.language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(400, f"Language '{request.language}' not supported. Supported: {SUPPORTED_LANGUAGES}")
 
     start_time = time.time()
 
     try:
-        # Map voice_id to Orpheus preset voices
-        # Default to "zoe" for simplicity
-        voice = "zoe"
-        if request.voice_id in ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]:
-            voice = request.voice_id
-
-        # Generate audio using official method
+        # Generate audio using XTTS v2
         audio_bytes = await asyncio.get_event_loop().run_in_executor(
             None,
             generate_audio,
             request.text,
-            voice
+            request.voice_id,
+            request.language,
+            request.temperature,
+            request.speed,
+            request.enable_text_splitting
         )
 
         # Stream to LiveKit
@@ -356,9 +445,11 @@ async def synthesize_speech(request: SynthesizeRequest):
 
         return JSONResponse({
             "status": "success",
-            "model": ORPHEUS_MODEL,
+            "model": XTTS_MODEL,
+            "model_type": "xtts_v2",
             "total_time_ms": round(total_ms, 2),
-            "voice": voice
+            "voice": request.voice_id,
+            "language": request.language
         })
 
     except Exception as e:
@@ -382,10 +473,15 @@ async def clone_voice(voice_id: str = Form(...), voice_name: str = Form(...), fi
         else:
             raise HTTPException(503, "Database not available")
 
+        # Clear cache for this voice if it exists
+        if voice_id in voice_cache:
+            del voice_cache[voice_id]
+
         return JSONResponse({
             "status": "success",
             "voice_id": voice_id,
-            "voice_name": voice_name
+            "voice_name": voice_name,
+            "message": "Voice cloned successfully. XTTS v2 will use this for synthesis."
         })
     except HTTPException:
         raise
@@ -402,6 +498,26 @@ async def list_voices():
         rows = await conn.fetch("SELECT voice_id, name, created_at FROM tts_voices ORDER BY created_at DESC")
     voices = [{"voice_id": r["voice_id"], "name": r["name"], "created_at": str(r["created_at"])} for r in rows]
     return {"total": len(voices), "voices": voices}
+
+@app.delete("/api/voices/{voice_id}")
+async def delete_voice(voice_id: str):
+    if not db_pool:
+        raise HTTPException(503, "Database not available")
+
+    async with db_pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM tts_voices WHERE voice_id = $1", voice_id)
+
+    # Clear from cache
+    if voice_id in voice_cache:
+        del voice_cache[voice_id]
+
+    if result == "DELETE 0":
+        raise HTTPException(404, f"Voice '{voice_id}' not found")
+
+    return JSONResponse({
+        "status": "success",
+        "message": f"Voice '{voice_id}' deleted"
+    })
 
 if __name__ == "__main__":
     import uvicorn

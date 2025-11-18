@@ -1,5 +1,5 @@
-# Dockerfile for June TTS Service - Orpheus Multilingual TTS with GPU Support
-# Ultra-low latency multilingual TTS with vLLM backend
+# Dockerfile for June TTS Service - XTTS v2 (Coqui TTS) with GPU Support
+# Multilingual TTS with voice cloning and streaming support
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 # Set environment variables
@@ -13,21 +13,10 @@ ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:True
 ENV CUDA_LAUNCH_BLOCKING=0
 ENV TORCH_CUDNN_V8_API_ENABLED=1
 
-# Orpheus TTS settings
-ENV ORPHEUS_MODEL=canopylabs/orpheus-3b-0.1-ft
-ENV ORPHEUS_VARIANT=english
+# XTTS v2 settings
+ENV XTTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 ENV WARMUP_ON_STARTUP=0
-ENV MAX_WORKERS=2
-
-# vLLM Optimization settings for Orpheus (tested with vLLM 0.6.x-0.7.x)
-# Optimized for ~3 concurrent sessions with 16GB VRAM
-ENV VLLM_GPU_MEMORY_UTILIZATION=0.5
-ENV VLLM_MAX_MODEL_LEN=2048
-ENV VLLM_QUANTIZATION=fp8
-
-# Orpheus streaming settings
-ENV ORPHEUS_CHUNK_SIZE=210
-ENV ORPHEUS_FADE_MS=5
+ENV USE_DEEPSPEED=0
 
 # Install system dependencies and add deadsnakes PPA for Python 3.11
 RUN apt-get update && apt-get install -y \
@@ -68,22 +57,16 @@ RUN python3.11 -m pip install \
     torchaudio==2.4.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install core ML dependencies BEFORE orpheus-speech
+# Install Coqui TTS with XTTS v2
 RUN python3.11 -m pip install \
+    "coqui-tts>=0.22.0" \
     "numpy<2.0.0" \
-    "transformers>=4.36.0,<4.54.0" \
-    "tokenizers>=0.15.0" \
-    accelerate>=0.25.0 \
-    einops>=0.7.0 \
-    safetensors \
-    "librosa>=0.10.1" \
     "soundfile>=0.12.1" \
+    "librosa>=0.10.1" \
     "scipy>=1.11.4"
 
-# Install Orpheus TTS package
-# Note: This will install compatible vLLM version as dependency
-# orpheus-speech package handles both LLM inference and audio decoding internally
-RUN python3.11 -m pip install orpheus-speech
+# Install DeepSpeed for faster inference (optional but recommended)
+RUN python3.11 -m pip install deepspeed==0.10.3
 
 # Install FastAPI and server dependencies
 RUN python3.11 -m pip install \
@@ -109,17 +92,16 @@ WORKDIR /app
 # Copy application code
 COPY app/main.py /app/main.py
 COPY app/start.sh /app/start.sh
-COPY app/references/ /app/references/
 
 # Create directories for voices and cache
-RUN mkdir -p /app/voices /app/references /app/.cache/huggingface
+RUN mkdir -p /app/voices /app/.cache/huggingface
 
 # Make start script executable
 RUN chmod +x /app/start.sh
 
-# Pre-download Orpheus model (optional - speeds up first startup)
-# Uncomment if you want models baked into image (increases image size by ~3-4GB)
-# RUN python3.11 -c "from orpheus_tts import OrpheusModel; OrpheusModel(model_name='canopylabs/orpheus-3b-0.1-ft')"
+# Pre-download XTTS v2 model (optional - speeds up first startup)
+# Uncomment if you want models baked into image (increases image size)
+# RUN python3.11 -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2', gpu=False)"
 
 # Expose port (8000 for our API)
 EXPOSE 8000
