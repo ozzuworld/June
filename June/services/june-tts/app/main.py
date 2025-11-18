@@ -148,17 +148,17 @@ async def ensure_default_speaker():
     logger.info("📥 Setting up default speaker from database...")
 
     try:
-        # Try to load "June" voice from PostgreSQL database
-        voice_audio = await get_voice_from_db("June")
+        # Try to load "default" voice from PostgreSQL database
+        voice_audio = await get_voice_from_db("default")
 
         if voice_audio:
             # Save to default speaker path
             with open(default_speaker_path, 'wb') as f:
                 f.write(voice_audio)
-            logger.info(f"✅ Loaded 'June' voice from database as default speaker")
+            logger.info(f"✅ Loaded 'default' voice from database as default speaker")
             return default_speaker_path
         else:
-            logger.warning("⚠️  'June' voice not found in database")
+            logger.warning("⚠️  'default' voice not found in database")
             logger.info("📥 Downloading fallback default speaker from XTTS repository...")
 
             # Fallback: Download a sample speaker from XTTS repository
