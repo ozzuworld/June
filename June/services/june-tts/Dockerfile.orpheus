@@ -130,5 +130,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run via start script
-CMD ["/app/start.sh"]
+# Override NVIDIA entrypoint and run start script directly
+ENTRYPOINT []
+CMD ["/bin/bash", "/app/start.sh"]
