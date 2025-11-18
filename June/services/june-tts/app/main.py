@@ -145,28 +145,39 @@ async def ensure_default_speaker():
         logger.info(f"✅ Default speaker already exists: {default_speaker_path}")
         return default_speaker_path
 
-    logger.info("📥 Downloading default speaker reference...")
+    logger.info("📥 Setting up default speaker from database...")
 
     try:
-        # Download a sample speaker from XTTS repository
-        import httpx
+        # Try to load "June" voice from PostgreSQL database
+        voice_audio = await get_voice_from_db("June")
 
-        # Use a sample from the XTTS repo (female English speaker)
-        sample_url = "https://github.com/coqui-ai/TTS/raw/dev/tests/data/ljspeech/wavs/LJ001-0001.wav"
+        if voice_audio:
+            # Save to default speaker path
+            with open(default_speaker_path, 'wb') as f:
+                f.write(voice_audio)
+            logger.info(f"✅ Loaded 'June' voice from database as default speaker")
+            return default_speaker_path
+        else:
+            logger.warning("⚠️  'June' voice not found in database")
+            logger.info("📥 Downloading fallback default speaker from XTTS repository...")
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(sample_url)
-            if response.status_code == 200:
-                with open(default_speaker_path, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"✅ Downloaded default speaker to {default_speaker_path}")
-                return default_speaker_path
-            else:
-                logger.error(f"Failed to download default speaker: HTTP {response.status_code}")
-                return None
+            # Fallback: Download a sample speaker from XTTS repository
+            import httpx
+            sample_url = "https://github.com/coqui-ai/TTS/raw/dev/tests/data/ljspeech/wavs/LJ001-0001.wav"
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(sample_url)
+                if response.status_code == 200:
+                    with open(default_speaker_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"✅ Downloaded fallback speaker to {default_speaker_path}")
+                    return default_speaker_path
+                else:
+                    logger.error(f"Failed to download fallback speaker: HTTP {response.status_code}")
+                    return None
 
     except Exception as e:
-        logger.error(f"❌ Failed to download default speaker: {e}")
+        logger.error(f"❌ Failed to setup default speaker: {e}")
         return None
 
 async def load_model():
