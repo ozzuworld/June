@@ -1,0 +1,132 @@
+# Dockerfile for Orpheus TTS Service with GPU Support
+# Migration from Chatterbox vLLM to Orpheus Multilingual TTS
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda-12.1
+ENV HF_HOME=/app/.cache/huggingface
+
+# GPU optimization settings
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:True
+ENV CUDA_LAUNCH_BLOCKING=0
+ENV TORCH_CUDNN_V8_API_ENABLED=1
+
+# Orpheus TTS settings
+ENV ORPHEUS_MODEL=canopylabs/orpheus-3b-0.1-ft
+ENV ORPHEUS_VARIANT=english
+ENV WARMUP_ON_STARTUP=1
+ENV MAX_WORKERS=2
+
+# vLLM Optimization settings for Orpheus (tested with vLLM 0.6.x-0.7.x)
+ENV VLLM_GPU_MEMORY_UTILIZATION=0.7
+ENV VLLM_MAX_MODEL_LEN=2048
+ENV VLLM_QUANTIZATION=fp8
+
+# Orpheus streaming settings
+ENV ORPHEUS_CHUNK_SIZE=210
+ENV ORPHEUS_FADE_MS=5
+
+# Install system dependencies and add deadsnakes PPA for Python 3.11
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update \
+    && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3.11-venv \
+    build-essential \
+    gcc \
+    g++ \
+    git \
+    ffmpeg \
+    libsndfile1 \
+    libsox-dev \
+    portaudio19-dev \
+    wget \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Install pip for Python 3.11
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
+    python3.11 get-pip.py && \
+    rm get-pip.py && \
+    python3.11 -m pip install --upgrade pip setuptools wheel
+
+# Install PyTorch 2.4.0+ with CUDA 12.1 support
+RUN python3.11 -m pip install \
+    torch==2.4.0 \
+    torchvision==0.19.0 \
+    torchaudio==2.4.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Install core ML dependencies BEFORE orpheus-speech
+RUN python3.11 -m pip install \
+    "numpy<2.0.0" \
+    "transformers>=4.36.0,<4.54.0" \
+    "tokenizers>=0.15.0" \
+    accelerate>=0.25.0 \
+    einops>=0.7.0 \
+    safetensors \
+    "librosa>=0.10.1" \
+    "soundfile>=0.12.1" \
+    "scipy>=1.11.4"
+
+# Install Orpheus TTS package
+# Note: This will install compatible vLLM version as dependency
+RUN python3.11 -m pip install orpheus-speech
+
+# Install SNAC audio decoder (required for Orpheus token → audio conversion)
+RUN python3.11 -m pip install snac
+
+# Install FastAPI and server dependencies
+RUN python3.11 -m pip install \
+    "fastapi==0.104.1" \
+    "uvicorn[standard]==0.24.0" \
+    "pydantic==2.5.0" \
+    "httpx==0.25.0" \
+    python-multipart \
+    sse-starlette
+
+# Install LiveKit Python SDK with compatible protobuf
+RUN python3.11 -m pip install "protobuf>=4.21.0,<5.0.0" livekit==0.11.1
+
+# Install PostgreSQL client
+RUN python3.11 -m pip install asyncpg
+
+# Install Hugging Face CLI for model downloads
+RUN python3.11 -m pip install "huggingface-hub[cli]"
+
+# Create app directory
+WORKDIR /app
+
+# Copy application code
+COPY app/ /app/
+
+# Create directories for voices, references, and cache
+RUN mkdir -p /app/voices /app/references /app/.cache/huggingface
+
+# Make start script executable
+RUN chmod +x /app/start.sh
+
+# Pre-download Orpheus model and SNAC decoder (optional - speeds up first startup)
+# Uncomment if you want models baked into image (increases image size by ~4-5GB)
+# RUN python3.11 -c "from orpheus_tts import OrpheusModel; OrpheusModel(model_name='canopylabs/orpheus-3b-0.1-ft')"
+# RUN python3.11 -c "import snac; snac.SNAC.from_pretrained('hubertsiuzdak/snac_24khz')"
+
+# Expose port (8000 for our API)
+EXPOSE 8000
+
+# Health check (extended start-period for model download + warmup)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run via start script
+CMD ["/app/start.sh"]
