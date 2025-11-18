@@ -210,15 +210,16 @@ async def load_model():
     try:
         # Load Orpheus model
         logger.info("📥 Loading Orpheus LLM model...")
+
+        # Configure vLLM via environment variables (must be set BEFORE import)
+        # This prevents KV cache memory errors
+        os.environ["VLLM_MAX_MODEL_LEN"] = str(VLLM_MAX_MODEL_LEN)
+        os.environ["VLLM_GPU_MEMORY_UTILIZATION"] = str(VLLM_GPU_MEMORY_UTILIZATION)
+
         from orpheus_tts import OrpheusModel
 
-        # OrpheusModel accepts vLLM engine parameters via **kwargs
-        # Pass max_model_len and gpu_memory_utilization to configure KV cache
-        orpheus_model = OrpheusModel(
-            model_name=ORPHEUS_MODEL,
-            max_model_len=VLLM_MAX_MODEL_LEN,  # Default 2048 - enough for TTS
-            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION  # 0.7-0.9 recommended
-        )
+        # OrpheusModel reads vLLM config from environment variables
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
         logger.info("✅ Orpheus model loaded")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
