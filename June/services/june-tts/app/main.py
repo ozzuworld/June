@@ -307,6 +307,8 @@ async def generate_async(
 
     def _generate():
         try:
+            logger.info(f"🔧 DEBUG: Starting generation with voice_path={voice_path}")
+
             # Generate with Orpheus - returns iterator of audio chunks
             audio_chunks = orpheus_model.generate_speech(
                 prompt=text,
@@ -317,13 +319,21 @@ async def generate_async(
                 top_p=0.9
             )
 
+            logger.info("🔧 DEBUG: generate_speech() returned, iterating chunks...")
+
             # Collect all chunks and combine into single audio bytes
             all_chunks = []
+            chunk_count = 0
             for chunk in audio_chunks:
+                chunk_count += 1
+                logger.info(f"🔧 DEBUG: Got chunk {chunk_count}, size: {len(chunk)} bytes")
                 all_chunks.append(chunk)
+
+            logger.info(f"🔧 DEBUG: Iteration complete! Total chunks: {len(all_chunks)}")
 
             # Concatenate all audio chunks
             complete_audio = b''.join(all_chunks)
+            logger.info(f"🔧 DEBUG: Concatenated audio: {len(complete_audio)} bytes")
             return complete_audio
 
         except Exception as e:
