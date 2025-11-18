@@ -433,13 +433,13 @@ async def stream_audio_to_livekit(audio_data: bytes):
 async def on_startup():
     logger.info("🚀 XTTS v2 TTS Service Starting")
 
-    # Load model
+    # Initialize database FIRST (needed for loading default speaker)
+    await init_db_pool()
+
+    # Load model (will use database to get default speaker)
     success = await load_model()
     if not success:
         logger.error("❌ Failed to load model")
-
-    # Initialize database
-    await init_db_pool()
 
     # Connect to LiveKit
     asyncio.create_task(connect_livekit())
