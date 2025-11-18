@@ -212,30 +212,17 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
 
         from orpheus_tts import OrpheusModel
-        from vllm import LLM, SamplingParams
 
-        # Monkey-patch OrpheusModel._setup_engine to inject vLLM configuration
-        # CRITICAL: Use synchronous LLM class, not AsyncLLMEngine
-        # OrpheusModel.generate_speech() returns a sync generator
-        # Reference: https://github.com/canopyai/Orpheus-TTS/issues/13
-        def custom_setup_engine(self):
-            logger.info(f"🔧 Custom engine setup with max_model_len={VLLM_MAX_MODEL_LEN}")
+        # Create model with vLLM parameters passed directly
+        # OrpheusModel accepts vLLM parameters in its constructor
+        logger.info(f"🔧 Initializing with max_model_len={VLLM_MAX_MODEL_LEN}, gpu_mem={VLLM_GPU_MEMORY_UTILIZATION}")
 
-            # Use synchronous LLM class
-            llm = LLM(
-                model=self.model_name,
-                dtype=self.dtype,
-                max_model_len=VLLM_MAX_MODEL_LEN,
-                gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-                quantization=VLLM_QUANTIZATION,
-            )
-            return llm
-
-        # Apply monkey patch before creating model instance
-        OrpheusModel._setup_engine = custom_setup_engine
-
-        # Create model (will use our patched _setup_engine method)
-        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
+        orpheus_model = OrpheusModel(
+            model_name=ORPHEUS_MODEL,
+            max_model_len=VLLM_MAX_MODEL_LEN,
+            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
+            quantization=VLLM_QUANTIZATION,
+        )
         logger.info("✅ Orpheus model loaded")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
@@ -303,57 +290,45 @@ async def generate_async(
     repetition_penalty: float = 1.1,
 ) -> bytes:
     """Generate audio with Orpheus (non-streaming, returns complete WAV bytes)"""
+    loop = asyncio.get_event_loop()
 
-    try:
-        logger.info(f"🔧 DEBUG: Starting generation with voice_path={voice_path}")
-
-        # Try WITHOUT threading - maybe vLLM async engine needs main thread
-        logger.info("🔧 DEBUG: Calling generate_speech() directly in async context...")
-
-        test_voice = "zoe"
-        logger.info(f"🔧 DEBUG: Using PRESET voice '{test_voice}'")
-
-        # Call directly
-        audio_chunks = orpheus_model.generate_speech(
-            prompt=text,
-            voice=test_voice,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
-            max_tokens=100,  # Extremely short for testing
-            top_p=0.9
-        )
-
-        logger.info("🔧 DEBUG: generate_speech() returned, trying next()...")
-
-        # Try explicit next() first
-        chunks = []
+    def _generate():
         try:
-            logger.info("🔧 DEBUG: Calling next() on generator...")
-            first_chunk = next(iter(audio_chunks))
-            logger.info(f"🔧 DEBUG: SUCCESS! Got first chunk, size: {len(first_chunk)} bytes")
-            chunks.append(first_chunk)
+            # For finetuned model: use preset voice names ("zoe", "tara", etc.)
+            # For voice cloning with custom audio, use the pretrained model
+            # Default to "zoe" if no specific voice provided
+            voice = voice_path if voice_path and not voice_path.startswith('/') else "zoe"
 
-            # Continue iterating
-            for chunk in audio_chunks:
-                logger.info(f"🔧 DEBUG: Got chunk {len(chunks)+1}, size: {len(chunk)} bytes")
-                chunks.append(chunk)
+            logger.info(f"🔧 DEBUG: Generating with voice='{voice}'")
 
-            logger.info(f"🔧 DEBUG: Iteration complete! Total chunks: {len(chunks)}")
-        except StopIteration:
-            logger.info("🔧 DEBUG: Generator ended (StopIteration)")
+            # Generate with Orpheus - returns iterator of audio chunks
+            audio_chunks = orpheus_model.generate_speech(
+                prompt=text,
+                voice=voice,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                max_tokens=2000,
+                top_p=0.9
+            )
+
+            # Collect all chunks
+            all_chunks = []
+            for i, chunk in enumerate(audio_chunks):
+                logger.info(f"🔧 DEBUG: Got chunk {i+1}, size: {len(chunk)} bytes")
+                all_chunks.append(chunk)
+
+            logger.info(f"🔧 DEBUG: Generation complete! Total chunks: {len(all_chunks)}")
+
+            # Concatenate all audio chunks
+            complete_audio = b''.join(all_chunks)
+            return complete_audio
+
         except Exception as e:
-            logger.error(f"🔧 DEBUG: ERROR during iteration: {e}", exc_info=True)
+            logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
             raise
 
-        all_chunks = chunks
-
-        # Concatenate all audio chunks
-        complete_audio = b''.join(all_chunks)
-        return complete_audio
-
-    except Exception as e:
-        logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
-        raise
+    audio_bytes = await loop.run_in_executor(executor, _generate)
+    return audio_bytes
 
 async def generate_stream(
     text: str,
