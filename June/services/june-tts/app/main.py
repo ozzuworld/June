@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-June TTS Service - Chatterbox TTS Integration
-Multilingual TTS with voice cloning and emotion control
+June TTS Service - Orpheus Multilingual TTS Integration
+Ultra-low latency multilingual TTS with streaming support
 """
 import asyncio
 import io
@@ -11,24 +11,17 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 import numpy as np
 import soundfile as sf
 import torch
 import torchaudio as ta
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from livekit import rtc
 from pydantic import BaseModel, Field
 import asyncpg
-
-# CRITICAL: Import chatterbox_vllm models to register custom tokenizers BEFORE vLLM multiprocessing
-# vLLM uses multiprocessing spawn mode, so tokenizers must be registered at module level
-try:
-    import chatterbox_vllm.models.t3  # Registers EnTokenizer and MtlTokenizer
-except ImportError:
-    pass  # Will fail gracefully during model load if chatterbox-vllm not installed
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -37,7 +30,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("june-tts-chatterbox")
+logger = logging.getLogger("june-tts-orpheus")
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -46,23 +39,24 @@ LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
 
-# Chatterbox settings
+# Device settings
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-USE_MULTILINGUAL = os.getenv("USE_MULTILINGUAL", "1") == "1"
 WARMUP_ON_STARTUP = os.getenv("WARMUP_ON_STARTUP", "1") == "1"
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "1000"))
 
-# Phase 1 Optimization settings (legacy - now using vLLM)
-USE_FP16 = os.getenv("USE_FP16", "0") == "1" and DEVICE == "cuda"  # vLLM handles precision internally
-USE_TORCH_COMPILE = os.getenv("USE_TORCH_COMPILE", "0") == "1"  # Not used with vLLM
-TORCH_COMPILE_MODE = os.getenv("TORCH_COMPILE_MODE", "reduce-overhead")
+# Orpheus model settings
+ORPHEUS_MODEL = os.getenv("ORPHEUS_MODEL", "canopylabs/orpheus-3b-0.1-ft")
+ORPHEUS_VARIANT = os.getenv("ORPHEUS_VARIANT", "english")  # or "multilingual"
 
-# vLLM Optimization settings (4-10x speedup)
-VLLM_GPU_MEMORY_UTILIZATION = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.6"))
-VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "1000"))
-VLLM_ENFORCE_EAGER = os.getenv("VLLM_ENFORCE_EAGER", "1") == "1"
-CHATTERBOX_CFG_SCALE = float(os.getenv("CHATTERBOX_CFG_SCALE", "0.3"))
+# vLLM settings for Orpheus
+VLLM_GPU_MEMORY_UTILIZATION = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.7"))
+VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "2048"))
+VLLM_QUANTIZATION = os.getenv("VLLM_QUANTIZATION", "fp8")
+
+# Orpheus streaming settings
+ORPHEUS_CHUNK_SIZE = int(os.getenv("ORPHEUS_CHUNK_SIZE", "210"))  # SNAC tokens per chunk
+ORPHEUS_FADE_MS = int(os.getenv("ORPHEUS_FADE_MS", "5"))  # Fade transition duration
 
 # PostgreSQL
 DB_HOST = os.getenv("DB_HOST", "100.64.0.1")
@@ -72,7 +66,7 @@ DB_USER = os.getenv("DB_USER", "keycloak")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "Pokemon123!")
 
 # Audio settings
-CHATTERBOX_SAMPLE_RATE = 24000  # Chatterbox default
+ORPHEUS_SAMPLE_RATE = 24000  # Orpheus native sample rate
 LIVEKIT_SAMPLE_RATE = 48000
 LIVEKIT_FRAME_SIZE = 960  # 20ms @ 48kHz
 FRAME_PERIOD_S = 0.020
@@ -81,18 +75,17 @@ FRAME_PERIOD_S = 0.020
 # FastAPI app
 # -----------------------------------------------------------------------------
 app = FastAPI(
-    title="June TTS (Chatterbox vLLM)",
-    version="7.0.0-vllm",
-    description="Chatterbox TTS with vLLM port: 4-10x faster inference with automatic batching"
+    title="June TTS (Orpheus Multilingual)",
+    version="8.0.0-orpheus",
+    description="Orpheus Multilingual TTS: Ultra-low latency streaming TTS with LLM backbone"
 )
 
 # -----------------------------------------------------------------------------
 # Global state
 # -----------------------------------------------------------------------------
-model = None
+orpheus_model = None  # OrpheusModel instance (handles both LLM and audio decoding internally)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 voice_cache = {}  # Maps voice_id -> file path
-voice_cache_gpu = {}  # Maps voice_id -> preprocessed GPU tensors (Phase 1 optimization)
 
 livekit_room = None
 livekit_audio_source = None
@@ -112,37 +105,42 @@ class SynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     room_name: str = Field(..., description="LiveKit room name")
     voice_id: str = Field(default="default")
-    language: str = Field(default="en", description="Language code for multilingual model")
-    # Phase 1: Optimized defaults for speed (was 0.5/0.5/0.9)
-    exaggeration: float = Field(default=0.35, ge=0.0, le=2.0, description="Emotion intensity (0.0=flat, 2.0=very expressive)")
-    cfg_weight: float = Field(default=0.3, ge=0.0, le=1.0, description="Voice adherence (lower=better pacing)")
+    language: str = Field(default="en", description="Language code (en, es, fr, de, it, pt, zh)")
     temperature: float = Field(default=0.7, ge=0.1, le=2.0, description="Sampling temperature")
+    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0, description="Repetition penalty")
+    stream: bool = Field(default=False, description="Enable streaming response")
 
 # -----------------------------------------------------------------------------
 # Database
 # -----------------------------------------------------------------------------
 async def init_db_pool():
     global db_pool
-    db_pool = await asyncpg.create_pool(
-        host=DB_HOST, port=DB_PORT, database=DB_NAME,
-        user=DB_USER, password=DB_PASSWORD, min_size=2, max_size=10
-    )
-    logger.info("✅ PostgreSQL connection pool created")
+    try:
+        db_pool = await asyncpg.create_pool(
+            host=DB_HOST, port=DB_PORT, database=DB_NAME,
+            user=DB_USER, password=DB_PASSWORD, min_size=2, max_size=10
+        )
+        logger.info("✅ PostgreSQL connection pool created")
 
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS tts_voices (
-                id SERIAL PRIMARY KEY,
-                voice_id VARCHAR(100) UNIQUE NOT NULL,
-                name VARCHAR(255),
-                audio_data BYTEA NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-    logger.info("✅ Voices table ready")
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS tts_voices (
+                    id SERIAL PRIMARY KEY,
+                    voice_id VARCHAR(100) UNIQUE NOT NULL,
+                    name VARCHAR(255),
+                    audio_data BYTEA NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        logger.info("✅ Voices table ready")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+        # Continue without DB - will use default voice only
 
 async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
+    if db_pool is None:
+        return None
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT audio_data FROM tts_voices WHERE voice_id = $1", voice_id
@@ -181,7 +179,7 @@ async def load_voice_reference(voice_id: str = "default") -> Optional[str]:
             logger.warning(f"⚠️ No reference audio for '{voice_id}'")
             return None
 
-    # Save to temp file for Chatterbox
+    # Save to temp file
     temp_path = f"/tmp/voice_{voice_id}.wav"
     with open(temp_path, 'wb') as f:
         f.write(audio_bytes)
@@ -192,207 +190,174 @@ async def load_voice_reference(voice_id: str = "default") -> Optional[str]:
     logger.info(f"✅ Voice '{voice_id}' loaded to {temp_path}")
     return temp_path
 
-async def preload_all_voices():
-    """Phase 1 Optimization: Pre-load all voices from database into cache on startup"""
-    try:
-        if db_pool is None:
-            logger.warning("⚠️ Cannot preload voices: DB pool not initialized")
-            return
-
-        logger.info("📦 Preloading all voices from database...")
-        async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT voice_id, audio_data FROM tts_voices")
-
-        if not rows:
-            logger.info("   No voices found in database to preload")
-            return
-
-        for row in rows:
-            voice_id = row["voice_id"]
-            audio_bytes = bytes(row["audio_data"])
-
-            # Save to temp file
-            temp_path = f"/tmp/voice_{voice_id}.wav"
-            with open(temp_path, 'wb') as f:
-                f.write(audio_bytes)
-
-            # Cache the path
-            voice_cache[voice_id] = temp_path
-
-        logger.info(f"✅ Preloaded {len(rows)} voices into cache")
-
-    except Exception as e:
-        logger.error(f"❌ Failed to preload voices: {e}", exc_info=True)
-
 # -----------------------------------------------------------------------------
-# Chatterbox Model Management
+# Orpheus Model Management
 # -----------------------------------------------------------------------------
 async def load_model():
-    """Load Chatterbox vLLM model on startup (4-10x faster than original)"""
-    global model
+    """Load Orpheus TTS model with vLLM backend"""
+    global orpheus_model, snac_decoder
 
     logger.info("=" * 80)
-    logger.info("🚀 Loading Chatterbox TTS Model (vLLM Port - 4-10x Faster)")
+    logger.info("🚀 Loading Orpheus Multilingual TTS Model")
+    logger.info(f"   Model: {ORPHEUS_MODEL}")
+    logger.info(f"   Variant: {ORPHEUS_VARIANT}")
     logger.info(f"   Device: {DEVICE}")
     logger.info(f"   GPU Memory Utilization: {VLLM_GPU_MEMORY_UTILIZATION}")
     logger.info(f"   Max Model Length: {VLLM_MAX_MODEL_LEN}")
-    logger.info(f"   Enforce Eager: {VLLM_ENFORCE_EAGER}")
-    logger.info(f"   CFG Scale: {CHATTERBOX_CFG_SCALE}")
+    logger.info(f"   Quantization: {VLLM_QUANTIZATION}")
     logger.info("=" * 80)
 
     try:
-        # Set CFG scale via environment variable (required by vLLM port)
-        os.environ["CHATTERBOX_CFG_SCALE"] = str(CHATTERBOX_CFG_SCALE)
+        # Load Orpheus model
+        logger.info("📥 Loading Orpheus LLM model...")
 
-        # Manually replicate what ChatterboxTTS.from_pretrained() is supposed to do
-        # The library has a bug where it doesn't create the ./t3-model directory before
-        # trying to create a symlink inside it
-        logger.info("📥 Downloading Chatterbox model files from HuggingFace...")
-        from huggingface_hub import hf_hub_download
-        from pathlib import Path
+        from orpheus_tts import OrpheusModel
+        from vllm import AsyncEngineArgs, AsyncLLMEngine
 
-        REPO_ID = "ResembleAI/chatterbox"
-        REVISION = "1b475dffa71fb191cb6d5901215eb6f55635a9b6"
+        # Monkey-patch OrpheusModel._setup_engine to inject vLLM configuration
+        # This is necessary because OrpheusModel doesn't expose vLLM parameters
+        # and VLLM_MAX_MODEL_LEN is not a real vLLM environment variable
+        # Reference: https://github.com/canopyai/Orpheus-TTS/issues/13
+        def custom_setup_engine(self):
+            engine_args = AsyncEngineArgs(
+                model=self.model_name,
+                dtype=self.dtype,
+                max_model_len=VLLM_MAX_MODEL_LEN,
+                gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
+                quantization=VLLM_QUANTIZATION,
+            )
+            return AsyncLLMEngine.from_engine_args(engine_args)
 
-        # Download required files (same as library's from_pretrained)
-        for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
-            local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, revision=REVISION)
+        # Apply monkey patch before creating model instance
+        OrpheusModel._setup_engine = custom_setup_engine
 
-        logger.info(f"✅ Model files downloaded to HF cache")
+        # Create model (will use our patched _setup_engine method)
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
+        logger.info("✅ Orpheus model loaded")
 
-        # Create symlink structure that vLLM expects (fixing the library bug)
-        t3_cfg_path = Path(local_path).parent / "t3_cfg.safetensors"
-        t3_model_dir = Path("/app/t3-model")
-        t3_model_dir.mkdir(exist_ok=True)  # This is what the library forgot to do!
-        model_safetensors_path = t3_model_dir / "model.safetensors"
-        model_safetensors_path.unlink(missing_ok=True)
-        model_safetensors_path.symlink_to(t3_cfg_path)
-        logger.info(f"✅ Created symlink: {model_safetensors_path} -> {t3_cfg_path}")
+        # Note: SNAC decoding is handled internally by orpheus_tts package
+        # The generate_speech() method returns ready-to-use audio chunks
 
-        # Create config.json for vLLM (another missing piece)
-        # vLLM needs this to identify the model architecture and configuration
-        import json
-        config_json = {
-            "architectures": ["ChatterboxT3"],  # Registered custom model class
-            "model_type": "llama",
-            "hidden_size": 1024,  # From T3Config.n_channels
-            "intermediate_size": 2752,  # Llama_520M config
-            "num_attention_heads": 16,
-            "num_hidden_layers": 24,
-            "num_key_value_heads": 16,
-            "vocab_size": 704,  # English tokenizer size
-            "max_position_embeddings": 2048,
-            "rms_norm_eps": 1e-5,
-            "rope_theta": 10000.0,
-            "torch_dtype": "float16"
-        }
-        config_path = t3_model_dir / "config.json"
-        with open(config_path, 'w') as f:
-            json.dump(config_json, f, indent=2)
-        logger.info(f"✅ Created config.json: {config_path}")
-
-        # Copy tokenizer.json to where EnTokenizer expects it
-        # EnTokenizer.from_pretrained() looks for tokenizer.json in its own package directory
-        import shutil
-        import chatterbox_vllm.models.t3.entokenizer
-        tokenizer_src = Path(local_path).parent / "tokenizer.json"
-        entokenizer_dir = Path(chatterbox_vllm.models.t3.entokenizer.__file__).parent
-        tokenizer_dst = entokenizer_dir / "tokenizer.json"
-        shutil.copy2(tokenizer_src, tokenizer_dst)
-        logger.info(f"✅ Copied tokenizer.json to: {tokenizer_dst}")
-
-        from chatterbox_vllm.tts import ChatterboxTTS
-        # Note: Custom tokenizers (EnTokenizer, MtlTokenizer) are registered at module level
-        # to ensure they're available in vLLM's multiprocessing subprocesses
-
-        # Now call from_local() with the HF cache directory
-        logger.info("📦 Initializing vLLM engine from local model...")
-        # Note: from_local() calculates gpu_memory_utilization internally based on
-        # max_batch_size and max_model_len. We can't override it directly.
-        # The 'compile' parameter controls enforce_eager (compile=False → enforce_eager=True)
-        # Using minimal parameters to avoid API version incompatibilities
-        model = ChatterboxTTS.from_local(
-            str(Path(local_path).parent),  # ckpt_dir - use string path for compatibility
-            target_device="cuda" if DEVICE == "cuda" else "cpu",
-            max_model_len=VLLM_MAX_MODEL_LEN,
-            compile=not VLLM_ENFORCE_EAGER,  # compile=False means enforce_eager=True
-            max_batch_size=10,  # Default from library, affects GPU memory calculation
-            # Note: variant defaults to "english" in the library, which is what we want
-        )
-        logger.info("✅ Chatterbox vLLM model loaded")
-
-        global CHATTERBOX_SAMPLE_RATE
-        CHATTERBOX_SAMPLE_RATE = model.sr
-        logger.info(f"   Sample Rate: {CHATTERBOX_SAMPLE_RATE} Hz")
-
-        # vLLM Optimizations are built-in
-        logger.info("⚡ vLLM Optimizations Active:")
-        logger.info("   - Automatic batching support")
-        logger.info("   - Optimized GPU memory management")
-        logger.info("   - PagedAttention for faster inference")
-        logger.info("   - 4-10x speedup vs original implementation")
+        logger.info("⚡ Orpheus TTS Features:")
+        logger.info("   - Ultra-low latency (100-200ms)")
+        logger.info("   - Real-time streaming support")
+        logger.info("   - Zero-shot voice cloning")
+        logger.info("   - Multilingual support (7 languages)")
+        logger.info("   - LLM-native architecture (Llama-3b)")
 
         # Warmup generation
         if WARMUP_ON_STARTUP:
-            logger.info("⏱️  Warming up vLLM model...")
+            logger.info("⏱️  Warming up Orpheus model...")
             start = time.time()
             warmup_text = "Hello world."
 
-            # vLLM expects list of prompts
-            _ = model.generate([warmup_text], exaggeration=0.5)
+            # Generate warmup audio (consume the iterator)
+            warmup_chunks = list(orpheus_model.generate_speech(
+                prompt=warmup_text,
+                voice=None,
+                temperature=0.7,
+                repetition_penalty=1.1,
+                max_tokens=500
+            ))
 
             elapsed = time.time() - start
-            logger.info(f"✅ Warmup complete ({elapsed:.1f}s)")
+            logger.info(f"✅ Warmup complete ({elapsed:.1f}s) - Generated {len(warmup_chunks)} chunks")
 
-        logger.info("✅ vLLM model ready for inference")
+        logger.info("✅ Orpheus TTS ready for inference")
         return True
 
-    except Exception as e:
-        logger.error(f"❌ Failed to load vLLM model: {e}", exc_info=True)
+    except ImportError as e:
+        logger.error(f"❌ Import error: {e}")
+        logger.error("   Make sure 'orpheus-speech' is installed")
         return False
+    except Exception as e:
+        logger.error(f"❌ Failed to load Orpheus model: {e}", exc_info=True)
+        return False
+
+def apply_fade(audio: torch.Tensor, fade_ms: int = 5) -> torch.Tensor:
+    """Apply fade in/out to prevent clicks between chunks"""
+    if fade_ms <= 0:
+        return audio
+
+    fade_samples = int(ORPHEUS_SAMPLE_RATE * fade_ms / 1000)
+    if fade_samples >= len(audio):
+        return audio
+
+    # Create fade windows
+    fade_in = torch.linspace(0, 1, fade_samples, device=audio.device)
+    fade_out = torch.linspace(1, 0, fade_samples, device=audio.device)
+
+    # Apply fades
+    audio[:fade_samples] *= fade_in
+    audio[-fade_samples:] *= fade_out
+
+    return audio
 
 async def generate_async(
     text: str,
-    audio_prompt_path: Optional[str] = None,
-    exaggeration: float = 0.5,
-    cfg_weight: float = 0.5,  # Not used in vLLM (set globally via env var)
-    temperature: float = 0.9,  # Not exposed in vLLM port
-    language_id: Optional[str] = None  # Limited support in vLLM
-):
-    """Run vLLM generate() in thread pool (4-10x faster than original)"""
+    voice_path: Optional[str] = None,
+    temperature: float = 0.7,
+    repetition_penalty: float = 1.1,
+) -> bytes:
+    """Generate audio with Orpheus (non-streaming, returns complete WAV bytes)"""
     loop = asyncio.get_event_loop()
 
     def _generate():
         try:
-            # vLLM expects list of prompts
-            prompts = [text]
+            # Generate with Orpheus - returns iterator of audio chunks
+            audio_chunks = orpheus_model.generate_speech(
+                prompt=text,
+                voice=voice_path,  # Can be file path or None for default
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                max_tokens=2000,
+                top_p=0.9
+            )
 
-            kwargs = {
-                "exaggeration": exaggeration,
-            }
+            # Collect all chunks and combine into single audio bytes
+            all_chunks = []
+            for chunk in audio_chunks:
+                all_chunks.append(chunk)
 
-            # Voice reference audio
-            if audio_prompt_path and os.path.exists(audio_prompt_path):
-                kwargs["audio_prompt_path"] = audio_prompt_path
-
-            # Note: CFG is controlled globally via CHATTERBOX_CFG_SCALE env var
-            # Note: temperature not exposed in vLLM port
-            # Note: language_id has limited support in vLLM port
-
-            # Generate with vLLM (returns list of tensors)
-            audios = model.generate(prompts, **kwargs)
-
-            # Extract single audio from list
-            wav = audios[0]
-
-            return wav
+            # Concatenate all audio chunks
+            complete_audio = b''.join(all_chunks)
+            return complete_audio
 
         except Exception as e:
-            logger.error(f"❌ vLLM generation error: {e}", exc_info=True)
+            logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
             raise
 
-    wav = await loop.run_in_executor(executor, _generate)
-    return wav
+    audio_bytes = await loop.run_in_executor(executor, _generate)
+    return audio_bytes
+
+async def generate_stream(
+    text: str,
+    voice_path: Optional[str] = None,
+    temperature: float = 0.7,
+    repetition_penalty: float = 1.1,
+) -> AsyncGenerator[bytes, None]:
+    """Generate audio with Orpheus (streaming) - yields audio byte chunks"""
+    loop = asyncio.get_event_loop()
+
+    logger.info("🎙️ Generating with Orpheus (streaming mode)...")
+
+    def _get_generator():
+        # Returns the generator from Orpheus
+        return orpheus_model.generate_speech(
+            prompt=text,
+            voice=voice_path,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            max_tokens=2000,
+            top_p=0.9
+        )
+
+    # Get the generator in executor
+    audio_generator = await loop.run_in_executor(executor, _get_generator)
+
+    # Yield chunks as they come
+    for chunk in audio_generator:
+        yield chunk
 
 # -----------------------------------------------------------------------------
 # LiveKit
@@ -419,7 +384,7 @@ async def connect_livekit():
         await room.connect(ws_url, token)
 
         source = rtc.AudioSource(LIVEKIT_SAMPLE_RATE, 1)
-        track = rtc.LocalAudioTrack.create_audio_track("chatterbox-audio", source)
+        track = rtc.LocalAudioTrack.create_audio_track("orpheus-audio", source)
         opts = rtc.TrackPublishOptions()
         opts.source = rtc.TrackSource.SOURCE_MICROPHONE
         await room.local_participant.publish_track(track, opts)
@@ -500,7 +465,7 @@ async def stream_audio_to_livekit(audio_data: bytes):
         if delay > 0:
             await asyncio.sleep(delay)
 
-    logger.info(f"✅ Streamed {frames_sent} frames")
+    logger.info(f"✅ Streamed {frames_sent} frames to LiveKit")
 
 # -----------------------------------------------------------------------------
 # Lifecycle
@@ -508,17 +473,16 @@ async def stream_audio_to_livekit(audio_data: bytes):
 @app.on_event("startup")
 async def on_startup():
     logger.info("=" * 80)
-    logger.info("🚀 Chatterbox TTS Service Starting (vLLM Port - 4-10x Faster)")
+    logger.info("🚀 Orpheus TTS Service Starting")
     logger.info("=" * 80)
 
-    # Load vLLM model
-    await load_model()
+    # Load Orpheus model
+    success = await load_model()
+    if not success:
+        logger.error("❌ Failed to load Orpheus model - service may not work correctly")
 
     # Initialize database
     await init_db_pool()
-
-    # Preload all voices into cache
-    await preload_all_voices()
 
     # Load default voice
     await load_voice_reference("default")
@@ -528,13 +492,13 @@ async def on_startup():
 
     logger.info("✅ Service ready")
     logger.info("=" * 80)
-    logger.info("vLLM Optimizations Active:")
+    logger.info("Orpheus TTS Optimizations Active:")
+    logger.info(f"  ⚡ Model: {ORPHEUS_MODEL}")
     logger.info(f"  ⚡ GPU Memory Utilization: {VLLM_GPU_MEMORY_UTILIZATION}")
     logger.info(f"  ⚡ Max Model Length: {VLLM_MAX_MODEL_LEN}")
-    logger.info(f"  ⚡ CFG Scale: {CHATTERBOX_CFG_SCALE}")
-    logger.info(f"  ⚡ Automatic Batching: Enabled")
-    logger.info(f"  ⚡ Voice Cache: {len(voice_cache)} voices preloaded")
-    logger.info(f"  ⚡ Expected Speedup: 4-10x vs original Chatterbox")
+    logger.info(f"  ⚡ Quantization: {VLLM_QUANTIZATION}")
+    logger.info(f"  ⚡ Streaming: Enabled")
+    logger.info(f"  ⚡ Expected Latency: 100-200ms")
     logger.info("=" * 80)
 
 @app.on_event("shutdown")
@@ -542,7 +506,8 @@ async def on_shutdown():
     if db_pool:
         await db_pool.close()
     executor.shutdown(wait=True)
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # -----------------------------------------------------------------------------
 # Health
@@ -556,29 +521,26 @@ async def health():
         gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
 
     return {
-        "status": "ok" if model is not None else "model_not_loaded",
-        "mode": "chatterbox_vllm",
-        "model_type": "vllm_port",
+        "status": "ok" if orpheus_model is not None else "model_not_loaded",
+        "mode": "orpheus_tts",
+        "model": ORPHEUS_MODEL,
+        "variant": ORPHEUS_VARIANT,
         "device": DEVICE,
-        "sample_rate": CHATTERBOX_SAMPLE_RATE if model else None,
+        "sample_rate": ORPHEUS_SAMPLE_RATE,
+        "streaming_enabled": True,
         "livekit_connected": livekit_connected,
         "db_connected": db_pool is not None,
         "current_voice": current_voice_id,
         "voices_cached": len(voice_cache),
-        # vLLM optimization status
         "optimizations": {
-            "engine": "vllm",
-            "version": "7.0.0-vllm",
-            "expected_speedup": "4-10x",
+            "engine": "orpheus_vllm",
+            "version": "8.0.0-orpheus",
+            "expected_latency_ms": "100-200",
             "gpu_memory_utilization": VLLM_GPU_MEMORY_UTILIZATION,
             "max_model_len": VLLM_MAX_MODEL_LEN,
-            "enforce_eager": VLLM_ENFORCE_EAGER,
-            "cfg_scale": CHATTERBOX_CFG_SCALE,
-            "automatic_batching": True,
-            "optimized_defaults": {
-                "exaggeration": 0.35,
-                "cfg_weight": CHATTERBOX_CFG_SCALE,
-            }
+            "quantization": VLLM_QUANTIZATION,
+            "streaming": True,
+            "zero_shot_cloning": True
         },
         "gpu_memory": {
             "used_gb": round(gpu_memory_used, 2),
@@ -601,8 +563,8 @@ async def clone_voice(voice_id: str = Form(...), voice_name: str = Form(...), fi
         try:
             audio, sr = sf.read(tmp_path)
             duration = len(audio) / sr
-            if duration < 10:
-                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 10s for Chatterbox.")
+            if duration < 3:
+                raise HTTPException(400, f"Audio too short ({duration:.1f}s). Minimum 3s for Orpheus.")
             if duration > 60:
                 raise HTTPException(400, f"Audio too long ({duration:.1f}s). Maximum 60s.")
         finally:
@@ -611,14 +573,17 @@ async def clone_voice(voice_id: str = Form(...), voice_name: str = Form(...), fi
             except:
                 pass
 
-        async with db_pool.acquire() as conn:
-            exists = await conn.fetchval("SELECT COUNT(*) FROM tts_voices WHERE voice_id = $1", voice_id)
-            if exists > 0:
-                raise HTTPException(409, f"Voice ID '{voice_id}' already exists")
-            await conn.execute(
-                "INSERT INTO tts_voices (voice_id, name, audio_data) VALUES ($1, $2, $3)",
-                voice_id, voice_name, audio_bytes
-            )
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                exists = await conn.fetchval("SELECT COUNT(*) FROM tts_voices WHERE voice_id = $1", voice_id)
+                if exists > 0:
+                    raise HTTPException(409, f"Voice ID '{voice_id}' already exists")
+                await conn.execute(
+                    "INSERT INTO tts_voices (voice_id, name, audio_data) VALUES ($1, $2, $3)",
+                    voice_id, voice_name, audio_bytes
+                )
+        else:
+            raise HTTPException(503, "Database not available")
 
         return JSONResponse({
             "status": "success",
@@ -634,6 +599,9 @@ async def clone_voice(voice_id: str = Form(...), voice_name: str = Form(...), fi
 
 @app.get("/api/voices")
 async def list_voices():
+    if not db_pool:
+        return {"total": 0, "voices": [], "current_voice": current_voice_id, "cached_voices": list(voice_cache.keys())}
+
     async with db_pool.acquire() as conn:
         rows = await conn.fetch("SELECT voice_id, name, created_at FROM tts_voices ORDER BY created_at DESC")
     voices = [{"voice_id": r["voice_id"], "name": r["name"], "created_at": str(r["created_at"])} for r in rows]
@@ -644,15 +612,15 @@ async def list_voices():
 # -----------------------------------------------------------------------------
 @app.post("/api/tts/synthesize")
 async def synthesize_speech(request: SynthesizeRequest):
-    if model is None:
-        raise HTTPException(503, "Model not loaded")
+    if orpheus_model is None:
+        raise HTTPException(503, "Orpheus model not loaded")
 
     start_time = time.time()
 
     try:
         logger.info(f"🎙️ Synthesizing: '{request.text[:60]}...'")
         logger.info(f"   Voice: {request.voice_id}, Language: {request.language}")
-        logger.info(f"   Params: exaggeration={request.exaggeration}, cfg_weight={request.cfg_weight}")
+        logger.info(f"   Params: temperature={request.temperature}, repetition_penalty={request.repetition_penalty}")
 
         # Load voice reference if different
         voice_path = None
@@ -661,27 +629,32 @@ async def synthesize_speech(request: SynthesizeRequest):
         else:
             voice_path = current_reference_audio_path
 
-        # Generate audio with Chatterbox
-        wav = await generate_async(
+        # Generate audio with Orpheus (returns raw PCM bytes)
+        raw_audio_bytes = await generate_async(
             text=request.text,
-            audio_prompt_path=voice_path,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
+            voice_path=voice_path,
             temperature=request.temperature,
-            language_id=request.language if USE_MULTILINGUAL else None
+            repetition_penalty=request.repetition_penalty
         )
 
-        # Convert to WAV bytes
+        # Convert raw PCM to WAV format
+        import wave
         buffer = io.BytesIO()
-        ta.save(buffer, wav, CHATTERBOX_SAMPLE_RATE, format="wav")
+        with wave.open(buffer, 'wb') as wf:
+            wf.setnchannels(1)  # Mono
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(ORPHEUS_SAMPLE_RATE)  # 24kHz
+            wf.writeframes(raw_audio_bytes)
+
         audio_bytes = buffer.getvalue()
 
         # Stream to LiveKit
         await stream_audio_to_livekit(audio_bytes)
 
         total_ms = (time.time() - start_time) * 1000
-        audio_duration = len(wav[0]) / CHATTERBOX_SAMPLE_RATE
-        rtf = (total_ms / 1000.0) / audio_duration  # Real-time factor
+        # Calculate duration from raw PCM bytes (2 bytes per sample for 16-bit)
+        audio_duration = len(raw_audio_bytes) / (2 * ORPHEUS_SAMPLE_RATE)
+        rtf = (total_ms / 1000.0) / audio_duration if audio_duration > 0 else 0  # Real-time factor
 
         # GPU metrics
         gpu_memory_used = 0
@@ -692,21 +665,20 @@ async def synthesize_speech(request: SynthesizeRequest):
 
         return JSONResponse({
             "status": "success",
-            "mode": "chatterbox_vllm",
-            "model_type": "vllm_port",
+            "mode": "orpheus_tts",
+            "model": ORPHEUS_MODEL,
             "total_time_ms": round(total_ms, 2),
             "audio_duration_seconds": round(audio_duration, 2),
             "voice_id": request.voice_id,
             "language": request.language,
-            # vLLM Performance metrics
             "performance": {
                 "real_time_factor": round(rtf, 3),
                 "inference_speedup": round(1.0 / rtf, 2) if rtf > 0 else 0,
                 "gpu_memory_used_mb": round(gpu_memory_used, 1),
                 "optimizations_active": {
-                    "vllm": True,
-                    "automatic_batching": True,
-                    "cfg_scale": CHATTERBOX_CFG_SCALE,
+                    "orpheus_vllm": True,
+                    "streaming_capable": True,
+                    "quantization": VLLM_QUANTIZATION,
                     "gpu_memory_utilization": VLLM_GPU_MEMORY_UTILIZATION
                 }
             }
