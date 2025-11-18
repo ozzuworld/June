@@ -217,7 +217,7 @@ async def load_model():
         # Monkey-patch OrpheusModel._setup_engine to override GPU memory settings
         # OrpheusModel doesn't accept parameters, so we must patch _setup_engine
         # to inject our custom gpu_memory_utilization value
-        logger.info(f"🔧 Initializing Orpheus with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}")
+        logger.info(f"🔧 Initializing Orpheus with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}, max_model_len={VLLM_MAX_MODEL_LEN}")
 
         def custom_setup_engine(self):
             """Custom _setup_engine that respects our GPU memory settings"""
@@ -225,6 +225,7 @@ async def load_model():
                 model=self.model_name,
                 dtype=self.dtype,
                 gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,  # Use our env var!
+                max_model_len=VLLM_MAX_MODEL_LEN,  # CRITICAL: Limit max sequence length for KV cache
                 enforce_eager=False,
                 disable_log_stats=False,
             )
@@ -235,7 +236,7 @@ async def load_model():
 
         # Now create the model - it will use our patched _setup_engine
         orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
-        logger.info(f"✅ Orpheus model loaded with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}")
+        logger.info(f"✅ Orpheus model loaded with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}, max_model_len={VLLM_MAX_MODEL_LEN}")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
         # The generate_speech() method returns ready-to-use audio chunks
