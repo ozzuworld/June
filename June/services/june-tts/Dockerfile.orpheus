@@ -81,10 +81,8 @@ RUN python3.11 -m pip install \
 
 # Install Orpheus TTS package
 # Note: This will install compatible vLLM version as dependency
+# orpheus-speech package handles both LLM inference and audio decoding internally
 RUN python3.11 -m pip install orpheus-speech
-
-# Install SNAC audio decoder (required for Orpheus token → audio conversion)
-RUN python3.11 -m pip install snac
 
 # Install FastAPI and server dependencies
 RUN python3.11 -m pip install \
@@ -118,10 +116,9 @@ RUN mkdir -p /app/voices /app/references /app/.cache/huggingface
 # Make start script executable
 RUN chmod +x /app/start.sh
 
-# Pre-download Orpheus model and SNAC decoder (optional - speeds up first startup)
-# Uncomment if you want models baked into image (increases image size by ~4-5GB)
+# Pre-download Orpheus model (optional - speeds up first startup)
+# Uncomment if you want models baked into image (increases image size by ~3-4GB)
 # RUN python3.11 -c "from orpheus_tts import OrpheusModel; OrpheusModel(model_name='canopylabs/orpheus-3b-0.1-ft')"
-# RUN python3.11 -c "import snac; snac.SNAC.from_pretrained('hubertsiuzdak/snac_24khz')"
 
 # Expose port (8000 for our API)
 EXPOSE 8000
