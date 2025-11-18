@@ -33,6 +33,9 @@ logger = logging.getLogger("june-tts-xtts")
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
+# Accept Coqui TOS automatically (required for non-interactive Docker environment)
+os.environ["COQUI_TOS_AGREED"] = "1"
+
 LIVEKIT_IDENTITY = os.getenv("LIVEKIT_IDENTITY", "june-tts")
 LIVEKIT_ROOM_NAME = os.getenv("LIVEKIT_ROOM", "ozzu-main")
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "https://api.ozzu.world")
