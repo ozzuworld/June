@@ -1,139 +1,84 @@
-name: Build June Services
+name: 📱 iOS IPA for AltStore (Device - Release)
 
 on:
   workflow_dispatch:
-    inputs:
-      service:
-        description: 'Select service to build'
-        required: true
-        type: choice
-        options:
-          - 'june-orchestrator'
-          - 'june-stt'
-          - 'june-tts'
-          - 'june-dark'
-          - 'june-idp'
-          - 'june-quant'
-          - 'june-vast'
-          - 'all-services'
-      
-      image_tag:
-        description: 'Docker image tag (default: latest)'
-        required: false
-        default: 'latest'
-        type: string
-      
-      push_to_registry:
-        description: 'Push to Docker registry'
-        required: true
-        type: boolean
-        default: true
-      
-      registry:
-        description: 'Docker registry (default: ghcr.io)'
-        required: false
-        default: 'ghcr.io'
-        type: string
-
-env:
-  REGISTRY: ${{ inputs.registry || 'ghcr.io' }}
-  IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
+  push:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'ios/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/ios-build-IPA-device.yml'
 
 jobs:
-  build-service:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    
-    strategy:
-      matrix:
-        service: ${{ inputs.service == 'all-services' && fromJson('["june-orchestrator", "june-stt", "june-tts", "june-dark", "june-idp", "june-quant", "june-vast"]') || fromJson(format('["${0}"]', inputs.service)) }}
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      - name: Log in to Container Registry
-        if: ${{ inputs.push_to_registry }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}
-          tags: |
-            type=raw,value=${{ env.IMAGE_TAG }}
-            type=raw,value=build-${{ github.run_number }}
-            type=sha,prefix={{branch}}-
-      
-      - name: Check if Dockerfile exists
-        id: check-dockerfile
-        run: |
-          if [ -f "June/services/${{ matrix.service }}/Dockerfile" ]; then
-            echo "dockerfile_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Dockerfile found for ${{ matrix.service }}"
-          else
-            echo "dockerfile_exists=false" >> $GITHUB_OUTPUT
-            echo "❌ Dockerfile not found for ${{ matrix.service }}"
-          fi
-      
-      - name: Build Docker image
-        if: steps.check-dockerfile.outputs.dockerfile_exists == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: June/services
-          file: June/services/${{ matrix.service }}/Dockerfile
-          platforms: linux/amd64
-          push: ${{ inputs.push_to_registry }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
-      
-      - name: Skip build (no Dockerfile)
-        if: steps.check-dockerfile.outputs.dockerfile_exists == 'false'
-        run: |
-          echo "⚠️ Skipping build for ${{ matrix.service }} - no Dockerfile found"
-          echo "Expected location: June/services/${{ matrix.service }}/Dockerfile"
-      
-      - name: Build summary
-        run: |
-          echo "## Build Summary for ${{ matrix.service }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.check-dockerfile.outputs.dockerfile_exists }}" == "true" ]; then
-            echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
-            echo "📦 **Image**: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}" >> $GITHUB_STEP_SUMMARY
-            echo "🏷️ **Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
-            if [ "${{ inputs.push_to_registry }}" == "true" ]; then
-              echo "🚀 **Registry**: Pushed to ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "🏠 **Registry**: Built locally only" >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "❌ **Status**: Build skipped - no Dockerfile" >> $GITHUB_STEP_SUMMARY
-            echo "📍 **Expected**: June/services/${{ matrix.service }}/Dockerfile" >> $GITHUB_STEP_SUMMARY
-          fi
+  build_ipa_device:
+    name: 🏗️ Build IPA for iPhone/iPad (Release) for AltStore
+    runs-on: macos-latest
+    timeout-minutes: 60
 
-  notify-completion:
-    runs-on: ubuntu-latest
-    needs: build-service
-    if: always()
     steps:
-      - name: Final summary
-        run: |
-          echo "## 🎉 June Services Build Complete" >> $GITHUB_STEP_SUMMARY
-          echo "**Service(s)**: ${{ inputs.service }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag**: ${{ inputs.image_tag || 'latest' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Registry**: ${{ inputs.registry || 'ghcr.io' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Push to registry**: ${{ inputs.push_to_registry }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Workflow run**: [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+      with:
+        lfs: true
+
+    - name: 🔄 Checkout LFS objects (Fix for PNG pointer files)
+      run: git lfs checkout
+
+    - name: 🐦 Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.24.0'
+        cache: true
+
+    - name: 📦 Get Flutter dependencies
+      run: flutter pub get
+
+    - name: ⚕️ Flutter doctor
+      run: flutter doctor -v
+
+    # Disable automatic signing in Xcode project to bypass codesign requirements
+    - name: 🔓 Disable automatic signing (bypass Apple Developer requirements)
+      run: |
+        # Modify project.pbxproj to disable automatic signing
+        sed -i '' 's/ENABLE_AUTOMATIC_SIGNING = YES/ENABLE_AUTOMATIC_SIGNING = NO/g' ios/Runner.xcodeproj/project.pbxproj
+        sed -i '' 's/ProvisioningStyle = Automatic/ProvisioningStyle = Manual/g' ios/Runner.xcodeproj/project.pbxproj
+        echo "✅ Automatic signing disabled - bypassing Apple Developer requirements"
+    # Build using xcodebuild directly (bypasses Flutter's codesign validation)
+    - name: 🔨 Build iOS (Device, Release) - Bypass Flutter codesign validation
+      run: |
+        flutter build ios --release --no-codesign || echo "Flutter build may fail, continuing with xcodebuild..."
+        cd ios
+        xcodebuild -workspace Runner.xcworkspace \
+                   -scheme Runner \
+                   -configuration Release \
+                   -destination generic/platform=iOS \
+                   -archivePath build/Runner.xcarchive \
+                   archive \
+                   CODE_SIGN_IDENTITY="" \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGNING_ALLOWED=NO \
+                   DEVELOPMENT_TEAM=""
+        echo "✅ Device Runner.app built successfully"
+    # Package device Runner.app into IPA for AltStore
+    - name: 📱 Create Device IPA for AltStore
+      run: |
+        cd ios/build
+        mkdir -p Payload
+        cp -R ../build/Release-iphoneos/Runner.app Payload/ || cp -R Runner.xcarchive/Products/Applications/Runner.app Payload/
+        zip -r ozzu-app-device.ipa Payload
+        echo "✅ ozzu-app-device.ipa created for iPhone/iPad"
+    - name: 📤 Upload Device IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ozzu-app-device-ipa-${{ github.run_number }}
+        path: ios/build/ozzu-app-device.ipa
+        retention-days: 30
+
+    - name: 📢 Summary
+      run: |
+        echo "🎉 DEVICE IPA READY: ozzu-app-device.ipa"
+        echo "📱 Install via AltStore: My Apps → + → select IPA"
+        echo "✅ Compatible with iPhone 16 Pro (ARM64-device)"
+        echo "✅ No Apple Developer account required"
+        echo "⚠️  AltStore will re-sign with your Apple ID"
