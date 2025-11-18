@@ -140,11 +140,9 @@ async def load_model():
     try:
         from orpheus_tts import OrpheusModel
 
-        # OFFICIAL: OrpheusModel accepts model_name and max_model_len directly
-        orpheus_model = OrpheusModel(
-            model_name=ORPHEUS_MODEL,
-            max_model_len=MAX_MODEL_LEN
-        )
+        # OFFICIAL: OrpheusModel only accepts model_name
+        # It will use vLLM defaults internally
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
         logger.info("✅ Orpheus model loaded")
 
         # Warmup
