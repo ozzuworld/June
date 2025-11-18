@@ -212,13 +212,30 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
 
         from orpheus_tts import OrpheusModel
+        from vllm import AsyncEngineArgs, AsyncLLMEngine
 
-        # Initialize OrpheusModel with just model_name
-        # The model uses vLLM defaults internally
-        logger.info(f"🔧 Initializing Orpheus model: {ORPHEUS_MODEL}")
+        # Monkey-patch OrpheusModel._setup_engine to override GPU memory settings
+        # OrpheusModel doesn't accept parameters, so we must patch _setup_engine
+        # to inject our custom gpu_memory_utilization value
+        logger.info(f"🔧 Initializing Orpheus with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}")
 
+        def custom_setup_engine(self):
+            """Custom _setup_engine that respects our GPU memory settings"""
+            engine_args = AsyncEngineArgs(
+                model=self.model_name,
+                dtype=self.dtype,
+                gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,  # Use our env var!
+                enforce_eager=False,
+                disable_log_stats=False,
+            )
+            return AsyncLLMEngine.from_engine_args(engine_args)
+
+        # Apply patch before creating instance
+        OrpheusModel._setup_engine = custom_setup_engine
+
+        # Now create the model - it will use our patched _setup_engine
         orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
-        logger.info("✅ Orpheus model loaded with vLLM defaults")
+        logger.info(f"✅ Orpheus model loaded with gpu_memory_utilization={VLLM_GPU_MEMORY_UTILIZATION}")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
         # The generate_speech() method returns ready-to-use audio chunks
