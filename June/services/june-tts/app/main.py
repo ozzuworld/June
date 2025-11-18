@@ -304,39 +304,45 @@ async def generate_async(
     try:
         logger.info(f"🔧 DEBUG: Starting generation with voice_path={voice_path}")
 
-        # Use asyncio.to_thread to run generation in a thread
-        # This is needed because Orpheus's generate_speech blocks
-        def generate_and_collect():
-            logger.info("🔧 DEBUG: Thread started, calling generate_speech()...")
+        # Try WITHOUT threading - maybe vLLM async engine needs main thread
+        logger.info("🔧 DEBUG: Calling generate_speech() directly in async context...")
 
-            # TEST: Use preset voice first - docs only show preset names, not file paths
-            test_voice = "zoe"
-            logger.info(f"🔧 DEBUG: Testing with PRESET voice '{test_voice}' (ignoring custom voice_path for now)")
+        test_voice = "zoe"
+        logger.info(f"🔧 DEBUG: Using PRESET voice '{test_voice}'")
 
-            # Generate with Orpheus - returns iterator of audio chunks
-            audio_chunks = orpheus_model.generate_speech(
-                prompt=text,
-                voice=test_voice,  # Use preset voice name
-                temperature=temperature,
-                repetition_penalty=repetition_penalty,
-                max_tokens=500,  # Reduced from 2000
-                top_p=0.9
-            )
+        # Call directly
+        audio_chunks = orpheus_model.generate_speech(
+            prompt=text,
+            voice=test_voice,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            max_tokens=100,  # Extremely short for testing
+            top_p=0.9
+        )
 
-            logger.info("🔧 DEBUG: generate_speech() returned, starting iteration...")
+        logger.info("🔧 DEBUG: generate_speech() returned, trying next()...")
 
-            chunks = []
-            count = 0
+        # Try explicit next() first
+        chunks = []
+        try:
+            logger.info("🔧 DEBUG: Calling next() on generator...")
+            first_chunk = next(iter(audio_chunks))
+            logger.info(f"🔧 DEBUG: SUCCESS! Got first chunk, size: {len(first_chunk)} bytes")
+            chunks.append(first_chunk)
+
+            # Continue iterating
             for chunk in audio_chunks:
-                count += 1
-                if count % 10 == 0:
-                    logger.info(f"🔧 DEBUG: Processed {count} chunks...")
+                logger.info(f"🔧 DEBUG: Got chunk {len(chunks)+1}, size: {len(chunk)} bytes")
                 chunks.append(chunk)
 
-            logger.info(f"🔧 DEBUG: Iteration complete, collected {count} chunks")
-            return chunks
+            logger.info(f"🔧 DEBUG: Iteration complete! Total chunks: {len(chunks)}")
+        except StopIteration:
+            logger.info("🔧 DEBUG: Generator ended (StopIteration)")
+        except Exception as e:
+            logger.error(f"🔧 DEBUG: ERROR during iteration: {e}", exc_info=True)
+            raise
 
-        all_chunks = await asyncio.to_thread(generate_and_collect)
+        all_chunks = chunks
 
         # Concatenate all audio chunks
         complete_audio = b''.join(all_chunks)
