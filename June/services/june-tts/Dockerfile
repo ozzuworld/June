@@ -17,6 +17,7 @@ ENV TORCH_CUDNN_V8_API_ENABLED=1
 ENV XTTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
 ENV WARMUP_ON_STARTUP=0
 ENV USE_DEEPSPEED=0
+ENV COQUI_TOS_AGREED=1
 
 # Install system dependencies and add deadsnakes PPA for Python 3.11
 RUN apt-get update && apt-get install -y \
