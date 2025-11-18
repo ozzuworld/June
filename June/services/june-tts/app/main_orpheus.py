@@ -212,15 +212,26 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
 
         from orpheus_tts import OrpheusModel
+        from vllm import AsyncEngineArgs, AsyncLLMEngine
 
-        # Pass vLLM configuration directly to OrpheusModel constructor
-        # This prevents KV cache memory errors by limiting max_model_len
-        orpheus_model = OrpheusModel(
-            model_name=ORPHEUS_MODEL,
-            max_model_len=VLLM_MAX_MODEL_LEN,
-            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-            quantization=VLLM_QUANTIZATION,
-        )
+        # Monkey-patch OrpheusModel._setup_engine to inject vLLM configuration
+        # This is necessary because OrpheusModel.__init__ doesn't expose these parameters
+        # See: https://github.com/canopyai/Orpheus-TTS/issues/13
+        def custom_setup_engine(self):
+            engine_args = AsyncEngineArgs(
+                model=self.model_name,
+                dtype=self.dtype,
+                max_model_len=VLLM_MAX_MODEL_LEN,
+                gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
+                quantization=VLLM_QUANTIZATION,
+            )
+            return AsyncLLMEngine.from_engine_args(engine_args)
+
+        # Apply the monkey patch before instantiation
+        OrpheusModel._setup_engine = custom_setup_engine
+
+        # Create OrpheusModel instance (now uses our custom _setup_engine)
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
         logger.info("✅ Orpheus model loaded")
 
         # Note: SNAC decoding is handled internally by orpheus_tts package
