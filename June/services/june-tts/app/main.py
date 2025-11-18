@@ -212,21 +212,24 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
 
         from orpheus_tts import OrpheusModel
-        from vllm import AsyncEngineArgs, AsyncLLMEngine
+        from vllm import LLM, SamplingParams
 
         # Monkey-patch OrpheusModel._setup_engine to inject vLLM configuration
-        # This is necessary because OrpheusModel doesn't expose vLLM parameters
-        # and VLLM_MAX_MODEL_LEN is not a real vLLM environment variable
+        # CRITICAL: Use synchronous LLM class, not AsyncLLMEngine
+        # OrpheusModel.generate_speech() returns a sync generator
         # Reference: https://github.com/canopyai/Orpheus-TTS/issues/13
         def custom_setup_engine(self):
-            engine_args = AsyncEngineArgs(
+            logger.info(f"🔧 Custom engine setup with max_model_len={VLLM_MAX_MODEL_LEN}")
+
+            # Use synchronous LLM class
+            llm = LLM(
                 model=self.model_name,
                 dtype=self.dtype,
                 max_model_len=VLLM_MAX_MODEL_LEN,
                 gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
                 quantization=VLLM_QUANTIZATION,
             )
-            return AsyncLLMEngine.from_engine_args(engine_args)
+            return llm
 
         # Apply monkey patch before creating model instance
         OrpheusModel._setup_engine = custom_setup_engine
