@@ -83,8 +83,7 @@ app = FastAPI(
 # -----------------------------------------------------------------------------
 # Global state
 # -----------------------------------------------------------------------------
-orpheus_model = None
-snac_decoder = None
+orpheus_model = None  # OrpheusModel instance (handles both LLM and audio decoding internally)
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 voice_cache = {}  # Maps voice_id -> file path
 
@@ -213,24 +212,13 @@ async def load_model():
         logger.info("📥 Loading Orpheus LLM model...")
         from orpheus_tts import OrpheusModel
 
-        orpheus_model = OrpheusModel(
-            model_name=ORPHEUS_MODEL,
-            max_model_len=VLLM_MAX_MODEL_LEN,
-            gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-            quantization=VLLM_QUANTIZATION if DEVICE == "cuda" else None,
-            dtype="auto"
-        )
+        # Note: OrpheusModel only accepts model_name in initialization
+        # vLLM parameters are configured via environment variables or internal defaults
+        orpheus_model = OrpheusModel(model_name=ORPHEUS_MODEL)
         logger.info("✅ Orpheus model loaded")
 
-        # Load SNAC decoder for audio token → waveform conversion
-        logger.info("📥 Loading SNAC audio decoder...")
-        import snac
-
-        snac_decoder = snac.SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
-        if DEVICE == "cuda":
-            snac_decoder = snac_decoder.cuda()
-        snac_decoder = snac_decoder.eval()
-        logger.info("✅ SNAC decoder loaded")
+        # Note: SNAC decoding is handled internally by orpheus_tts package
+        # The generate_speech() method returns ready-to-use audio chunks
 
         logger.info("⚡ Orpheus TTS Features:")
         logger.info("   - Ultra-low latency (100-200ms)")
@@ -245,16 +233,17 @@ async def load_model():
             start = time.time()
             warmup_text = "Hello world."
 
-            # Generate warmup audio
-            _ = orpheus_model.generate(
+            # Generate warmup audio (consume the iterator)
+            warmup_chunks = list(orpheus_model.generate_speech(
                 prompt=warmup_text,
                 voice=None,
                 temperature=0.7,
-                repetition_penalty=1.1
-            )
+                repetition_penalty=1.1,
+                max_tokens=500
+            ))
 
             elapsed = time.time() - start
-            logger.info(f"✅ Warmup complete ({elapsed:.1f}s)")
+            logger.info(f"✅ Warmup complete ({elapsed:.1f}s) - Generated {len(warmup_chunks)} chunks")
 
         logger.info("✅ Orpheus TTS ready for inference")
         return True
@@ -291,54 +280,66 @@ async def generate_async(
     voice_path: Optional[str] = None,
     temperature: float = 0.7,
     repetition_penalty: float = 1.1,
-) -> torch.Tensor:
-    """Generate audio with Orpheus (non-streaming)"""
+) -> bytes:
+    """Generate audio with Orpheus (non-streaming, returns complete WAV bytes)"""
     loop = asyncio.get_event_loop()
 
     def _generate():
         try:
-            # Generate with Orpheus
-            audio = orpheus_model.generate(
+            # Generate with Orpheus - returns iterator of audio chunks
+            audio_chunks = orpheus_model.generate_speech(
                 prompt=text,
-                voice=voice_path,
+                voice=voice_path,  # Can be file path or None for default
                 temperature=temperature,
-                repetition_penalty=repetition_penalty
+                repetition_penalty=repetition_penalty,
+                max_tokens=2000,
+                top_p=0.9
             )
-            return audio
+
+            # Collect all chunks and combine into single audio bytes
+            all_chunks = []
+            for chunk in audio_chunks:
+                all_chunks.append(chunk)
+
+            # Concatenate all audio chunks
+            complete_audio = b''.join(all_chunks)
+            return complete_audio
 
         except Exception as e:
             logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
             raise
 
-    audio = await loop.run_in_executor(executor, _generate)
-    return audio
+    audio_bytes = await loop.run_in_executor(executor, _generate)
+    return audio_bytes
 
 async def generate_stream(
     text: str,
     voice_path: Optional[str] = None,
     temperature: float = 0.7,
     repetition_penalty: float = 1.1,
-) -> AsyncGenerator[torch.Tensor, None]:
-    """Generate audio with Orpheus (streaming)"""
-
-    # Note: Current orpheus-speech package may not have streaming API
-    # This is a placeholder for future streaming implementation
-    # For now, generate complete audio and yield in chunks
+) -> AsyncGenerator[bytes, None]:
+    """Generate audio with Orpheus (streaming) - yields audio byte chunks"""
+    loop = asyncio.get_event_loop()
 
     logger.info("🎙️ Generating with Orpheus (streaming mode)...")
-    audio = await generate_async(text, voice_path, temperature, repetition_penalty)
 
-    # Simulate streaming by chunking the output
-    chunk_size = int(ORPHEUS_SAMPLE_RATE * 0.2)  # 200ms chunks
+    def _get_generator():
+        # Returns the generator from Orpheus
+        return orpheus_model.generate_speech(
+            prompt=text,
+            voice=voice_path,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            max_tokens=2000,
+            top_p=0.9
+        )
 
-    for i in range(0, audio.shape[-1], chunk_size):
-        chunk = audio[..., i:i+chunk_size]
-        if chunk.shape[-1] > 0:
-            # Apply fade to prevent clicks
-            chunk = apply_fade(chunk, ORPHEUS_FADE_MS)
-            yield chunk
-            # Small delay to simulate real-time streaming
-            await asyncio.sleep(0.01)
+    # Get the generator in executor
+    audio_generator = await loop.run_in_executor(executor, _get_generator)
+
+    # Yield chunks as they come
+    for chunk in audio_generator:
+        yield chunk
 
 # -----------------------------------------------------------------------------
 # LiveKit
@@ -610,28 +611,32 @@ async def synthesize_speech(request: SynthesizeRequest):
         else:
             voice_path = current_reference_audio_path
 
-        # Generate audio with Orpheus
-        wav = await generate_async(
+        # Generate audio with Orpheus (returns raw PCM bytes)
+        raw_audio_bytes = await generate_async(
             text=request.text,
             voice_path=voice_path,
             temperature=request.temperature,
             repetition_penalty=request.repetition_penalty
         )
 
-        # Convert to WAV bytes
+        # Convert raw PCM to WAV format
+        import wave
         buffer = io.BytesIO()
-        # Ensure correct shape for torchaudio.save
-        if wav.dim() == 1:
-            wav = wav.unsqueeze(0)
-        ta.save(buffer, wav.cpu(), ORPHEUS_SAMPLE_RATE, format="wav")
+        with wave.open(buffer, 'wb') as wf:
+            wf.setnchannels(1)  # Mono
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(ORPHEUS_SAMPLE_RATE)  # 24kHz
+            wf.writeframes(raw_audio_bytes)
+
         audio_bytes = buffer.getvalue()
 
         # Stream to LiveKit
         await stream_audio_to_livekit(audio_bytes)
 
         total_ms = (time.time() - start_time) * 1000
-        audio_duration = wav.shape[-1] / ORPHEUS_SAMPLE_RATE
-        rtf = (total_ms / 1000.0) / audio_duration  # Real-time factor
+        # Calculate duration from raw PCM bytes (2 bytes per sample for 16-bit)
+        audio_duration = len(raw_audio_bytes) / (2 * ORPHEUS_SAMPLE_RATE)
+        rtf = (total_ms / 1000.0) / audio_duration if audio_duration > 0 else 0  # Real-time factor
 
         # GPU metrics
         gpu_memory_used = 0
