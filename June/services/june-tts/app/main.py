@@ -137,6 +137,38 @@ async def get_voice_from_db(voice_id: str) -> Optional[bytes]:
 # -----------------------------------------------------------------------------
 # XTTS v2 Model
 # -----------------------------------------------------------------------------
+async def ensure_default_speaker():
+    """Ensure we have a default speaker reference for XTTS v2"""
+    default_speaker_path = "/app/voices/default_speaker.wav"
+
+    if os.path.exists(default_speaker_path):
+        logger.info(f"✅ Default speaker already exists: {default_speaker_path}")
+        return default_speaker_path
+
+    logger.info("📥 Downloading default speaker reference...")
+
+    try:
+        # Download a sample speaker from XTTS repository
+        import httpx
+
+        # Use a sample from the XTTS repo (female English speaker)
+        sample_url = "https://github.com/coqui-ai/TTS/raw/dev/tests/data/ljspeech/wavs/LJ001-0001.wav"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(sample_url)
+            if response.status_code == 200:
+                with open(default_speaker_path, 'wb') as f:
+                    f.write(response.content)
+                logger.info(f"✅ Downloaded default speaker to {default_speaker_path}")
+                return default_speaker_path
+            else:
+                logger.error(f"Failed to download default speaker: HTTP {response.status_code}")
+                return None
+
+    except Exception as e:
+        logger.error(f"❌ Failed to download default speaker: {e}")
+        return None
+
 async def load_model():
     """Load XTTS v2 model"""
     global tts_model
@@ -151,16 +183,21 @@ async def load_model():
     try:
         from TTS.api import TTS
 
+        # Ensure we have a default speaker reference
+        default_speaker = await ensure_default_speaker()
+        if not default_speaker:
+            logger.warning("⚠️  No default speaker available - users must clone voices")
+
         # Initialize XTTS v2
         tts_model = TTS(XTTS_MODEL, gpu=torch.cuda.is_available())
         logger.info("✅ XTTS v2 model loaded")
 
         # Warmup
-        if WARMUP_ON_STARTUP:
+        if WARMUP_ON_STARTUP and default_speaker:
             logger.info("⏱️  Warming up...")
-            # Use built-in speaker for warmup
             warmup_output = tts_model.tts(
                 text="Hello world.",
+                speaker_wav=default_speaker,
                 language="en"
             )
             logger.info(f"✅ Warmup complete")
@@ -234,33 +271,48 @@ def generate_audio(
     logger.info(f"🎙️ Generating: '{text[:60]}...' with voice='{voice_id}', language='{language}'")
 
     try:
-        # Get voice conditioning if custom voice
+        # Get voice reference - XTTS v2 requires a speaker for all synthesis
         speaker_wav = None
-        if voice_id != "default":
-            # For now, we'll use the voice file path directly
-            # In production, we'd use cached conditioning latents
+        cleanup_speaker_file = False
+
+        if voice_id == "default":
+            # Use default speaker downloaded during startup
+            default_speaker_path = "/app/voices/default_speaker.wav"
+            if os.path.exists(default_speaker_path):
+                speaker_wav = default_speaker_path
+                logger.info("Using default speaker")
+            else:
+                raise RuntimeError(
+                    "Default speaker not available. Please clone a voice first using /api/voices/clone"
+                )
+        else:
+            # Use custom voice from database
             voice_audio = asyncio.run(get_voice_from_db(voice_id))
             if voice_audio:
                 # Save to temp file
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp.write(voice_audio)
                     speaker_wav = tmp.name
+                    cleanup_speaker_file = True
+                logger.info(f"Using custom voice: {voice_id}")
+            else:
+                logger.warning(f"Voice '{voice_id}' not found, falling back to default")
+                default_speaker_path = "/app/voices/default_speaker.wav"
+                if os.path.exists(default_speaker_path):
+                    speaker_wav = default_speaker_path
+                else:
+                    raise RuntimeError(f"Voice '{voice_id}' not found and no default speaker available")
 
         # Generate using XTTS v2
-        if speaker_wav:
-            wav = tts_model.tts(
-                text=text,
-                speaker_wav=speaker_wav,
-                language=language
-            )
-            # Clean up temp file
+        wav = tts_model.tts(
+            text=text,
+            speaker_wav=speaker_wav,
+            language=language
+        )
+
+        # Clean up temp file if it was created for custom voice
+        if cleanup_speaker_file and os.path.exists(speaker_wav):
             os.unlink(speaker_wav)
-        else:
-            # Use default voice
-            wav = tts_model.tts(
-                text=text,
-                language=language
-            )
 
         # Convert to bytes (WAV format)
         buffer = io.BytesIO()
