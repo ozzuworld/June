@@ -300,16 +300,19 @@ async def generate_async(
     repetition_penalty: float = 1.1,
 ) -> bytes:
     """Generate audio with Orpheus (non-streaming, returns complete WAV bytes)"""
-    loop = asyncio.get_event_loop()
 
-    def _generate():
-        try:
-            logger.info(f"🔧 DEBUG: Starting generation with voice_path={voice_path}")
+    try:
+        logger.info(f"🔧 DEBUG: Starting generation with voice_path={voice_path}")
+
+        # Use asyncio.to_thread to run generation in a thread
+        # This is needed because Orpheus's generate_speech blocks
+        def generate_and_collect():
+            logger.info("🔧 DEBUG: Thread started, calling generate_speech()...")
 
             # Generate with Orpheus - returns iterator of audio chunks
             audio_chunks = orpheus_model.generate_speech(
                 prompt=text,
-                voice=voice_path,  # Can be file path or None for default
+                voice=voice_path,
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
                 max_tokens=2000,
@@ -318,27 +321,26 @@ async def generate_async(
 
             logger.info("🔧 DEBUG: generate_speech() returned, starting iteration...")
 
-            # Collect all chunks and combine into single audio bytes
-            all_chunks = []
-            chunk_count = 0
+            chunks = []
+            count = 0
             for chunk in audio_chunks:
-                chunk_count += 1
-                if chunk_count % 10 == 0:
-                    logger.info(f"🔧 DEBUG: Processed {chunk_count} chunks...")
-                all_chunks.append(chunk)
+                count += 1
+                if count % 10 == 0:
+                    logger.info(f"🔧 DEBUG: Processed {count} chunks...")
+                chunks.append(chunk)
 
-            logger.info(f"🔧 DEBUG: Iteration complete, collected {chunk_count} chunks")
+            logger.info(f"🔧 DEBUG: Iteration complete, collected {count} chunks")
+            return chunks
 
-            # Concatenate all audio chunks
-            complete_audio = b''.join(all_chunks)
-            return complete_audio
+        all_chunks = await asyncio.to_thread(generate_and_collect)
 
-        except Exception as e:
-            logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
-            raise
+        # Concatenate all audio chunks
+        complete_audio = b''.join(all_chunks)
+        return complete_audio
 
-    audio_bytes = await loop.run_in_executor(executor, _generate)
-    return audio_bytes
+    except Exception as e:
+        logger.error(f"❌ Orpheus generation error: {e}", exc_info=True)
+        raise
 
 async def generate_stream(
     text: str,
