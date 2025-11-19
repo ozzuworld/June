@@ -21,7 +21,10 @@ proxyHeaders: xforwarded
 # PostgreSQL configuration (bundled)
 postgresql:
   enabled: true
-  # Use chart's default PostgreSQL image (Bitnami handles versioning)
+  image:
+    registry: docker.io
+    repository: bitnami/postgresql
+    tag: "16"  # Use major version tag for stability
   auth:
     username: keycloak
     password: Pokemon123!  # CHANGE IN PRODUCTION
