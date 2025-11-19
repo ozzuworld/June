@@ -20,12 +20,7 @@ proxy: edge
 # PostgreSQL configuration (bundled)
 postgresql:
   enabled: true
-  # Explicit image configuration to avoid pull issues
-  image:
-    registry: docker.io
-    repository: bitnami/postgresql
-    tag: "16.4.0-debian-12-r23"
-    pullPolicy: IfNotPresent
+  # Use chart's default PostgreSQL image (Bitnami handles versioning)
   auth:
     username: keycloak
     password: Pokemon123!  # CHANGE IN PRODUCTION
