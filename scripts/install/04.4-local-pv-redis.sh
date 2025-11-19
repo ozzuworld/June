@@ -36,7 +36,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   local:
     path: /opt/redis-data
   nodeAffinity:
@@ -58,7 +58,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   local:
     path: /opt/redis-replicas-data
   nodeAffinity:
@@ -80,7 +80,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
+  storageClassName: "fast-ssd"
   local:
     path: /opt/redis-replicas-1-data
   nodeAffinity:
