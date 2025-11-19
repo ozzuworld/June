@@ -11,7 +11,7 @@ spec:
   resources:
     requests:
       storage: 50Gi
-  storageClassName: ""
+  storageClassName: "fast-ssd"
 
 ---
 # PostgreSQL PVC
@@ -26,7 +26,7 @@ spec:
   resources:
     requests:
       storage: 20Gi
-  storageClassName: ""
+  storageClassName: "fast-ssd"
 
 ---
 # Neo4j Data PVC
@@ -41,7 +41,7 @@ spec:
   resources:
     requests:
       storage: 30Gi
-  storageClassName: ""
+  storageClassName: "fast-ssd"
 
 ---
 # MinIO PVC
@@ -56,7 +56,7 @@ spec:
   resources:
     requests:
       storage: 100Gi
-  storageClassName: ""
+  storageClassName: "slow-hdd"
 
 ---
 # Redis PVC
@@ -71,7 +71,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  storageClassName: ""
+  storageClassName: "fast-ssd"
 
 ---
 # RabbitMQ PVC
@@ -86,4 +86,4 @@ spec:
   resources:
     requests:
       storage: 10Gi
-  storageClassName: ""
+  storageClassName: "fast-ssd"

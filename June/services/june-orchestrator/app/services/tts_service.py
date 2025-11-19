@@ -55,8 +55,19 @@ class TTSService:
             pool=None       # No pool timeout
         )
 
+        # Shared HTTP client for connection pooling (prevents "too many open files")
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0
+            )
+        )
+
         logger.info(f"✅ XTTS v2 TTS service initialized: {self.base_url}")
         logger.info(f"⏱️  Timeout config: connect=10s, read=120s, write=10s")
+        logger.info(f"🔗 Connection pool: max=100, keepalive=20")
         logger.info(f"🌍 Languages: 17 languages supported")
         logger.info(f"🎙️ Voice cloning: 6+ seconds of audio recommended")
         self._log_network_debug()
@@ -162,43 +173,42 @@ class TTSService:
 
             connection_start = time.time()
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                logger.info(f"🔄 Sending POST request...")
+            logger.info(f"🔄 Sending POST request...")
 
-                response = await client.post(
-                    full_url,
-                    json=payload,
-                    headers=self._headers(),
-                )
+            response = await self.client.post(
+                full_url,
+                json=payload,
+                headers=self._headers(),
+            )
 
-                connection_time = (time.time() - connection_start) * 1000
-                logger.info(f"⏱️  Connection: {connection_time:.2f}ms")
+            connection_time = (time.time() - connection_start) * 1000
+            logger.info(f"⏱️  Connection: {connection_time:.2f}ms")
 
-                logger.info(f"\n📨 RESPONSE:")
-                logger.info(f"   Status: {response.status_code}")
-                logger.info(f"   Body: {response.text[:500]}")
+            logger.info(f"\n📨 RESPONSE:")
+            logger.info(f"   Status: {response.status_code}")
+            logger.info(f"   Body: {response.text[:500]}")
 
-                if response.status_code == 200:
-                    result = response.json()
-                    total_time = (time.time() - request_start_time) * 1000
-                    logger.info(f"\n✅ XTTS v2 TTS SUCCESS:")
-                    logger.info(f"   Model: {result.get('model', 'xtts_v2')}")
-                    logger.info(f"   Type: {result.get('model_type', 'xtts_v2')}")
-                    logger.info(f"   Voice: {result.get('voice', voice_id)}")
-                    logger.info(f"   Language: {result.get('language', language)}")
-                    logger.info(f"   Synthesis: {result.get('total_time_ms', 0):.0f}ms")
-                    logger.info(f"   Total: {total_time:.0f}ms")
-                    logger.info("="*80)
-                    return True
-                elif response.status_code == 503:
-                    logger.error(f"\n❌ XTTS v2 TTS unavailable (503)")
-                    logger.error("="*80)
-                    return False
-                else:
-                    logger.error(f"\n❌ XTTS v2 TTS error: {response.status_code}")
-                    logger.error(f"   Detail: {response.text[:200]}")
-                    logger.error("="*80)
-                    return False
+            if response.status_code == 200:
+                result = response.json()
+                total_time = (time.time() - request_start_time) * 1000
+                logger.info(f"\n✅ XTTS v2 TTS SUCCESS:")
+                logger.info(f"   Model: {result.get('model', 'xtts_v2')}")
+                logger.info(f"   Type: {result.get('model_type', 'xtts_v2')}")
+                logger.info(f"   Voice: {result.get('voice', voice_id)}")
+                logger.info(f"   Language: {result.get('language', language)}")
+                logger.info(f"   Synthesis: {result.get('total_time_ms', 0):.0f}ms")
+                logger.info(f"   Total: {total_time:.0f}ms")
+                logger.info("="*80)
+                return True
+            elif response.status_code == 503:
+                logger.error(f"\n❌ XTTS v2 TTS unavailable (503)")
+                logger.error("="*80)
+                return False
+            else:
+                logger.error(f"\n❌ XTTS v2 TTS error: {response.status_code}")
+                logger.error(f"   Detail: {response.text[:200]}")
+                logger.error("="*80)
+                return False
 
         except httpx.TimeoutException as e:
             total = (time.time() - request_start_time) * 1000
@@ -244,28 +254,28 @@ class TTSService:
         try:
             logger.info(f"🎭 Cloning voice '{voice_id}' from {audio_file_path}")
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                with open(audio_file_path, 'rb') as f:
-                    files = {'file': (os.path.basename(audio_file_path), f)}
-                    data = {
-                        'voice_id': voice_id,
-                        'voice_name': voice_name
-                    }
+            with open(audio_file_path, 'rb') as f:
+                files = {'file': (os.path.basename(audio_file_path), f)}
+                data = {
+                    'voice_id': voice_id,
+                    'voice_name': voice_name
+                }
 
-                    response = await client.post(
-                        f"{self.base_url}/api/voices/clone",
-                        files=files,
-                        data=data,
-                        headers={"Authorization": f"Bearer {SERVICE_AUTH_TOKEN}"} if SERVICE_AUTH_TOKEN else {}
-                    )
+                response = await self.client.post(
+                    f"{self.base_url}/api/voices/clone",
+                    files=files,
+                    data=data,
+                    headers={"Authorization": f"Bearer {SERVICE_AUTH_TOKEN}"} if SERVICE_AUTH_TOKEN else {},
+                    timeout=30.0
+                )
 
-                    if response.status_code == 200:
-                        result = response.json()
-                        logger.info(f"✅ Voice '{voice_id}' cloned successfully")
-                        return result
-                    else:
-                        logger.error(f"❌ Voice cloning failed: {response.status_code}")
-                        return {"status": "error", "detail": response.text}
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"✅ Voice '{voice_id}' cloned successfully")
+                    return result
+                else:
+                    logger.error(f"❌ Voice cloning failed: {response.status_code}")
+                    return {"status": "error", "detail": response.text}
 
         except Exception as e:
             logger.error(f"❌ Voice cloning error: {e}")
@@ -279,18 +289,17 @@ class TTSService:
             List of voice dicts with id, name, timestamps
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/voices",
-                    headers=self._headers()
-                )
+            response = await self.client.get(
+                f"{self.base_url}/api/voices",
+                headers=self._headers()
+            )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    return data.get("voices", [])
-                else:
-                    logger.error(f"Failed to list voices: {response.status_code}")
-                    return []
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("voices", [])
+            else:
+                logger.error(f"Failed to list voices: {response.status_code}")
+                return []
 
         except Exception as e:
             logger.error(f"Error listing voices: {e}")
@@ -307,20 +316,19 @@ class TTSService:
             Voice info dict or None if not found
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/voices/{voice_id}",
-                    headers=self._headers()
-                )
+            response = await self.client.get(
+                f"{self.base_url}/api/voices/{voice_id}",
+                headers=self._headers()
+            )
 
-                if response.status_code == 200:
-                    return response.json()
-                elif response.status_code == 404:
-                    logger.warning(f"Voice '{voice_id}' not found")
-                    return None
-                else:
-                    logger.error(f"Failed to get voice info: {response.status_code}")
-                    return None
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                logger.warning(f"Voice '{voice_id}' not found")
+                return None
+            else:
+                logger.error(f"Failed to get voice info: {response.status_code}")
+                return None
 
         except Exception as e:
             logger.error(f"Error getting voice info: {e}")
@@ -337,18 +345,17 @@ class TTSService:
             True if deleted, False otherwise
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.delete(
-                    f"{self.base_url}/api/voices/{voice_id}",
-                    headers=self._headers()
-                )
+            response = await self.client.delete(
+                f"{self.base_url}/api/voices/{voice_id}",
+                headers=self._headers()
+            )
 
-                if response.status_code == 200:
-                    logger.info(f"✅ Voice '{voice_id}' deleted")
-                    return True
-                else:
-                    logger.error(f"Failed to delete voice: {response.status_code}")
-                    return False
+            if response.status_code == 200:
+                logger.info(f"✅ Voice '{voice_id}' deleted")
+                return True
+            else:
+                logger.error(f"Failed to delete voice: {response.status_code}")
+                return False
 
         except Exception as e:
             logger.error(f"Error deleting voice: {e}")
@@ -358,24 +365,23 @@ class TTSService:
         """Check XTTS v2 TTS service health"""
         try:
             logger.info(f"🏥 Health check: {self.base_url}/health")
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/health",
-                    headers=self._headers()
-                )
+            response = await self.client.get(
+                f"{self.base_url}/health",
+                headers=self._headers()
+            )
 
-                if response.status_code == 200:
-                    return {
-                        "healthy": True,
-                        "service": "xtts_v2_tts",
-                        "details": response.json()
-                    }
-                else:
-                    return {
-                        "healthy": False,
-                        "service": "xtts_v2_tts",
-                        "error": f"HTTP {response.status_code}"
-                    }
+            if response.status_code == 200:
+                return {
+                    "healthy": True,
+                    "service": "xtts_v2_tts",
+                    "details": response.json()
+                }
+            else:
+                return {
+                    "healthy": False,
+                    "service": "xtts_v2_tts",
+                    "error": f"HTTP {response.status_code}"
+                }
 
         except Exception as e:
             logger.error(f"❌ Health check failed: {e}")
@@ -388,21 +394,28 @@ class TTSService:
     async def get_stats(self) -> Optional[Dict[str, Any]]:
         """Get XTTS v2 TTS service statistics"""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/stats",
-                    headers=self._headers()
-                )
+            response = await self.client.get(
+                f"{self.base_url}/stats",
+                headers=self._headers()
+            )
 
-                if response.status_code == 200:
-                    return response.json()
+            if response.status_code == 200:
+                return response.json()
 
-                logger.error(f"Failed to get stats: {response.status_code}")
-                return None
+            logger.error(f"Failed to get stats: {response.status_code}")
+            return None
 
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return None
+
+    async def close(self):
+        """Close HTTP client connection pool"""
+        try:
+            await self.client.aclose()
+            logger.info("✅ TTS service HTTP client closed")
+        except Exception as e:
+            logger.error(f"❌ Error closing TTS client: {e}")
 
 
 # Global service instance

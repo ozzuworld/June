@@ -41,15 +41,17 @@ spec:
               value: "/var/lib/postgresql/data/pgdata"
           args:
             - "-c"
-            - "max_connections=200"
+            - "max_connections=100"
             - "-c"
-            - "shared_buffers=2GB"
+            - "shared_buffers=1GB"
             - "-c"
-            - "effective_cache_size=6GB"
+            - "effective_cache_size=3GB"
             - "-c"
-            - "work_mem=16MB"
+            - "work_mem=8MB"
             - "-c"
-            - "maintenance_work_mem=512MB"
+            - "maintenance_work_mem=256MB"
+            - "-c"
+            - "max_parallel_workers_per_gather=2"
           ports:
             - containerPort: 5432
           volumeMounts:

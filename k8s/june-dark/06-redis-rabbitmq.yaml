@@ -162,9 +162,9 @@ spec:
                 - rabbitmq-diagnostics
                 - ping
             initialDelaySeconds: 90     # RabbitMQ takes ~13s to start, give extra buffer
-            periodSeconds: 30
-            timeoutSeconds: 10          # Give diagnostics command time to respond
-            failureThreshold: 5         # Allow 5 failures before restarting (2.5 minutes)
+            periodSeconds: 10           # Check every 10s (reduced from 30s)
+            timeoutSeconds: 5           # Reduce timeout to 5s
+            failureThreshold: 3         # Allow 3 failures = 30s to restart (reduced from 2.5min)
           readinessProbe:
             exec:
               command:
