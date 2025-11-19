@@ -100,6 +100,7 @@ PHASES=(
     "07.1-opencti"
     "07.2-june-dark-opencti"  # June Dark + OpenCTI integration
     "09-june-platform"
+    "09-keycloak-operator"    # Official Keycloak Operator (quay.io images)
     "09.1-keycloak-provision" # Provision Keycloak realm & base clients
     "media-stack/00-setup-namespace"  # Setup media-stack namespace + cert sync (MUST BE BEFORE LIVEKIT)
     "webrtc/01-stunner"       # STUNner WebRTC gateway
