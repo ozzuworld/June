@@ -241,11 +241,11 @@ auth:
   adminUser: admin
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
 
-# Image (Quay.io - no rate limiting)
+# Image (Bitnami - required for Bitnami chart)
 image:
-  registry: quay.io
-  repository: keycloak/keycloak
-  tag: 26.0.4
+  registry: docker.io
+  repository: bitnami/keycloak
+  tag: "26.0.4"
   pullPolicy: IfNotPresent
 
 # Resources
@@ -384,11 +384,11 @@ If you still see ImagePullBackOff after migration:
 # Check events
 kubectl describe pod -n june-services -l app.kubernetes.io/name=keycloak
 
-# Verify image is from Quay.io (not Docker Hub)
+# Verify image is Bitnami (required for Bitnami chart)
 kubectl get deployment -n june-services -l app.kubernetes.io/name=keycloak \
   -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
 
-# Should output: quay.io/keycloak/keycloak:26.0.4
+# Should output: docker.io/bitnami/keycloak:26.0.4
 ```
 
 ### Pod Not Ready

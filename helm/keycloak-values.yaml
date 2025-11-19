@@ -50,11 +50,13 @@ postgresql:
 # Keycloak pod configuration
 replicaCount: 1
 
-# Image configuration (uses Quay.io - no Docker Hub rate limiting)
+# Image configuration - Use Bitnami image (required for Bitnami chart)
+# Note: Bitnami images are available on Docker Hub but chart handles rate limiting better
+# Alternatively, you can mirror to your own registry
 image:
-  registry: quay.io
-  repository: keycloak/keycloak
-  tag: 26.0.4
+  registry: docker.io
+  repository: bitnami/keycloak
+  tag: "26.0.4"
   pullPolicy: IfNotPresent
 
 resources:
@@ -65,26 +67,31 @@ resources:
     memory: "2Gi"
     cpu: "1000m"
 
-# Health checks
+# Health checks - Bitnami chart format
 livenessProbe:
   enabled: true
-  httpGet:
-    path: /health/live
-    port: http
-  initialDelaySeconds: 90
+  initialDelaySeconds: 120
   periodSeconds: 20
   timeoutSeconds: 10
-  failureThreshold: 5
+  failureThreshold: 6
+  successThreshold: 1
 
 readinessProbe:
   enabled: true
-  httpGet:
-    path: /health/ready
-    port: http
   initialDelaySeconds: 60
   periodSeconds: 10
   timeoutSeconds: 5
-  failureThreshold: 3
+  failureThreshold: 6
+  successThreshold: 1
+
+# Startup probe for slow-starting containers
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
 
 # Metrics (Prometheus integration)
 metrics:
@@ -106,24 +113,15 @@ ingress:
     traefik.ingress.kubernetes.io/router.tls: "true"
 
 # Extra environment variables for Keycloak
+# Note: Bitnami handles most KC_* vars automatically from chart values
 extraEnvVars:
-  - name: KC_HOSTNAME
-    value: "idp.ozzu.world"
   - name: KC_HOSTNAME_STRICT
     value: "false"
-  - name: KC_HTTP_ENABLED
-    value: "true"
-  - name: KC_HEALTH_ENABLED
-    value: "true"
-  - name: KC_METRICS_ENABLED
-    value: "true"
   - name: KC_PROXY_HEADERS
     value: "xforwarded"
-  - name: KC_DB
-    value: "postgres"
 
-# Keycloak startup arguments
-extraStartupArgs: "--optimized --db=postgres --health-enabled=true --metrics-enabled=true"
+# Note: extraStartupArgs removed - Bitnami chart uses different startup mechanism
+# The chart automatically configures database, health, and metrics from values
 
 # Service configuration
 service:
