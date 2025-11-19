@@ -18,7 +18,7 @@ spec:
       containers:
         - name: collector
           image: ozzuworld/june-dark-collector:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: june-dark-config

@@ -31,7 +31,7 @@ spec:
       containers:
         - name: orchestrator
           image: ozzuworld/june-dark-orchestrator:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: june-dark-config

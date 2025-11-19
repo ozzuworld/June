@@ -19,6 +19,7 @@ spec:
       initContainers:
       - name: wait-for-postgres
         image: postgres:15-alpine
+        imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
@@ -31,6 +32,7 @@ spec:
       containers:
       - name: keycloak
         image: docker.io/ozzuworld/june-idp:latest
+        imagePullPolicy: IfNotPresent
         command: ["/opt/keycloak/bin/kc.sh"]
         args: ["start", "--optimized"]
         ports:
