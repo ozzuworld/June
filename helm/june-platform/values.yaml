@@ -24,9 +24,9 @@ certificate:
   useBackup: false  # Set to true when using backup certificates
 
 # PostgreSQL Database
-# DEPRECATED: Now deployed separately via Bitnami Keycloak chart
+# Required by Keycloak Operator (operator doesn't bundle database)
 postgresql:
-  enabled: false  # Disabled - using Bitnami Keycloak chart with bundled PostgreSQL
+  enabled: true  # Enable for Keycloak Operator
   database: keycloak
   username: keycloak
   password: Pokemon123!  # CHANGE IN PRODUCTION
