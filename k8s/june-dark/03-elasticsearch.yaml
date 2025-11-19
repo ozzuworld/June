@@ -49,7 +49,7 @@ spec:
             - name: xpack.monitoring.collection.enabled
               value: "true"
             - name: ES_JAVA_OPTS
-              value: "-Xms2g -Xmx4g"  # Reduced from 8g
+              value: "-Xms1g -Xmx3g"  # Reduced to leave more room for off-heap memory
             - name: cluster.name
               value: june-osint-cluster
             - name: node.name
