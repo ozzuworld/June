@@ -1,0 +1,134 @@
+# Bitnami Keycloak Helm Chart Values
+# Official chart: https://github.com/bitnami/charts/tree/main/bitnami/keycloak
+
+# Global configuration
+global:
+  storageClass: "fast-ssd"
+
+# Keycloak configuration
+auth:
+  adminUser: admin
+  adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
+
+# Production mode
+production: true
+
+# Proxy configuration (behind Ingress/Traefik)
+proxy: edge
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    username: keycloak
+    password: Pokemon123!  # CHANGE IN PRODUCTION
+    database: keycloak
+  primary:
+    persistence:
+      enabled: true
+      storageClass: fast-ssd
+      size: 10Gi
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+# External PostgreSQL (if you want to use your existing one)
+# externalDatabase:
+#   host: postgresql.june-services.svc.cluster.local
+#   port: 5432
+#   user: keycloak
+#   password: Pokemon123!
+#   database: keycloak
+
+# Keycloak pod configuration
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "1Gi"
+    cpu: "500m"
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"
+
+# Health checks
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health/live
+    port: http
+  initialDelaySeconds: 90
+  periodSeconds: 20
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health/ready
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+
+# Metrics (Prometheus integration)
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+
+# Ingress configuration
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hostname: idp.ozzu.world
+  tls: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+
+# Extra environment variables
+extraEnvVars:
+  - name: KC_HOSTNAME_STRICT
+    value: "false"
+  - name: KC_HTTP_ENABLED
+    value: "true"
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+  - name: KC_METRICS_ENABLED
+    value: "true"
+  - name: KC_PROXY_HEADERS
+    value: xforwarded
+
+# Keycloak command (optimized startup)
+command:
+  - "/opt/bitnami/keycloak/bin/kc.sh"
+args:
+  - "start"
+  - "--optimized"
+  - "--db=postgres"
+  - "--health-enabled=true"
+  - "--metrics-enabled=true"
+
+# Service configuration
+service:
+  type: ClusterIP
+  http:
+    port: 8080
+  management:
+    port: 9000
+
+# Pod security context
+podSecurityContext:
+  enabled: true
+  fsGroup: 1000
+
+containerSecurityContext:
+  enabled: true
+  runAsUser: 1000
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
