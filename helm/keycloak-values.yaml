@@ -24,7 +24,7 @@ postgresql:
   image:
     registry: docker.io
     repository: bitnami/postgresql
-    tag: "16"  # Use major version tag for stability
+    tag: "latest"  # Free tier only supports 'latest' tag since Aug 2025
   auth:
     username: keycloak
     password: Pokemon123!  # CHANGE IN PRODUCTION
@@ -56,13 +56,13 @@ postgresql:
 replicaCount: 1
 
 # Image configuration - Use Bitnami image (required for Bitnami chart)
-# Note: Bitnami images are available on Docker Hub but chart handles rate limiting better
-# Alternatively, you can mirror to your own registry
+# Note: Bitnami free tier only supports 'latest' tag since Aug 2025
+# For versioned tags, subscribe to Bitnami Secure Images or use official Keycloak
 image:
   registry: docker.io
   repository: bitnami/keycloak
-  tag: "26.0.4"
-  pullPolicy: IfNotPresent
+  tag: "latest"
+  pullPolicy: Always  # Always pull to get latest updates
 
 resources:
   requests:
