@@ -1,5 +1,6 @@
 # Bitnami Keycloak Helm Chart Values
 # Official chart: https://github.com/bitnami/charts/tree/main/bitnami/keycloak
+# Version: Compatible with Keycloak 26.x via Bitnami chart
 
 # Global configuration
 global:
@@ -16,7 +17,7 @@ production: true
 # Proxy configuration (behind Ingress/Traefik)
 proxy: edge
 
-# PostgreSQL configuration
+# PostgreSQL configuration (bundled)
 postgresql:
   enabled: true
   auth:
@@ -36,7 +37,9 @@ postgresql:
         memory: "512Mi"
         cpu: "500m"
 
-# External PostgreSQL (if you want to use your existing one)
+# Option 2: Use existing PostgreSQL (uncomment to use existing DB)
+# postgresql:
+#   enabled: false
 # externalDatabase:
 #   host: postgresql.june-services.svc.cluster.local
 #   port: 5432
@@ -46,6 +49,13 @@ postgresql:
 
 # Keycloak pod configuration
 replicaCount: 1
+
+# Image configuration (uses Quay.io - no Docker Hub rate limiting)
+image:
+  registry: quay.io
+  repository: keycloak/keycloak
+  tag: 26.0.4
+  pullPolicy: IfNotPresent
 
 resources:
   requests:
@@ -63,6 +73,8 @@ livenessProbe:
     port: http
   initialDelaySeconds: 90
   periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 5
 
 readinessProbe:
   enabled: true
@@ -71,6 +83,8 @@ readinessProbe:
     port: http
   initialDelaySeconds: 60
   periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
 
 # Metrics (Prometheus integration)
 metrics:
@@ -91,8 +105,10 @@ ingress:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
 
-# Extra environment variables
+# Extra environment variables for Keycloak
 extraEnvVars:
+  - name: KC_HOSTNAME
+    value: "idp.ozzu.world"
   - name: KC_HOSTNAME_STRICT
     value: "false"
   - name: KC_HTTP_ENABLED
@@ -102,25 +118,18 @@ extraEnvVars:
   - name: KC_METRICS_ENABLED
     value: "true"
   - name: KC_PROXY_HEADERS
-    value: xforwarded
+    value: "xforwarded"
+  - name: KC_DB
+    value: "postgres"
 
-# Keycloak command (optimized startup)
-command:
-  - "/opt/bitnami/keycloak/bin/kc.sh"
-args:
-  - "start"
-  - "--optimized"
-  - "--db=postgres"
-  - "--health-enabled=true"
-  - "--metrics-enabled=true"
+# Keycloak startup arguments
+extraStartupArgs: "--optimized --db=postgres --health-enabled=true --metrics-enabled=true"
 
 # Service configuration
 service:
   type: ClusterIP
-  http:
-    port: 8080
-  management:
-    port: 9000
+  ports:
+    http: 8080
 
 # Pod security context
 podSecurityContext:
@@ -132,3 +141,10 @@ containerSecurityContext:
   runAsUser: 1000
   runAsNonRoot: true
   allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Logging
+logging:
+  level: INFO
