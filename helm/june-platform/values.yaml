@@ -35,10 +35,10 @@ postgresql:
   hostPath: /mnt/ssd/postgresql
 
 # Keycloak Identity Provider
-# MIGRATED: Now deployed separately via Bitnami Keycloak Helm chart
-# See: helm/keycloak-values.yaml and scripts/install/migrate-to-bitnami-keycloak.sh
+# MIGRATED: Now deployed via official Keycloak Operator (quay.io images)
+# See: scripts/install/09-keycloak-operator.sh
 keycloak:
-  enabled: false  # Disabled - using official Bitnami chart instead
+  enabled: false  # Disabled - using official Keycloak Operator
   adminUsername: admin
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
