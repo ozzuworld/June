@@ -1,0 +1,23 @@
+---
+# ServiceMonitor for June Orchestrator
+# Scrapes metrics from /metrics endpoint (already implemented)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: june-orchestrator
+  namespace: june-services
+  labels:
+    app: june-orchestrator
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: june-orchestrator
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - june-services

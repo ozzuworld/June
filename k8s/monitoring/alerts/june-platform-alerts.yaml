@@ -1,0 +1,263 @@
+---
+# Custom Alert Rules for June Platform
+# These are in addition to the default rules from kube-prometheus-stack
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: june-platform-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    prometheus: kube-prometheus-stack
+spec:
+  groups:
+  ## CRITICAL ALERTS (Page immediately)
+  - name: june-critical
+    interval: 30s
+    rules:
+    # Database down
+    - alert: PostgreSQLDown
+      expr: up{job="postgres-exporter"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: database
+      annotations:
+        summary: "PostgreSQL is down in {{ $labels.namespace }}"
+        description: "PostgreSQL has been down for more than 2 minutes in namespace {{ $labels.namespace }}"
+        runbook_url: "https://docs.june.platform/runbooks/postgres-down"
+
+    - alert: RedisDown
+      expr: up{job="redis-exporter"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: cache
+      annotations:
+        summary: "Redis is down in {{ $labels.namespace }}"
+        description: "Redis has been down for more than 2 minutes"
+        runbook_url: "https://docs.june.platform/runbooks/redis-down"
+
+    - alert: RabbitMQDown
+      expr: up{job="rabbitmq-exporter"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: messaging
+      annotations:
+        summary: "RabbitMQ is down"
+        description: "RabbitMQ has been down for more than 2 minutes"
+        runbook_url: "https://docs.june.platform/runbooks/rabbitmq-down"
+
+    # High error rate
+    - alert: HighHTTPErrorRate
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job, namespace)
+          /
+          sum(rate(http_requests_total[5m])) by (job, namespace)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "High HTTP error rate on {{ $labels.job }}"
+        description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+        runbook_url: "https://docs.june.platform/runbooks/high-error-rate"
+
+    # Disk space critical
+    - alert: DiskSpaceCritical
+      expr: |
+        (
+          node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+          /
+          node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"}
+        ) < 0.05
+      for: 5m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "Critical disk space on {{ $labels.instance }}"
+        description: "Disk space is below 5% on {{ $labels.instance }}"
+        runbook_url: "https://docs.june.platform/runbooks/disk-space-critical"
+
+    # PVC almost full
+    - alert: PersistentVolumeAlmostFull
+      expr: |
+        (
+          kubelet_volume_stats_available_bytes
+          /
+          kubelet_volume_stats_capacity_bytes
+        ) < 0.1
+      for: 5m
+      labels:
+        severity: critical
+        component: storage
+      annotations:
+        summary: "PVC {{ $labels.persistentvolumeclaim }} almost full"
+        description: "PVC {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is {{ $value | humanizePercentage }} full"
+        runbook_url: "https://docs.june.platform/runbooks/pvc-almost-full"
+
+  ## WARNING ALERTS (Slack notification)
+  - name: june-warnings
+    interval: 30s
+    rules:
+    # High memory usage
+    - alert: HighMemoryUsage
+      expr: |
+        (
+          1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+        ) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "High memory usage on {{ $labels.instance }}"
+        description: "Memory usage is {{ $value | humanizePercentage }} (threshold: 85%)"
+        runbook_url: "https://docs.june.platform/runbooks/high-memory"
+
+    # High CPU usage
+    - alert: HighCPUUsage
+      expr: |
+        (
+          100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+        ) > 80
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "High CPU usage on {{ $labels.instance }}"
+        description: "CPU usage is {{ $value | humanize }}% (threshold: 80%)"
+        runbook_url: "https://docs.june.platform/runbooks/high-cpu"
+
+    # Pod not ready
+    - alert: PodNotReady
+      expr: kube_pod_status_phase{phase!~"Running|Succeeded"} > 0
+      for: 15m
+      labels:
+        severity: warning
+        component: kubernetes
+      annotations:
+        summary: "Pod {{ $labels.pod }} not ready"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in {{ $labels.phase }} state for more than 15 minutes"
+        runbook_url: "https://docs.june.platform/runbooks/pod-not-ready"
+
+    # Container restarts
+    - alert: ContainerRestarting
+      expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+      annotations:
+        summary: "Container {{ $labels.container }} restarting"
+        description: "Container {{ $labels.container }} in pod {{ $labels.pod }} ({{ $labels.namespace }}) is restarting frequently"
+        runbook_url: "https://docs.june.platform/runbooks/container-restarting"
+
+    # PostgreSQL connection issues
+    - alert: PostgreSQLTooManyConnections
+      expr: |
+        (
+          sum by (namespace) (pg_stat_database_numbackends)
+          /
+          max by (namespace) (pg_settings_max_connections)
+        ) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "PostgreSQL connection pool almost full"
+        description: "PostgreSQL in {{ $labels.namespace }} is using {{ $value | humanizePercentage }} of available connections"
+        runbook_url: "https://docs.june.platform/runbooks/postgres-connections"
+
+    # Redis memory usage
+    - alert: RedisMemoryHigh
+      expr: |
+        (
+          redis_memory_used_bytes
+          /
+          redis_memory_max_bytes
+        ) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: cache
+      annotations:
+        summary: "Redis memory usage high"
+        description: "Redis memory usage is {{ $value | humanizePercentage }} (threshold: 90%)"
+        runbook_url: "https://docs.june.platform/runbooks/redis-memory"
+
+    # RabbitMQ queue growing
+    - alert: RabbitMQQueueGrowing
+      expr: rabbitmq_queue_messages > 1000
+      for: 10m
+      labels:
+        severity: warning
+        component: messaging
+      annotations:
+        summary: "RabbitMQ queue {{ $labels.queue }} growing"
+        description: "Queue {{ $labels.queue }} has {{ $value }} messages (threshold: 1000)"
+        runbook_url: "https://docs.june.platform/runbooks/rabbitmq-queue-growing"
+
+    # Elasticsearch cluster health
+    - alert: ElasticsearchClusterYellow
+      expr: elasticsearch_cluster_health_status{color="yellow"} == 1
+      for: 5m
+      labels:
+        severity: warning
+        component: search
+      annotations:
+        summary: "Elasticsearch cluster health is yellow"
+        description: "Elasticsearch cluster health has been yellow for more than 5 minutes"
+        runbook_url: "https://docs.june.platform/runbooks/elasticsearch-yellow"
+
+    # Slow HTTP responses
+    - alert: SlowHTTPResponses
+      expr: |
+        histogram_quantile(0.95,
+          sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))
+        ) > 1
+      for: 10m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "Slow HTTP responses on {{ $labels.job }}"
+        description: "95th percentile response time is {{ $value | humanizeDuration }} (threshold: 1s)"
+        runbook_url: "https://docs.june.platform/runbooks/slow-responses"
+
+  ## INFO ALERTS (Log only)
+  - name: june-info
+    interval: 1m
+    rules:
+    # Certificate expiring soon
+    - alert: CertificateExpiringSoon
+      expr: |
+        (
+          certmanager_certificate_expiration_timestamp_seconds - time()
+        ) / 86400 < 7
+      for: 1h
+      labels:
+        severity: info
+        component: security
+      annotations:
+        summary: "Certificate {{ $labels.name }} expiring soon"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} expires in {{ $value | humanizeDuration }}"
+        runbook_url: "https://docs.june.platform/runbooks/cert-expiring"
+
+    # High database query time
+    - alert: PostgreSQLSlowQueries
+      expr: rate(pg_stat_database_blk_read_time[5m]) > 0.1
+      for: 10m
+      labels:
+        severity: info
+        component: database
+      annotations:
+        summary: "PostgreSQL slow queries detected"
+        description: "PostgreSQL in {{ $labels.namespace }} has slow queries"
+        runbook_url: "https://docs.june.platform/runbooks/postgres-slow-queries"

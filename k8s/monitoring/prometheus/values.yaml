@@ -1,0 +1,395 @@
+# Kube-Prometheus-Stack Helm Values
+# Complete monitoring stack with Prometheus, Grafana, and AlertManager
+# Optimized for June Platform infrastructure
+
+## Global settings
+fullnameOverride: "kube-prometheus-stack"
+namespaceOverride: "monitoring"
+
+## Prometheus configuration
+prometheus:
+  enabled: true
+
+  prometheusSpec:
+    # Retention period for metrics
+    retention: 15d
+    retentionSize: "45GB"
+
+    # Resources
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+
+    # Storage
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: slow-hdd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+    # Scrape interval
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+
+    # Service monitor selector - monitor all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    # Pod monitor selector
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+    # Rule selector
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+    # External labels
+    externalLabels:
+      cluster: "june-platform"
+      environment: "production"
+
+    # Remote write (for external TTS/STT services)
+    # Uncomment and configure when ready
+    # remoteWrite:
+    #   - url: http://remote-prometheus:9090/api/v1/write
+    #     basicAuth:
+    #       username:
+    #         name: remote-write-secret
+    #         key: username
+    #       password:
+    #         name: remote-write-secret
+    #         key: password
+
+  # Ingress for Prometheus UI
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # Add authentication (basic auth or OAuth)
+      # nginx.ingress.kubernetes.io/auth-type: basic
+      # nginx.ingress.kubernetes.io/auth-secret: monitoring-basic-auth
+      # nginx.ingress.kubernetes.io/auth-realm: 'Monitoring Access'
+    hosts:
+      - prometheus.DOMAIN_PLACEHOLDER
+    tls:
+      - secretName: DOMAIN_PLACEHOLDER-wildcard-tls
+        hosts:
+          - prometheus.DOMAIN_PLACEHOLDER
+
+## Grafana configuration
+grafana:
+  enabled: true
+
+  # Admin credentials
+  adminPassword: "CHANGE_ME_IMMEDIATELY"  # IMPORTANT: Change this!
+
+  # Resources
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  # Persistence
+  persistence:
+    enabled: true
+    storageClassName: fast-ssd
+    size: 5Gi
+
+  # Datasources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        # Prometheus
+        - name: Prometheus
+          type: prometheus
+          url: http://kube-prometheus-stack-prometheus:9090
+          access: proxy
+          isDefault: true
+          jsonData:
+            timeInterval: 30s
+
+        # Loki (will be available after Loki installation)
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+          access: proxy
+          jsonData:
+            maxLines: 1000
+
+  # Dashboard providers
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/default
+
+        - name: 'june-platform'
+          orgId: 1
+          folder: 'June Platform'
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/june-platform
+
+        - name: 'june-dark'
+          orgId: 1
+          folder: 'June Dark'
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/june-dark
+
+        - name: 'media-stack'
+          orgId: 1
+          folder: 'Media Stack'
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/media-stack
+
+  # Load dashboards from ConfigMaps
+  dashboards:
+    default:
+      # Kubernetes dashboards (built-in)
+      k8s-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+
+      k8s-resources-cluster:
+        gnetId: 11454
+        revision: 14
+        datasource: Prometheus
+
+      k8s-resources-namespace:
+        gnetId: 15758
+        revision: 27
+        datasource: Prometheus
+
+      k8s-resources-pod:
+        gnetId: 15760
+        revision: 17
+        datasource: Prometheus
+
+      node-exporter:
+        gnetId: 1860
+        revision: 31
+        datasource: Prometheus
+
+      nginx-ingress:
+        gnetId: 9614
+        revision: 1
+        datasource: Prometheus
+
+  # Ingress
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - grafana.DOMAIN_PLACEHOLDER
+    tls:
+      - secretName: DOMAIN_PLACEHOLDER-wildcard-tls
+        hosts:
+          - grafana.DOMAIN_PLACEHOLDER
+
+  # Grafana configuration
+  grafana.ini:
+    server:
+      root_url: "https://grafana.DOMAIN_PLACEHOLDER"
+
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+
+    security:
+      allow_embedding: true
+
+    auth.anonymous:
+      enabled: false
+
+    # Optional: Configure SMTP for email alerts
+    # smtp:
+    #   enabled: true
+    #   host: smtp.gmail.com:587
+    #   user: your-email@gmail.com
+    #   password: your-app-password
+    #   from_address: grafana@yourdomain.com
+    #   from_name: Grafana
+
+## AlertManager configuration
+alertmanager:
+  enabled: true
+
+  alertmanagerSpec:
+    # Resources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
+
+    # Storage
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: fast-ssd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+  # Ingress
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # Add authentication
+      # nginx.ingress.kubernetes.io/auth-type: basic
+      # nginx.ingress.kubernetes.io/auth-secret: monitoring-basic-auth
+    hosts:
+      - alertmanager.DOMAIN_PLACEHOLDER
+    tls:
+      - secretName: DOMAIN_PLACEHOLDER-wildcard-tls
+        hosts:
+          - alertmanager.DOMAIN_PLACEHOLDER
+
+  # AlertManager configuration
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: ['alertname', 'cluster', 'namespace']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'null'
+      routes:
+        # Critical alerts - page immediately
+        - receiver: 'critical'
+          matchers:
+            - severity =~ "critical|page"
+          continue: true
+
+        # Warning alerts - Slack notification
+        - receiver: 'warning'
+          matchers:
+            - severity = "warning"
+          continue: true
+
+    receivers:
+      # Null receiver (default)
+      - name: 'null'
+
+      # Critical alerts receiver
+      - name: 'critical'
+        # Configure your preferred notification method:
+
+        # Slack example:
+        # slack_configs:
+        #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+        #     channel: '#alerts-critical'
+        #     title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        #     text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}'
+
+        # Email example:
+        # email_configs:
+        #   - to: 'ops-team@yourdomain.com'
+        #     from: 'alertmanager@yourdomain.com'
+        #     smarthost: 'smtp.gmail.com:587'
+        #     auth_username: 'your-email@gmail.com'
+        #     auth_password: 'your-app-password'
+        #     headers:
+        #       Subject: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+
+        # Webhook example (for PagerDuty, Opsgenie, etc.):
+        # webhook_configs:
+        #   - url: 'https://your-webhook-url.com/alerts'
+
+      # Warning alerts receiver
+      - name: 'warning'
+        # slack_configs:
+        #   - api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+        #     channel: '#alerts-warning'
+        #     title: '⚠️ WARNING: {{ .GroupLabels.alertname }}'
+        #     text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}'
+
+## Node Exporter (collects node metrics)
+nodeExporter:
+  enabled: true
+
+## Kube State Metrics (collects Kubernetes object metrics)
+kubeStateMetrics:
+  enabled: true
+
+## Default rules (alerts)
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserverAvailability: true
+    kubeApiserverSlos: true
+    kubeControllerManager: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: true
+    kubeSchedulerRecording: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
+
+## Prometheus Operator
+prometheusOperator:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

@@ -54,7 +54,7 @@ orchestrator:
   image:
     repository: docker.io/ozzuworld/june-orchestrator
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   resources:
     requests:
       memory: 512Mi
@@ -70,7 +70,7 @@ stt:
   image:
     repository: docker.io/ozzuworld/june-stt
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   gpu:
     enabled: true
     count: 1
@@ -89,7 +89,7 @@ tts:
   image:
     repository: docker.io/ozzuworld/june-tts
     tag: latest
-    pullPolicy: Always
+    pullPolicy: IfNotPresent
   gpu:
     enabled: true
     count: 1

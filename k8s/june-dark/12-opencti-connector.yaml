@@ -91,7 +91,7 @@ spec:
       containers:
         - name: connector
           image: ozzuworld/june-dark-opencti-connector:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: opencti-connector-config

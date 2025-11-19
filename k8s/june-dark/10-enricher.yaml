@@ -31,7 +31,7 @@ spec:
       containers:
         - name: enricher
           image: ozzuworld/june-dark-enricher:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: june-dark-config
