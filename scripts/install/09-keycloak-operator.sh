@@ -36,7 +36,6 @@ KEYCLOAK_HOSTNAME="idp.${DOMAIN}"
 DB_USERNAME="${POSTGRESQL_USERNAME:-keycloak}"
 DB_PASSWORD="${POSTGRESQL_PASSWORD:-Pokemon123!}"
 DB_DATABASE="${POSTGRESQL_DATABASE:-keycloak}"
-ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-Pokemon123!}"
 
 log "Installing Keycloak Operator for domain: $DOMAIN"
 
@@ -77,19 +76,8 @@ kubectl create secret generic keycloak-db-secret \
 
 success "Database secret created"
 
-# Step 4: Create initial admin secret
-log "Step 4: Creating initial admin credentials..."
-
-kubectl create secret generic keycloak-initial-admin \
-    --namespace $NAMESPACE \
-    --from-literal=username=admin \
-    --from-literal=password=$ADMIN_PASSWORD \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-success "Admin credentials created"
-
-# Step 5: Create Keycloak CR
-log "Step 5: Creating Keycloak instance..."
+# Step 4: Create Keycloak CR
+log "Step 4: Creating Keycloak instance..."
 
 cat <<EOF | kubectl apply -f -
 apiVersion: k8s.keycloak.org/v2alpha1
@@ -150,30 +138,12 @@ spec:
     limits:
       memory: "2Gi"
       cpu: "1000m"
-
-  # Use existing admin secret
-  unsupported:
-    podTemplate:
-      spec:
-        containers:
-          - name: keycloak
-            env:
-              - name: KEYCLOAK_ADMIN
-                valueFrom:
-                  secretKeyRef:
-                    name: keycloak-initial-admin
-                    key: username
-              - name: KEYCLOAK_ADMIN_PASSWORD
-                valueFrom:
-                  secretKeyRef:
-                    name: keycloak-initial-admin
-                    key: password
 EOF
 
 success "Keycloak CR created"
 
-# Step 6: Create Ingress for Keycloak
-log "Step 6: Creating Ingress for Keycloak..."
+# Step 5: Create Ingress for Keycloak
+log "Step 5: Creating Ingress for Keycloak..."
 
 cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
@@ -206,8 +176,8 @@ EOF
 
 success "Keycloak Ingress created"
 
-# Step 7: Wait for Keycloak to be ready
-log "Step 7: Waiting for Keycloak to be ready..."
+# Step 6: Wait for Keycloak to be ready
+log "Step 6: Waiting for Keycloak to be ready..."
 
 MAX_ATTEMPTS=60
 ATTEMPT=0
@@ -231,14 +201,16 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     echo "  kubectl get pods -n $NAMESPACE -l app=keycloak"
 fi
 
-# Step 8: Show status
+# Step 7: Show status
 log "Keycloak Operator installation complete"
 echo ""
 echo "Keycloak Access Information:"
 echo "  URL: https://$KEYCLOAK_HOSTNAME"
 echo "  Admin Console: https://$KEYCLOAK_HOSTNAME/admin"
-echo "  Username: admin"
-echo "  Password: $ADMIN_PASSWORD"
+echo ""
+echo "Get Admin Credentials:"
+echo "  Username: kubectl get secret keycloak-initial-admin -n $NAMESPACE -o jsonpath='{.data.username}' | base64 -d"
+echo "  Password: kubectl get secret keycloak-initial-admin -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d"
 echo ""
 echo "Useful Commands:"
 echo "  Check status:    kubectl get keycloak keycloak -n $NAMESPACE"
