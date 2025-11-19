@@ -15,7 +15,8 @@ auth:
 production: true
 
 # Proxy configuration (behind Ingress/Traefik)
-proxy: edge
+# Required for production mode when behind reverse proxy
+proxyHeaders: xforwarded
 
 # PostgreSQL configuration (bundled)
 postgresql:
