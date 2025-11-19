@@ -1,0 +1,84 @@
+---
+# Elasticsearch Exporter for June Dark namespace
+# Exports Elasticsearch metrics to Prometheus
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch-exporter
+  namespace: june-dark
+  labels:
+    app: elasticsearch-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch-exporter
+  template:
+    metadata:
+      labels:
+        app: elasticsearch-exporter
+    spec:
+      containers:
+      - name: elasticsearch-exporter
+        image: quay.io/prometheuscommunity/elasticsearch-exporter:v1.6.0
+        ports:
+        - containerPort: 9114
+          name: metrics
+        args:
+        - "--es.uri=http://elasticsearch.june-dark.svc.cluster.local:9200"
+        - "--es.all"
+        - "--es.indices"
+        - "--es.indices_settings"
+        - "--es.shards"
+        - "--es.snapshots"
+        - "--es.cluster_settings"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9114
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9114
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-exporter
+  namespace: june-dark
+  labels:
+    app: elasticsearch-exporter
+spec:
+  selector:
+    app: elasticsearch-exporter
+  ports:
+  - port: 9114
+    targetPort: 9114
+    name: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: elasticsearch-exporter
+  namespace: june-dark
+  labels:
+    app: elasticsearch-exporter
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: elasticsearch-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s

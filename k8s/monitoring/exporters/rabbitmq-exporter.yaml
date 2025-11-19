@@ -1,0 +1,87 @@
+---
+# RabbitMQ Exporter for June Dark namespace
+# Exports RabbitMQ metrics to Prometheus
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq-exporter
+  namespace: june-dark
+  labels:
+    app: rabbitmq-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq-exporter
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-exporter
+    spec:
+      containers:
+      - name: rabbitmq-exporter
+        image: kbudde/rabbitmq-exporter:v1.0.0-RC19
+        ports:
+        - containerPort: 9419
+          name: metrics
+        env:
+        - name: RABBIT_URL
+          value: "http://rabbitmq.june-dark.svc.cluster.local:15672"
+        - name: RABBIT_USER
+          value: "juneadmin"
+        - name: RABBIT_PASSWORD
+          value: "juneR@bbit2024"
+        - name: PUBLISH_PORT
+          value: "9419"
+        - name: LOG_LEVEL
+          value: "info"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9419
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9419
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-exporter
+  namespace: june-dark
+  labels:
+    app: rabbitmq-exporter
+spec:
+  selector:
+    app: rabbitmq-exporter
+  ports:
+  - port: 9419
+    targetPort: 9419
+    name: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rabbitmq-exporter
+  namespace: june-dark
+  labels:
+    app: rabbitmq-exporter
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s

@@ -1,0 +1,79 @@
+---
+# Redis Exporter for June Dark namespace
+# Exports Redis metrics to Prometheus
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: june-dark
+  labels:
+    app: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      containers:
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0
+        ports:
+        - containerPort: 9121
+          name: metrics
+        env:
+        - name: REDIS_ADDR
+          value: "redis.june-dark.svc.cluster.local:6379"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9121
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9121
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: june-dark
+  labels:
+    app: redis-exporter
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+  - port: 9121
+    targetPort: 9121
+    name: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-exporter
+  namespace: june-dark
+  labels:
+    app: redis-exporter
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: redis-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s
