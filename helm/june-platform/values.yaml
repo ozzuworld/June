@@ -24,8 +24,9 @@ certificate:
   useBackup: false  # Set to true when using backup certificates
 
 # PostgreSQL Database
+# DEPRECATED: Now deployed separately via Bitnami Keycloak chart
 postgresql:
-  enabled: true
+  enabled: false  # Disabled - using Bitnami Keycloak chart with bundled PostgreSQL
   database: keycloak
   username: keycloak
   password: Pokemon123!  # CHANGE IN PRODUCTION
@@ -34,8 +35,10 @@ postgresql:
   hostPath: /mnt/ssd/postgresql
 
 # Keycloak Identity Provider
+# MIGRATED: Now deployed separately via Bitnami Keycloak Helm chart
+# See: helm/keycloak-values.yaml and scripts/install/migrate-to-bitnami-keycloak.sh
 keycloak:
-  enabled: true
+  enabled: false  # Disabled - using official Bitnami chart instead
   adminUsername: admin
   adminPassword: Pokemon123!  # CHANGE IN PRODUCTION
   realm: june-realm
