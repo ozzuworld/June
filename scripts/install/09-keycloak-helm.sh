@@ -61,6 +61,7 @@ log "Step 3: Installing Keycloak..."
 helm upgrade --install keycloak bitnami/keycloak \
   --namespace $NAMESPACE \
   --create-namespace \
+  --set image.tag=25.0.6-debian-12-r0 \
   --set auth.adminUser="$ADMIN_USER" \
   --set auth.adminPassword="$ADMIN_PASSWORD" \
   --set production=true \
