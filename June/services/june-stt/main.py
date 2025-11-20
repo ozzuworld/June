@@ -62,7 +62,7 @@ app.add_middleware(
 
 class ASRConfig(BaseModel):
     model: str = "large-v2"
-    language: str = "en"
+    language: Optional[str] = None  # ✅ MULTILINGUAL: None = auto-detect, or specify language code
     task: str = "transcribe"  # or "translate"
     use_vac: bool = True
     min_chunk_size: float = 1.0
@@ -198,7 +198,7 @@ async def startup_event() -> None:
 
     config = ASRConfig(
         model=model_name,  # ✅ UPGRADED from "base" for production-grade accuracy
-        language="en",
+        language=None,  # ✅ MULTILINGUAL: Auto-detect language instead of forcing English
         task="transcribe",
         use_vac=True,
         min_chunk_size=1.0,
