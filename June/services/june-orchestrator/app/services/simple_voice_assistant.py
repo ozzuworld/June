@@ -842,6 +842,8 @@ NATURAL SPEECH (when NOT using tools):
                         if cleaned:
                             logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
                             await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
+                            # ✅ Track immediately for echo detection
+                            self._track_assistant_response(session_id, cleaned)
                             self._last_response_time[session_id] = time.time()
                             self.total_sentences_sent += 1
 
@@ -853,6 +855,8 @@ NATURAL SPEECH (when NOT using tools):
                     sentence_count += 1
                     logger.info(f"🔊 Final: '{cleaned[:50]}...'")
                     await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
+                    # ✅ Track immediately for echo detection
+                    self._track_assistant_response(session_id, cleaned)
                     self._last_response_time[session_id] = time.time()
                     self.total_sentences_sent += 1
             
@@ -898,7 +902,10 @@ NATURAL SPEECH (when NOT using tools):
 
             # Send error message
             try:
-                await self._send_tts(room_name, "Sorry, I'm having trouble right now.", "default")
+                error_msg = "Sorry, I'm having trouble right now."
+                await self._send_tts(room_name, error_msg, "default")
+                # ✅ Track error message for echo detection
+                self._track_assistant_response(session_id, error_msg)
             except:
                 pass
 
@@ -1022,26 +1029,32 @@ NATURAL SPEECH (when NOT using tools):
             
             if tool_name == "enable_mockingbird":
                 result = await self.mockingbird.enable(session_id, room_name)
-                
+
                 # Tool returns TTS message - send it
                 if "tts_message" in result:
                     # ✅ FIX: For "already active" message, use cloned voice
                     voice_to_use = "default" if result["status"] == "awaiting_sample" else current_voice
                     await self._send_tts(room_name, result["tts_message"], voice_to_use)
-                
+                    # ✅ Track for echo detection
+                    self._track_assistant_response(session_id, result["tts_message"])
+
             elif tool_name == "disable_mockingbird":
                 result = await self.mockingbird.disable(session_id)
-                
+
                 # Tool returns TTS message - send it with current voice
                 if "tts_message" in result:
                     await self._send_tts(room_name, result["tts_message"], current_voice)
-                
+                    # ✅ Track for echo detection
+                    self._track_assistant_response(session_id, result["tts_message"])
+
             elif tool_name == "check_mockingbird_status":
                 result = self.mockingbird.check_status(session_id)
 
                 # Tool returns TTS message - send it with the voice_id from result
                 if "tts_message" in result:
                     await self._send_tts(room_name, result["tts_message"], result.get("voice_id", "default"))
+                    # ✅ Track for echo detection
+                    self._track_assistant_response(session_id, result["tts_message"])
             else:
                 logger.error(f"❌ Unknown tool: {tool_name}")
                 
