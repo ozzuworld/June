@@ -80,7 +80,8 @@ helm upgrade --install keycloak bitnami/keycloak \
   --set ingress.ingressClassName=traefik \
   --set ingress.hostname="$KEYCLOAK_HOSTNAME" \
   --set ingress.tls=true \
-  --set-string ingress.annotations."cert-manager\.io/cluster-issuer"=letsencrypt-prod
+  --set ingress.extraTls[0].hosts[0]="$KEYCLOAK_HOSTNAME" \
+  --set ingress.extraTls[0].secretName=ozzu-world-wildcard-tls
 
 success "Keycloak Helm chart installed"
 
