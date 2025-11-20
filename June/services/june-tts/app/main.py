@@ -3,11 +3,12 @@
 June TTS Service - XTTS v2 (Coqui TTS)
 Production-optimized implementation with:
 - DeepSpeed acceleration (2-3x speedup)
-- Streaming inference (<200ms latency)
+- TRUE real-time streaming (<200ms to first audio chunk)
 - Latent caching (40-60% faster for repeated voices)
 - Result caching for duplicate requests
 - Low VRAM mode support
 - Full Japanese language support
+- LiveKit integration with real-time chunk streaming
 """
 import asyncio
 import hashlib
@@ -18,7 +19,8 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple, Union, List
+from concurrent.futures import ThreadPoolExecutor
 
 import librosa
 import numpy as np
@@ -755,6 +757,202 @@ def generate_audio_streaming(
         logger.error(f"❌ Streaming audio generation failed: {e}", exc_info=True)
         raise
 
+async def stream_chunk_to_livekit(chunk: np.ndarray, chunk_num: int):
+    """Stream a single audio chunk to LiveKit immediately"""
+    if not livekit_connected or livekit_audio_source is None:
+        return
+
+    try:
+        # Resample chunk to LiveKit sample rate
+        if XTTS_SAMPLE_RATE != LIVEKIT_SAMPLE_RATE:
+            import torchaudio.transforms as T
+            resampler = T.Resample(XTTS_SAMPLE_RATE, LIVEKIT_SAMPLE_RATE)
+            chunk_tensor = torch.from_numpy(chunk).float().unsqueeze(0)
+            chunk = resampler(chunk_tensor).squeeze().numpy()
+
+        chunk = chunk.astype(np.float32)
+
+        # Stream chunk in frames
+        next_deadline = time.perf_counter()
+        frames_sent = 0
+
+        for i in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
+            frame_data = chunk[i:i+LIVEKIT_FRAME_SIZE]
+
+            # Pad if needed
+            if len(frame_data) < LIVEKIT_FRAME_SIZE:
+                frame_data = np.pad(frame_data, (0, LIVEKIT_FRAME_SIZE - len(frame_data)))
+
+            # Convert to int16
+            pcm_int16 = (np.clip(frame_data, -1.0, 1.0) * 32767).astype(np.int16)
+
+            # Send frame
+            frame = rtc.AudioFrame.create(LIVEKIT_SAMPLE_RATE, 1, LIVEKIT_FRAME_SIZE)
+            np.copyto(np.frombuffer(frame.data, dtype=np.int16), pcm_int16)
+            await livekit_audio_source.capture_frame(frame)
+
+            frames_sent += 1
+
+            # Pace frames
+            next_deadline += FRAME_PERIOD_S
+            now = time.perf_counter()
+            delay = next_deadline - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+        if chunk_num == 1:
+            logger.info(f"🎵 First chunk streamed to LiveKit ({frames_sent} frames)")
+
+    except Exception as e:
+        logger.error(f"❌ Error streaming chunk {chunk_num}: {e}")
+
+async def generate_and_stream_to_livekit_realtime(
+    text: str,
+    conditioning: Union[Tuple[torch.Tensor, torch.Tensor], str],
+    language: str = "en",
+    temperature: float = 0.65,
+    speed: float = 1.0,
+    stream_chunk_size: int = 20,
+    enable_text_splitting: bool = True
+) -> bytes:
+    """
+    Generate audio using XTTS v2 STREAMING and stream chunks to LiveKit in REAL-TIME
+
+    This is TRUE streaming: chunks are sent to LiveKit as they're generated,
+    not after collection. User hears audio starting in ~200ms instead of waiting
+    for full generation (2-7 seconds).
+
+    Returns: Complete audio bytes for caching
+    """
+    if conditioning is None:
+        raise RuntimeError("No voice conditioning available")
+
+    # Streaming only works with cached latents
+    if not isinstance(conditioning, tuple) or not xtts_model_internal:
+        logger.warning("⚠️  True streaming requires cached latents. Falling back to standard.")
+        # Fallback to non-streaming
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            generate_audio_sync,
+            text, conditioning, language, temperature, speed, enable_text_splitting
+        )
+
+    gpt_cond_latent, speaker_embedding = conditioning
+    logger.info("🌊 TRUE STREAMING: Sending chunks to LiveKit as generated")
+
+    # Queue for passing chunks from sync thread to async context
+    chunk_queue = asyncio.Queue()
+    audio_chunks = []
+    generation_complete = asyncio.Event()
+    start_time = time.time()
+    first_chunk_time = None
+
+    def generate_in_thread():
+        """Run XTTS streaming in thread, put chunks in queue"""
+        nonlocal first_chunk_time
+
+        try:
+            # Low VRAM: Move model to GPU
+            if LOW_VRAM_MODE and torch.cuda.is_available():
+                xtts_model_internal.cuda()
+
+            try:
+                # Stream audio chunks
+                chunks_iterator = xtts_model_internal.inference_stream(
+                    text=text,
+                    language=language,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    stream_chunk_size=stream_chunk_size,
+                    overlap_wav_len=1024,
+                    temperature=temperature,
+                    length_penalty=1.0,
+                    repetition_penalty=5.0,
+                    top_k=50,
+                    top_p=0.85,
+                    enable_text_splitting=enable_text_splitting
+                )
+
+                chunk_count = 0
+                for chunk in chunks_iterator:
+                    chunk_count += 1
+
+                    if chunk_count == 1:
+                        first_chunk_time = (time.time() - start_time) * 1000
+
+                    # Convert to numpy
+                    if isinstance(chunk, torch.Tensor):
+                        chunk = chunk.cpu().numpy()
+
+                    # Put chunk in queue for async processing
+                    asyncio.run_coroutine_threadsafe(
+                        chunk_queue.put((chunk_count, chunk)),
+                        asyncio.get_event_loop()
+                    )
+
+                    audio_chunks.append(chunk)
+
+                logger.info(f"✅ Generation complete: {chunk_count} chunks, first at {first_chunk_time:.0f}ms")
+
+            finally:
+                # Low VRAM: Move model back to CPU
+                if LOW_VRAM_MODE and torch.cuda.is_available():
+                    xtts_model_internal.cpu()
+                    torch.cuda.empty_cache()
+
+        except Exception as e:
+            logger.error(f"❌ Generation thread error: {e}", exc_info=True)
+            asyncio.run_coroutine_threadsafe(
+                chunk_queue.put(("ERROR", str(e))),
+                asyncio.get_event_loop()
+            )
+        finally:
+            # Signal completion
+            asyncio.run_coroutine_threadsafe(
+                chunk_queue.put(("DONE", None)),
+                asyncio.get_event_loop()
+            )
+
+    # Start generation in thread
+    executor = ThreadPoolExecutor(max_workers=1)
+    executor.submit(generate_in_thread)
+
+    # Process chunks as they arrive and stream to LiveKit
+    try:
+        while True:
+            item = await chunk_queue.get()
+
+            if item[0] == "DONE":
+                break
+            elif item[0] == "ERROR":
+                raise RuntimeError(f"Generation failed: {item[1]}")
+            else:
+                chunk_num, chunk = item
+                # Stream this chunk to LiveKit immediately
+                await stream_chunk_to_livekit(chunk, chunk_num)
+
+        # All chunks processed
+        total_time = (time.time() - start_time) * 1000
+        logger.info(f"🌊 TRUE STREAMING complete: {len(audio_chunks)} chunks in {total_time:.0f}ms")
+
+        # Concatenate all chunks for caching
+        wav = np.concatenate(audio_chunks)
+
+        # Convert to bytes
+        buffer = io.BytesIO()
+        sf.write(buffer, wav, XTTS_SAMPLE_RATE, format='WAV')
+        buffer.seek(0)
+        audio_bytes = buffer.getvalue()
+
+        # GPU cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return audio_bytes
+
+    finally:
+        executor.shutdown(wait=False)
+
 # -----------------------------------------------------------------------------
 # LiveKit
 # -----------------------------------------------------------------------------
@@ -899,7 +1097,9 @@ async def health():
             "deepspeed_enabled": USE_DEEPSPEED and gpu_available,
             "low_vram_mode": LOW_VRAM_MODE,
             "streaming_mode": STREAMING_MODE,
+            "streaming_realtime": STREAMING_MODE,  # TRUE streaming: chunks sent as generated
             "streaming_improved": STREAMING_MODE_IMPROVE,
+            "streaming_text_threshold": STREAMING_TEXT_THRESHOLD,
             "result_cache_enabled": ENABLE_RESULT_CACHE,
             "latent_cache_enabled": True,
         },
@@ -975,8 +1175,8 @@ async def synthesize_speech(request: SynthesizeRequest):
             else:
                 raise HTTPException(503, "No voice available. Please clone a voice using /api/voices/clone")
 
-        # Generate audio using XTTS v2 (sync operation in executor)
-        # Use streaming for longer text to reduce latency to first audio chunk
+        # Generate audio using XTTS v2
+        # Use TRUE STREAMING for longer text to reduce latency (user hears audio in ~200ms)
         use_streaming = (
             STREAMING_MODE and
             len(request.text) > STREAMING_TEXT_THRESHOLD and
@@ -984,10 +1184,10 @@ async def synthesize_speech(request: SynthesizeRequest):
         )
 
         if use_streaming:
-            logger.info(f"🌊 Using STREAMING mode (text length: {len(request.text)} > {STREAMING_TEXT_THRESHOLD})")
-            audio_bytes, chunks = await asyncio.get_event_loop().run_in_executor(
-                None,
-                generate_audio_streaming,
+            logger.info(f"🌊 Using TRUE STREAMING mode (text length: {len(request.text)} > {STREAMING_TEXT_THRESHOLD})")
+            # TRUE STREAMING: Chunks sent to LiveKit as they're generated
+            # User hears audio starting in ~200ms instead of waiting 2-7 seconds
+            audio_bytes = await generate_and_stream_to_livekit_realtime(
                 request.text,
                 conditioning,
                 request.language,
@@ -996,6 +1196,7 @@ async def synthesize_speech(request: SynthesizeRequest):
                 20,  # stream_chunk_size
                 request.enable_text_splitting
             )
+            # LiveKit streaming already handled inside function
         else:
             logger.info(f"⚡ Using STANDARD mode (text length: {len(request.text)} <= {STREAMING_TEXT_THRESHOLD})")
             audio_bytes = await asyncio.get_event_loop().run_in_executor(
@@ -1008,12 +1209,11 @@ async def synthesize_speech(request: SynthesizeRequest):
                 request.speed,
                 request.enable_text_splitting
             )
+            # Stream complete audio to LiveKit
+            await stream_audio_to_livekit(audio_bytes)
 
         # Cache the result
         add_to_cache(cache_key, audio_bytes)
-
-        # Stream to LiveKit
-        await stream_audio_to_livekit(audio_bytes)
 
         total_ms = (time.time() - start_time) * 1000
 
