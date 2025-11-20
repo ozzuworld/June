@@ -77,7 +77,7 @@ helm upgrade --install keycloak bitnami/keycloak \
   --set externalDatabase.password="$DB_PASSWORD" \
   --set externalDatabase.database="$DB_DATABASE" \
   --set ingress.enabled=true \
-  --set ingress.ingressClassName=traefik \
+  --set ingress.ingressClassName=nginx \
   --set ingress.hostname="$KEYCLOAK_HOSTNAME" \
   --set ingress.tls=true \
   --set ingress.extraTls[0].hosts[0]="$KEYCLOAK_HOSTNAME" \
