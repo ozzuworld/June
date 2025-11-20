@@ -1,4 +1,15 @@
-{{- if .Values.certificate.enabled }}
+---
+# ConfigMap for Keycloak proxy headers
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-proxy-headers
+  namespace: {{ .Release.Namespace }}
+data:
+  X-Forwarded-Proto: "https"
+  X-Forwarded-Port: "443"
+
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -14,12 +25,8 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
     nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    # Critical Keycloak proxy headers for production mode with proxy=edge
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
-      proxy_set_header X-Forwarded-Host $host;
-      proxy_set_header X-Forwarded-Port $server_port;
+    # Use ConfigMap to set proxy headers for Keycloak
+    nginx.ingress.kubernetes.io/proxy-set-headers: "{{ .Release.Namespace }}/keycloak-proxy-headers"
 spec:
   ingressClassName: nginx
   {{- if .Values.certificate.enabled }}
@@ -39,4 +46,3 @@ spec:
             name: keycloak
             port:
               number: 80
-{{- end }}
