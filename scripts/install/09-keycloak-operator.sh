@@ -115,14 +115,9 @@ spec:
   proxy:
     headers: xforwarded
 
-  # Ingress configuration (managed by operator)
+  # Disable operator-managed ingress (we'll create it manually for Traefik compatibility)
   ingress:
-    enabled: true
-    className: traefik
-    annotations:
-      cert-manager.io/cluster-issuer: letsencrypt-prod
-      traefik.ingress.kubernetes.io/router.entrypoints: websecure
-      traefik.ingress.kubernetes.io/router.tls: "true"
+    enabled: false
 
   # Features
   features:
@@ -151,8 +146,56 @@ EOF
 
 success "Keycloak CR created"
 
-# Step 5: Wait for Keycloak to be ready
-log "Step 5: Waiting for Keycloak to be ready..."
+# Step 5: Wait for Keycloak service to be created
+log "Step 5: Waiting for Keycloak service to be created..."
+sleep 10
+
+# Find the actual service name created by the operator
+SERVICE_NAME=$(kubectl get svc -n $NAMESPACE -o name | grep keycloak | grep -v operator | head -1 | cut -d'/' -f2)
+
+if [ -z "$SERVICE_NAME" ]; then
+  warn "Keycloak service not found yet, using default name"
+  SERVICE_NAME="keycloak-service"
+fi
+
+log "Using service: $SERVICE_NAME"
+
+# Step 6: Create manual ingress for Traefik compatibility
+log "Step 6: Creating Traefik-compatible ingress..."
+
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak-ingress
+  namespace: $NAMESPACE
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - $KEYCLOAK_HOSTNAME
+      secretName: keycloak-tls
+  rules:
+    - host: $KEYCLOAK_HOSTNAME
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: $SERVICE_NAME
+                port:
+                  number: 8080
+EOF
+
+success "Keycloak ingress created"
+
+# Step 7: Wait for Keycloak to be ready
+log "Step 7: Waiting for Keycloak to be ready..."
 
 MAX_ATTEMPTS=60
 ATTEMPT=0
@@ -176,7 +219,7 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     echo "  kubectl get pods -n $NAMESPACE -l app=keycloak"
 fi
 
-# Step 6: Show status
+# Step 8: Show status
 log "Keycloak Operator installation complete"
 echo ""
 echo "Keycloak Access Information:"
