@@ -47,13 +47,14 @@ helm repo update
 
 success "Bitnami repo added"
 
-# Step 2: Uninstall operator-based Keycloak if it exists
-log "Step 2: Removing operator-based Keycloak..."
+# Step 2: Uninstall any existing Keycloak
+log "Step 2: Removing existing Keycloak installations..."
+helm uninstall keycloak -n $NAMESPACE --ignore-not-found 2>/dev/null || true
 kubectl delete keycloak keycloak -n $NAMESPACE --ignore-not-found=true
 kubectl delete ingress keycloak-ingress -n $NAMESPACE --ignore-not-found=true
 kubectl delete deployment keycloak-operator -n $NAMESPACE --ignore-not-found=true
 
-success "Operator resources removed"
+success "Previous installations removed"
 
 # Step 3: Install Keycloak with Helm
 log "Step 3: Installing Keycloak..."
