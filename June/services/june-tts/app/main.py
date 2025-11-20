@@ -757,10 +757,20 @@ def generate_audio_streaming(
         logger.error(f"❌ Streaming audio generation failed: {e}", exc_info=True)
         raise
 
-async def stream_chunk_to_livekit(chunk: np.ndarray, chunk_num: int):
-    """Stream a single audio chunk to LiveKit immediately"""
+async def stream_chunk_to_livekit(chunk: np.ndarray, chunk_num: int, next_deadline: float):
+    """
+    Stream a single audio chunk to LiveKit immediately with continuous timing
+
+    Args:
+        chunk: Audio chunk to stream
+        chunk_num: Chunk number for logging
+        next_deadline: The deadline for the next frame (maintains continuity across chunks)
+
+    Returns:
+        Updated next_deadline for the next chunk
+    """
     if not livekit_connected or livekit_audio_source is None:
-        return
+        return next_deadline
 
     try:
         # Resample chunk to LiveKit sample rate
@@ -772,8 +782,7 @@ async def stream_chunk_to_livekit(chunk: np.ndarray, chunk_num: int):
 
         chunk = chunk.astype(np.float32)
 
-        # Stream chunk in frames
-        next_deadline = time.perf_counter()
+        # Stream chunk in frames with continuous timing
         frames_sent = 0
 
         for i in range(0, len(chunk), LIVEKIT_FRAME_SIZE):
@@ -793,18 +802,22 @@ async def stream_chunk_to_livekit(chunk: np.ndarray, chunk_num: int):
 
             frames_sent += 1
 
-            # Pace frames
-            next_deadline += FRAME_PERIOD_S
+            # Pace frames - maintain continuous timing across chunks
             now = time.perf_counter()
             delay = next_deadline - now
             if delay > 0:
                 await asyncio.sleep(delay)
 
+            next_deadline += FRAME_PERIOD_S
+
         if chunk_num == 1:
             logger.info(f"🎵 First chunk streamed to LiveKit ({frames_sent} frames)")
 
+        return next_deadline
+
     except Exception as e:
         logger.error(f"❌ Error streaming chunk {chunk_num}: {e}")
+        return next_deadline
 
 async def generate_and_stream_to_livekit_realtime(
     text: str,
@@ -919,6 +932,9 @@ async def generate_and_stream_to_livekit_realtime(
     executor.submit(generate_in_thread, loop)
 
     # Process chunks as they arrive and stream to LiveKit
+    # Initialize timing for continuous playback across chunks
+    next_deadline = time.perf_counter()
+
     try:
         while True:
             item = await chunk_queue.get()
@@ -929,8 +945,8 @@ async def generate_and_stream_to_livekit_realtime(
                 raise RuntimeError(f"Generation failed: {item[1]}")
             else:
                 chunk_num, chunk = item
-                # Stream this chunk to LiveKit immediately
-                await stream_chunk_to_livekit(chunk, chunk_num)
+                # Stream this chunk to LiveKit immediately with continuous timing
+                next_deadline = await stream_chunk_to_livekit(chunk, chunk_num, next_deadline)
 
         # All chunks processed
         total_time = (time.time() - start_time) * 1000
