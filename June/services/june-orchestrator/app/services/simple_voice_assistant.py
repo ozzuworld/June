@@ -1073,6 +1073,7 @@ NATURAL SPEECH (when NOT using tools):
     async def _send_tts(self, room_name: str, text: str, voice_id: str, language: str = "en"):
         """Send text to TTS service"""
         try:
+            logger.info(f"🎙️ _send_tts called with: text='{text[:50]}...', voice={voice_id}, lang={language}")
             await self.tts.publish_to_room(
                 room_name=room_name,
                 text=text,
