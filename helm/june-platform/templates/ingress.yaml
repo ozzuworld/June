@@ -69,9 +69,9 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: june-idp
+            name: keycloak
             port:
-              number: 8080
+              number: 80
   {{- if .Values.stt.enabled }}
   - host: {{ .Values.domains.stt }}
     http:
