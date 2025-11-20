@@ -76,17 +76,20 @@ helm upgrade --install keycloak bitnami/keycloak \
   --set externalDatabase.user="$DB_USERNAME" \
   --set externalDatabase.password="$DB_PASSWORD" \
   --set externalDatabase.database="$DB_DATABASE" \
-  --set ingress.enabled=true \
-  --set ingress.ingressClassName=nginx \
-  --set ingress.hostname="$KEYCLOAK_HOSTNAME" \
-  --set ingress.tls=true \
-  --set ingress.extraTls[0].hosts[0]="$KEYCLOAK_HOSTNAME" \
-  --set ingress.extraTls[0].secretName=ozzu-world-wildcard-tls
+  --set ingress.enabled=false
 
 success "Keycloak Helm chart installed"
 
-# Step 4: Wait for Keycloak to be ready
-log "Step 4: Waiting for Keycloak to be ready..."
+# Step 4: Update june-platform ingress to route to Keycloak
+log "Step 4: Updating june-platform ingress..."
+helm upgrade june-platform "$ROOT_DIR/helm/june-platform" \
+  --namespace $NAMESPACE \
+  --reuse-values
+
+success "Ingress updated to route to Keycloak"
+
+# Step 5: Wait for Keycloak to be ready
+log "Step 5: Waiting for Keycloak to be ready..."
 
 kubectl rollout status statefulset/keycloak -n $NAMESPACE --timeout=600s
 
