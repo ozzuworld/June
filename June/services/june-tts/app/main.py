@@ -474,49 +474,27 @@ async def get_voice_conditioning(voice_id: str) -> Optional[Union[Tuple[torch.Te
         logger.error(f"❌ Failed to get voice conditioning: {e}", exc_info=True)
         return None
 
-def generate_audio(
+def generate_audio_sync(
     text: str,
-    voice_id: str = "default",
+    conditioning: Union[Tuple[torch.Tensor, torch.Tensor], str],
     language: str = "en",
     temperature: float = 0.65,
     speed: float = 1.0,
     enable_text_splitting: bool = True
 ) -> bytes:
     """
-    Generate audio using XTTS v2 (PRODUCTION OPTIMIZED)
+    Generate audio using XTTS v2 (PRODUCTION OPTIMIZED) - SYNC VERSION
+    This function expects conditioning to already be loaded (async operations done separately)
     - Uses latent caching for 40-60% speedup on repeated voices
-    - Uses result caching for duplicate requests
     - Supports DeepSpeed acceleration
     - Low VRAM mode support
     """
-    logger.info(f"🎙️ Generating: '{text[:60]}...' | voice={voice_id} | lang={language} | temp={temperature}")
-
-    # Check result cache first
-    cache_key = get_cache_key(text, voice_id, language, temperature, speed)
-    cached_result = get_from_cache(cache_key)
-    if cached_result:
-        logger.info("⚡ Returning cached result (INSTANT)")
-        return cached_result
-
     try:
         start_time = time.time()
 
-        # Get voice conditioning (cached or compute)
-        conditioning = asyncio.run(get_voice_conditioning(voice_id))
-
-        # Fallback to default if voice not found
+        # Conditioning should not be None at this point
         if conditioning is None:
-            logger.warning(f"Voice '{voice_id}' not found, trying default")
-            conditioning = asyncio.run(get_voice_conditioning("default"))
-
-        # Last resort: use default speaker file
-        if conditioning is None:
-            default_speaker_path = "/app/voices/default_speaker.wav"
-            if os.path.exists(default_speaker_path):
-                conditioning = default_speaker_path
-                logger.info("Using default speaker file")
-            else:
-                raise RuntimeError("No voice available. Please clone a voice using /api/voices/clone")
+            raise RuntimeError("No voice conditioning available")
 
         # Generate using optimized method
         wav = None
@@ -591,9 +569,6 @@ def generate_audio(
 
         generation_time = (time.time() - start_time) * 1000
         logger.info(f"✅ Generated audio: {len(wav)} samples in {generation_time:.0f}ms")
-
-        # Cache the result
-        add_to_cache(cache_key, audio_bytes)
 
         # Periodic GPU cleanup
         if torch.cuda.is_available():
@@ -788,17 +763,57 @@ async def synthesize_speech(request: SynthesizeRequest):
     start_time = time.time()
 
     try:
-        # Generate audio using XTTS v2
+        logger.info(f"🎙️ Request: '{request.text[:60]}...' | voice={request.voice_id} | lang={request.language} | temp={request.temperature}")
+
+        # Check result cache first (before any heavy operations)
+        cache_key = get_cache_key(request.text, request.voice_id, request.language, request.temperature, request.speed)
+        cached_result = get_from_cache(cache_key)
+        if cached_result:
+            logger.info("⚡ Returning cached result (INSTANT)")
+            # Stream cached audio to LiveKit
+            await stream_audio_to_livekit(cached_result)
+            total_ms = (time.time() - start_time) * 1000
+            return JSONResponse({
+                "status": "success",
+                "model": XTTS_MODEL,
+                "model_type": "xtts_v2_optimized",
+                "total_time_ms": round(total_ms, 2),
+                "voice": request.voice_id,
+                "language": request.language,
+                "cached": True
+            })
+
+        # Get voice conditioning (async database operation)
+        conditioning = await get_voice_conditioning(request.voice_id)
+
+        # Fallback to default if voice not found
+        if conditioning is None:
+            logger.warning(f"Voice '{request.voice_id}' not found, trying default")
+            conditioning = await get_voice_conditioning("default")
+
+        # Last resort: use default speaker file
+        if conditioning is None:
+            default_speaker_path = "/app/voices/default_speaker.wav"
+            if os.path.exists(default_speaker_path):
+                conditioning = default_speaker_path
+                logger.info("Using default speaker file")
+            else:
+                raise HTTPException(503, "No voice available. Please clone a voice using /api/voices/clone")
+
+        # Generate audio using XTTS v2 (sync operation in executor)
         audio_bytes = await asyncio.get_event_loop().run_in_executor(
             None,
-            generate_audio,
+            generate_audio_sync,
             request.text,
-            request.voice_id,
+            conditioning,
             request.language,
             request.temperature,
             request.speed,
             request.enable_text_splitting
         )
+
+        # Cache the result
+        add_to_cache(cache_key, audio_bytes)
 
         # Stream to LiveKit
         await stream_audio_to_livekit(audio_bytes)
@@ -810,10 +825,11 @@ async def synthesize_speech(request: SynthesizeRequest):
         return JSONResponse({
             "status": "success",
             "model": XTTS_MODEL,
-            "model_type": "xtts_v2",
+            "model_type": "xtts_v2_optimized",
             "total_time_ms": round(total_ms, 2),
             "voice": request.voice_id,
-            "language": request.language
+            "language": request.language,
+            "cached": False
         })
 
     except Exception as e:
