@@ -63,6 +63,9 @@ helm upgrade --install keycloak bitnami/keycloak \
   --version 19.3.3 \
   --namespace $NAMESPACE \
   --create-namespace \
+  --set image.registry=docker.io \
+  --set image.repository=bitnamilegacy/keycloak \
+  --set image.tag=23.0.7-debian-12-r3 \
   --set auth.adminUser="$ADMIN_USER" \
   --set auth.adminPassword="$ADMIN_PASSWORD" \
   --set production=true \
