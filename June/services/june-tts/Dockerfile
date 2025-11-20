@@ -89,6 +89,12 @@ RUN python3.11 -m pip install \
     "librosa>=0.10.1" \
     "scipy>=1.11.4"
 
+# Install Japanese language support for XTTS v2
+RUN python3.11 -m pip install \
+    "cutlet>=0.3.0" \
+    "mecab-python3>=1.0.6" \
+    "unidic-lite>=1.0.8"
+
 # Install DeepSpeed for faster inference (optional but recommended)
 RUN python3.11 -m pip install deepspeed==0.10.3
 

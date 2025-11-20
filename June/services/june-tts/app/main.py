@@ -377,20 +377,28 @@ async def load_model():
             logger.info("⏱️  Warming up (English + Japanese)...")
 
             # English warmup
-            warmup_en = tts_model.tts(
-                text="Hello world, this is a warmup.",
-                speaker_wav=default_speaker,
-                language="en"
-            )
-            logger.info(f"✅ English warmup: {len(warmup_en)} samples")
+            try:
+                warmup_en = tts_model.tts(
+                    text="Hello world, this is a warmup.",
+                    speaker_wav=default_speaker,
+                    language="en"
+                )
+                logger.info(f"✅ English warmup: {len(warmup_en)} samples")
+            except Exception as e:
+                logger.error(f"❌ English warmup failed: {e}")
 
             # Japanese warmup
-            warmup_ja = tts_model.tts(
-                text="こんにちは、世界。",
-                speaker_wav=default_speaker,
-                language="ja"
-            )
-            logger.info(f"✅ Japanese warmup: {len(warmup_ja)} samples")
+            try:
+                warmup_ja = tts_model.tts(
+                    text="こんにちは、世界。",
+                    speaker_wav=default_speaker,
+                    language="ja"
+                )
+                logger.info(f"✅ Japanese warmup: {len(warmup_ja)} samples")
+                logger.info(f"🇯🇵 Japanese support: VERIFIED")
+            except Exception as e:
+                logger.error(f"❌ Japanese warmup failed: {e}")
+                logger.warning(f"⚠️  Japanese support may not be available. Check dependencies: cutlet, mecab-python3, unidic-lite")
 
             # Clear CUDA cache after warmup
             if torch.cuda.is_available():
