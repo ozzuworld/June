@@ -1,0 +1,42 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: keycloak-ingress
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    {{- if .Values.certificate.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.certificate.issuer }}
+    {{- end }}
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "128k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # Critical Keycloak proxy headers for production mode with proxy=edge
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host $host;
+      proxy_set_header X-Forwarded-Port $server_port;
+spec:
+  ingressClassName: nginx
+  {{- if .Values.certificate.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.domains.idp }}
+    secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.domains.idp }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: keycloak
+            port:
+              number: 80
+{{- end }}

@@ -41,34 +41,29 @@ MAX_ATTEMPTS=60  # 10 minutes max wait for fresh installs
 ATTEMPT=0
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    # Check if Keycloak responds (try health endpoints or main page)
-    if curl -k -s -f "$KEYCLOAK_URL/health/ready" > /dev/null 2>&1 || \
-       curl -k -s -f "$KEYCLOAK_URL/health" > /dev/null 2>&1 || \
-       curl -k -s "$KEYCLOAK_URL/realms/master" | grep -q "realm" 2>/dev/null; then
-        success "Keycloak is responding"
+    # Verify we can actually get an admin token
+    log "Testing admin token endpoint (attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)..."
+    TEST_TOKEN=$(curl -k -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "username=$KEYCLOAK_ADMIN_USER" \
+      -d "password=$KEYCLOAK_ADMIN_PASSWORD" \
+      -d "grant_type=password" \
+      -d "client_id=admin-cli" 2>/dev/null)
 
-        # Give Keycloak extra time to fully initialize on fresh installs
-        log "Waiting 30 seconds for Keycloak to fully initialize..."
-        sleep 30
-
-        # Verify we can actually get an admin token before proceeding
-        log "Testing admin token endpoint..."
-        TEST_TOKEN=$(curl -k -s -X POST "$KEYCLOAK_URL/realms/master/protocol/openid-connect/token" \
-          -H "Content-Type: application/x-www-form-urlencoded" \
-          -d "username=$KEYCLOAK_ADMIN_USER" \
-          -d "password=$KEYCLOAK_ADMIN_PASSWORD" \
-          -d "grant_type=password" \
-          -d "client_id=admin-cli" 2>/dev/null)
-
-        if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
-            success "Keycloak is fully ready and accepting API calls"
-            break
+    if echo "$TEST_TOKEN" | jq -e '.access_token' > /dev/null 2>&1; then
+        success "Keycloak is fully ready and accepting API calls"
+        break
+    else
+        # Show error if available for debugging
+        ERROR_MSG=$(echo "$TEST_TOKEN" | jq -r '.error_description // .error // empty' 2>/dev/null)
+        if [ -n "$ERROR_MSG" ]; then
+            log "API error: $ERROR_MSG"
         else
-            log "Keycloak responded but admin API not ready yet, continuing to wait..."
+            log "Keycloak not ready yet, waiting..."
         fi
     fi
+
     ATTEMPT=$((ATTEMPT + 1))
-    log "Attempt $ATTEMPT/$MAX_ATTEMPTS - Waiting for Keycloak..."
     sleep 10
 done
 
