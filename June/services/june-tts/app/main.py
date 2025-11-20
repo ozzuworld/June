@@ -485,9 +485,16 @@ def generate_audio_sync(
     """
     Generate audio using XTTS v2 (PRODUCTION OPTIMIZED) - SYNC VERSION
     This function expects conditioning to already be loaded (async operations done separately)
+
+    Optimizations:
     - Uses latent caching for 40-60% speedup on repeated voices
     - Supports DeepSpeed acceleration
     - Low VRAM mode support
+    - Direct model.inference() for cached latents (fast path)
+    - Falls back to TTS API for uncached (standard path)
+
+    Note: speed and enable_text_splitting only work in standard path (TTS API).
+    Fast path uses raw XTTS inference which doesn't support these parameters.
     """
     try:
         start_time = time.time()
@@ -511,6 +518,7 @@ def generate_audio_sync(
 
             try:
                 # Direct inference with cached conditioning
+                # Based on XTTS v2 inference signature from TTS/tts/models/xtts.py
                 out = xtts_model_internal.inference(
                     text=text,
                     language=language,
@@ -521,16 +529,18 @@ def generate_audio_sync(
                     repetition_penalty=5.0,
                     top_k=50,
                     top_p=0.85,
-                    speed=speed,
-                    enable_text_splitting=enable_text_splitting
+                    # Note: speed and enable_text_splitting are handled at TTS API level
+                    # XTTS inference() returns raw waveform as torch.Tensor
                 )
 
                 # Extract wav from output
+                # XTTS inference returns torch.Tensor directly
                 if isinstance(out, dict) and 'wav' in out:
                     wav = out['wav']
                 elif isinstance(out, torch.Tensor):
                     wav = out.cpu().numpy()
                 else:
+                    # Fallback: assume it's already a numpy array
                     wav = out
 
                 logger.info(f"✅ FAST PATH successful")
