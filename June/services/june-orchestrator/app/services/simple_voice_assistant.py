@@ -366,6 +366,7 @@ class SimpleVoiceAssistant:
             Language code (e.g., "ja", "es", "fr") or None if no language requested
         """
         text_lower = text.lower()
+        logger.info(f"🔍 Checking text for language request: '{text_lower}'")
 
         # Language mapping with various ways to express them
         language_patterns = {
@@ -400,15 +401,17 @@ class SimpleVoiceAssistant:
 
         # Check if text contains any trigger phrase
         has_trigger = any(phrase in text_lower for phrase in trigger_phrases)
+        logger.info(f"🔍 Has language trigger phrase: {has_trigger}")
 
         if has_trigger:
             # Look for language keywords
             for lang_code, keywords in language_patterns.items():
                 for keyword in keywords:
                     if keyword in text_lower:
-                        logger.info(f"🌐 Detected language request: {keyword} → {lang_code}")
+                        logger.info(f"🌐 Detected language request: '{keyword}' → {lang_code}")
                         return lang_code
 
+        logger.info(f"🔍 No language request detected")
         return None
 
     def _build_system_prompt(
@@ -744,10 +747,14 @@ NATURAL SPEECH (when NOT using tools):
             if requested_language:
                 context.requested_language = requested_language
                 logger.info(f"🎯 User requested response in: {requested_language}")
+            else:
+                # Clear previous language request if not explicitly requested this time
+                # This ensures we don't carry over old language requests
+                logger.info(f"🌐 No explicit language request in current message")
 
             # Determine which language to use for TTS
             tts_language = context.requested_language or context.detected_language
-            logger.info(f"🔊 TTS will use language: {tts_language}")
+            logger.info(f"🔊 TTS will use language: {tts_language} (requested={context.requested_language}, detected={context.detected_language})")
 
             # Get conversation style from context
             conversation_style = context.conversation_style
@@ -841,6 +848,7 @@ NATURAL SPEECH (when NOT using tools):
 
                         if cleaned:
                             logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
+                            logger.info(f"🌐 Sending to TTS with language: {tts_language}")
                             await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
                             # ✅ Track immediately for echo detection
                             self._track_assistant_response(session_id, cleaned)
@@ -854,6 +862,7 @@ NATURAL SPEECH (when NOT using tools):
                 if cleaned and len(cleaned) >= self.min_chunk_size:
                     sentence_count += 1
                     logger.info(f"🔊 Final: '{cleaned[:50]}...'")
+                    logger.info(f"🌐 Sending FINAL to TTS with language: {tts_language}")
                     await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
                     # ✅ Track immediately for echo detection
                     self._track_assistant_response(session_id, cleaned)
