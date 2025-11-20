@@ -46,7 +46,6 @@ spec:
   - hosts:
     - "*.{{ .Values.domains.primary }}"
     - {{ .Values.domains.api }}
-    - {{ .Values.domains.idp }}
     - {{ .Values.domains.stt }}
     - {{ .Values.domains.tts }}
     secretName: {{ .Values.certificate.secretName | default (printf "%s-wildcard-tls" (.Values.domains.primary | replace "." "-")) }}
@@ -62,16 +61,6 @@ spec:
             name: june-orchestrator
             port:
               number: 8080
-  - host: {{ .Values.domains.idp }}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: keycloak
-            port:
-              number: 80
   {{- if .Values.stt.enabled }}
   - host: {{ .Values.domains.stt }}
     http:

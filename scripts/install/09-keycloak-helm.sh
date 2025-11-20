@@ -70,6 +70,8 @@ helm upgrade --install keycloak bitnami/keycloak \
   --set auth.adminPassword="$ADMIN_PASSWORD" \
   --set production=true \
   --set proxy=edge \
+  --set httpRelativePath="/" \
+  --set hostname="$KEYCLOAK_HOSTNAME" \
   --set postgresql.enabled=false \
   --set externalDatabase.host=postgresql \
   --set externalDatabase.port=5432 \
