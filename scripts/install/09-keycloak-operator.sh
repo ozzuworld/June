@@ -150,12 +150,13 @@ success "Keycloak CR created"
 log "Step 5: Waiting for Keycloak service to be created..."
 sleep 10
 
-# Find the actual service name created by the operator
-SERVICE_NAME=$(kubectl get svc -n $NAMESPACE -o name | grep keycloak | grep -v operator | head -1 | cut -d'/' -f2)
+# Find the actual HTTP service name created by the operator (exclude discovery and operator services)
+SERVICE_NAME=$(kubectl get svc -n $NAMESPACE -o name | grep keycloak | grep -v operator | grep -v discovery | head -1 | cut -d'/' -f2)
 
 if [ -z "$SERVICE_NAME" ]; then
-  warn "Keycloak service not found yet, using default name"
-  SERVICE_NAME="keycloak-service"
+  warn "Keycloak HTTP service not found, checking all services..."
+  kubectl get svc -n $NAMESPACE
+  error "Could not find Keycloak HTTP service"
 fi
 
 log "Using service: $SERVICE_NAME"
