@@ -74,10 +74,7 @@ helm upgrade --install keycloak bitnami/keycloak \
   --set ingress.enabled=true \
   --set ingress.ingressClassName=traefik \
   --set ingress.hostname="$KEYCLOAK_HOSTNAME" \
-  --set ingress.tls=true \
-  --set ingress.annotations."cert-manager\.io/cluster-issuer"="letsencrypt-prod" \
-  --set ingress.annotations."traefik\.ingress\.kubernetes\.io/router\.entrypoints"="websecure" \
-  --set ingress.annotations."traefik\.ingress\.kubernetes\.io/router\.tls"="true"
+  --set-string ingress.annotations."cert-manager\.io/cluster-issuer"=letsencrypt-prod
 
 success "Keycloak Helm chart installed"
 
