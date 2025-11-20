@@ -49,10 +49,8 @@ success "Bitnami repo added"
 
 # Step 2: Uninstall any existing Keycloak
 log "Step 2: Removing existing Keycloak installations..."
-helm uninstall keycloak -n $NAMESPACE --ignore-not-found 2>/dev/null || true
-kubectl delete keycloak keycloak -n $NAMESPACE --ignore-not-found=true
-kubectl delete ingress keycloak-ingress -n $NAMESPACE --ignore-not-found=true
-kubectl delete deployment keycloak-operator -n $NAMESPACE --ignore-not-found=true
+helm uninstall keycloak -n $NAMESPACE 2>/dev/null || true
+kubectl delete ingress keycloak-ingress -n $NAMESPACE --ignore-not-found=true 2>/dev/null || true
 
 success "Previous installations removed"
 
