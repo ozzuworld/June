@@ -847,7 +847,7 @@ async def generate_and_stream_to_livekit_realtime(
     start_time = time.time()
     first_chunk_time = None
 
-    def generate_in_thread():
+    def generate_in_thread(loop):
         """Run XTTS streaming in thread, put chunks in queue"""
         nonlocal first_chunk_time
 
@@ -887,7 +887,7 @@ async def generate_and_stream_to_livekit_realtime(
                     # Put chunk in queue for async processing
                     asyncio.run_coroutine_threadsafe(
                         chunk_queue.put((chunk_count, chunk)),
-                        asyncio.get_event_loop()
+                        loop
                     )
 
                     audio_chunks.append(chunk)
@@ -904,18 +904,19 @@ async def generate_and_stream_to_livekit_realtime(
             logger.error(f"❌ Generation thread error: {e}", exc_info=True)
             asyncio.run_coroutine_threadsafe(
                 chunk_queue.put(("ERROR", str(e))),
-                asyncio.get_event_loop()
+                loop
             )
         finally:
             # Signal completion
             asyncio.run_coroutine_threadsafe(
                 chunk_queue.put(("DONE", None)),
-                asyncio.get_event_loop()
+                loop
             )
 
-    # Start generation in thread
+    # Start generation in thread with event loop reference
+    loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(generate_in_thread)
+    executor.submit(generate_in_thread, loop)
 
     # Process chunks as they arrive and stream to LiveKit
     try:
