@@ -66,6 +66,10 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
                 logger.warning(f"⚠️ Failed to base64-decode audio_data: {e}")
                 audio_data = None
 
+        # ✅ MULTILINGUAL: Extract language from STT payload
+        detected_language = payload.get("language", "en")
+        logger.debug(f"🌐 Detected language: {detected_language}")
+
         # Validate input
         if not text:
             logger.warning("⚠️ Empty text received, skipping")
@@ -146,6 +150,7 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             text=text,
             is_partial=is_partial,
             audio_data=audio_data,
+            detected_language=detected_language,  # ✅ MULTILINGUAL: Pass detected language
         )
 
         # Add metadata to response

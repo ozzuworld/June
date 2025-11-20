@@ -273,17 +273,28 @@ async def send_to_orchestrator(
         
         # Simple language detection based on character ranges
         def detect_language(text: str) -> str:
-            """Basic language detection"""
-            # Check for Chinese characters
-            if any('\u4e00' <= char <= '\u9fff' for char in text):
-                return "zh"
-            # Check for Japanese characters
-            elif any('\u3040' <= char <= '\u309f' for char in text) or any('\u30a0' <= char <= '\u30ff' for char in text):
-                return "jp"
-            # Check for Korean characters  
+            """
+            Basic language detection using character ranges.
+
+            Returns language codes compatible with XTTS v2 TTS service:
+            en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi
+            """
+            # Check for Japanese characters (Hiragana and Katakana)
+            if any('\u3040' <= char <= '\u309f' for char in text) or any('\u30a0' <= char <= '\u30ff' for char in text):
+                return "ja"  # ✅ FIXED: Changed from "jp" to "ja" for XTTS v2 compatibility
+            # Check for Chinese characters (CJK Unified Ideographs)
+            elif any('\u4e00' <= char <= '\u9fff' for char in text):
+                return "zh-cn"  # ✅ FIXED: Changed from "zh" to "zh-cn" for XTTS v2 compatibility
+            # Check for Korean characters (Hangul)
             elif any('\uac00' <= char <= '\ud7af' for char in text):
                 return "ko"
-            # Default to English
+            # Check for Arabic characters
+            elif any('\u0600' <= char <= '\u06ff' for char in text):
+                return "ar"
+            # Check for Cyrillic (Russian and other Slavic languages)
+            elif any('\u0400' <= char <= '\u04ff' for char in text):
+                return "ru"
+            # Default to English for Latin characters and mixed content
             return "en"
         
         detected_lang = detect_language(text)

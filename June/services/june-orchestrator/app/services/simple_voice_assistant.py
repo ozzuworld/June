@@ -352,12 +352,78 @@ class SimpleVoiceAssistant:
         ]
         return any(keyword in text_lower for keyword in keywords)
 
-    def _build_system_prompt(self, conversation_style: str = "balanced") -> str:
+    def _extract_requested_language(self, text: str) -> Optional[str]:
         """
-        Build system prompt with tool instructions and conversation style
+        Extract requested language from user's text
+
+        Detects phrases like:
+        - "tell me a story in Japanese"
+        - "respond in Spanish"
+        - "say that in French"
+        - "in German please"
+
+        Returns:
+            Language code (e.g., "ja", "es", "fr") or None if no language requested
+        """
+        text_lower = text.lower()
+
+        # Language mapping with various ways to express them
+        language_patterns = {
+            "ja": ["japanese", "japan", "日本語"],
+            "zh-cn": ["chinese", "mandarin", "中文"],
+            "ko": ["korean", "korea", "한국어"],
+            "es": ["spanish", "español", "spanish"],
+            "fr": ["french", "français", "french"],
+            "de": ["german", "deutsch", "german"],
+            "it": ["italian", "italiano", "italian"],
+            "pt": ["portuguese", "português", "portuguese"],
+            "ru": ["russian", "русский", "russian"],
+            "ar": ["arabic", "العربية", "arabic"],
+            "hi": ["hindi", "हिन्दी", "hindi"],
+            "tr": ["turkish", "türkçe", "turkish"],
+            "pl": ["polish", "polski", "polish"],
+            "nl": ["dutch", "nederlands", "dutch"],
+            "cs": ["czech", "čeština", "czech"],
+            "hu": ["hungarian", "magyar", "hungarian"]
+        }
+
+        # Trigger phrases that indicate language request
+        trigger_phrases = [
+            "in ",
+            "tell me in ",
+            "say in ",
+            "respond in ",
+            "speak in ",
+            "talk in ",
+            "answer in "
+        ]
+
+        # Check if text contains any trigger phrase
+        has_trigger = any(phrase in text_lower for phrase in trigger_phrases)
+
+        if has_trigger:
+            # Look for language keywords
+            for lang_code, keywords in language_patterns.items():
+                for keyword in keywords:
+                    if keyword in text_lower:
+                        logger.info(f"🌐 Detected language request: {keyword} → {lang_code}")
+                        return lang_code
+
+        return None
+
+    def _build_system_prompt(
+        self,
+        conversation_style: str = "balanced",
+        detected_language: str = "en",
+        requested_language: Optional[str] = None
+    ) -> str:
+        """
+        Build system prompt with tool instructions, conversation style, and language awareness
 
         Args:
             conversation_style: "casual", "formal", "balanced", or "technical"
+            detected_language: Language detected from user's speech
+            requested_language: Language explicitly requested by user
         """
         # Style-specific personality prompts
         style_prompts = {
@@ -396,9 +462,42 @@ class SimpleVoiceAssistant:
         # Get the appropriate style prompt (default to balanced if unknown)
         personality_section = style_prompts.get(conversation_style, style_prompts["balanced"])
 
+        # ✅ MULTILINGUAL: Build language instruction
+        language_instruction = ""
+        if requested_language and requested_language != detected_language:
+            lang_names = {
+                "ja": "Japanese", "zh-cn": "Chinese", "ko": "Korean", "es": "Spanish",
+                "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese",
+                "ru": "Russian", "ar": "Arabic", "hi": "Hindi", "tr": "Turkish",
+                "pl": "Polish", "nl": "Dutch", "cs": "Czech", "hu": "Hungarian"
+            }
+            requested_lang_name = lang_names.get(requested_language, requested_language)
+            detected_lang_name = lang_names.get(detected_language, detected_language)
+            language_instruction = f"""
+🌐 MULTILINGUAL MODE:
+• User is speaking in {detected_lang_name} but requested response in {requested_lang_name}
+• IMPORTANT: Respond ENTIRELY in {requested_lang_name}
+• Understand the user's {detected_lang_name} input, but reply in {requested_lang_name}
+• Maintain natural conversation flow in the target language
+"""
+        elif detected_language != "en":
+            lang_names = {
+                "ja": "Japanese", "zh-cn": "Chinese", "ko": "Korean", "es": "Spanish",
+                "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese",
+                "ru": "Russian", "ar": "Arabic", "hi": "Hindi", "tr": "Turkish",
+                "pl": "Polish", "nl": "Dutch", "cs": "Czech", "hu": "Hungarian"
+            }
+            lang_name = lang_names.get(detected_language, detected_language)
+            language_instruction = f"""
+🌐 LANGUAGE:
+• User is speaking in {lang_name}
+• Respond in {lang_name} naturally
+"""
+
         return f"""You are June, a warm and intelligent voice assistant with voice cloning capabilities.
 
 {personality_section}
+{language_instruction}
 
 🎭 MOCKINGBIRD VOICE CLONING:
 
@@ -533,7 +632,8 @@ NATURAL SPEECH (when NOT using tools):
         room_name: str,
         text: str,
         is_partial: bool = False,
-        audio_data: Optional[bytes] = None
+        audio_data: Optional[bytes] = None,
+        detected_language: str = "en"  # ✅ MULTILINGUAL: Language detected by STT
     ) -> Dict:
         """Main entry point for STT transcripts"""
         start_time = time.time()
@@ -596,7 +696,8 @@ NATURAL SPEECH (when NOT using tools):
                 room_name=room_name,
                 text=text,
                 is_partial=is_partial,
-                start_time=start_time
+                start_time=start_time,
+                detected_language=detected_language  # ✅ MULTILINGUAL: Pass language to processor
             )
     
     async def _process_transcript(
@@ -605,7 +706,8 @@ NATURAL SPEECH (when NOT using tools):
         room_name: str,
         text: str,
         is_partial: bool,
-        start_time: float
+        start_time: float,
+        detected_language: str = "en"  # ✅ MULTILINGUAL: Language from STT
     ) -> Dict:
         """Process transcript"""
 
@@ -617,6 +719,7 @@ NATURAL SPEECH (when NOT using tools):
         logger.info("=" * 80)
         logger.info(f"📥 Session: {session_id[:8]}...")
         logger.info(f"📝 Text: '{text}'")
+        logger.info(f"🌐 Detected language: {detected_language}")
 
         # Mark that assistant is now responding
         self._assistant_responding[session_id] = True
@@ -624,23 +727,38 @@ NATURAL SPEECH (when NOT using tools):
         try:
             # Get conversation history
             history = self.history.get_history(session_id)
-            
+
             # Get current voice
             current_voice_id = self.mockingbird.get_current_voice_id(session_id)
             logger.info(f"🎤 Using voice: {current_voice_id}")
 
-            # Get conversation style from context
+            # ✅ MULTILINGUAL: Get or create conversation context and update language
             conversation_style = "balanced"  # Default
-            try:
-                context = self.conversation_manager.get_context(room_name, session_id)
-                if context:
-                    conversation_style = context.conversation_style
-                    logger.info(f"💬 Using conversation style: {conversation_style}")
-            except Exception as e:
-                logger.debug(f"Could not get conversation style, using default: {e}")
+            context = self.conversation_manager.get_or_create_context(session_id)
 
-            # Build system prompt with conversation style
-            system_prompt = self._build_system_prompt(conversation_style=conversation_style)
+            # Update detected language in context
+            context.detected_language = detected_language
+
+            # ✅ MULTILINGUAL: Extract requested language from user's text
+            requested_language = self._extract_requested_language(text)
+            if requested_language:
+                context.requested_language = requested_language
+                logger.info(f"🎯 User requested response in: {requested_language}")
+
+            # Determine which language to use for TTS
+            tts_language = context.requested_language or context.detected_language
+            logger.info(f"🔊 TTS will use language: {tts_language}")
+
+            # Get conversation style from context
+            conversation_style = context.conversation_style
+            logger.info(f"💬 Using conversation style: {conversation_style}")
+
+            # Build system prompt with conversation style and language
+            system_prompt = self._build_system_prompt(
+                conversation_style=conversation_style,
+                detected_language=context.detected_language,
+                requested_language=context.requested_language
+            )
 
             # ✅ Reset acknowledgment flag for new request
             self._ack_sent[session_id] = False
@@ -723,18 +841,18 @@ NATURAL SPEECH (when NOT using tools):
 
                         if cleaned:
                             logger.info(f"🔊 Sentence #{sentence_count}: '{cleaned[:60]}...'")
-                            await self._send_tts(room_name, cleaned, current_voice_id)
+                            await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
                             self._last_response_time[session_id] = time.time()
                             self.total_sentences_sent += 1
-            
+
             # Send remaining text (only if no tool was called)
             if not tool_executed and sentence_buffer.strip():
                 cleaned = self._clean_llm_output(sentence_buffer.strip())
-                
+
                 if cleaned and len(cleaned) >= self.min_chunk_size:
                     sentence_count += 1
                     logger.info(f"🔊 Final: '{cleaned[:50]}...'")
-                    await self._send_tts(room_name, cleaned, current_voice_id)
+                    await self._send_tts(room_name, cleaned, current_voice_id, tts_language)  # ✅ MULTILINGUAL
                     self._last_response_time[session_id] = time.time()
                     self.total_sentences_sent += 1
             
@@ -930,13 +1048,14 @@ NATURAL SPEECH (when NOT using tools):
         except Exception as e:
             logger.error(f"❌ Tool execution error: {e}", exc_info=True)
     
-    async def _send_tts(self, room_name: str, text: str, voice_id: str):
+    async def _send_tts(self, room_name: str, text: str, voice_id: str, language: str = "en"):
         """Send text to TTS service"""
         try:
             await self.tts.publish_to_room(
                 room_name=room_name,
                 text=text,
                 voice_id=voice_id,
+                language=language,  # ✅ MULTILINGUAL: Pass language to TTS
                 streaming=True
             )
         except Exception as e:

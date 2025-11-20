@@ -107,7 +107,11 @@ class ConversationContext:
     # User modeling
     user_preferences: Dict[str, Any] = field(default_factory=dict)
     conversation_style: str = "balanced"  # "formal", "casual", "balanced", "technical"
-    
+
+    # ✅ MULTILINGUAL: Language tracking
+    detected_language: str = "en"  # Language detected from user's speech (from STT)
+    requested_language: Optional[str] = None  # Language explicitly requested by user (e.g., "tell a story in Japanese")
+
     # Metrics
     total_turns: int = 0
     successful_intents: int = 0
@@ -229,28 +233,34 @@ class ConversationContext:
     def get_context_summary(self) -> str:
         """
         Generate a context summary for LLM prompts
-        
+
         Returns:
             String summary of current context
         """
         summary_parts = []
-        
+
+        # ✅ MULTILINGUAL: Add language context
+        if self.requested_language and self.requested_language != self.detected_language:
+            summary_parts.append(f"User speaks {self.detected_language} but requested response in {self.requested_language}")
+        elif self.detected_language != "en":
+            summary_parts.append(f"Conversation language: {self.detected_language}")
+
         if self.current_topic:
             summary_parts.append(f"Current topic: {self.current_topic}")
-        
+
         if self.current_intent:
             summary_parts.append(f"Current intent: {self.current_intent.name} (confidence: {self.current_intent.confidence:.2f})")
-        
+
         if self.filled_slots:
             slots_str = ", ".join(f"{k}={v}" for k, v in self.filled_slots.items())
             summary_parts.append(f"Known information: {slots_str}")
-        
+
         if self.pending_slots:
             summary_parts.append(f"Still need: {', '.join(self.pending_slots)}")
-        
+
         if self.conversation_style != "balanced":
             summary_parts.append(f"User prefers {self.conversation_style} style")
-        
+
         return ". ".join(summary_parts) if summary_parts else "New conversation"
     
     def should_summarize(self) -> bool:
@@ -289,6 +299,8 @@ class ConversationContext:
             "semantic_memory": self.semantic_memory,
             "user_preferences": self.user_preferences,
             "conversation_style": self.conversation_style,
+            "detected_language": self.detected_language,  # ✅ MULTILINGUAL
+            "requested_language": self.requested_language,  # ✅ MULTILINGUAL
             "total_turns": self.total_turns,
             "successful_intents": self.successful_intents,
             "clarification_requests": self.clarification_requests,
@@ -345,6 +357,8 @@ class ConversationContext:
             semantic_memory=data.get("semantic_memory", []),
             user_preferences=data.get("user_preferences", {}),
             conversation_style=data.get("conversation_style", "balanced"),
+            detected_language=data.get("detected_language", "en"),  # ✅ MULTILINGUAL
+            requested_language=data.get("requested_language"),  # ✅ MULTILINGUAL
             total_turns=data.get("total_turns", 0),
             successful_intents=data.get("successful_intents", 0),
             clarification_requests=data.get("clarification_requests", 0),
