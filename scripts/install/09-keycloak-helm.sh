@@ -60,13 +60,13 @@ success "Previous installations removed"
 log "Step 3: Installing Keycloak..."
 
 helm upgrade --install keycloak bitnami/keycloak \
-  --version 24.2.0 \
+  --version 19.3.3 \
   --namespace $NAMESPACE \
   --create-namespace \
   --set auth.adminUser="$ADMIN_USER" \
   --set auth.adminPassword="$ADMIN_PASSWORD" \
   --set production=true \
-  --set proxyHeaders=xforwarded \
+  --set proxy=edge \
   --set postgresql.enabled=false \
   --set externalDatabase.host=postgresql \
   --set externalDatabase.port=5432 \
