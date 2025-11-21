@@ -103,7 +103,7 @@ cat > /tmp/jellyfin-values.yaml <<EOF
 image:
   repository: $(echo $JELLYFIN_IMAGE | cut -d: -f1)
   tag: $(echo $JELLYFIN_IMAGE | cut -d: -f2)
-  pullPolicy: IfNotPresent
+  pullPolicy: Never
 
 persistence:
   config:
