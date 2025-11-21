@@ -15,11 +15,10 @@ RUN mkdir -p /config/data/plugins/SSO-Auth && \
     cd /tmp && \
     curl -L https://github.com/9p4/jellyfin-plugin-sso/releases/download/v4.0.0.3/sso-authentication_4.0.0.3.zip -o sso-plugin.zip && \
     unzip sso-plugin.zip -d /config/data/plugins/SSO-Auth/ && \
-    rm sso-plugin.zip && \
-    chown -R jellyfin:jellyfin /config/data/plugins/SSO-Auth
+    rm sso-plugin.zip
 
-# Switch back to jellyfin user
-USER jellyfin
+# Jellyfin will set proper permissions at runtime
+# No need to chown here as jellyfin user doesn't exist during build
 
 # Plugin is now pre-installed and will be available on first boot
 LABEL org.opencontainers.image.description="Jellyfin with SSO-Auth plugin pre-installed"
