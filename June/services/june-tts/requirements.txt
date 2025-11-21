@@ -30,6 +30,9 @@ python-multipart
 # Hugging Face
 huggingface-hub[cli]
 
+# Multilingual text processing (required for XTTS v2 text splitting)
+spacy>=3.7.0
+
 # Japanese language support (required for XTTS v2 Japanese synthesis)
 cutlet>=0.3.0
 mecab-python3>=1.0.6
