@@ -750,6 +750,7 @@ NATURAL SPEECH (when NOT using tools):
             else:
                 # Clear previous language request if not explicitly requested this time
                 # This ensures we don't carry over old language requests
+                context.requested_language = None
                 logger.info(f"🌐 No explicit language request in current message")
 
             # Determine which language to use for TTS
