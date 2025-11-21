@@ -26,6 +26,15 @@ import numpy as np
 import httpx
 from livekit import rtc
 
+# Language detection for multilingual support
+try:
+    from langdetect import detect as langdetect_detect
+    from langdetect import LangDetectException
+    LANGDETECT_AVAILABLE = True
+except ImportError:
+    LANGDETECT_AVAILABLE = False
+    LangDetectException = Exception  # Fallback
+
 logger = logging.getLogger(__name__)
 
 
@@ -271,20 +280,20 @@ async def send_to_orchestrator(
         
         webhook_url = f"{orchestrator_url}/api/webhooks/stt"
         
-        # Simple language detection based on character ranges
+        # Language detection with langdetect for Latin-based languages
         def detect_language(text: str) -> str:
             """
-            Basic language detection using character ranges.
+            Improved language detection using character ranges + langdetect.
 
             Returns language codes compatible with XTTS v2 TTS service:
             en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh-cn, ja, hu, ko, hi
             """
             # Check for Japanese characters (Hiragana and Katakana)
             if any('\u3040' <= char <= '\u309f' for char in text) or any('\u30a0' <= char <= '\u30ff' for char in text):
-                return "ja"  # ✅ FIXED: Changed from "jp" to "ja" for XTTS v2 compatibility
+                return "ja"
             # Check for Chinese characters (CJK Unified Ideographs)
             elif any('\u4e00' <= char <= '\u9fff' for char in text):
-                return "zh-cn"  # ✅ FIXED: Changed from "zh" to "zh-cn" for XTTS v2 compatibility
+                return "zh-cn"
             # Check for Korean characters (Hangul)
             elif any('\uac00' <= char <= '\ud7af' for char in text):
                 return "ko"
@@ -294,7 +303,29 @@ async def send_to_orchestrator(
             # Check for Cyrillic (Russian and other Slavic languages)
             elif any('\u0400' <= char <= '\u04ff' for char in text):
                 return "ru"
-            # Default to English for Latin characters and mixed content
+            # Check for Hindi/Devanagari characters
+            elif any('\u0900' <= char <= '\u097f' for char in text):
+                return "hi"
+
+            # For Latin-based text, use langdetect library
+            if LANGDETECT_AVAILABLE and len(text.strip()) >= 3:
+                try:
+                    detected = langdetect_detect(text)
+                    # Map langdetect codes to XTTS v2 compatible codes
+                    langdetect_to_xtts = {
+                        "en": "en", "es": "es", "fr": "fr", "de": "de",
+                        "it": "it", "pt": "pt", "pl": "pl", "tr": "tr",
+                        "nl": "nl", "cs": "cs", "hu": "hu", "ru": "ru",
+                        "ar": "ar", "ja": "ja", "ko": "ko", "hi": "hi",
+                        "zh-cn": "zh-cn", "zh-tw": "zh-cn", "zh": "zh-cn"
+                    }
+                    if detected in langdetect_to_xtts:
+                        logger.debug(f"🌐 langdetect detected: {detected}")
+                        return langdetect_to_xtts[detected]
+                except LangDetectException:
+                    pass  # Fall through to default
+
+            # Default to English
             return "en"
         
         detected_lang = detect_language(text)
