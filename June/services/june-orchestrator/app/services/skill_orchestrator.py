@@ -9,8 +9,9 @@ from typing import Any, Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
 
-from app.services.dialogue_state import ConversationContext, Intent
+from app.services.dialogue_state import ConversationContext, Intent, DialogueState
 from app.services.mockingbird_skill import MockingbirdSkill, MockingbirdState
+from app.services.response_generator import ResponseGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ class SkillOrchestrator:
         self.pending_intent: Optional[str] = None
         self.pending_context: Optional[ConversationContext] = None
         self.pending_room_name: Optional[str] = None
+
+        # ===== Phase 3: Response generation =====
+        self.response_generator = ResponseGenerator()
 
         # Intent to handler mapping
         self.intent_handlers = {
@@ -406,9 +410,8 @@ class SkillOrchestrator:
         """
         logger.info(f"Handling greeting for session {self.session_id}")
 
-        # Personalize based on user profile
-        user_name = context.user_profile.get("name", "")
-        greeting = f"Hello{' ' + user_name if user_name else ''}! How can I help you today?"
+        # ===== Phase 3: Use response generator for time-aware greetings =====
+        greeting = self.response_generator.generate_greeting(context)
 
         return OrchestrationResult(
             handled=True,
