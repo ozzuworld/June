@@ -636,9 +636,15 @@ NATURAL SPEECH (when NOT using tools):
         text: str,
         is_partial: bool = False,
         audio_data: Optional[bytes] = None,
-        detected_language: str = "en"  # ✅ MULTILINGUAL: Language detected by STT
+        detected_language: str = "en",  # ✅ MULTILINGUAL: Language detected by STT
+        bypass_intent_classification: bool = False  # ✅ ENHANCED: Skip tools when intent already classified
     ) -> Dict:
-        """Main entry point for STT transcripts"""
+        """
+        Main entry point for STT transcripts
+
+        Args:
+            bypass_intent_classification: If True, don't include tool calling (intent was already classified upstream)
+        """
         start_time = time.time()
         self.total_requests += 1
         
@@ -958,7 +964,11 @@ NATURAL SPEECH (when NOT using tools):
                 full_prompt = f"{system_prompt}\n\nUser: {user_message}\n\nYour response:"
 
             # Only enable tools if user mentions Mockingbird-related keywords
-            enable_tools = self._should_enable_tools(user_message)
+            # AND we haven't already classified intent upstream
+            enable_tools = self._should_enable_tools(user_message) and not bypass_intent_classification
+
+            if bypass_intent_classification:
+                logger.info("🎯 Intent already classified - tools DISABLED")
 
             # Configure generation
             if enable_tools:
@@ -1084,7 +1094,47 @@ NATURAL SPEECH (when NOT using tools):
             )
         except Exception as e:
             logger.error(f"❌ TTS error: {e}")
-    
+
+    async def send_to_tts(
+        self,
+        session_id: str,
+        room_name: str,
+        text: str,
+        language: str = "en"
+    ):
+        """
+        Public method to send text to TTS service.
+        Can be called by SkillOrchestrator or other components.
+
+        Args:
+            session_id: Session identifier
+            room_name: LiveKit room name
+            text: Text to speak
+            language: Language code for TTS
+        """
+        try:
+            # Get current voice (handles mockingbird automatically)
+            voice_id = self.mockingbird.get_current_voice_id(session_id)
+            logger.info(f"🎙️ send_to_tts called with voice: {voice_id}")
+
+            # Mark assistant as responding
+            self._assistant_responding[session_id] = True
+            self._last_response_time[session_id] = time.time()
+
+            # Store last response for echo detection
+            self._last_responses[session_id] = text.lower().strip()
+
+            # Send to TTS
+            await self._send_tts(room_name, text, voice_id, language)
+
+            # Mark as done responding
+            self._assistant_responding[session_id] = False
+
+        except Exception as e:
+            logger.error(f"❌ Error in send_to_tts: {e}", exc_info=True)
+            self._assistant_responding[session_id] = False
+            raise
+
     async def handle_interruption(self, session_id: str, room_name: str):
         """Handle user interruption - stop ongoing processing and TTS"""
         logger.info(f"🛑 User interruption for session {session_id[:8]}... in room {room_name}")
