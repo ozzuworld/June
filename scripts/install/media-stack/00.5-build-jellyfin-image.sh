@@ -34,15 +34,19 @@ docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
 if [ $? -eq 0 ]; then
     success "Custom Jellyfin image built successfully"
 
-    # Import image into k3s containerd
-    log "Importing image into k3s containerd..."
+    # Import image into containerd (for k8s)
+    log "Importing image into containerd..."
     docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o /tmp/jellyfin-sso.tar
 
-    if command -v k3s &> /dev/null; then
-        sudo k3s ctr images import /tmp/jellyfin-sso.tar
-        success "Image imported into k3s"
+    if command -v ctr &> /dev/null; then
+        sudo ctr -n k8s.io images import /tmp/jellyfin-sso.tar
+        success "Image imported into containerd (k8s.io namespace)"
+    elif command -v crictl &> /dev/null; then
+        # Alternative using crictl
+        sudo crictl pull "docker.io/library/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || \
+        warn "Could not import via crictl, image only in Docker"
     else
-        warn "k3s not found, skipping import (image only in Docker)"
+        warn "ctr/crictl not found, image only in Docker"
     fi
 
     rm -f /tmp/jellyfin-sso.tar
@@ -54,7 +58,7 @@ if [ $? -eq 0 ]; then
     echo "📦 Custom Jellyfin Image Ready"
     echo "  Image: ${IMAGE_NAME}:${IMAGE_TAG}"
     echo "  Includes: SSO-Auth plugin v4.0.0.3"
-    echo "  Available in: k3s containerd"
+    echo "  Available in: containerd (k8s.io namespace)"
     echo ""
 else
     error "Failed to build custom Jellyfin image"
