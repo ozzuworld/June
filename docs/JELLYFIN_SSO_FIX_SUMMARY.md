@@ -125,21 +125,26 @@ Files modified/created:
 
 ## 🚀 How to Fix Right Now
 
-### Quick Fix (5 minutes)
+### Quick Fix (FULLY AUTOMATED - NO MANUAL STEPS!)
 
 1. **Run the fix script**:
 ```bash
 cd /home/user/June
-source config.env
 bash scripts/automation-media-stack/fix-jellyfin-sso-now.sh
 ```
 
-2. **If plugin not installed**, follow the output instructions:
-   - Login to Jellyfin dashboard
-   - Install SSO-Auth plugin
-   - Run fix script again
+That's it! The script will:
+- ✅ Authenticate with Jellyfin
+- ✅ Create API key
+- ✅ Install SSO plugin
+- ✅ Restart Jellyfin
+- ✅ Configure SSO with Keycloak
+- ✅ Add SSO button to login page
+- ✅ Verify SSO is working
 
-3. **Update frontend code**:
+**Total time**: ~2-3 minutes (mostly waiting for Jellyfin restart)
+
+2. **Update frontend code**:
    - Remove hardcoded credentials
    - Redirect users to: `https://tv.ozzu.world/sso/OID/start/keycloak`
    - See `docs/FRONTEND_JELLYFIN_SSO_INTEGRATION.md` for code examples

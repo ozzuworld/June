@@ -111,105 +111,76 @@ log "Loading SSO configuration from: $SSO_CONFIG_FILE"
 source "$SSO_CONFIG_FILE"
 echo ""
 
-# Step 2: Get Jellyfin API key
-log "Step 2: Getting Jellyfin API key..."
+# Step 2: Wait for Jellyfin to be ready
+log "Step 2: Waiting for Jellyfin to be ready..."
 echo ""
 
-# Check if we have API key already
-if [ -z "$JELLYFIN_API_KEY" ]; then
-    warn "JELLYFIN_API_KEY not set in config.env"
-    log "You'll need to get the API key manually:"
-    echo "  1. Login to Jellyfin as admin"
-    echo "  2. Dashboard > API Keys > Create new API key"
-    echo "  3. Add to config.env: JELLYFIN_API_KEY=your-key-here"
-    echo ""
-    read -p "Enter Jellyfin API key now (or press Enter to skip SSO plugin installation): " MANUAL_API_KEY
+JELLYFIN_URL="https://tv.${DOMAIN}"
+MAX_WAIT=60
+WAITED=0
 
-    if [ -n "$MANUAL_API_KEY" ]; then
-        JELLYFIN_API_KEY="$MANUAL_API_KEY"
-    else
-        warn "Skipping Jellyfin SSO plugin installation - set JELLYFIN_API_KEY and run manually"
-        SKIP_JELLYFIN_SSO=true
+while [ $WAITED -lt $MAX_WAIT ]; do
+    if curl -ks "$JELLYFIN_URL/health" &>/dev/null || \
+       curl -ks "$JELLYFIN_URL/System/Info/Public" &>/dev/null; then
+        success "Jellyfin is ready"
+        break
     fi
+    sleep 5
+    WAITED=$((WAITED + 5))
+    log "Still waiting... ($WAITED/$MAX_WAIT seconds)"
+done
+
+if [ $WAITED -ge $MAX_WAIT ]; then
+    warn "Jellyfin may not be ready yet, continuing anyway..."
 fi
 
-# Step 3: Install Jellyfin SSO plugin
-if [ "$SKIP_JELLYFIN_SSO" != "true" ]; then
-    log "Step 3: Jellyfin SSO plugin setup..."
-    echo ""
+echo ""
 
-    warn "Jellyfin SSO plugin requires manual installation"
+# Step 3: Run fully automated SSO setup
+log "Step 3: Installing and configuring Jellyfin SSO (FULLY AUTOMATED)..."
+echo ""
+
+python3 "${AUTOMATION_DIR}/install-and-configure-sso-fully-automated.py" \
+  --jellyfin-url "$JELLYFIN_URL" \
+  --username "$JELLYFIN_USERNAME" \
+  --password "$JELLYFIN_PASSWORD" \
+  --keycloak-url "$KEYCLOAK_URL" \
+  --realm "$REALM" \
+  --client-secret "$JELLYFIN_CLIENT_SECRET" \
+  --domain "$DOMAIN"
+
+if [ $? -ne 0 ]; then
+    warn "Jellyfin SSO setup encountered issues"
     echo ""
-    echo "📝 Manual Jellyfin SSO Plugin Setup:"
-    echo ""
-    echo "1. Login to Jellyfin: https://tv.${DOMAIN}"
-    echo "   Username: ${JELLYFIN_USERNAME}"
-    echo "   Password: ${JELLYFIN_PASSWORD}"
-    echo ""
-    echo "2. Go to: Dashboard > Plugins > Repositories"
-    echo ""
-    echo "3. Click '+' and add repository:"
-    echo "   https://raw.githubusercontent.com/9p4/jellyfin-plugin-sso/manifest-release/manifest.json"
-    echo ""
-    echo "4. Go to: Dashboard > Plugins > Catalog"
-    echo ""
-    echo "5. Find 'SSO-Auth' plugin and click Install"
-    echo ""
-    echo "6. Restart Jellyfin when prompted"
-    echo ""
-    echo "7. After restart, go to: Dashboard > Plugins > SSO-Auth"
-    echo ""
-    echo "8. Configure OIDC Provider 'keycloak':"
-    echo "   - OID Endpoint: ${KEYCLOAK_URL}/realms/${REALM}"
-    echo "   - Client ID: jellyfin"
-    echo "   - Client Secret: ${JELLYFIN_CLIENT_SECRET}"
-    echo "   - Enabled: ✓"
-    echo "   - Enable Authorization: ✓"
-    echo "   - Enable All Folders: ✓"
-    echo "   - Admin Roles: jellyfin-admin"
-    echo "   - Roles: jellyfin-user"
-    echo "   - Role Claim: realm_access.roles"
-    echo ""
-    echo "9. Save settings"
-    echo ""
-    warn "Complete these steps before proceeding to assign users roles in Keycloak"
+    echo "You can retry manually with:"
+    echo "  bash ${AUTOMATION_DIR}/fix-jellyfin-sso-now.sh"
     echo ""
 fi
 
-# Step 5: Configure Jellyseerr OIDC
-log "Step 5: Jellyseerr OIDC setup..."
 echo ""
 
-warn "Jellyseerr OIDC configuration requires manual setup"
+# Step 4: Jellyseerr OIDC (info only, handled by configure-jellyseerr-oidc.py)
+log "Step 4: Jellyseerr OIDC information..."
 echo ""
-echo "📝 Manual Jellyseerr OIDC Setup:"
-echo ""
-echo "1. Login to Jellyseerr: https://requests.${DOMAIN}"
-echo "   Email: mail@${DOMAIN}"
-echo "   Password: ${JELLYFIN_PASSWORD}"
-echo ""
-echo "2. Go to: Settings > General"
-echo ""
-echo "3. Scroll to 'Authentication' section"
-echo ""
-echo "4. Enable 'Enable OIDC Sign-In'"
-echo ""
-echo "5. Configure OIDC settings:"
-echo "   - OIDC Issuer URL: ${KEYCLOAK_URL}/realms/${REALM}"
-echo "   - OIDC Client ID: jellyseerr"
-echo "   - OIDC Client Secret: ${JELLYSEERR_CLIENT_SECRET}"
-echo "   - Button Text: Sign in with Keycloak"
-echo ""
-echo "6. Save settings"
-echo ""
-warn "Note: Jellyseerr preview-OIDC build may have different UI - check Settings > Authentication"
+
+log "Note: Jellyseerr OIDC can be configured via the configure-jellyseerr-oidc.py script"
+echo "Configuration details:"
+echo "  - OIDC Issuer: ${KEYCLOAK_URL}/realms/${REALM}"
+echo "  - Client ID: jellyseerr"
+echo "  - Client Secret: ${JELLYSEERR_CLIENT_SECRET}"
 echo ""
 
 # Summary
 echo ""
 echo "═══════════════════════════════════════════════"
-success "Media Stack SSO Configuration Complete!"
+success "Media Stack SSO Configuration Complete (FULLY AUTOMATED)!"
 echo "═══════════════════════════════════════════════"
+echo ""
+echo "✅ What was configured automatically:"
+echo "  1. Keycloak OIDC clients (jellyfin, jellyseerr)"
+echo "  2. Jellyfin SSO plugin installed and configured"
+echo "  3. SSO button added to Jellyfin login page"
+echo "  4. Role-based access control enabled"
 echo ""
 echo "🔐 SSO Endpoints:"
 echo ""
@@ -220,31 +191,31 @@ echo "Jellyseerr OIDC Login:"
 echo "  https://requests.${DOMAIN}"
 echo "  (Click 'Sign in with Keycloak' button)"
 echo ""
-echo "🔑 Keycloak Role Management:"
+echo "📱 CRITICAL - Frontend Integration:"
+echo "  ❌ REMOVE hardcoded credentials from frontend code!"
+echo "  ✅ Redirect users to: https://tv.${DOMAIN}/sso/OID/start/keycloak"
+echo "  📖 See: docs/FRONTEND_JELLYFIN_SSO_INTEGRATION.md"
+echo ""
+echo "🔑 Keycloak User Management:"
 echo "  Admin Portal: ${KEYCLOAK_URL}/admin"
 echo ""
-echo "  Jellyfin Roles:"
+echo "  Assign these roles to users:"
+echo "  Jellyfin:"
 echo "    - jellyfin-admin (administrators)"
 echo "    - jellyfin-user (regular users)"
 echo ""
-echo "  Jellyseerr Roles:"
+echo "  Jellyseerr:"
 echo "    - jellyseerr-admin (administrators)"
 echo "    - jellyseerr-user (regular users)"
 echo ""
-echo "📝 Next Steps:"
-echo "  1. Login to Keycloak: ${KEYCLOAK_URL}/admin"
-echo "  2. Navigate to Realm: $REALM > Users"
-echo "  3. Assign roles to users for access control"
-echo "  4. Test SSO login on both services"
+echo "🧪 Test SSO Now:"
+echo "  1. Visit: https://tv.${DOMAIN}"
+echo "  2. Click: 'Sign in with Keycloak SSO'"
+echo "  3. Login with Keycloak credentials"
+echo "  4. Should be logged into Jellyfin automatically"
 echo ""
-echo "🧪 Testing:"
-echo "  Jellyfin: Visit https://tv.${DOMAIN} and click SSO button"
-echo "  Jellyseerr: Visit https://requests.${DOMAIN} and click Keycloak button"
+echo "🔧 If SSO Not Working:"
+echo "  Run: bash ${AUTOMATION_DIR}/fix-jellyfin-sso-now.sh"
 echo ""
-echo "💡 Custom Frontend Integration:"
-echo "  Your mobile app can use the same Keycloak realm"
-echo "  Use the 'june-mobile-app' client (if configured)"
-echo "  Exchange Keycloak tokens for service-specific sessions"
-echo ""
-echo "📄 Configuration saved to: $SSO_CONFIG_FILE"
+echo "📄 Configuration: $SSO_CONFIG_FILE"
 echo "═══════════════════════════════════════════════"

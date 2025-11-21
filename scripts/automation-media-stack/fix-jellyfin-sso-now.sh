@@ -90,19 +90,18 @@ fi
 success "Keycloak clients configured"
 echo ""
 
-# Step 2: Run verification and auto-fix
-log "Step 2: Verifying and fixing Jellyfin SSO..."
+# Step 2: Run fully automated SSO setup
+log "Step 2: Installing and configuring Jellyfin SSO (fully automated)..."
 echo ""
 
-python3 "${SCRIPT_DIR}/verify-and-fix-jellyfin-sso.py" \
+python3 "${SCRIPT_DIR}/install-and-configure-sso-fully-automated.py" \
   --jellyfin-url "$JELLYFIN_URL" \
   --username "$JELLYFIN_USERNAME" \
   --password "$JELLYFIN_PASSWORD" \
   --keycloak-url "$KEYCLOAK_URL" \
   --realm "$REALM" \
-  --domain "$DOMAIN" \
   --client-secret "$JELLYFIN_CLIENT_SECRET" \
-  --fix
+  --domain "$DOMAIN"
 
 VERIFY_EXIT_CODE=$?
 
@@ -134,43 +133,30 @@ if [ $VERIFY_EXIT_CODE -eq 0 ]; then
     echo "     - jellyfin-user (for users)"
     echo ""
 else
-    warn "SSO verification encountered issues"
+    error "SSO setup failed"
     echo ""
     echo "╔════════════════════════════════════════════════════════╗"
-    echo "║              ⚠️  MANUAL STEPS REQUIRED                 ║"
+    echo "║                 ❌ SSO SETUP FAILED                     ║"
     echo "╚════════════════════════════════════════════════════════╝"
     echo ""
-    echo "The SSO plugin may not be installed. Complete these steps:"
+    echo "Possible issues:"
+    echo "  1. Jellyfin not accessible at: ${JELLYFIN_URL}"
+    echo "  2. Invalid credentials for Jellyfin"
+    echo "  3. Keycloak client secret incorrect"
     echo ""
-    echo "1️⃣  Install SSO Plugin:"
-    echo "   a. Login to Jellyfin: ${JELLYFIN_URL}"
-    echo "      Username: ${JELLYFIN_USERNAME}"
-    echo "      Password: ${JELLYFIN_PASSWORD}"
+    echo "🔧 Troubleshooting:"
+    echo "  1. Check Jellyfin is running:"
+    echo "     kubectl get pods -n media-stack | grep jellyfin"
     echo ""
-    echo "   b. Go to: Dashboard > Plugins > Repositories"
+    echo "  2. Check Jellyfin logs:"
+    echo "     kubectl logs -n media-stack deployment/jellyfin"
     echo ""
-    echo "   c. Click '+' and add repository:"
-    echo "      https://raw.githubusercontent.com/9p4/jellyfin-plugin-sso/manifest-release/manifest.json"
+    echo "  3. Verify Keycloak client secret:"
+    echo "     source $SSO_CONFIG_FILE"
+    echo "     echo \$JELLYFIN_CLIENT_SECRET"
     echo ""
-    echo "   d. Go to: Dashboard > Plugins > Catalog"
-    echo ""
-    echo "   e. Find 'SSO-Auth' plugin and click Install"
-    echo ""
-    echo "   f. Restart Jellyfin"
-    echo ""
-    echo "2️⃣  After plugin is installed, run this script again:"
-    echo "   bash ${SCRIPT_DIR}/fix-jellyfin-sso-now.sh"
-    echo ""
-    echo "3️⃣  Or configure manually:"
-    echo "   Dashboard > Plugins > SSO-Auth > Configure"
-    echo "   - OID Endpoint: ${KEYCLOAK_URL}/realms/${REALM}"
-    echo "   - Client ID: jellyfin"
-    echo "   - Client Secret: ${JELLYFIN_CLIENT_SECRET}"
-    echo "   - Enable: ✓"
-    echo "   - Enable Authorization: ✓"
-    echo "   - Admin Roles: jellyfin-admin"
-    echo "   - User Roles: jellyfin-user"
-    echo "   - Role Claim: realm_access.roles"
+    echo "  4. Re-run the script:"
+    echo "     bash ${SCRIPT_DIR}/fix-jellyfin-sso-now.sh"
     echo ""
 fi
 
