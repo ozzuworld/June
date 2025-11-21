@@ -136,11 +136,11 @@ fi
 
 echo ""
 
-# Step 3: Run fully automated SSO setup
-log "Step 3: Installing and configuring Jellyfin SSO (FULLY AUTOMATED)..."
+# Step 3: Configure SSO (plugin pre-installed in Docker image)
+log "Step 3: Configuring Jellyfin SSO..."
 echo ""
 
-python3 "${AUTOMATION_DIR}/install-and-configure-sso-fully-automated.py" \
+python3 "${AUTOMATION_DIR}/configure-sso-only.py" \
   --jellyfin-url "$JELLYFIN_URL" \
   --username "$JELLYFIN_USERNAME" \
   --password "$JELLYFIN_PASSWORD" \
@@ -150,10 +150,10 @@ python3 "${AUTOMATION_DIR}/install-and-configure-sso-fully-automated.py" \
   --domain "$DOMAIN"
 
 if [ $? -ne 0 ]; then
-    warn "Jellyfin SSO setup encountered issues"
+    warn "Jellyfin SSO configuration encountered issues"
     echo ""
-    echo "You can retry manually with:"
-    echo "  bash ${AUTOMATION_DIR}/fix-jellyfin-sso-now.sh"
+    echo "Note: SSO plugin should be pre-installed in the custom Docker image"
+    echo "If using standard Jellyfin image, the plugin needs to be installed separately"
     echo ""
 fi
 

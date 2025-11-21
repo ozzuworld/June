@@ -83,9 +83,28 @@ spec:
     type: DirectoryOrCreate
 EOF
 
+# Build custom Jellyfin image with SSO plugin
+log "Building custom Jellyfin image with SSO plugin..."
+bash "${SCRIPT_DIR}/00.5-build-jellyfin-image.sh" "$ROOT_DIR" || \
+  warn "Failed to build custom image, will use standard image"
+
+# Determine image to use
+JELLYFIN_IMAGE="jellyfin/jellyfin:latest"
+if docker images | grep -q "jellyfin-sso"; then
+    JELLYFIN_IMAGE="jellyfin-sso:latest"
+    success "Using custom Jellyfin image with SSO plugin pre-installed"
+else
+    warn "Using standard Jellyfin image (SSO plugin will need separate installation)"
+fi
+
 # Create Helm values
 log "Creating Jellyfin Helm values..."
 cat > /tmp/jellyfin-values.yaml <<EOF
+image:
+  repository: $(echo $JELLYFIN_IMAGE | cut -d: -f1)
+  tag: $(echo $JELLYFIN_IMAGE | cut -d: -f2)
+  pullPolicy: IfNotPresent
+
 persistence:
   config:
     enabled: true
