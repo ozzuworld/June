@@ -34,8 +34,18 @@ docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
 if [ $? -eq 0 ]; then
     success "Custom Jellyfin image built successfully"
 
-    # Tag for local k8s use
-    docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "localhost:5000/${IMAGE_NAME}:${IMAGE_TAG}" || true
+    # Import image into k3s containerd
+    log "Importing image into k3s containerd..."
+    docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o /tmp/jellyfin-sso.tar
+
+    if command -v k3s &> /dev/null; then
+        sudo k3s ctr images import /tmp/jellyfin-sso.tar
+        success "Image imported into k3s"
+    else
+        warn "k3s not found, skipping import (image only in Docker)"
+    fi
+
+    rm -f /tmp/jellyfin-sso.tar
 
     log "Image details:"
     docker images | grep jellyfin-sso
@@ -44,6 +54,7 @@ if [ $? -eq 0 ]; then
     echo "📦 Custom Jellyfin Image Ready"
     echo "  Image: ${IMAGE_NAME}:${IMAGE_TAG}"
     echo "  Includes: SSO-Auth plugin v4.0.0.3"
+    echo "  Available in: k3s containerd"
     echo ""
 else
     error "Failed to build custom Jellyfin image"
