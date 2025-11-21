@@ -40,3 +40,6 @@ unidic-lite>=1.0.8
 
 # Korean language support (required for XTTS v2 Korean synthesis)
 hangul-romanize>=0.1.0
+
+# Chinese language support (required for XTTS v2 Chinese synthesis)
+pypinyin>=0.44.0

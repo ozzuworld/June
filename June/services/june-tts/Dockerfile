@@ -110,6 +110,9 @@ RUN python3.11 -m pip install \
 # Install Korean language support for XTTS v2
 RUN python3.11 -m pip install "hangul-romanize>=0.1.0"
 
+# Install Chinese language support for XTTS v2
+RUN python3.11 -m pip install "pypinyin>=0.44.0"
+
 # Install DeepSpeed for faster inference (optional but recommended)
 RUN python3.11 -m pip install deepspeed==0.10.3
 
