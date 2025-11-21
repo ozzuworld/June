@@ -93,6 +93,17 @@ JELLYFIN_IMAGE="jellyfin/jellyfin:latest"
 if docker images | grep -q "jellyfin-sso"; then
     JELLYFIN_IMAGE="jellyfin-sso:latest"
     success "Using custom Jellyfin image with SSO plugin pre-installed"
+
+    # Copy SSO plugin from Docker image to host path (before PVC mount)
+    log "Installing SSO plugin to persistent storage..."
+    mkdir -p /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth
+
+    # Extract plugin files from Docker image
+    docker run --rm jellyfin-sso:latest tar -cf - -C /config/data/plugins/SSO-Auth . | \
+        tar -xf - -C /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth/
+
+    chown -R 1000:1000 /mnt/ssd/jellyfin-config/data/plugins
+    success "SSO plugin installed to persistent storage"
 else
     warn "Using standard Jellyfin image (SSO plugin will need separate installation)"
 fi
