@@ -140,10 +140,55 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             )
             logger.info(f"🎤 Marked audio as available for {session_id[:8]}...")
 
-        # Get assistant and process
+        # Get assistant
         assistant = get_assistant()
 
-        # Pass to assistant
+        # ✅ ENHANCED FLOW: Use intent classification for FINAL transcripts only
+        # Partials go directly to assistant for faster response
+        if not is_partial:
+            try:
+                # Import here to avoid circular dependencies
+                from app.services.session_managers import get_skill_orchestrator
+
+                # Step 1: Process with ConversationManager for intent classification
+                logger.info(f"🎯 Processing input with intent classification: '{text[:50]}...'")
+                context = conversation_mgr.process_user_input(
+                    session_id=session_id,
+                    text=text,
+                    audio_features=None
+                )
+
+                # Step 2: Get skill orchestrator for this session
+                orchestrator = get_skill_orchestrator(session_id)
+
+                # Step 3: Route through orchestrator
+                logger.info(f"🎯 Routing through orchestrator (intent: {context.current_intent.name if context.current_intent else 'none'})")
+                orchestration_result = await orchestrator.route_intent(
+                    session_id=session_id,
+                    room_name=room_name,
+                    context=context,
+                    original_text=text,
+                    assistant=assistant
+                )
+
+                # Return orchestration result
+                return {
+                    "status": "success",
+                    "mode": "orchestrated",
+                    "intent": context.current_intent.name if context.current_intent else "general_question",
+                    "confidence": context.current_intent.confidence if context.current_intent else 0.0,
+                    "handled": orchestration_result.handled,
+                    "skill_activated": orchestration_result.skill_activated,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "session_id": session_id,
+                    "room_name": room_name
+                }
+
+            except Exception as e:
+                logger.error(f"❌ Error in orchestrated flow, falling back to direct assistant: {e}", exc_info=True)
+                # Fall back to direct assistant on error
+
+        # PARTIAL transcripts or fallback: Use direct assistant
         result = await assistant.handle_transcript(
             session_id=session_id,
             room_name=room_name,
@@ -151,6 +196,7 @@ async def handle_stt_webhook(request: Request) -> Dict[str, Any]:
             is_partial=is_partial,
             audio_data=audio_data,
             detected_language=detected_language,  # ✅ MULTILINGUAL: Pass detected language
+            bypass_intent_classification=True if not is_partial else False  # Bypass if we already classified
         )
 
         # Add metadata to response
