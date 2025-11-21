@@ -89,6 +89,18 @@ RUN python3.11 -m pip install \
     "librosa>=0.10.1" \
     "scipy>=1.11.4"
 
+# Install multilingual text processing for XTTS v2
+RUN python3.11 -m pip install "spacy>=3.7.0"
+
+# Download spacy language models for text splitting
+# Core models needed for XTTS v2 multilingual support
+RUN python3.11 -m spacy download en_core_web_sm && \
+    python3.11 -m spacy download ja_core_news_sm && \
+    python3.11 -m spacy download zh_core_web_sm && \
+    python3.11 -m spacy download es_core_news_sm && \
+    python3.11 -m spacy download fr_core_news_sm && \
+    python3.11 -m spacy download de_core_news_sm
+
 # Install Japanese language support for XTTS v2
 RUN python3.11 -m pip install \
     "cutlet>=0.3.0" \
