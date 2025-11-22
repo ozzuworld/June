@@ -78,6 +78,14 @@ class RateLimitConfig(BaseModel):
     max_tokens_per_day: int = 100000
 
 
+class JellyfinConfig(BaseModel):
+    """Jellyfin configuration for SSO token exchange"""
+    base_url: str
+    admin_username: str
+    admin_password: str
+    sso_user_password: str  # Password set for all SSO users
+
+
 class AppConfig:
     """Main configuration"""
     
@@ -107,9 +115,12 @@ class AppConfig:
         
         # AI configuration
         self.ai = self._load_ai_config()
-        
+
         # Rate limiting
         self.rate_limit = self._load_rate_limit_config()
+
+        # Jellyfin configuration
+        self.jellyfin = self._load_jellyfin_config()
     
     def _load_service_config(self) -> ServiceConfig:
         return ServiceConfig(
@@ -182,6 +193,14 @@ class AppConfig:
             max_requests_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
             max_requests_per_hour=int(os.getenv("RATE_LIMIT_PER_HOUR", "1000")),
             max_tokens_per_day=int(os.getenv("RATE_LIMIT_TOKENS_PER_DAY", "100000"))
+        )
+
+    def _load_jellyfin_config(self) -> JellyfinConfig:
+        return JellyfinConfig(
+            base_url=os.getenv("JELLYFIN_BASE_URL", "http://jellyfin.media-stack.svc.cluster.local:8096"),
+            admin_username=os.getenv("JELLYFIN_ADMIN_USERNAME", "hadmin"),
+            admin_password=os.getenv("JELLYFIN_ADMIN_PASSWORD", "Pokemon123!"),
+            sso_user_password=os.getenv("JELLYFIN_SSO_USER_PASSWORD", "Pokemon123!")
         )
 
 
