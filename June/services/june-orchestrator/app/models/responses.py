@@ -81,3 +81,11 @@ class ServiceInfoResponse(BaseModel):
     voice_registry: Dict[str, Any]
     security: Dict[str, Any]
     config: Dict[str, Any]
+
+
+class JellyfinTokenResponse(BaseModel):
+    """Jellyfin token exchange response"""
+    access_token: str
+    user_id: str
+    server_id: str
+    username: str

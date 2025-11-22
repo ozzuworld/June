@@ -16,6 +16,7 @@ from .routes.webhooks import router as webhooks_router
 from .routes.xtts_voices import router as voices_router
 from .routes.livekit_token import router as livekit_router
 from .routes.vpn import router as vpn_router
+from .routes.jellyfin_token import router as jellyfin_router
 
 # ✅ ADD THIS IMPORT
 from .services.simple_assistant import initialize_assistant
@@ -142,6 +143,7 @@ app.include_router(webhooks_router, tags=["Webhooks"])
 app.include_router(voices_router, tags=["XTTS Voices"])
 app.include_router(livekit_router, tags=["LiveKit"])
 app.include_router(vpn_router, tags=["VPN"])
+app.include_router(jellyfin_router, tags=["Jellyfin"])
 
 
 @app.get("/")
