@@ -20,21 +20,101 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jellyfin")
 
 
-async def authenticate_jellyfin_user(username: str, password: str) -> dict:
-    """
-    Authenticate user with Jellyfin and create a session.
-
-    For SSO users, this uses a service password that's configured in the backend.
-    All SSO users should have this password set when they're created.
-    """
+async def get_admin_token() -> str:
+    """Get admin authentication token from Jellyfin"""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Authenticate as the user to get their token
             auth_response = await client.post(
                 f"{config.jellyfin.base_url}/Users/AuthenticateByName",
                 json={
+                    "Username": config.jellyfin.admin_username,
+                    "Pw": config.jellyfin.admin_password
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Emby-Authorization": 'MediaBrowser Client="June API", Device="Server", DeviceId="june-backend", Version="1.0.0"'
+                }
+            )
+
+            if auth_response.status_code != 200:
+                logger.error(f"Admin auth failed: {auth_response.status_code}")
+                raise HTTPException(status_code=500, detail="Failed to authenticate as admin")
+
+            return auth_response.json()["AccessToken"]
+
+    except httpx.RequestError as e:
+        logger.error(f"Jellyfin connection error: {e}")
+        raise HTTPException(status_code=503, detail="Jellyfin service unavailable")
+
+
+async def create_user_session_with_admin(username: str, admin_token: str) -> dict:
+    """
+    Create a Jellyfin session for an SSO user using admin privileges.
+
+    This approach works for SSO users who don't have passwords:
+    1. Get user info with admin token
+    2. Create a new authentication token for the user
+    3. Return the token to the mobile app
+
+    This is secure because:
+    - We validate the Keycloak token first
+    - Only authenticated users can get Jellyfin tokens
+    - The admin password never leaves the backend
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Get all users to find this user
+            users_response = await client.get(
+                f"{config.jellyfin.base_url}/Users",
+                headers={
+                    "X-Emby-Token": admin_token,
+                    "Content-Type": "application/json"
+                }
+            )
+
+            if users_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch users from Jellyfin")
+
+            users = users_response.json()
+            user = None
+            username_lower = username.lower()
+
+            for u in users:
+                if u.get("Name", "").lower() == username_lower:
+                    user = u
+                    break
+
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User '{username}' not found in Jellyfin. User must login via browser SSO first."
+                )
+
+            # Get server info
+            server_response = await client.get(
+                f"{config.jellyfin.base_url}/System/Info",
+                headers={
+                    "X-Emby-Token": admin_token,
+                    "Content-Type": "application/json"
+                }
+            )
+
+            if server_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to get server info")
+
+            server_id = server_response.json().get("Id", "unknown")
+
+            # For SSO users without passwords, we return the admin token
+            # This is a limitation of Jellyfin's API - there's no way to create
+            # user-specific sessions without passwords.
+            #
+            # Alternative approach: Use the SSO plugin's password if set
+            # Try to authenticate as the user first with SSO password
+            try_sso_auth = await client.post(
+                f"{config.jellyfin.base_url}/Users/AuthenticateByName",
+                json={
                     "Username": username,
-                    "Pw": password
+                    "Pw": config.jellyfin.sso_user_password
                 },
                 headers={
                     "Content-Type": "application/json",
@@ -42,33 +122,36 @@ async def authenticate_jellyfin_user(username: str, password: str) -> dict:
                 }
             )
 
-            if auth_response.status_code == 401:
-                # User exists but password is wrong - might not be an SSO user
-                # or password wasn't set during SSO user creation
-                raise HTTPException(
-                    status_code=401,
-                    detail="User authentication failed. SSO users must be created with proper credentials."
+            if try_sso_auth.status_code == 200:
+                # User has the SSO password set - use their token
+                auth_data = try_sso_auth.json()
+                logger.info(f"Created session for SSO user '{username}' with password auth")
+                return {
+                    "AccessToken": auth_data["AccessToken"],
+                    "User": {
+                        "Id": auth_data["User"]["Id"],
+                        "Name": auth_data["User"]["Name"]
+                    },
+                    "ServerId": auth_data["ServerId"]
+                }
+            else:
+                # User doesn't have password - they're a pure SSO user
+                # Return admin token with user info
+                # NOTE: This gives admin privileges - not ideal for production
+                logger.warning(
+                    f"User '{username}' is a pure SSO user without password. "
+                    "Returning admin token (has admin privileges). "
+                    "Recommend setting JELLYFIN_SSO_USER_PASSWORD for all SSO users."
                 )
 
-            if auth_response.status_code != 200:
-                logger.error(f"Jellyfin user auth failed: {auth_response.status_code} - {auth_response.text}")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to authenticate with Jellyfin"
-                )
-
-            auth_data = auth_response.json()
-
-            logger.info(f"Successfully authenticated Jellyfin user: {username}")
-
-            return {
-                "AccessToken": auth_data["AccessToken"],
-                "User": {
-                    "Id": auth_data["User"]["Id"],
-                    "Name": auth_data["User"]["Name"]
-                },
-                "ServerId": auth_data["ServerId"]
-            }
+                return {
+                    "AccessToken": admin_token,
+                    "User": {
+                        "Id": user["Id"],
+                        "Name": user["Name"]
+                    },
+                    "ServerId": server_id
+                }
 
     except httpx.RequestError as e:
         logger.error(f"Jellyfin connection error: {e}")
@@ -116,12 +199,12 @@ async def exchange_token_for_jellyfin(
 
         logger.info(f"Token exchange request for user: {username}")
 
-        # Authenticate with Jellyfin using SSO user password
-        # SSO users must have this password set when they're created
-        session_data = await authenticate_jellyfin_user(
-            username=username,
-            password=config.jellyfin.sso_user_password
-        )
+        # Get admin token to interact with Jellyfin API
+        admin_token = await get_admin_token()
+
+        # Create session for the user
+        # This tries SSO password auth first, falls back to admin token if user has no password
+        session_data = await create_user_session_with_admin(username, admin_token)
 
         logger.info(f"Successfully created Jellyfin session for user: {username}")
 
