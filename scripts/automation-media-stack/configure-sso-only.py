@@ -97,11 +97,7 @@ class JellyfinSSOConfigurator:
             "Roles": ["jellyfin-user"],
             "RoleClaim": "realm_access.roles",
             "EnableFolderRoles": False,
-            "FolderRoleMapping": [],
-            "CanonicalLinks": [
-                f"https://tv.{self.domain}/sso/OID/start/keycloak",
-                f"https://tv.{self.domain}/sso/OID/redirect/keycloak"
-            ]
+            "FolderRoleMapping": []
         }
 
         try:
