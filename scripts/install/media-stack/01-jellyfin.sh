@@ -95,15 +95,16 @@ if docker images | grep -q "jellyfin-sso"; then
     success "Using custom Jellyfin image with SSO plugin pre-installed"
 
     # Copy SSO plugin from Docker image to host path (before PVC mount)
+    # IMPORTANT: Jellyfin looks for plugins in /config/plugins/ NOT /config/data/plugins/
     log "Installing SSO plugin to persistent storage..."
-    mkdir -p /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth
+    mkdir -p /mnt/ssd/jellyfin-config/plugins/SSO-Auth
 
     # Create temporary container and copy plugin files
     TEMP_CONTAINER=$(docker create jellyfin-sso:latest)
-    docker cp $TEMP_CONTAINER:/config/data/plugins/SSO-Auth/. /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth/
+    docker cp $TEMP_CONTAINER:/config/data/plugins/SSO-Auth/. /mnt/ssd/jellyfin-config/plugins/SSO-Auth/
     docker rm $TEMP_CONTAINER > /dev/null 2>&1
 
-    chown -R 1000:1000 /mnt/ssd/jellyfin-config/data/plugins
+    chown -R 1000:1000 /mnt/ssd/jellyfin-config/plugins
     success "SSO plugin installed to persistent storage"
 else
     warn "Using standard Jellyfin image (SSO plugin will need separate installation)"
