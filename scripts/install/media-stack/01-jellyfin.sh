@@ -98,9 +98,10 @@ if docker images | grep -q "jellyfin-sso"; then
     log "Installing SSO plugin to persistent storage..."
     mkdir -p /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth
 
-    # Extract plugin files from Docker image
-    docker run --rm jellyfin-sso:latest tar -cf - -C /config/data/plugins/SSO-Auth . | \
-        tar -xf - -C /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth/
+    # Create temporary container and copy plugin files
+    TEMP_CONTAINER=$(docker create jellyfin-sso:latest)
+    docker cp $TEMP_CONTAINER:/config/data/plugins/SSO-Auth/. /mnt/ssd/jellyfin-config/data/plugins/SSO-Auth/
+    docker rm $TEMP_CONTAINER > /dev/null 2>&1
 
     chown -R 1000:1000 /mnt/ssd/jellyfin-config/data/plugins
     success "SSO plugin installed to persistent storage"
